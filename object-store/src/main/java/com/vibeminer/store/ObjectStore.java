@@ -77,7 +77,6 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     private void openCore() throws IOException {
         if (!readOnly) {
             Files.createDirectories(packs);
-            if (options.kind() == Kind.CDN) Files.createDirectories(staging);
             lock = new WriterLock(folder.resolve("writer.lock"));
         } else if (!Files.exists(indexPath)) throw new StoreException("OBJECT_STORE_MISSING", "No complete index");
         NavigableMap<Integer, Path> files = diskPacks();
@@ -99,6 +98,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 StoreIndex candidate = new StoreIndex(check);
                 long version = check.scalar("PRAGMA user_version"); boolean damaged = candidate.damagedVersion(version);
                 if (!damaged && version > 1) throw Format.newer();
+                if (readOnly && !damaged && version < 1) throw new StoreException("OBJECT_STORE_MISSING", "No complete index");
                 if (version == 1 || damaged) {
                     long kind = check.scalar("PRAGMA application_id"); if (kind > 1) throw Format.newer();
                     if (kind != options.kind().ordinal()) throw Format.mismatch();
@@ -145,6 +145,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             Path path = packPath(Math.toIntExact((long)row[0]));
             if (Files.exists(path)) Maintenance.preflightTail(this, path, (long)row[1]);
         }
+        if (options.kind() == Kind.CDN) Files.createDirectories(staging);
         deleteRebuild();
         database.transaction(true, () -> { index.clean = 0; index.save(); });
         long recovered = 0, truncated = 0;
@@ -305,10 +306,10 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                     for (int block = 0; block < Format.blocks(length); block++) Format.le(table).putInt(block * 4, (int)Format.crc(content, block * Format.BLOCK, Math.min(Format.BLOCK, content.length - block * Format.BLOCK)));
                 } else {
                     ObjectCheck check = verifier.begin(key, length);
-                    try (FileChannel input = FileChannel.open(source, READ)) {
-                        if (input.size() != length) throw new StoreException("OBJECT_STAGING_REJECTED", "Staged length changed");
+                    try (FileChannel input = openStaged(source)) {
+                        if (stagedLength(input) != length) throw new StoreException("OBJECT_SIZE_MISMATCH", "Staged length changed");
                         for (int block = 0; block < Format.blocks(length); block++) {
-                            byte[] data = Format.read(input, (long)block * Format.BLOCK, (int)Math.min(Format.BLOCK, length - (long)block * Format.BLOCK));
+                            byte[] data = readStaged(input, (long)block * Format.BLOCK, (int)Math.min(Format.BLOCK, length - (long)block * Format.BLOCK));
                             Refusal r = check.append(data); if (r != null) throw new StoreException(r.code(), r.message());
                             sha.update(data); Format.le(table).putInt(block * 4, (int)Format.crc(data)); Format.write(file, start + 96 + (long)block * Format.BLOCK, data);
                         }
@@ -338,6 +339,21 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 throw translate(error, "OBJECT_STORE_WRITE_FAILED");
             }
         }
+    }
+    private static FileChannel openStaged(Path path) {
+        try { return FileChannel.open(path, READ); }
+        catch (IOException e) { throw new StoreException("OBJECT_STAGING_REJECTED", "Cannot open staged file", e); }
+    }
+    private static long stagedLength(FileChannel file) {
+        try { return file.size(); }
+        catch (IOException e) { throw new StoreException("OBJECT_STAGING_REJECTED", "Cannot inspect staged file", e); }
+    }
+    private static byte[] readStaged(FileChannel file, long offset, int count) {
+        try {
+            byte[] bytes = Format.read(file, offset, count);
+            if (bytes.length != count) throw new StoreException("OBJECT_SIZE_MISMATCH", "Staged file is short");
+            return bytes;
+        } catch (IOException e) { throw new StoreException("OBJECT_STAGING_REJECTED", "Cannot read staged file", e); }
     }
     int activePack(long entrySize) throws IOException {
         List<Object[]> active = database.query("SELECT seq,committed_length,live_bytes FROM packs WHERE state=0");
@@ -401,7 +417,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         });
     }
     @Override public CompletableFuture<ObjectStaging> stage(ObjectKey key, long declaredLength, Origin origin, Cancellation cancellation) {
-        return write(() -> { cancellation.check(); return Staging.open(this, key, declaredLength, origin); });
+        return write(() -> { cancellation.check(); return Staging.open(this, key, declaredLength, origin, cancellation); });
     }
     @Override public CompletableFuture<ScanReport> scan(Cancellation cancellation) {
         return write(() -> Maintenance.scan(this, cancellation));

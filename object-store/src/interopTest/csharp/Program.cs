@@ -1,7 +1,57 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using VibeMiner.Objects;
 
+if (args[0] == "verify-vectors") {
+    using var input = JsonDocument.Parse(await File.ReadAllTextAsync(args[1]));
+    int count = 0;
+    foreach (var vector in input.RootElement.EnumerateArray()) {
+        var key = ObjectKey.Parse((ObjectKeyType)vector.GetProperty("type").GetInt32(), vector.GetProperty("key").GetString()!, (byte)vector.GetProperty("namespace").GetInt32());
+        var bytes = Convert.FromBase64String(vector.GetProperty("data").GetString()!);
+        long declared = vector.GetProperty("declared").GetInt64();
+        string? expected = vector.GetProperty("expected").ValueKind == JsonValueKind.Null ? null : vector.GetProperty("expected").GetString();
+        string? actual = ObjectVerification.Default.Check(key, bytes, declared)?.Code;
+        if (actual != expected) throw new Exception($"Verification vector {count}: expected {expected ?? "accepted"}, got {actual ?? "accepted"}");
+        using var check = ObjectVerification.Default.Begin(key, declared);
+        ObjectRefusal? incremental = null;
+        for (int at = 0; at < bytes.Length; at += 7) {
+            incremental = check.Append(bytes.AsSpan(at, Math.Min(7, bytes.Length-at)));
+            if (incremental is not null) break;
+        }
+        incremental ??= check.Complete();
+        if (incremental?.Code != expected) throw new Exception($"Incremental vector {count}: expected {expected ?? "accepted"}, got {incremental?.Code ?? "accepted"}");
+        count++;
+    }
+    Console.WriteLine($"C# matched {count} whole and fragmented verification vectors"); return;
+}
+if (args[0] == "generated-exchange") {
+    await using var generated = await ObjectStore.OpenAsync(Path.GetFullPath(args[1]), new ObjectStoreOptions { Kind = ObjectStoreKind.Generated });
+    var key = new ObjectKey(ObjectKeyType.Generated, new byte[16]);
+    var read = await generated.ReadAsync(key);
+    if (read.State != ReadState.Present || !read.Bytes!.SequenceEqual(new byte[]{1,2,3})) throw new Exception("Generated Java bytes unreadable");
+    var second = new byte[16]; second[0] = 1;
+    await generated.PutAsync([new(new ObjectKey(ObjectKeyType.Generated, second), 3, new byte[]{4,5,6})], true);
+    if ((await generated.ScanAsync()).Live != 2 || (await generated.VerifyAsync(true)).CorruptCount != 0) throw new Exception("Generated rebuild failed");
+    Console.WriteLine("C# read/wrote generated data and rebuilt its index"); return;
+}
+if (args[0] is "stage-exchange" or "stage-save") {
+    var bytes = await File.ReadAllBytesAsync(Path.Combine(args[1], "encoded.bin"));
+    int headerLength = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(bytes.AsSpan(4));
+    var key = new ObjectKey(ObjectKeyType.Encoded, MD5.HashData(bytes.AsSpan(0,headerLength)));
+    await using var stagedStore = await ObjectStore.OpenAsync(Path.Combine(args[1], "store"));
+    await using var stage = await stagedStore.StageAsync(key,bytes.Length);
+    int expected = headerLength + System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(bytes.AsSpan(12));
+    if (args[0] == "stage-save") {
+        if (stage.Length != 0) throw new Exception("Expected a new staging");
+        await stage.AppendAsync(bytes.AsMemory(0, expected+2));
+        Console.WriteLine("C# saved a chunked staging with an unproven tail"); return;
+    }
+    if (stage.Length != expected) throw new Exception("Java/C# staged proof differs");
+    await stage.AppendAsync(bytes.AsMemory((int)stage.Length));
+    if ((await stage.CommitAsync()).Outcome != PutOutcome.Stored) throw new Exception("C# staged commit failed");
+    Console.WriteLine("C# resumed Java chunked staging and committed the object"); return;
+}
 var folder = Path.GetFullPath(args[1]);
 if (args[0] == "busy") {
     try { await using var unexpected = await ObjectStore.OpenAsync(folder); throw new Exception("Writer exclusion failed"); }

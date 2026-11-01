@@ -34,7 +34,9 @@ Run the changed component's fast tests by default:
 
 This suite checks the binary format and the in-memory reader/writer/history
 contracts without SQLite, disk stores, .NET, or the sibling checkout. Gradle skips
-unchanged compile and test tasks. Use `--rerun-tasks` to deliberately run them again.
+unchanged compile and test tasks and reuses cached build configuration. Build and
+configuration caches are enabled by default; use `--no-configuration-cache` to
+diagnose future incompatible plugins or tasks. Use `--rerun-tasks` to deliberately run them again.
 Tests produce HTML reports under `object-store/build/reports/tests/<task>/`.
 
 Choose additional checks based on the change:
@@ -49,7 +51,9 @@ Choose additional checks based on the change:
 
 The disk suite runs the shared contracts against the actual store, plus temporary
 store tests for reads/ranges, history, cancellation, concurrency, corruption,
-staging, recovery, rebuild and compaction. Tests never use profile/user data.
+staging, recovery, rebuild and compaction. Functional-parity coverage includes
+generated-store isolation, chunked BLTE resume, strict history UTF-8, index
+validation, the 64 MiB generated limit, and encoded staging above 64 MiB. Tests never use profile/user data.
 
 ```sh
 ./gradlew :object-store:integrationTest
@@ -88,8 +92,9 @@ It requires the .NET 10 SDK and packages pinned in its `packages.lock.json`.
 
 The default .NET executable is `../vibeminer/.local/toolchains/dotnet/dotnet`.
 On Windows set `-Pdotnet` to the installed `dotnet.exe` path.
-The harness checks bidirectional data/history exchange, rebuilds and writer
-exclusion. C# build output stays in the ignored `bin/` and `obj/` directories
+The harness checks bidirectional data/history and generated-store exchange,
+rebuilds, writer exclusion, chunked staging resume in both directions, and
+whole/incremental verification refusal vectors. C# build output stays in the ignored `bin/` and `obj/` directories
 next to its project. The CLI home stays in ignored `.local/dotnet/`.
 
 ## Component boundaries and layout
@@ -138,7 +143,8 @@ Read-day updates, the pack-handle cache, parallel caller verification and the
 session SHA cache are not implemented. Scan's merge holds one open handle per
 pack; compaction retains moved-row metadata per source pack. Cancellation checks
 occur between entries/blocks/pages and do not interrupt an active SQLite statement.
-The memory fake covers reader/writer/history contracts but does not implement staging.
+The memory fake supports CDN/generated reader/writer/history and resumable staging
+contracts without native or file dependencies.
 
 Linux ARM64 native SQLite and cross-language writer locks have been exercised.
 Windows and macOS need native-platform CI, including read-only media behavior and

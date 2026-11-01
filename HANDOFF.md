@@ -60,6 +60,27 @@ The higher-level generated-record store and network clients are separate work.
   JDK at `/tmp/vimi-jdk25-arm64` and `GRADLE_USER_HOME=/tmp/vimi-gradle-home`.
   Set `JAVA_HOME` to a persistent full JDK for ordinary local builds.
 
+## Functional parity milestone implementation
+
+- Added generated-store contracts, chosen-key persistence/rebuild/delete, type isolation,
+  limits and bidirectional C# generated-store exchange.
+- Added chunked staging/resume, fragmented headers, corruption, budget, complete/incomplete
+  commit and stale-handle contracts. Exercise the 64 MiB generated boundary and encoded
+  staging above the whole-object limit on temporary stores.
+- Fixed incomplete commits deleting resume data, broken-handle lifecycle, stale handles
+  deleting replacement files, and missing/changed staged sources causing store-wide errors.
+- Aligned invalid staging arguments with the reference. Target pack failures still fail
+  at store level; source validation failures refuse only the staged object.
+- Added per-key bounds/refusal precedence, index/footer/page checks, BLTE proof, strict
+  history grammar/UTF-8, full identity verification and newer-header preflight coverage.
+- The reusable memory fake now supports both store kinds, staged proof/resume, budgets,
+  close/cancellation and history paging. Shared contracts run against memory and disk.
+- Added whole/incremental Java/C# verification vectors and cross-language chunked resume.
+- Enabled Gradle configuration cache after testing storage and reuse with all suites.
+- This implementation covers GitHub stories #3, #4, #5 and #10. Linux validation
+  passes 54 unit, integration and interoperability tests; native Windows/macOS
+  validation remains in the platform milestone.
+
 ## Remaining parity work
 
 This is not yet full reference parity. See README's Current limits. In particular:
@@ -68,9 +89,7 @@ This is not yet full reference parity. See README's Current limits. In particula
 - Queue overflow currently fails with a limit error rather than asynchronously waiting.
 - Cancellation does not interrupt running SQLite statements.
 - Replay holds a file handle per pack; compaction holds moved-row metadata per source.
-- The memory fake implements reader/writer/history contracts, but not staging.
-- Expand fault-injection/process-kill coverage, namespace/type identity checks, large
-  chunked BLTE cases, generated-store contracts and read-only media tests.
+- Expand fault-injection/process-kill coverage and read-only media tests.
 - Validate native Windows/macOS locking and SQLite packaging in platform CI.
 - Native Windows/macOS validation remains; the Gradle wrapper includes Windows launchers.
 

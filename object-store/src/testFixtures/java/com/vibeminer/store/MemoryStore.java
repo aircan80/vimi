@@ -1,59 +1,173 @@
 package com.vibeminer.store;
 
+import java.io.ByteArrayOutputStream;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.function.Supplier;
 import com.vibeminer.store.StoreTypes.*;
 
-/** In-memory layer-boundary fake; no native or file dependencies. */
+/** Deterministic role-boundary fake. State is in memory; no SQLite or filesystem access. */
 public final class MemoryStore implements ObjectReader, ObjectWriter, HistoryLog {
+    private final Kind kind;
+    private final Verification verifier;
     private final Map<ObjectKey, PutObject> objects = new TreeMap<>();
-    private <T> CompletableFuture<T> result(java.util.function.Supplier<T> work) {
-        try { return CompletableFuture.completedFuture(work.get()); }
-        catch (RuntimeException e) { return CompletableFuture.failedFuture(e); }
+    private final Map<ObjectKey, byte[]> stagedBytes = new HashMap<>();
+    private final Map<ObjectKey, Stage> stages = new HashMap<>();
+    private long stagingBudget;
+    private boolean closed;
+
+    public MemoryStore() { this(Kind.CDN); }
+    public MemoryStore(Kind kind) {
+        this.kind = Objects.requireNonNull(kind);
+        verifier = kind == Kind.CDN ? Verification.CDN : Verification.GENERATED;
     }
-    public CompletableFuture<Boolean> has(ObjectKey key, Cancellation c) { return result(() -> { c.check(); return objects.containsKey(key); }); }
+    private synchronized <T> CompletableFuture<T> result(Supplier<T> work) {
+        try {
+            if (closed) throw new StoreException("OBJECT_STORE_CLOSED", "Store is closed");
+            return CompletableFuture.completedFuture(work.get());
+        } catch (RuntimeException e) { return CompletableFuture.failedFuture(e); }
+    }
+    public CompletableFuture<Boolean> has(ObjectKey key, Cancellation c) {
+        return result(() -> { c.check(); return objects.containsKey(key); });
+    }
     public CompletableFuture<ObjectRead> read(ObjectKey key, Cancellation c) {
-        return result(() -> { c.check(); PutObject p = objects.get(key); return p == null ? new ObjectRead(ReadState.ABSENT, null, null, null) : new ObjectRead(ReadState.PRESENT, new ObjectInfo(key,p.declaredLength(),p.origin(),Instant.EPOCH),p.bytes(),null); });
+        return result(() -> { c.check(); return readCore(key, 0, -1); });
+    }
+    private ObjectRead readCore(ObjectKey key, long offset, int length) {
+        PutObject object = objects.get(key);
+        if (object == null) return new ObjectRead(ReadState.ABSENT, null, null, null);
+        if (offset > object.declaredLength() || length >= 0 && length > object.declaredLength() - offset)
+            throw new IllegalArgumentException("Range extends past object");
+        byte[] bytes = length < 0 ? object.bytes() : Arrays.copyOfRange(object.data(), (int)offset, (int)offset + length);
+        return new ObjectRead(ReadState.PRESENT, new ObjectInfo(key, object.declaredLength(), object.origin(), Instant.EPOCH), bytes, null);
     }
     public CompletableFuture<ObjectRead> readRange(ObjectKey key, long offset, int length, Cancellation c) {
-        return result(() -> {
-            if (offset < 0 || length < 0) throw new IllegalArgumentException();
-            if (length > Format.WHOLE_LIMIT) throw new StoreException("OBJECT_STORE_LIMIT", "Range too large");
-            ObjectRead r = read(key,c).join(); if (r.state() != ReadState.PRESENT) return r;
-            if (offset > r.bytes().length || length > r.bytes().length-offset) throw new IllegalArgumentException();
-            return new ObjectRead(r.state(),r.info(),Arrays.copyOfRange(r.bytes(),(int)offset,(int)offset+length),null);
-        });
+        if (offset < 0 || length < 0) return CompletableFuture.failedFuture(new IllegalArgumentException("Negative range"));
+        if (length > Format.WHOLE_LIMIT) return CompletableFuture.failedFuture(new StoreException("OBJECT_STORE_LIMIT", "Range too large"));
+        return result(() -> { c.check(); return readCore(key, offset, length); });
     }
     public CompletableFuture<List<PutResult>> put(List<PutObject> batch, boolean commitNow, Cancellation c) {
+        List<PutObject> owned = List.copyOf(batch);
         return result(() -> {
-            if (batch.size() > 4096 || batch.stream().mapToLong(p -> p.data().length).sum() > 256L<<20) throw new StoreException("OBJECT_STORE_LIMIT","Batch too large");
+            if (owned.size() > 4096 || owned.stream().mapToLong(p -> p.data().length).sum() > 256L << 20)
+                throw new StoreException("OBJECT_STORE_LIMIT", "Batch too large");
             List<PutResult> results = new ArrayList<>();
-            for (PutObject p : batch) {
-                Refusal r = Verification.CDN.check(p.key(),p.data(),p.declaredLength());
-                String code = r == null ? null : r.code(); History.Entry h = p.key().type()==6 ? History.parse(p.data(),p.key()) : null;
-                if (code == null && h != null && !objects.containsKey(h.document())) code = "OBJECT_HISTORY_DOCUMENT_MISSING";
-                PutOutcome outcome = code != null ? PutOutcome.REFUSED : c.isCanceled() ? PutOutcome.CANCELED : objects.containsKey(p.key()) ? PutOutcome.ALREADY_PRESENT : PutOutcome.STORED;
-                if (outcome == PutOutcome.STORED) objects.put(p.key(),p);
-                results.add(new PutResult(p.key(),outcome,code));
+            for (PutObject p : owned) {
+                Refusal refusal = verifier.check(p.key(), p.data(), p.declaredLength());
+                if (refusal != null) { results.add(new PutResult(p.key(), PutOutcome.REFUSED, refusal.code())); continue; }
+                if (c.isCanceled()) { results.add(new PutResult(p.key(), PutOutcome.CANCELED, null)); continue; }
+                if (objects.containsKey(p.key())) { results.add(new PutResult(p.key(), PutOutcome.ALREADY_PRESENT, null)); continue; }
+                History.Entry h = p.key().type() == 6 ? History.parse(p.data(), p.key()) : null;
+                if (h != null && !objects.containsKey(h.document())) {
+                    results.add(new PutResult(p.key(), PutOutcome.REFUSED, "OBJECT_HISTORY_DOCUMENT_MISSING")); continue;
+                }
+                objects.put(p.key(), p); results.add(new PutResult(p.key(), PutOutcome.STORED, null));
             }
             return List.copyOf(results);
         });
     }
     public CompletableFuture<List<DeleteResult>> delete(List<ObjectKey> keys, Cancellation c) {
+        List<ObjectKey> owned = List.copyOf(keys);
         return result(() -> {
+            if (owned.size() > 4096) throw new StoreException("OBJECT_STORE_LIMIT", "Delete batch too large");
             List<DeleteResult> results = new ArrayList<>();
-            for (ObjectKey key : keys) { c.check(); boolean refused = key.type()==5 || key.type()==6;
-                results.add(new DeleteResult(key,refused ? DeleteOutcome.REFUSED : objects.remove(key)==null ? DeleteOutcome.ABSENT : DeleteOutcome.DELETED,refused ? "OBJECT_DELETE_REFUSED" : null)); }
+            for (ObjectKey key : owned) {
+                c.check(); boolean refused = key.type() == 5 || key.type() == 6;
+                results.add(new DeleteResult(key, refused ? DeleteOutcome.REFUSED : objects.remove(key) == null
+                    ? DeleteOutcome.ABSENT : DeleteOutcome.DELETED, refused ? "OBJECT_DELETE_REFUSED" : null));
+            }
             return List.copyOf(results);
         });
     }
-    public CompletableFuture<ObjectStaging> stage(ObjectKey key,long length,Origin origin,Cancellation c) { return CompletableFuture.failedFuture(new UnsupportedOperationException("Use disk staging tests")); }
-    public CompletableFuture<List<PutResult>> appendHistory(History.Observation o,Cancellation c) { return put(History.objects(o),true,c); }
-    public CompletableFuture<List<History.Entry>> readHistory(History.Query q,Cancellation c) {
-        return result(() -> { c.check(); return objects.values().stream().filter(p->p.key().type()==6).map(p->History.parse(p.data(),p.key()))
-            .filter(e->q.product()==null || q.product().equals(e.product())).filter(e->q.region()==null || q.region().equals(e.region())).filter(e->q.kind()==null || q.kind()==e.kind())
-            .sorted(Comparator.comparing(History.Entry::observedAt).thenComparing(History.Entry::record))
-            .filter(e->q.after()==null || e.observedAt().isAfter(q.after().observedAt()) || e.observedAt().equals(q.after().observedAt()) && e.record().compareTo(q.after().record())>0).limit(q.limit()).toList(); });
+    public CompletableFuture<List<PutResult>> appendHistory(History.Observation observation, Cancellation c) {
+        return put(History.objects(observation), true, c);
+    }
+    public CompletableFuture<List<History.Entry>> readHistory(History.Query query, Cancellation c) {
+        return result(() -> {
+            c.check();
+            return objects.values().stream().filter(p -> p.key().type() == 6).map(p -> History.parse(p.data(), p.key()))
+                .filter(e -> query.product() == null || query.product().equals(e.product()))
+                .filter(e -> query.region() == null || query.region().equals(e.region()))
+                .filter(e -> query.kind() == null || query.kind() == e.kind())
+                .sorted(Comparator.comparing(History.Entry::observedAt).thenComparing(History.Entry::record))
+                .filter(e -> query.after() == null || e.observedAt().isAfter(query.after().observedAt())
+                    || e.observedAt().equals(query.after().observedAt()) && e.record().compareTo(query.after().record()) > 0)
+                .limit(query.limit()).toList();
+        });
+    }
+    public CompletableFuture<ObjectStaging> stage(ObjectKey key, long length, Origin origin, Cancellation c) {
+        return result(() -> {
+            c.check(); Objects.requireNonNull(origin);
+            if (kind != Kind.CDN || key.type() != 4 || key.namespace() != 0 || length < 1 || length > Format.MAX_PAYLOAD)
+                throw new IllegalArgumentException("Staging requires a CDN encoded object of 1–512 MiB");
+            if (stages.containsKey(key)) throw new IllegalStateException("Key is already being staged");
+            if (stages.size() >= 16 || length > (2L << 30) - stagingBudget)
+                throw new StoreException("OBJECT_STORE_LIMIT", "Staging budget is in use");
+            Stage stage = new Stage(key, length, origin); stages.put(key, stage); stagingBudget += length; return stage;
+        });
+    }
+    public synchronized CompletableFuture<Void> closeAsync() {
+        for (Stage stage : List.copyOf(stages.values())) stage.release(false);
+        closed = true; return CompletableFuture.completedFuture(null);
+    }
+    private final class Stage implements ObjectStaging {
+        private final ObjectKey key;
+        private final long declared;
+        private final Origin origin;
+        private final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        private final ObjectCheck check;
+        private boolean finished, broken;
+        Stage(ObjectKey key, long declared, Origin origin) {
+            this.key = key; this.declared = declared; this.origin = origin;
+            byte[] saved = stagedBytes.getOrDefault(key, new byte[0]);
+            ObjectCheck probe = verifier.begin(key, declared);
+            if (saved.length <= declared) probe.append(saved);
+            buffer.writeBytes(Arrays.copyOf(saved, (int)probe.provenLength()));
+            stagedBytes.put(key, buffer.toByteArray());
+            check = verifier.begin(key, declared); check.append(buffer.toByteArray());
+        }
+        public ObjectKey key() { return key; }
+        public long declaredLength() { return declared; }
+        public long length() { synchronized (MemoryStore.this) { return buffer.size(); } }
+        private void requireOpen() {
+            if (finished) throw new StoreException("OBJECT_STORE_CLOSED", "Staging is closed");
+        }
+        public CompletableFuture<Void> append(byte[] bytes, Cancellation c) {
+            byte[] owned = bytes.clone();
+            return result(() -> {
+                requireOpen(); if (broken) throw new StoreException("OBJECT_STAGING_REJECTED", "Start staging again"); c.check();
+                if (owned.length > declared - buffer.size()) throw new IllegalArgumentException("Append exceeds declared length");
+                buffer.writeBytes(owned); Refusal refusal = check.append(owned);
+                if (refusal != null) {
+                    broken = true; byte[] proven = Arrays.copyOf(buffer.toByteArray(), (int)check.provenLength());
+                    buffer.reset(); buffer.writeBytes(proven); stagedBytes.put(key, proven);
+                    throw new StoreException("OBJECT_STAGING_REJECTED", refusal.code());
+                }
+                stagedBytes.put(key, buffer.toByteArray()); return null;
+            });
+        }
+        public CompletableFuture<PutResult> commit(Cancellation c) {
+            return result(() -> {
+                requireOpen();
+                if (broken || buffer.size() != declared) throw new IllegalStateException("Only complete unrefused staging can be committed");
+                if (c.isCanceled()) { release(false); return new PutResult(key, PutOutcome.CANCELED, null); }
+                try {
+                    Refusal refusal = check.complete();
+                    if (refusal != null) return new PutResult(key, PutOutcome.REFUSED, refusal.code());
+                    if (objects.containsKey(key)) return new PutResult(key, PutOutcome.ALREADY_PRESENT, null);
+                    objects.put(key, new PutObject(key, declared, buffer.toByteArray(), origin));
+                    return new PutResult(key, PutOutcome.STORED, null);
+                } finally { release(true); }
+            });
+        }
+        void release(boolean delete) {
+            if (finished) return;
+            finished = true;
+            if (stages.remove(key, this)) stagingBudget -= declared;
+            if (delete) stagedBytes.remove(key);
+        }
+        public CompletableFuture<Void> abandon() { return result(() -> { release(true); return null; }); }
+        public CompletableFuture<Void> closeAsync() { return result(() -> { release(false); return null; }); }
     }
 }
