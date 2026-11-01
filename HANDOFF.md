@@ -176,12 +176,30 @@ The higher-level generated-record store and network clients are separate work.
   Future asynchronous/performance and native-platform work remains tracked; the review
   does not complete those milestones.
 
+## Asynchronous writer admission
+
+- #16 uses one serial disk worker, 64 ready slots and 64 FIFO admission waiters.
+  Retained active/ready/waiting input is capped at 512 MiB; excess waiter/payload
+  budgets report OBJECT_STORE_LIMIT. Waiting uses no blocked admission threads.
+- Token cancellation removes unaccepted requests and cancels their futures without
+  disk work. Admitted requests retain existing per-operation cancellation behavior.
+  A staged commit canceled before admission leaves its handle usable.
+- Close rejects unaccepted waiters and drains accepted writes. User continuations
+  run outside the writer and admission locks, including reentrant write/close calls.
+- Added 11 fast unit cases and five disk cases for admission, budgets, cancellation,
+  FIFO, close/draining, reentrant continuations and staged-input ownership.
+- Validation: 235 cases (37 unit, 107 integration, 51 crash, 40 interop), formatting,
+  Checkstyle, compiler lint and assembly on Linux. No Windows/macOS development yet.
+- Next: #17, interrupt active SQLite work safely on cancellation. Group commits
+  remain separate in #21. Commits remain local until a push is requested.
+
 ## Remaining parity work
 
 This is not yet full reference parity. See README's Current limits. In particular:
 - Group commits, read-day accounting, pack-handle/session SHA caches and caller-side
   parallel verification remain. Current writes commit individually.
-- Queue overflow currently fails with a limit error rather than asynchronously waiting.
+- Reader/opener queue overflow still fails with a limit error. Writer admission waits
+  asynchronously within explicit request/payload bounds (see below).
 - Cancellation does not interrupt running SQLite statements.
 - Replay holds a file handle per pack; compaction holds moved-row metadata per source.
 - Native-platform/read-only-media validation and optional broader fault-boundary

@@ -53,7 +53,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     final Options options;
     final boolean readOnly;
     final Verification verifier;
-    final ThreadPoolExecutor writer = Async.pool("vimi-store-writer", 1);
+    final WriteQueue writer = new WriteQueue();
     final ThreadPoolExecutor readers = Async.pool("vimi-store-read", 8);
     private final Object lifecycle = new Object();
     private boolean accepting = true;
@@ -425,6 +425,10 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     }
 
     <T> CompletableFuture<T> write(Async.Work<T> work) {
+        return write(0, Cancellation.NONE, work);
+    }
+
+    <T> CompletableFuture<T> write(long bytes, Cancellation cancellation, Async.Work<T> work) {
         synchronized (lifecycle) {
             if (!accepting) {
                 return CompletableFuture.failedFuture(closed());
@@ -436,8 +440,9 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             if (writeFailure != null) {
                 return CompletableFuture.failedFuture(writeFailure);
             }
-            return Async.submit(
-                    writer,
+            return writer.submit(
+                    bytes,
+                    cancellation,
                     () -> {
                         if (writeFailure != null) {
                             throw writeFailure;
@@ -709,6 +714,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                             "OBJECT_STORE_LIMIT", "Put batch exceeds 4096 objects or 256 MiB"));
         }
         return write(
+                bytes,
+                cancellation,
                 () -> {
                     List<PutResult> results = new ArrayList<>();
                     for (PutObject p : owned) {
@@ -980,6 +987,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                     new StoreException("OBJECT_STORE_LIMIT", "Delete batch exceeds 4096"));
         }
         return write(
+                18L * owned.size(),
+                cancellation,
                 () -> {
                     List<DeleteResult> result = new ArrayList<>();
                     for (ObjectKey key : owned) {
@@ -1082,6 +1091,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     public CompletableFuture<ObjectStaging> stage(
             ObjectKey key, long declaredLength, Origin origin, Cancellation cancellation) {
         return write(
+                0,
+                cancellation,
                 () -> {
                     cancellation.check();
                     return Staging.open(this, key, declaredLength, origin, cancellation);
@@ -1090,7 +1101,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
 
     @Override
     public CompletableFuture<ScanReport> scan(Cancellation cancellation) {
-        return write(() -> Maintenance.scan(this, cancellation));
+        return write(0, cancellation, () -> Maintenance.scan(this, cancellation));
     }
 
     @Override
@@ -1105,7 +1116,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             return CompletableFuture.failedFuture(
                     new IllegalArgumentException("Invalid compaction bounds"));
         }
-        return write(() -> Maintenance.compact(this, fraction, maxPacks, cancellation));
+        return write(
+                0, cancellation, () -> Maintenance.compact(this, fraction, maxPacks, cancellation));
     }
 
     @Override

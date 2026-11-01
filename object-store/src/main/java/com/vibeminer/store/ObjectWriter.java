@@ -7,6 +7,11 @@ import com.vibeminer.store.StoreTypes.PutResult;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
+/**
+ * Asynchronous writes use FIFO admission with bounded request and payload budgets. A canceled
+ * admission waiter completes exceptionally with CancellationException; admitted operations apply
+ * their per-operation cancellation semantics. Close drains accepted work and rejects waiters.
+ */
 public interface ObjectWriter {
     CompletableFuture<List<PutResult>> put(
             List<PutObject> batch, boolean commitNow, Cancellation cancellation);

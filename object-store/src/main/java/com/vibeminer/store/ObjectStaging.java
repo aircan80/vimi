@@ -19,8 +19,9 @@ public interface ObjectStaging {
 
     /**
      * Requires complete, unrefused bytes; incomplete commit leaves the handle usable. A canceled
-     * complete commit keeps the file for resume and releases this handle. Source-file validation
-     * failures return a refusal for this object only.
+     * complete commit keeps the file for resume and releases this handle. Cancellation while
+     * waiting for admission leaves this handle usable and cancels the future. Source-file
+     * validation failures return a refusal for this object only.
      */
     CompletableFuture<PutResult> commit(Cancellation cancellation);
 

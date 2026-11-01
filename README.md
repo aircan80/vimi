@@ -223,7 +223,14 @@ through `ObjectStore.openReadOnly` and a separate interface without write method
 
 This is a functioning initial port, not full performance/behavior parity. Writes
 currently commit each object individually; `commitNow` has no additional effect.
-Queues reject overflow with `OBJECT_STORE_LIMIT` rather than waiting for room.
+The serial writer supports 64 ready requests plus 64 asynchronous admission waiters.
+Its 512 MiB retained-input budget includes active, ready and waiting payloads.
+Exceeding either the waiter or payload budget returns `OBJECT_STORE_LIMIT`.
+Admission is FIFO; cancellation removes an unaccepted waiter and cancels its future.
+Once admitted, each operation applies its existing cancellation semantics (including
+per-object `CANCELED` results). Close rejects unaccepted waiters and drains accepted
+writes. Result continuations run outside the disk writer and admission locks.
+Reader and opener queues still reject overflow rather than waiting for room.
 Read-day updates, the pack-handle cache, parallel caller verification and the
 session SHA cache are not implemented. Scan's merge holds one open handle per
 pack; compaction retains moved-row metadata per source pack. Cancellation checks

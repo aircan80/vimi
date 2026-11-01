@@ -117,6 +117,8 @@ final class Staging implements ObjectStaging {
     public CompletableFuture<Void> append(byte[] bytes, Cancellation cancellation) {
         byte[] owned = bytes.clone();
         return store.write(
+                owned.length,
+                cancellation,
                 () -> {
                     requireUsable();
                     cancellation.check();
@@ -143,6 +145,8 @@ final class Staging implements ObjectStaging {
 
     public CompletableFuture<PutResult> commit(Cancellation cancellation) {
         return store.write(
+                0,
+                cancellation,
                 () -> {
                     requireOpen();
                     if (broken || length != declared) {
