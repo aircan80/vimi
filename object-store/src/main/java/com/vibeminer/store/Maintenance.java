@@ -73,7 +73,7 @@ final class Maintenance {
                 at += e.size(); recovered++;
             }
             long truncated = file.size() - at;
-            file.truncate(at); file.force(true);
+            s.io.truncate(file, s.packPath(pack), at); s.io.sync(file, s.packPath(pack));
             long end = at;
             s.database.transaction(true, () -> { s.index.pack(pack, 0, end, liveBytes(s.index, pack, file, end)); s.index.save(); });
             if (truncated > 0) problems.add("Truncated tail of pack " + pack + " by " + truncated + " bytes");
@@ -148,6 +148,7 @@ final class Maintenance {
         });
         s.atMaintenance(MaintenancePoint.SCAN_SEALED);
         cancel.check();
+        Throwable failedScan = null;
         try {
             s.database.transaction(true, () -> {
                 s.database.exec("CREATE TEMP TABLE saved_reads AS SELECT k,last_read FROM objects WHERE last_read IS NOT NULL");
@@ -161,7 +162,8 @@ final class Maintenance {
                 s.database.exec("UPDATE objects SET last_read=(SELECT last_read FROM saved_reads r WHERE r.k=objects.k)");
                 s.database.exec("DROP TABLE saved_reads");
             });
-        } finally { s.index.load(); }
+        } catch (Throwable error) { failedScan = error; throw error; }
+        finally { s.reloadIndex(failedScan); }
         s.atMaintenance(MaintenancePoint.SCAN_COMMITTED);
         s.database.exec("PRAGMA wal_checkpoint(PASSIVE)");
         s.atMaintenance(MaintenancePoint.SCAN_CHECKPOINTED);
@@ -188,7 +190,7 @@ final class Maintenance {
     }
     /** Copy and verify the very same blocks; do not validate then reread unchecked bytes. */
     private static boolean copyEntry(ObjectStore s, FileChannel input, long from, Format.Entry entry,
-                                     FileChannel output, long to, Cancellation cancel) throws IOException {
+                                     FileChannel output, Path targetPath, long to, Cancellation cancel) throws IOException {
         MessageDigest sha = Format.digest("SHA-256");
         for (int block = 0; block < Format.blocks(entry.length()); block++) {
             cancel.check(); long offset = (long)block * Format.BLOCK;
@@ -196,12 +198,12 @@ final class Maintenance {
             byte[] bytes = Format.read(input, from + 96 + offset, count);
             byte[] crc = Format.read(input, from + 96 + entry.length() + 4L * block, 4);
             if (bytes.length != count || crc.length != 4 || Format.le(crc).getInt() != (int)Format.crc(bytes)) return false;
-            sha.update(bytes); Format.write(output, to + 96 + offset, bytes);
-            Format.write(output, to + 96 + entry.length() + 4L * block, crc);
+            sha.update(bytes); s.io.write(output, targetPath, to + 96 + offset, bytes);
+            s.io.write(output, targetPath, to + 96 + entry.length() + 4L * block, crc);
             if (block == 0) s.atMaintenance(MaintenancePoint.COMPACT_COPYING);
         }
         if (!MessageDigest.isEqual(sha.digest(), entry.sha())) return false;
-        Format.write(output, to, entry.header()); return true;
+        s.io.write(output, targetPath, to, entry.header()); return true;
     }
     static CompactReport compact(ObjectStore s, double fraction, int maxPacks, Cancellation cancel) throws IOException {
         int count = 0, attempted = 0; long before = 0, after = 0, moved = 0, skipped = 0;
@@ -212,7 +214,7 @@ final class Maintenance {
             int source = Math.toIntExact((long)p[0]); long length = (long)p[1];
             if (s.corruptPacks.contains(source) || length - 64 - (long)p[2] < fraction * (length - 64)) continue;
             attempted++;
-            int target = s.allocatePack(); Path targetPath = s.packPath(target); boolean switched = false;
+            int target = s.allocatePack(); Path targetPath = s.packPath(target); boolean switched = false; Throwable failedCopy = null;
             List<StoreIndex.Row> rows = new ArrayList<>(); long end = 64;
             s.database.transaction(true, () -> s.index.pack(target, 2, 64, 0));
             try {
@@ -220,20 +222,20 @@ final class Maintenance {
                 cancel.check(); boolean bad = false, corrupt = false;
                 try (FileChannel input = FileChannel.open(s.packPath(source), READ);
                      FileChannel output = FileChannel.open(targetPath, CREATE_NEW, WRITE)) {
-                    Format.write(output, 0, Format.pack(target, s.index.id, s.now(), s.kind()));
+                    s.io.write(output, targetPath, 0, Format.pack(target, s.index.id, s.now(), s.kind()));
                     for (long at = 64; at < length;) {
                         cancel.check(); Format.Entry e = Format.entry(Format.read(input, at, 96), s.kind());
                         if (e == null || e.size() > length - at) { bad = true; break; }
                         StoreIndex.Row row = s.index.find(e.key());
                         boolean live = !e.tombstone() && row != null && row.pack() == source && row.offset() == at;
                         if (e.tombstone() || live) {
-                            if (!copyEntry(s, input, at, e, output, end, cancel)) { bad = corrupt = true; break; }
+                            if (!copyEntry(s, input, at, e, output, targetPath, end, cancel)) { bad = corrupt = true; break; }
                             if (live) rows.add(new StoreIndex.Row(e.key(), target, end, e.length(), e.sha()));
                             end += e.size();
                         }
                         at += e.size();
                     }
-                    if (!bad) { output.force(true); Format.syncDirectory(s.packs); }
+                    if (!bad) { s.io.sync(output, targetPath); s.io.syncDirectory(s.packs); }
                 }
                 if (bad) {
                     if (corrupt) { skipped++; s.corruptPacks.add(source); }
@@ -253,14 +255,23 @@ final class Maintenance {
                 });
                 switched = true;
                 s.atMaintenance(MaintenancePoint.COMPACT_SWITCHED);
-                Files.delete(s.packPath(source)); Format.syncDirectory(s.packs);
+                s.io.delete(s.packPath(source)); s.io.syncDirectory(s.packs);
                 s.atMaintenance(MaintenancePoint.COMPACT_OLD_DELETED);
                 s.database.exec("DELETE FROM packs WHERE seq=?", source);
                 s.atMaintenance(MaintenancePoint.COMPACT_SOURCE_UNLISTED);
+            } catch (Throwable error) {
+                failedCopy = error;
+                // Both committed and unknown outcomes need their files intact until reopen resolves state.
+                if (error instanceof NativeSqlite.TransactionFailure transaction && transaction.outcome != NativeSqlite.Outcome.ROLLED_BACK) switched = true;
+                throw error;
             } finally {
                 if (!switched) {
-                    // Handles are closed before cleanup, including cancellation during copying.
-                    Files.deleteIfExists(targetPath); s.database.exec("DELETE FROM packs WHERE seq=?", target); s.index.load();
+                    try {
+                        try { s.io.delete(targetPath); s.database.exec("DELETE FROM packs WHERE seq=?", target); }
+                        catch (Throwable cleanup) {
+                            if (failedCopy != null) failedCopy.addSuppressed(cleanup); else throw cleanup;
+                        }
+                    } finally { s.reloadIndex(failedCopy); }
                 }
             }
             count++; before += length; after += end; moved += rows.size();

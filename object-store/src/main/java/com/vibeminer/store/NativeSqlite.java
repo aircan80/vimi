@@ -44,7 +44,18 @@ final class NativeSqlite implements AutoCloseable {
     private static final MethodHandle ERROR = function(LIB, "sqlite3_errmsg", ADDRESS, ADDRESS);
     private static final MethodHandle TIMEOUT = function(LIB, "sqlite3_busy_timeout", JAVA_INT, ADDRESS, JAVA_INT);
     private static final MethodHandle INTERRUPT = Linker.nativeLinker().downcallHandle(LIB.find("sqlite3_interrupt").orElseThrow(), FunctionDescriptor.ofVoid(ADDRESS));
+    private static final MethodHandle AUTOCOMMIT = function(LIB, "sqlite3_get_autocommit", JAVA_INT, ADDRESS);
     private MemorySegment db;
+    java.util.function.Consumer<String> statementProbe;
+    java.util.function.Consumer<String> afterStatementProbe;
+    enum Outcome { ROLLED_BACK, COMMITTED, UNKNOWN }
+    static final class TransactionFailure extends RuntimeException {
+        final Outcome outcome;
+        TransactionFailure(Outcome outcome, Throwable cause) {
+            super("Index transaction outcome: " + outcome, cause); this.outcome = outcome;
+        }
+    }
+    boolean inTransaction() { return (int)call(AUTOCOMMIT, db) == 0; }
     NativeSqlite(Path path, boolean readOnly) { this(path.toString(), readOnly); }
     NativeSqlite(String path, boolean readOnly) {
         try (Arena arena = Arena.ofConfined()) {
@@ -66,6 +77,7 @@ final class NativeSqlite implements AutoCloseable {
     private void check(int rc) { if (rc != 0) throw new Failure(rc, message()); }
     void exec(String sql, Object... parameters) { query(sql, parameters); }
     List<Object[]> query(String sql, Object... parameters) {
+        if (statementProbe != null) statementProbe.accept(sql);
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment out = arena.allocate(ADDRESS);
             check((int) call(PREPARE, db, arena.allocateFrom(sql), -1, out, MemorySegment.NULL));
@@ -101,6 +113,7 @@ final class NativeSqlite implements AutoCloseable {
                     rows.add(row);
                 }
                 if (rc != 101) throw new Failure(rc, message());
+                if (afterStatementProbe != null) afterStatementProbe.accept(sql);
                 return rows;
             } finally { call(FINALIZE, stmt); }
         }
@@ -108,10 +121,30 @@ final class NativeSqlite implements AutoCloseable {
     long scalar(String sql, Object... p) { return (long) query(sql, p).getFirst()[0]; }
     void transaction(boolean full, Runnable action) {
         if (full) exec("PRAGMA synchronous=FULL");
-        exec("BEGIN IMMEDIATE");
-        try { action.run(); exec("COMMIT"); }
-        catch (Throwable e) { try { exec("ROLLBACK"); } catch (Throwable suppressed) { e.addSuppressed(suppressed); } throw e; }
-        finally { if (full) exec("PRAGMA synchronous=NORMAL"); }
+        Outcome outcome = Outcome.ROLLED_BACK; Throwable failure = null;
+        boolean commitAttempted = false;
+        try {
+            exec("BEGIN IMMEDIATE"); action.run(); commitAttempted = true; exec("COMMIT"); outcome = Outcome.COMMITTED;
+        } catch (Throwable error) {
+            failure = error;
+            // FULL/IOERR can auto-rollback SQLite's transaction. Never assume a rollback is still needed.
+            boolean rolledBack = false;
+            if (inTransaction()) {
+                try { exec("ROLLBACK"); rolledBack = true; } catch (Throwable rollback) { failure.addSuppressed(rollback); }
+            }
+            outcome = !inTransaction() && (!commitAttempted || rolledBack) ? Outcome.ROLLED_BACK : Outcome.UNKNOWN;
+        }
+        if (full) {
+            try { exec("PRAGMA synchronous=NORMAL"); }
+            catch (Throwable reset) { if (failure == null) failure = reset; else failure.addSuppressed(reset); }
+        }
+        if (failure != null) {
+            // Callers must not truncate a committed pack or delete a switched compaction target.
+            if (outcome != Outcome.ROLLED_BACK) throw new TransactionFailure(outcome, failure);
+            if (failure instanceof RuntimeException runtime) throw runtime;
+            if (failure instanceof Error error) throw error;
+            throw new IllegalStateException(failure);
+        }
     }
     void interrupt() { call(INTERRUPT, db); }
     @Override public void close() {

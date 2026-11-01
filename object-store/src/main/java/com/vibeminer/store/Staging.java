@@ -39,7 +39,7 @@ final class Staging implements ObjectStaging {
                 at += bytes.length;
             }
             cancellation.check();
-            result.length = probe.provenLength(); file.truncate(result.length);
+            result.length = probe.provenLength(); store.io.truncate(file, result.path, result.length);
             result.check = store.verifier.begin(key, declared);
             for (long at = 0; at < result.length;) {
                 cancellation.check();
@@ -63,14 +63,14 @@ final class Staging implements ObjectStaging {
             requireUsable(); cancellation.check();
             if (owned.length > declared - length) throw new IllegalArgumentException("Append exceeds declared length");
             try (FileChannel file = FileChannel.open(path, WRITE)) {
-                Format.write(file, length, owned);
+                store.io.write(file, path, length, owned);
                 Refusal refusal = check.append(owned);
                 if (refusal != null) {
-                    broken = true; length = check.provenLength(); file.truncate(length);
+                    broken = true; length = check.provenLength(); store.io.truncate(file, path, length);
                     throw new StoreException("OBJECT_STAGING_REJECTED", refusal.code());
                 }
                 length += owned.length;
-            }
+            } catch (IOException error) { broken = true; throw error; }
             return null;
         });
     }
@@ -82,24 +82,29 @@ final class Staging implements ObjectStaging {
                 release(false);
                 return new PutResult(key, PutOutcome.CANCELED, null);
             }
+            Throwable failure = null;
             try {
                 Refusal refusal = check.complete();
                 if (refusal != null) return new PutResult(key, PutOutcome.REFUSED, refusal.code());
                 if (store.index.find(key) != null) return new PutResult(key, PutOutcome.ALREADY_PRESENT, null);
                 store.append(key, declared, origin, false, null, path, null);
                 return new PutResult(key, PutOutcome.STORED, null);
-            } catch (IOException e) { throw ObjectStore.translate(e, "OBJECT_STORE_WRITE_FAILED"); }
+            } catch (IOException e) { failure = e; throw ObjectStore.translate(e, "OBJECT_STORE_WRITE_FAILED"); }
             catch (StoreException e) {
-                if (e.code().startsWith("OBJECT_STORE_")) throw e;
+                if (e.code().startsWith("OBJECT_STORE_")) { failure = e; throw e; }
                 return new PutResult(key, PutOutcome.REFUSED, e.code());
-            } finally { release(true); }
+            } catch (RuntimeException | Error error) { failure = error; throw error; }
+            finally {
+                try { release(true); }
+                catch (IOException cleanup) { if (failure != null) failure.addSuppressed(cleanup); else throw cleanup; }
+            }
         });
     }
     void release(boolean delete) throws IOException {
         if (closed) return;
         closed = true;
         if (store.stagings.remove(key, this)) store.stagingBytes -= declared;
-        if (delete) Files.deleteIfExists(path);
+        if (delete) store.io.delete(path);
     }
     public CompletableFuture<Void> abandon() { return store.write(() -> { release(true); return null; }); }
     public CompletableFuture<Void> closeAsync() { return store.write(() -> { release(false); return null; }); }

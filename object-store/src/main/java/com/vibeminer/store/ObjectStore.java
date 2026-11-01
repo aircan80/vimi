@@ -32,6 +32,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     OpenReport openReport;
     final Map<ObjectKey, Staging> stagings = new HashMap<>();
     long stagingBytes;
+    final StoreIo io = new StoreIo();
     final Set<Integer> corruptPacks = new HashSet<>();
     // Package-private, instance-scoped test seam. No property, public option or global hook.
     java.util.function.BiConsumer<WritePoint, ObjectKey> writeProbe;
@@ -53,10 +54,13 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     }
     // Used only by same-package tests to observe rebuilds before open completes.
     static CompletableFuture<ObjectStore> open(Path folder, Options options, java.util.function.Consumer<MaintenancePoint> probe) {
+        return open(folder, options, probe, null);
+    }
+    static CompletableFuture<ObjectStore> open(Path folder, Options options, java.util.function.Consumer<MaintenancePoint> probe, StoreIo.Fault fault) {
         return Async.submit(OPENERS, () -> {
             ObjectStore store = new ObjectStore(folder, options, false);
-            store.maintenanceProbe = probe;
-            try { store.openCore(); return store; } catch (Throwable e) { store.release(); throw translate(e, "OBJECT_STORE_INDEX_UNREADABLE"); }
+            store.maintenanceProbe = probe; store.io.fault = fault;
+            try { store.openCore(); return store; } catch (Throwable e) { store.release(); throw translate(e, "OBJECT_STORE_WRITE_FAILED"); }
         });
     }
     public static CompletableFuture<ReadOnlyStore> openReadOnly(Path folder, Options options) {
@@ -145,13 +149,13 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 atMaintenance(MaintenancePoint.REBUILD_BEFORE_REPLACE);
                 // Keep the previous main index until the atomic switch. An interruption
                 // must not create a gap between deleting the old file and installing the new one.
-                for (String suffix : List.of("-wal", "-shm")) Files.deleteIfExists(folder.resolve("objects.sqlite3" + suffix));
-                Files.move(rebuilding, indexPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                for (String suffix : List.of("-wal", "-shm")) io.delete(folder.resolve("objects.sqlite3" + suffix));
+                io.replace(rebuilding, indexPath);
                 atMaintenance(MaintenancePoint.REBUILD_REPLACED);
-                Format.syncDirectory(folder);
+                io.syncDirectory(folder);
             } else {
                 deleteIndexFiles();
-                for (Path path : files.values()) if (Files.size(path) <= 64) Files.delete(path);
+                for (Path path : files.values()) if (Files.size(path) <= 64) io.delete(path);
                 byte[] id = new byte[16]; new SecureRandom().nextBytes(id);
                 try (NativeSqlite db = new NativeSqlite(indexPath, false)) { new StoreIndex(db).create(id, now(), options.kind().ordinal()); }
                 rebuilt = Files.exists(indexPath) && !files.isEmpty();
@@ -173,7 +177,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         for (Object[] row : database.query("SELECT seq,state,committed_length,live_bytes FROM packs")) {
             int number = Math.toIntExact((long)row[0]), state = Math.toIntExact((long)row[1]); listed.add(number);
             long committed = (long)row[2], live = (long)row[3]; Path path = packPath(number);
-            if (state >= 2) { Files.deleteIfExists(path); Format.syncDirectory(packs); database.exec("DELETE FROM packs WHERE seq=?", number); continue; }
+            if (state >= 2) { io.delete(path); io.syncDirectory(packs); database.exec("DELETE FROM packs WHERE seq=?", number); continue; }
             if (!Files.exists(path)) {
                 problems.add("Missing pack " + number);
                 if (state == 0) index.pack(number, 1, committed, live);
@@ -186,11 +190,11 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             }
         }
         for (var item : diskPacks().entrySet()) if (!listed.contains(item.getKey())) {
-            if (Files.size(item.getValue()) <= 64) { Files.delete(item.getValue()); Format.syncDirectory(packs); }
+            if (Files.size(item.getValue()) <= 64) { io.delete(item.getValue()); io.syncDirectory(packs); }
             else problems.add("Unlisted pack " + item.getKey());
         }
         if (Files.isDirectory(staging)) try (var paths = Files.list(staging)) {
-            for (Path path : paths.toList()) if (path.getFileName().toString().matches("[0-9a-f]{36}\\.part") && Files.getLastModifiedTime(path).toMillis() < now() - 7L * 86400000) Files.delete(path);
+            for (Path path : paths.toList()) if (path.getFileName().toString().matches("[0-9a-f]{36}\\.part") && Files.getLastModifiedTime(path).toMillis() < now() - 7L * 86400000) io.delete(path);
         }
         openReport = new OpenReport(recovered, truncated, rebuilt, full, problems);
     }
@@ -208,17 +212,24 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         }
     }
     private void deleteRebuild() throws IOException {
-        for (String suffix : List.of("", "-wal", "-shm")) Files.deleteIfExists(folder.resolve("objects.sqlite3.rebuild" + suffix));
+        for (String suffix : List.of("", "-wal", "-shm")) io.delete(folder.resolve("objects.sqlite3.rebuild" + suffix));
     }
     private void deleteIndexFiles() throws IOException {
-        for (String suffix : List.of("-wal", "-shm", "")) Files.deleteIfExists(folder.resolve("objects.sqlite3" + suffix));
+        for (String suffix : List.of("-wal", "-shm", "")) io.delete(folder.resolve("objects.sqlite3" + suffix));
     }
     <T> CompletableFuture<T> write(Async.Work<T> work) {
         synchronized (lifecycle) {
             if (!accepting) return CompletableFuture.failedFuture(closed());
             if (readOnly) return CompletableFuture.failedFuture(new StoreException("OBJECT_STORE_READ_ONLY", "Store is read-only"));
             if (writeFailure != null) return CompletableFuture.failedFuture(writeFailure);
-            return Async.submit(writer, () -> { if (writeFailure != null) throw writeFailure; return work.run(); });
+            return Async.submit(writer, () -> {
+                if (writeFailure != null) throw writeFailure;
+                try { return work.run(); }
+                catch (IOException | NativeSqlite.Failure error) { throw translate(error, "OBJECT_STORE_WRITE_FAILED"); }
+                catch (NativeSqlite.TransactionFailure error) {
+                    writeFailure = storeFailure(error); throw writeFailure;
+                }
+            });
         }
     }
     <T> CompletableFuture<T> reading(Cancellation cancellation, ReadWork<T> work) {
@@ -234,11 +245,33 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     interface ReadWork<T> { T run(StoreIndex index) throws Exception; }
     static StoreException closed() { return new StoreException("OBJECT_STORE_CLOSED", "Store is closed"); }
     static RuntimeException translate(Throwable e, String fallback) {
+        if (e instanceof NativeSqlite.TransactionFailure transaction) return translate(transaction.getCause(), fallback);
         if (e instanceof StoreException s) return s;
         if (e instanceof CancellationException c) return c;
         if (e instanceof IllegalArgumentException a) return a;
-        String code = e instanceof NativeSqlite.Failure s && (s.result & 255) == 13 || e.getMessage() != null && e.getMessage().contains("No space left") ? "OBJECT_STORE_DISK_FULL" : fallback;
+        boolean full = false;
+        for (Throwable cause = e; cause != null; cause = cause.getCause()) {
+            String message = cause.getMessage() == null ? "" : cause.getMessage().toLowerCase(Locale.ROOT);
+            if (cause instanceof NativeSqlite.Failure sqlite && (sqlite.result & 255) == 13
+                || message.contains("no space left") || message.contains("not enough space") || message.contains("disk quota exceeded")) {
+                full = true; break;
+            }
+        }
+        String code = full ? "OBJECT_STORE_DISK_FULL" : fallback;
         return new StoreException(code, "Store operation failed", e);
+    }
+    private static StoreException storeFailure(Throwable error) {
+        RuntimeException translated = translate(error, "OBJECT_STORE_WRITE_FAILED");
+        if (translated instanceof StoreException store && store.code().startsWith("OBJECT_STORE_")) return store;
+        return new StoreException("OBJECT_STORE_WRITE_FAILED", "Writing stopped until reopen", error);
+    }
+    StoreException stopWriting(Throwable error) { writeFailure = storeFailure(error); return writeFailure; }
+    void reloadIndex(Throwable primary) {
+        try { index.load(); }
+        catch (Throwable reload) {
+            if (primary != null) { primary.addSuppressed(reload); throw stopWriting(primary); }
+            throw stopWriting(reload);
+        }
     }
     @Override public CompletableFuture<Boolean> has(ObjectKey key, Cancellation cancellation) {
         return reading(cancellation, i -> i.db.scalar("SELECT count(*) FROM objects WHERE k=?", key.indexBytes()) != 0);
@@ -330,12 +363,12 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 atWrite(WritePoint.ENTRY_STARTED, key);
                 if (source == null) {
                     byte[] content = tombstone ? new byte[0] : bytes;
-                    if (writeProbe == null) Format.write(file, start + 96, content);
+                    if (writeProbe == null) io.write(file, packPath(number), start + 96, content);
                     else if (content.length > 0) {
                         int first = Math.max(1, content.length / 2);
-                        Format.write(file, start + 96, Arrays.copyOfRange(content, 0, first));
+                        io.write(file, packPath(number), start + 96, Arrays.copyOfRange(content, 0, first));
                         atWrite(WritePoint.PAYLOAD_PARTIAL, key);
-                        Format.write(file, start + 96 + first, Arrays.copyOfRange(content, first, content.length));
+                        io.write(file, packPath(number), start + 96 + first, Arrays.copyOfRange(content, first, content.length));
                     }
                     sha.update(content);
                     for (int block = 0; block < Format.blocks(length); block++) Format.le(table).putInt(block * 4, (int)Format.crc(content, block * Format.BLOCK, Math.min(Format.BLOCK, content.length - block * Format.BLOCK)));
@@ -346,7 +379,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                         for (int block = 0; block < Format.blocks(length); block++) {
                             byte[] data = readStaged(input, (long)block * Format.BLOCK, (int)Math.min(Format.BLOCK, length - (long)block * Format.BLOCK));
                             Refusal r = check.append(data); if (r != null) throw new StoreException(r.code(), r.message());
-                            sha.update(data); Format.le(table).putInt(block * 4, (int)Format.crc(data)); Format.write(file, start + 96 + (long)block * Format.BLOCK, data);
+                            sha.update(data); Format.le(table).putInt(block * 4, (int)Format.crc(data)); io.write(file, packPath(number), start + 96 + (long)block * Format.BLOCK, data);
                             if (block == 0) atWrite(WritePoint.PAYLOAD_PARTIAL, key);
                         }
                         Refusal r = check.complete(); if (r != null) throw new StoreException(r.code(), r.message());
@@ -354,11 +387,11 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 }
                 atWrite(WritePoint.PAYLOAD_WRITTEN, key);
                 entry = new Format.Entry(key, length, sha.digest(), now(), origin, sequence, tombstone);
-                Format.write(file, start + 96 + length, table);
+                io.write(file, packPath(number), start + 96 + length, table);
                 atWrite(WritePoint.TABLE_WRITTEN, key);
-                Format.write(file, start, entry.header());
+                io.write(file, packPath(number), start, entry.header());
                 atWrite(WritePoint.HEADER_WRITTEN, key);
-                file.force(true);
+                io.sync(file, packPath(number));
                 atWrite(WritePoint.PACK_SYNCED, key);
                 Format.Entry committed = entry;
                 database.transaction(false, () -> {
@@ -376,8 +409,13 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                     atWrite(WritePoint.INDEX_UPDATED, key);
                 });
             } catch (Throwable error) {
-                try { file.truncate(start); file.force(true); index.load(); }
-                catch (Throwable cut) { error.addSuppressed(cut); writeFailure = new StoreException("OBJECT_STORE_WRITE_FAILED", "Rollback truncation failed; reopen store", error); }
+                if (error instanceof NativeSqlite.TransactionFailure transaction && transaction.outcome != NativeSqlite.Outcome.ROLLED_BACK) {
+                    writeFailure = storeFailure(error); throw writeFailure;
+                }
+                try { io.truncate(file, packPath(number), start); io.sync(file, packPath(number)); index.load(); }
+                catch (Throwable cut) {
+                    error.addSuppressed(cut); writeFailure = storeFailure(error); throw writeFailure;
+                }
                 if (source != null && error instanceof StoreException s && !s.code().equals("OBJECT_STORE_WRITE_FAILED")) throw s;
                 throw translate(error, "OBJECT_STORE_WRITE_FAILED");
             }
@@ -407,8 +445,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             if (committed == 64 || committed + entrySize <= options.maxPackBytes()) return Math.toIntExact((long)p[0]);
         }
         int next = allocatePack(); Path path = packPath(next);
-        try (FileChannel file = FileChannel.open(path, CREATE_NEW, WRITE)) { Format.write(file, 0, Format.pack(next, index.id, now(), options.kind())); file.force(true); }
-        Format.syncDirectory(packs);
+        try (FileChannel file = FileChannel.open(path, CREATE_NEW, WRITE)) { io.write(file, path, 0, Format.pack(next, index.id, now(), options.kind())); io.sync(file, path); }
+        io.syncDirectory(packs);
         database.transaction(true, () -> {
             if (!active.isEmpty()) { Object[] p = active.getFirst(); index.pack(Math.toIntExact((long)p[0]), 1, (long)p[1], (long)p[2]); }
             index.pack(next, 0, 64, 0);
@@ -488,16 +526,25 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         synchronized (lifecycle) {
             if (closing != null) return closing;
             accepting = false; writer.shutdown(); readers.shutdown();
-            closing = Async.submit(OPENERS, () -> {
+            closing = Async.submit(command -> Thread.ofVirtual().name("vimi-store-close").start(command), () -> {
                 try {
                     while (!writer.awaitTermination(1, TimeUnit.SECONDS)) { }
                     while (!readers.awaitTermination(1, TimeUnit.SECONDS)) { }
                     for (Staging staged : List.copyOf(stagings.values())) staged.release(false);
                     if (database != null && writeFailure == null) {
-                        database.transaction(true, () -> { index.clean = 1; index.save(); });
-                        database.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+                        try {
+                            database.transaction(true, () -> { index.clean = 1; index.save(); });
+                            database.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+                        } catch (Throwable error) {
+                            writeFailure = storeFailure(error);
+                            try { database.transaction(true, () -> { index.clean = 0; index.save(); }); }
+                            catch (Throwable reset) { error.addSuppressed(reset); }
+                            throw writeFailure;
+                        }
                     }
                     return null;
+                } catch (IOException | NativeSqlite.Failure error) {
+                    throw translate(error, "OBJECT_STORE_WRITE_FAILED");
                 } finally { release(); }
             });
             return closing;

@@ -107,8 +107,22 @@ one pass, corrupt compaction candidates are skipped for the session, and a reade
 whose pack disappeared before open retries once against the moved row. Java and
 C# recover each other's interrupted compactions.
 
-These tests model process termination, not a physical power cut. Deterministic
-injected storage failures remain separate work.
+Disk integration tests also inject write, sync, truncate, unlink, atomic-replace,
+SQLite commit/rollback and close failures. They exercise real SQLite-full behavior
+by capping a temporary database's page count in both rollback-journal and WAL modes;
+they do not fill the host disk. File and SQL fault hooks are package-private and
+per-instance, with no environment or public configuration switches.
+
+Confirmed rollback permits safe tail truncation and retry. Errors after commit or
+with an unknown transaction outcome preserve pack/compaction files and stop writes
+until reopen. Failed rollback/reload leaves the clean-close marker unset; close
+still drains accepted work and releases ownership independently of the opener pool.
+When a write fails with an uncertain outcome, reopening may retain its valid entry,
+so callers should retry by key. Cross-language checks cover C# recovery of these
+failed Java writes.
+
+These tests model injected I/O failures and process termination, not a physical
+power cut.
 
 ## Build
 
@@ -195,6 +209,6 @@ contracts without native or file dependencies.
 Linux ARM64 native SQLite and cross-language writer locks have been exercised.
 Windows and macOS need native-platform CI, including read-only media behavior and
 SQLite packaging. Recovery tests simulate durable unindexed tails and torn bytes;
-append, rebuild and compaction process-kill boundaries are tested. Injected I/O
-failures and real power-cut testing remain to be completed. No higher layer, generated-record abstraction
+append, rebuild and compaction process-kill boundaries and deterministic I/O
+failures are tested. Real power-cut testing has not been performed. No higher layer, generated-record abstraction
 or network client is included.

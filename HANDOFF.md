@@ -130,7 +130,31 @@ The higher-level generated-record store and network clients are separate work.
 - Added 12 bidirectional Java/C# compaction recovery cases. The component now passes
   164 unit/integration/crash/interoperability cases on Linux.
 - Completed implementation covers #12. Local commits remain pending an explicit push.
-  Next: deterministic injected I/O failures (#13), the last crash-safety milestone story.
+  Deterministic injected I/O failures are covered next by #13.
+
+## Injected storage-failure story implementation (#13)
+
+- Added a package-private per-store file adapter and per-connection SQL hooks. Tests
+  inject write/sync/truncate/delete/replace and statement failures without global state
+  or public fault switches. Page-count limits exercise real SQLite-full behavior in
+  both rollback-journal and WAL modes without exhausting the host filesystem.
+- Track SQLite transaction outcomes and use sqlite3_get_autocommit after failures.
+  Confirmed rollbacks can cut tails; committed/unknown outcomes preserve pack bytes
+  and compaction targets and stop writes until reopen. A failed write with uncertain
+  outcome may be recovered as present, so callers retry by key.
+- Failed rollback or index reload stops unsafe writes, fails queued writes predictably,
+  and never sets the clean marker. Failed clean-close/checkpoint attempts clear the
+  marker again when possible and always release ownership. Close drains on a virtual
+  thread independently of the bounded opener pool.
+- Preserve primary error codes when secondary cleanup fails. Normalize disk-full
+  errors, including SQLite FULL and known filesystem space/quota messages.
+- Added 42 integration cases and three C# recoveries of uncertain failed Java writes.
+  Component validation: 24 unit, 94 integration, 51 crash and 40 interop cases (209 total)
+  pass on Linux. Fast unit tests remain independent of native/disk/process/.NET tests.
+- #13 completes the Crash safety milestone. Local commits remain pending explicit push.
+  Next milestone: Asynchronous behavior (#16 backpressure, #17 SQLite cancellation,
+  #21 group commits), following their dependencies. Native platform work requires
+  notifying the user before switching to Windows/macOS; development is primarily Linux.
 
 ## Remaining parity work
 
@@ -140,7 +164,8 @@ This is not yet full reference parity. See README's Current limits. In particula
 - Queue overflow currently fails with a limit error rather than asynchronously waiting.
 - Cancellation does not interrupt running SQLite statements.
 - Replay holds a file handle per pack; compaction holds moved-row metadata per source.
-- Expand fault-injection/process-kill coverage and read-only media tests.
+- Native-platform/read-only-media validation and optional broader fault-boundary
+  expansion remain; process-kill and deterministic I/O failure suites now exist.
 - Validate native Windows/macOS locking and SQLite packaging in platform CI.
 - Native Windows/macOS validation remains; the Gradle wrapper includes Windows launchers.
 
