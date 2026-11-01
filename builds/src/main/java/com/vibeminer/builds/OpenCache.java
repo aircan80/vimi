@@ -24,7 +24,7 @@ final class OpenCache {
         final CompletableFuture<BuildOpenResult> result = new CompletableFuture<>();
         int waiters;
         boolean done;
-        Runnable work;
+        volatile Runnable work;
     }
 
     private final Object gate = new Object();
@@ -71,6 +71,16 @@ final class OpenCache {
             flight = flights.get(build);
             if (flight == null) {
                 flight = new Flight();
+                Flight created = flight;
+                created.work =
+                        () -> {
+                            try {
+                                created.token.check();
+                                finish(build, created, action.apply(created.token), null);
+                            } catch (Throwable e) {
+                                finish(build, created, null, e);
+                            }
+                        };
                 flights.put(build, flight);
                 start = true;
             }
@@ -114,17 +124,11 @@ final class OpenCache {
                     }
                 });
         if (start) {
-            shared.work =
-                    () -> {
-                        try {
-                            shared.token.check();
-                            finish(build, shared, action.apply(shared.token), null);
-                        } catch (Throwable e) {
-                            finish(build, shared, null, e);
-                        }
-                    };
             try {
                 workers.execute(shared.work);
+                if (shared.token.isCanceled() && workers.remove(shared.work)) {
+                    finish(build, shared, null, new CancellationException());
+                }
             } catch (RejectedExecutionException e) {
                 finish(
                         build,

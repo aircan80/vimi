@@ -1,7 +1,6 @@
 package com.vibeminer.builds.formats;
 
 import java.nio.charset.StandardCharsets;
-import java.util.Locale;
 import java.util.Objects;
 
 /** Bob Jenkins lookup3 hashlittle2, public domain; both seeds zero, pc in the high half. */
@@ -9,11 +8,20 @@ public final class RootNameHash {
     private RootNameHash() {}
 
     public static long of(String path) {
-        byte[] key =
-                Objects.requireNonNull(path)
-                        .toUpperCase(Locale.ROOT)
-                        .replace('/', '\\')
-                        .getBytes(StandardCharsets.UTF_8);
+        Objects.requireNonNull(path);
+        StringBuilder normalized = new StringBuilder(path.length());
+        path.codePoints()
+                .forEach(
+                        code -> {
+                            // .NET invariant casing is simple (no multi-character expansion), and
+                            // preserves dotless i.
+                            int upper = code == 0x131 ? code : Character.toUpperCase(code);
+                            if (upper >= 0xd800 && upper <= 0xdfff) {
+                                upper = 0xfffd;
+                            }
+                            normalized.appendCodePoint(upper == '/' ? '\\' : upper);
+                        });
+        byte[] key = normalized.toString().getBytes(StandardCharsets.UTF_8);
         int a = 0xdeadbeef + key.length, b = a, c = a, at = 0;
         if (key.length == 0) {
             return (Integer.toUnsignedLong(c) << 32) | Integer.toUnsignedLong(b);
