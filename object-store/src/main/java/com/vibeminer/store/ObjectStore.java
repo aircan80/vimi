@@ -617,10 +617,22 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             return new NativeSqlite(indexPath.toUri() + "?immutable=1", true);
         }
         try {
-            return new NativeSqlite(indexPath, true);
+            NativeSqlite reader = new NativeSqlite(indexPath, true);
+            try {
+                // WAL sidecar access can fail on the first query rather than sqlite3_open_v2.
+                reader.scalar("PRAGMA user_version");
+                return reader;
+            } catch (RuntimeException | Error error) {
+                try {
+                    reader.close();
+                } catch (RuntimeException | Error cleanup) {
+                    error.addSuppressed(cleanup);
+                }
+                throw error;
+            }
         } catch (NativeSqlite.Failure e) {
             Path wal = folder.resolve("objects.sqlite3-wal");
-            if (readOnly && (e.result & 255) == 14 || readOnly && (e.result & 255) == 8) {
+            if (readOnly && ((e.result & 255) == 14 || (e.result & 255) == 8)) {
                 if (!Files.isWritable(folder) && (!Files.exists(wal) || Files.size(wal) == 0)) {
                     immutable = true;
                     return new NativeSqlite(indexPath.toUri() + "?immutable=1", true);

@@ -289,8 +289,11 @@ contracts without native or file dependencies.
 
 Native integration passes in hosted CI on Linux, Windows and macOS; unit tests run
 on all three platforms. Linux ARM64/x64 and cross-language writer locks have been
-exercised. Broader native Windows/macOS interoperability, read-only media behavior
-and SQLite packaging remain platform-readiness work. Recovery tests simulate durable unindexed tails and torn bytes;
+exercised. Linux permission tests cover clean read-only media (including absent/empty WAL),
+rejection of unclean immutable indexes and inaccessible WAL commits, and live secondary
+reader visibility. POSIX permission cases skip when the filesystem lacks POSIX permissions
+or the process can bypass them. Native Windows/macOS read-only-media validation, broader
+interoperability and SQLite packaging remain platform-readiness work. Recovery tests simulate durable unindexed tails and torn bytes;
 append, rebuild and compaction process-kill boundaries and deterministic I/O
 failures are tested. Real power-cut testing has not been performed. No higher layer, generated-record abstraction
 or network client is included.

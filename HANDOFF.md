@@ -408,3 +408,22 @@ Combined local validation after #23: 351 cases (67 unit, 184 integration, 59 cra
 41 interoperability), formatting, lint and assembly passed. Opt-in benchmark ran
 three 64 × 64 KiB trials; measured environment, results and resource qualifications
 are in docs/maintenance-resources.md. Benchmarks do not execute during check/test.
+
+## Platform readiness: read-only media (#25)
+
+- PR #33 was fast-forwarded into main at b87df71; #19 and the performance/resource
+  milestone are complete. Its exact commit passed three-platform unit/integration
+  CI plus Linux crash and compatibility checks.
+- Read-only permission tests exposed delayed SQLite WAL initialization: opening the
+  native handle can succeed before the first query fails to create sidecars.
+  openReader now probes user_version and closes failed handles before considering
+  the existing guarded immutable fallback.
+- Five cases cover clean closed indexes with absent/empty WAL, unclean immutable
+  rejection, inaccessible nonempty WAL rejection, and secondary reader visibility
+  of later writes/deletes without taking writer ownership. Permission changes are
+  confined to test directories and restored on every exit; cases skip for POSIX-less
+  filesystems or privileged users that bypass permissions.
+- #25 remains open for native platform validation under #24. Notify the user before
+  hands-on Windows/macOS work so they can switch machines.
+- Local validation: 356 cases (67 unit, 189 integration, 59 crash, 41 interoperability),
+  formatting, Checkstyle, compiler lint and assembly passed. Hosted checks follow.
