@@ -50,7 +50,7 @@ def main():
     parser.add_argument("--base", default=ZERO_SHA)
     parser.add_argument("--head", required=True)
     args = parser.parse_args()
-    if args.event == "workflow_dispatch":
+    if args.event in {"workflow_dispatch", "schedule"}:
         selected = True
     else:
         try:

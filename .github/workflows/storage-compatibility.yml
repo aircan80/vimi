@@ -1,0 +1,194 @@
+name: Storage compatibility
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 5 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: storage-compatibility-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Select affected components
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      object_store: ${{ steps.select.outputs.object_store }}
+    steps:
+      - name: Check out source and comparison history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify selection rules
+        run: python3 -m unittest discover -s scripts/ci -p '*_test.py'
+      - name: Select affected components
+        id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: >-
+          python3 scripts/ci/select_components.py
+          --event "$EVENT_NAME" --base "$BASE_SHA" --head "$HEAD_SHA"
+          >> "$GITHUB_OUTPUT"
+
+  crash:
+    name: Crash recovery / Linux
+    needs: [changes]
+    if: ${{ needs.changes.outputs.object_store == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@0723195856401067f7a2779048b490ace7a47d7c # v5.0.2
+      - name: Install Java 25 and restore Gradle dependencies
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          java-package: jdk
+          cache: gradle
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+          cache-dependency-path: |
+            **/*.gradle
+            **/*gradle.lockfile
+            **/gradle.properties
+            **/gradle/wrapper/gradle-wrapper.properties
+          overwrite-settings: false
+      - name: Install native SQLite
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libsqlite3-0
+      - name: Locate and diagnose native SQLite
+        id: sqlite
+        run: python3 scripts/ci/native_sqlite.py --directory "$RUNNER_TEMP/vimi-sqlite"
+      - name: Run process-kill recovery tests
+        env:
+          SQLITE_LIBRARY: ${{ steps.sqlite.outputs.library }}
+        run: ./gradlew :object-store:crashTest "-PsqliteLibrary=$SQLITE_LIBRARY" --no-daemon --console=plain
+      - name: Retain crash test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: crash-reports-Linux
+          path: |
+            object-store/build/reports/tests/crashTest/
+            object-store/build/test-results/crashTest/TEST-*.xml
+          if-no-files-found: warn
+          retention-days: 7
+
+  interop:
+    name: Java-CSharp compatibility / Linux
+    needs: [changes]
+    if: ${{ needs.changes.outputs.object_store == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: vimi
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: vimi
+      - name: Check out pinned public CSharp reference
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: aircan80/vibeminer
+          ref: 4fd92d2a36add50c9b82e1c92bf72706e8d0df2b
+          path: vibeminer
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /src/backend/VibeMiner.Objects/
+            /Directory.Build.props
+            /.editorconfig
+            /global.json
+      - name: Install pinned reference SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.402'
+          cache: false
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@0723195856401067f7a2779048b490ace7a47d7c # v5.0.2
+      - name: Install Java 25 and restore Gradle dependencies
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          java-package: jdk
+          cache: gradle
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+          cache-dependency-path: |
+            **/*.gradle
+            **/*gradle.lockfile
+            **/gradle.properties
+            **/gradle/wrapper/gradle-wrapper.properties
+          overwrite-settings: false
+      - name: Install native SQLite
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libsqlite3-0
+      - name: Locate and diagnose native SQLite
+        id: sqlite
+        run: python3 scripts/ci/native_sqlite.py --directory "$RUNNER_TEMP/vimi-sqlite"
+      - name: Build pinned CSharp reference
+        run: >-
+          dotnet build ../vibeminer/src/backend/VibeMiner.Objects/VibeMiner.Objects.csproj
+          --configuration Release -p:RestoreLockedMode=true -p:NuGetAudit=false --nologo
+      - name: Run Java-CSharp interoperability tests
+        env:
+          SQLITE_LIBRARY: ${{ steps.sqlite.outputs.library }}
+        run: ./gradlew :object-store:interopTest -Pdotnet=dotnet "-PsqliteLibrary=$SQLITE_LIBRARY" --no-daemon --console=plain
+      - name: Retain interoperability test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: interop-reports-Linux
+          path: |
+            vimi/object-store/build/reports/tests/interopTest/
+            vimi/object-store/build/test-results/interopTest/TEST-*.xml
+          if-no-files-found: warn
+          retention-days: 7
+
+  required:
+    name: Storage compatibility
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: ${{ always() }}
+    needs: [changes, crash, interop]
+    steps:
+      - name: Require selected broader suites to pass
+        env:
+          SELECTION_RESULT: ${{ needs.changes.result }}
+          OBJECT_STORE: ${{ needs.changes.outputs.object_store }}
+          CRASH_RESULT: ${{ needs.crash.result }}
+          INTEROP_RESULT: ${{ needs.interop.result }}
+        run: |
+          test "$SELECTION_RESULT" = success
+          if [ "$OBJECT_STORE" = false ]; then
+            test "$CRASH_RESULT" = skipped
+            test "$INTEROP_RESULT" = skipped
+          else
+            test "$OBJECT_STORE" = true
+            test "$CRASH_RESULT" = success
+            test "$INTEROP_RESULT" = success
+          fi

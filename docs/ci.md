@@ -89,3 +89,38 @@ The CI library locations are dependencies of hosted test jobs, not an applicatio
 SQLite packaging policy. Native packaging/read-only-media and hands-on platform
 validation remain separate storage stories. These workflows have not yet been
 validated on hosted runners while workflow publication authorization is pending.
+
+## Crash and reference compatibility jobs
+
+`Storage compatibility` runs process-kill crash recovery and Java/C# interoperation
+as independent Linux x64 jobs. They use the same change selector: relevant storage,
+build, workflow and unknown changes run both jobs on pushes and pull requests;
+documentation-only changes skip both while the aggregate gate completes. Manual
+dispatch and a Monday 05:00 UTC schedule force both suites. Scheduled/manual events
+become available after the workflow reaches the default branch.
+
+The interoperation job checks out public `aircan80/vibeminer` at commit
+`4fd92d2a36add50c9b82e1c92bf72706e8d0df2b`, sparse to the layer 1 object project,
+root build properties, editor settings and `global.json`. It installs the specified
+.NET SDK 10.0.402 and builds only `VibeMiner.Objects` in Release with locked NuGet
+restore. Java and reference checkouts occupy sibling `vimi/` and `vibeminer/`
+directories, as required by the existing reference harness. The Java invocation is
+`:object-store:interopTest -Pdotnet=dotnet`, with an explicit SQLite library path.
+Missing reference source, SDK, dependencies or assembly fails rather than skipping.
+No repository secret or private-source access is needed; the reference is public.
+Reference-version updates require reviewing the pinned commit and rerunning the
+compatibility suite. NuGet caching is disabled in this initial workflow.
+
+Crash jobs run `:object-store:crashTest` independently and need no .NET/reference
+checkout. Both jobs retain separate seven-day HTML/JUnit artifacts named
+`crash-reports-Linux` and `interop-reports-Linux`. JUnit failure output includes the
+existing child-process failure diagnostics; test data remains temporary/synthetic.
+Broader Windows/macOS crash/interoperation coverage is not claimed by this initial
+Linux workflow. Those platforms first need the native validation milestone and
+hands-on development on the corresponding machine when necessary.
+
+For storage changes, the recommended required aggregates are `Unit tests`,
+`Integration tests` and `Storage compatibility`. Each always runs and rejects
+failed/canceled selection or selected tests; platform-job names are conditional
+and should not be required individually. Branch protection itself is unchanged.
+The workflows publish test reports only, never releases.

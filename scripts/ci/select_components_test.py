@@ -84,12 +84,13 @@ class SelectionTest(unittest.TestCase):
                 selection.main()
         self.assertEqual("object_store=true\n", output.getvalue())
 
-    def test_manual_dispatch_always_selects_tests(self):
-        output = io.StringIO()
-        with patch("sys.argv", ["select", "--event", "workflow_dispatch", "--head", "a" * 40]):
-            with contextlib.redirect_stdout(output):
-                selection.main()
-        self.assertEqual("object_store=true\n", output.getvalue())
+    def test_manual_and_scheduled_dispatch_always_select_tests(self):
+        for event in ["workflow_dispatch", "schedule"]:
+            output = io.StringIO()
+            with patch("sys.argv", ["select", "--event", event, "--head", "a" * 40]):
+                with contextlib.redirect_stdout(output):
+                    selection.main()
+            self.assertEqual("object_store=true\n", output.getvalue())
 
 
 class RequiredGateTest(unittest.TestCase):
@@ -116,6 +117,30 @@ class RequiredGateTest(unittest.TestCase):
                             "INTEGRATION_RESULT": unit_status,
                         })
                         self.assertEqual(expected, result.returncode == 0)
+
+
+class BroaderGateTest(unittest.TestCase):
+    def test_crash_and_interop_must_both_pass_or_both_be_deliberately_skipped(self):
+        workflow = Path(__file__).resolve().parents[2] / ".github/workflows/storage-compatibility.yml"
+        gate = textwrap.dedent(workflow.read_text(encoding="utf-8").split(
+            "      - name: Require selected broader suites to pass", 1
+        )[1].split("        run: |\n", 1)[1])
+        for selected in ["true", "false", ""]:
+            for selection_status in ["success", "failure", "cancelled", "skipped"]:
+                for crash in ["success", "failure", "cancelled", "skipped"]:
+                    for interop in ["success", "failure", "cancelled", "skipped"]:
+                        expected = selection_status == "success" and (
+                            (selected == "true" and crash == interop == "success")
+                            or (selected == "false" and crash == interop == "skipped")
+                        )
+                        with self.subTest(selected=selected, selection=selection_status,
+                                          crash=crash, interop=interop):
+                            result = subprocess.run(["bash", "-eo", "pipefail", "-c", gate], env={
+                                **os.environ, "OBJECT_STORE": selected,
+                                "SELECTION_RESULT": selection_status,
+                                "CRASH_RESULT": crash, "INTEROP_RESULT": interop,
+                            })
+                            self.assertEqual(expected, result.returncode == 0)
 
 
 if __name__ == "__main__":
