@@ -13,6 +13,10 @@ public final class CrashFixture {
         return "committed baseline".getBytes(StandardCharsets.US_ASCII);
     }
 
+    public static byte[] groupFirst() {
+        return "first pending group entry".getBytes(StandardCharsets.US_ASCII);
+    }
+
     public static byte[] target() {
         return "crash target".getBytes(StandardCharsets.US_ASCII);
     }
@@ -35,7 +39,7 @@ public final class CrashFixture {
 
     public static ObjectKey targetKey(String operation) {
         return switch (operation) {
-            case "put" -> StoreAssertions.key(target());
+            case "put", "group" -> StoreAssertions.key(target());
             case "delete" -> StoreAssertions.key(baseline());
             case "history" -> History.objects(observation(true)).getLast().key();
             case "staged" -> encoded().key();

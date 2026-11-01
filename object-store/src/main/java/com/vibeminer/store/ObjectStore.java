@@ -67,12 +67,144 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     OpenReport openReport;
     final Map<ObjectKey, Staging> stagings = new HashMap<>();
     long stagingBytes;
+    private PendingWrites pending;
+    private boolean grouping;
+    java.util.function.LongSupplier commitClock = System::nanoTime;
+
     final StoreIo io = new StoreIo();
     final Set<Integer> corruptPacks = new HashSet<>();
     // Package-private, instance-scoped test seam. No property, public option or global hook.
     java.util.function.BiConsumer<WritePoint, ObjectKey> writeProbe;
     java.util.function.Consumer<MaintenancePoint> maintenanceProbe;
     java.util.function.BiConsumer<ReadPoint, ObjectKey> readProbe;
+
+    private record Committed<T>(T result, CompletableFuture<Void> durable) {}
+
+    private static <T> CompletableFuture<T> finish(CompletableFuture<Committed<T>> operation) {
+        CompletableFuture<T> result = new CompletableFuture<>();
+        operation.whenComplete(
+                (value, error) -> {
+                    if (error != null) {
+                        result.completeExceptionally(error);
+                    } else {
+                        value.durable.whenComplete(
+                                (ignored, failure) -> {
+                                    if (failure != null) {
+                                        result.completeExceptionally(failure);
+                                    } else {
+                                        result.complete(value.result);
+                                    }
+                                });
+                    }
+                });
+        return result;
+    }
+
+    private boolean present(ObjectKey key) {
+        Boolean state = pending == null ? null : pending.keys.get(key);
+        return state != null ? state : index.find(key) != null;
+    }
+
+    private void commitPending() throws IOException {
+        PendingWrites batch = pending;
+        if (batch == null) {
+            return;
+        }
+        boolean committed = false;
+        try (FileChannel file = FileChannel.open(packPath(batch.pack), READ, WRITE)) {
+            io.sync(file, packPath(batch.pack));
+            for (var entry : batch.entries) {
+                atWrite(WritePoint.PACK_SYNCED, entry.header().key());
+            }
+            database.uncancelled(
+                    () ->
+                            database.transaction(
+                                    false,
+                                    () -> {
+                                        for (var entry : batch.entries) {
+                                            applyEntry(
+                                                    batch.pack,
+                                                    entry.offset(),
+                                                    entry.header(),
+                                                    entry.history());
+                                        }
+                                        index.save();
+                                        for (var entry : batch.entries) {
+                                            atWrite(WritePoint.INDEX_UPDATED, entry.header().key());
+                                        }
+                                    }));
+            committed = true;
+        } catch (Throwable error) {
+            if (committed) {
+                pending = null;
+                writeFailure = storeFailure(error);
+                batch.finish(writeFailure);
+                throw writeFailure;
+            }
+            throw abortPending(error, batch.pack, batch.start);
+        }
+        pending = null;
+        batch.finish(null);
+        for (var entry : batch.entries) {
+            atWrite(WritePoint.INDEX_COMMITTED, entry.header().key());
+        }
+    }
+
+    private RuntimeException abortPending(Throwable error, int pack, long start) {
+        PendingWrites batch = pending;
+        pending = null;
+        RuntimeException failure;
+        if (error instanceof NativeSqlite.TransactionFailure transaction
+                && transaction.outcome != NativeSqlite.Outcome.ROLLED_BACK) {
+            writeFailure = storeFailure(error);
+            failure = writeFailure;
+        } else {
+            try (FileChannel file = FileChannel.open(packPath(pack), READ, WRITE)) {
+                io.truncate(file, packPath(pack), start);
+                io.sync(file, packPath(pack));
+                database.uncancelled(index::load);
+                failure = translate(error, "OBJECT_STORE_WRITE_FAILED");
+            } catch (Throwable cleanup) {
+                error.addSuppressed(cleanup);
+                writeFailure = storeFailure(error);
+                failure = writeFailure;
+            }
+        }
+        if (batch != null) {
+            batch.finish(failure);
+        }
+        return failure;
+    }
+
+    private void applyEntry(int number, long start, Format.Entry entry, History.Entry history) {
+        ObjectKey key = entry.key();
+        StoreIndex.Row previous = index.find(key);
+        long live =
+                database.scalar("SELECT live_bytes FROM packs WHERE seq=?", number)
+                        + Format.entrySize(entry.length());
+        if (entry.tombstone() && previous != null) {
+            index.remove(previous);
+            if (previous.pack() == number) {
+                live -= Format.entrySize(previous.length());
+            } else {
+                Object[] pack =
+                        database.query(
+                                        "SELECT state,committed_length,live_bytes FROM packs WHERE seq=?",
+                                        previous.pack())
+                                .getFirst();
+                index.pack(
+                        previous.pack(),
+                        Math.toIntExact((long) pack[0]),
+                        (long) pack[1],
+                        (long) pack[2] - Format.entrySize(previous.length()));
+            }
+        } else if (!entry.tombstone()) {
+            index.insert(
+                    new StoreIndex.Row(key, number, start, entry.length(), entry.sha()), history);
+        }
+        index.next = entry.sequence() + 1;
+        index.pack(number, 0, start + Format.entrySize(entry.length()), live);
+    }
 
     private void atRead(ReadPoint point, ObjectKey key) {
         if (readProbe != null) {
@@ -429,6 +561,15 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     }
 
     <T> CompletableFuture<T> write(long bytes, Cancellation cancellation, Async.Work<T> work) {
+        return write(bytes, cancellation, false, false, work);
+    }
+
+    private <T> CompletableFuture<T> write(
+            long bytes,
+            Cancellation cancellation,
+            boolean grouped,
+            boolean commitNow,
+            Async.Work<T> work) {
         synchronized (lifecycle) {
             if (!accepting) {
                 return CompletableFuture.failedFuture(closed());
@@ -448,7 +589,31 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                             throw writeFailure;
                         }
                         try {
-                            return database.withCancellation(cancellation, work);
+                            if (!grouped) {
+                                commitPending();
+                            }
+                            grouping = grouped;
+                            T result;
+                            try {
+                                result = database.withCancellation(cancellation, work);
+                            } catch (Throwable error) {
+                                if (grouped && pending != null) {
+                                    if (error instanceof CancellationException) {
+                                        commitPending();
+                                    } else {
+                                        throw abortPending(error, pending.pack, pending.start);
+                                    }
+                                }
+                                throw error;
+                            }
+                            if (grouped
+                                    && pending != null
+                                    && (commitNow
+                                            || pending.expired(commitClock.getAsLong())
+                                            || writer.state().queued() == 0)) {
+                                commitPending();
+                            }
+                            return result;
                         } catch (StoreIndex.MalformedRow error) {
                             throw new StoreException(
                                     "OBJECT_STORE_INDEX_UNREADABLE",
@@ -459,6 +624,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                         } catch (NativeSqlite.TransactionFailure error) {
                             writeFailure = storeFailure(error);
                             throw writeFailure;
+                        } finally {
+                            grouping = false;
                         }
                     });
         }
@@ -714,54 +881,66 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                     new StoreException(
                             "OBJECT_STORE_LIMIT", "Put batch exceeds 4096 objects or 256 MiB"));
         }
-        return write(
-                bytes,
-                cancellation,
-                () -> {
-                    List<PutResult> results = new ArrayList<>();
-                    for (PutObject p : owned) {
-                        Refusal refusal = verifier.check(p.key(), p.data(), p.declaredLength());
-                        if (refusal != null) {
-                            results.add(new PutResult(p.key(), PutOutcome.REFUSED, refusal.code()));
-                            continue;
-                        }
-                        if (cancellation.isCanceled()) {
-                            results.add(new PutResult(p.key(), PutOutcome.CANCELED, null));
-                            continue;
-                        }
-                        if (index.find(p.key()) != null) {
-                            results.add(new PutResult(p.key(), PutOutcome.ALREADY_PRESENT, null));
-                            continue;
-                        }
-                        History.Entry history =
-                                p.key().type() == 6 ? History.parse(p.data(), p.key()) : null;
-                        if (history != null && index.find(history.document()) == null) {
-                            results.add(
-                                    new PutResult(
-                                            p.key(),
-                                            PutOutcome.REFUSED,
-                                            "OBJECT_HISTORY_DOCUMENT_MISSING"));
-                            continue;
-                        }
-                        append(
-                                p.key(),
-                                p.declaredLength(),
-                                p.origin(),
-                                false,
-                                p.data(),
-                                null,
-                                history);
-                        results.add(new PutResult(p.key(), PutOutcome.STORED, null));
-                    }
-                    return List.copyOf(results);
-                });
+        return finish(
+                write(
+                        bytes,
+                        cancellation,
+                        true,
+                        commitNow,
+                        () -> {
+                            List<CompletableFuture<Void>> commits = new ArrayList<>();
+                            List<PutResult> results = new ArrayList<>();
+                            for (PutObject p : owned) {
+                                Refusal refusal =
+                                        verifier.check(p.key(), p.data(), p.declaredLength());
+                                if (refusal != null) {
+                                    results.add(
+                                            new PutResult(
+                                                    p.key(), PutOutcome.REFUSED, refusal.code()));
+                                    continue;
+                                }
+                                if (cancellation.isCanceled()) {
+                                    results.add(new PutResult(p.key(), PutOutcome.CANCELED, null));
+                                    continue;
+                                }
+                                if (present(p.key())) {
+                                    results.add(
+                                            new PutResult(
+                                                    p.key(), PutOutcome.ALREADY_PRESENT, null));
+                                    continue;
+                                }
+                                History.Entry history =
+                                        p.key().type() == 6
+                                                ? History.parse(p.data(), p.key())
+                                                : null;
+                                if (history != null && !present(history.document())) {
+                                    results.add(
+                                            new PutResult(
+                                                    p.key(),
+                                                    PutOutcome.REFUSED,
+                                                    "OBJECT_HISTORY_DOCUMENT_MISSING"));
+                                    continue;
+                                }
+                                commits.add(
+                                        append(
+                                                p.key(),
+                                                p.declaredLength(),
+                                                p.origin(),
+                                                false,
+                                                p.data(),
+                                                null,
+                                                history));
+                                results.add(new PutResult(p.key(), PutOutcome.STORED, null));
+                            }
+                            return new Committed<>(
+                                    List.copyOf(results),
+                                    CompletableFuture.allOf(
+                                            commits.toArray(CompletableFuture[]::new)));
+                        }));
     }
 
-    /**
-     * Each operation commits before its future completes. Small writes currently commit
-     * individually.
-     */
-    void append(
+    /** Append to the active pack; puts share a durability future until their group commits. */
+    CompletableFuture<Void> append(
             ObjectKey key,
             long length,
             Origin origin,
@@ -775,9 +954,10 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         Object[] pack =
                 database.query("SELECT committed_length,live_bytes FROM packs WHERE seq=?", number)
                         .getFirst();
-        long start = (long) pack[0], live = (long) pack[1];
-        long sequence = index.next;
+        long start = pending == null ? (long) pack[0] : pending.end;
+        long sequence = index.next + (pending == null ? 0 : pending.entries.size());
         Format.Entry entry;
+        boolean handedOff = false;
         try (FileChannel file = FileChannel.open(packPath(number), READ, WRITE)) {
             MessageDigest sha = Format.digest("SHA-256");
             byte[] table = new byte[Format.blocks(length) * 4];
@@ -860,42 +1040,38 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 atWrite(WritePoint.TABLE_WRITTEN, key);
                 io.write(file, packPath(number), start, entry.header());
                 atWrite(WritePoint.HEADER_WRITTEN, key);
+                if (grouping) {
+                    if (pending == null) {
+                        pending = new PendingWrites(number, start, commitClock.getAsLong());
+                    }
+                    PendingWrites batch = pending;
+                    pending.add(entry, history);
+                    handedOff = true;
+                    if (!tombstone && pending.full()) {
+                        commitPending();
+                    }
+                    return batch.committed;
+                }
                 io.sync(file, packPath(number));
                 atWrite(WritePoint.PACK_SYNCED, key);
                 Format.Entry committed = entry;
                 database.transaction(
                         false,
                         () -> {
-                            StoreIndex.Row previous = index.find(key);
-                            long newLive = live + size;
-                            if (tombstone && previous != null) {
-                                index.remove(previous);
-                                if (previous.pack() == number) {
-                                    newLive -= Format.entrySize(previous.length());
-                                } else {
-                                    Object[] p =
-                                            database.query(
-                                                            "SELECT state,committed_length,live_bytes FROM packs WHERE seq=?",
-                                                            previous.pack())
-                                                    .getFirst();
-                                    index.pack(
-                                            previous.pack(),
-                                            Math.toIntExact((long) p[0]),
-                                            (long) p[1],
-                                            (long) p[2] - Format.entrySize(previous.length()));
-                                }
-                            } else if (!tombstone) {
-                                index.insert(
-                                        new StoreIndex.Row(
-                                                key, number, start, length, committed.sha()),
-                                        history);
-                            }
-                            index.next = sequence + 1;
-                            index.pack(number, 0, start + size, newLive);
+                            applyEntry(number, start, committed, history);
                             index.save();
                             atWrite(WritePoint.INDEX_UPDATED, key);
                         });
             } catch (Throwable error) {
+                if (grouping) {
+                    // A threshold commit already performed its rollback; do not cut twice.
+                    if (pending != null) {
+                        throw abortPending(error, number, pending.start);
+                    } else if (!handedOff) {
+                        throw abortPending(error, number, start);
+                    }
+                    throw translate(error, "OBJECT_STORE_WRITE_FAILED");
+                }
                 if (error instanceof NativeSqlite.TransactionFailure transaction
                         && transaction.outcome != NativeSqlite.Outcome.ROLLED_BACK) {
                     writeFailure = storeFailure(error);
@@ -919,6 +1095,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             }
             // Outside rollback scope: after commit, the entry must never be truncated.
             atWrite(WritePoint.INDEX_COMMITTED, key);
+            return CompletableFuture.completedFuture(null);
         }
     }
 
@@ -951,6 +1128,12 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     }
 
     int activePack(long entrySize) throws IOException {
+        if (pending != null) {
+            if (pending.end + entrySize <= options.maxPackBytes()) {
+                return pending.pack;
+            }
+            commitPending();
+        }
         List<Object[]> active =
                 database.query("SELECT seq,committed_length,live_bytes FROM packs WHERE state=0");
         if (!active.isEmpty()) {
@@ -990,7 +1173,10 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         return write(
                 18L * owned.size(),
                 cancellation,
+                true,
+                true,
                 () -> {
+                    commitPending();
                     List<DeleteResult> result = new ArrayList<>();
                     for (ObjectKey key : owned) {
                         cancellation.check();
@@ -998,7 +1184,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                             result.add(
                                     new DeleteResult(
                                             key, DeleteOutcome.REFUSED, "OBJECT_DELETE_REFUSED"));
-                        } else if (index.find(key) == null) {
+                        } else if (!present(key)) {
                             result.add(new DeleteResult(key, DeleteOutcome.ABSENT, null));
                         } else {
                             append(key, 0, Origin.UNKNOWN, true, null, null, null);
