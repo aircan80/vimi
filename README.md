@@ -99,8 +99,16 @@ visibility, repeatable scans and malformed/foreign/newer pack preflight. The old
 main index is retained until the replacement is installed atomically. C# recovery
 is checked after each Java rebuild termination point.
 
-These tests model process termination, not a physical power cut. Compaction crash
-boundaries and injected storage failures remain separate stories.
+Compaction tests cover target listing/copy, fsync, the uncommitted/durable switch,
+source deletion and final row cleanup. They check tombstone preservation, corrupt
+and newer source handling, cancellation on both sides of the switch, and whole/range
+read races before and after source-file acquisition. Copied blocks are checked in
+one pass, corrupt compaction candidates are skipped for the session, and a reader
+whose pack disappeared before open retries once against the moved row. Java and
+C# recover each other's interrupted compactions.
+
+These tests model process termination, not a physical power cut. Deterministic
+injected storage failures remain separate work.
 
 ## Build
 
@@ -187,6 +195,6 @@ contracts without native or file dependencies.
 Linux ARM64 native SQLite and cross-language writer locks have been exercised.
 Windows and macOS need native-platform CI, including read-only media behavior and
 SQLite packaging. Recovery tests simulate durable unindexed tails and torn bytes;
-append and rebuild process-kill boundaries are tested, but compaction kill boundaries,
-injected I/O failures and real power-cut testing remain to be completed. No higher layer, generated-record abstraction
+append, rebuild and compaction process-kill boundaries are tested. Injected I/O
+failures and real power-cut testing remain to be completed. No higher layer, generated-record abstraction
 or network client is included.

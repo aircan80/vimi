@@ -93,8 +93,8 @@ The higher-level generated-record store and network clients are separate work.
 - Added bidirectional process-kill recovery against the original C# implementation.
   The harness uses its existing `VibeMiner.Objects.Testing` friend assembly name.
 - Existing fast unit and default check commands do not launch crash workers or .NET.
-- Rebuild/scan safety is covered next by #11; compaction and injected I/O failures
-  remain stories #12 and #13.
+- Rebuild/scan safety is covered by #11 and compaction safety by #12. Injected
+  I/O failures remain story #13.
 - Append crash-safety story #6 is implemented and validated with 99 passing tests
   across the component suites. Rebuild/compaction and injected I/O failure work follows.
 
@@ -110,9 +110,27 @@ The higher-level generated-record store and network clients are separate work.
   malformed/unlisted/foreign/newer packs and replacement failure preserving the main file.
 - Added six C# recoveries of interrupted Java rebuilds; the existing reference source is
   unchanged. All 128 unit/integration/crash/interoperability cases pass on Linux.
-- Story #6 is committed locally as `e091a60`; the #11 implementation is the next commit.
-  These local commits have not been pushed. Next work is compaction safety (#12), then
-  injected storage failures (#13). Keep updating GitHub issues with progress and evidence.
+- Stories #6 and #11 are committed locally as `e091a60` and `8311bf2`. These
+  local commits have not been pushed. Keep updating GitHub issues with progress and evidence.
+
+## Compaction crash-safety story implementation (#12)
+
+- Added eight kill boundaries spanning target listing, partial copy, sync, uncommitted
+  and durable switch, source deletion and final source-row cleanup.
+- Copy verified payload blocks and CRCs in a single pass, preserving the original entry
+  header/sequence. Track corrupt compaction candidates for the session and bound the
+  number attempted by maxPacks, rather than counting only successful compactions.
+- Added a bounded row retry when a source disappears between row lookup and file open.
+  Deterministic tests cover both whole/range reads, before/after file acquisition.
+- Cancellation before the switch deletes the target after closing handles and restores
+  index metadata; cancellation after a completed one-pack request does not turn its
+  durable success into a cancellation on an unrelated next candidate.
+- Added 16 integration cases for cancellation, corruption/newer/torn sources, read races,
+  FULL switch durability, byte-identical headers and tombstone/history preservation.
+- Added 12 bidirectional Java/C# compaction recovery cases. The component now passes
+  164 unit/integration/crash/interoperability cases on Linux.
+- Completed implementation covers #12. Local commits remain pending an explicit push.
+  Next: deterministic injected I/O failures (#13), the last crash-safety milestone story.
 
 ## Remaining parity work
 

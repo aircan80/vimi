@@ -4,7 +4,7 @@ using System.Text.Json;
 using VibeMiner.Objects;
 
 // The harness assembly uses the original library's existing InternalsVisibleTo test seam.
-if (args[0] == "crash-writer") {
+if (args[0] is "crash-writer" or "crash-compactor") {
     var requested = Enum.Parse<StorePoint>(args[2]);
     var options = new ObjectStoreOptions { Fault = point => {
         if (point != requested) return;
@@ -13,9 +13,29 @@ if (args[0] == "crash-writer") {
         throw new Exception("Parent should terminate the blocked writer");
     }};
     await using var child = await ObjectStore.OpenAsync(Path.GetFullPath(args[1]), options);
+    if (args[0] == "crash-compactor") {
+        await child.CompactAsync(new CompactOptions(0,1));
+        throw new Exception("Requested compaction boundary was not reached");
+    }
     var bytes = Encoding.ASCII.GetBytes("crash target");
     await child.PutAsync([new(new ObjectKey(ObjectKeyType.Config,MD5.HashData(bytes)),bytes.Length,bytes)],true);
     throw new Exception("Requested crash boundary was not reached");
+}
+if (args[0] == "recover-compaction") {
+    await using var recovered = await ObjectStore.OpenAsync(Path.GetFullPath(args[1]));
+    if (!recovered.OpenReport.FullIndexCheck) throw new Exception("Killed Java compactor was incorrectly marked clean");
+    var kept = new byte[2*65536+13]; for(int i=0;i<kept.Length;i++)kept[i]=(byte)(i%251);
+    var dead = Enumerable.Repeat((byte)7,4096).ToArray();
+    var baseline = Encoding.ASCII.GetBytes("committed baseline");
+    var read = await recovered.ReadAsync(new(ObjectKeyType.Config,MD5.HashData(kept)));
+    if (read.State != ReadState.Present || !read.Bytes!.SequenceEqual(kept)) throw new Exception("Compacted live bytes were lost");
+    foreach(var bytes in new[]{dead,baseline})
+        if(await recovered.HasAsync(new(ObjectKeyType.Config,MD5.HashData(bytes))))throw new Exception("Compaction resurrected a deleted object");
+    if((await recovered.ReadHistoryAsync(new())).Count!=1)throw new Exception("Compaction lost history");
+    if((await recovered.ScanAsync()).Live!=3)throw new Exception("Compaction replay differs");
+    var verify=await recovered.VerifyAsync(true);
+    if(verify.CorruptCount!=0 || verify.LostCount!=0)throw new Exception("Compaction recovery failed verification");
+    Console.WriteLine("C# recovered interrupted Java compaction");return;
 }
 if (args[0] is "recover-crash" or "recover-rebuild") {
     await using var recovered = await ObjectStore.OpenAsync(Path.GetFullPath(args[1]));

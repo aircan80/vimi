@@ -32,9 +32,12 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     OpenReport openReport;
     final Map<ObjectKey, Staging> stagings = new HashMap<>();
     long stagingBytes;
+    final Set<Integer> corruptPacks = new HashSet<>();
     // Package-private, instance-scoped test seam. No property, public option or global hook.
     java.util.function.BiConsumer<WritePoint, ObjectKey> writeProbe;
     java.util.function.Consumer<MaintenancePoint> maintenanceProbe;
+    java.util.function.BiConsumer<ReadPoint, ObjectKey> readProbe;
+    private void atRead(ReadPoint point, ObjectKey key) { if (readProbe != null) readProbe.accept(point, key); }
     void atMaintenance(MaintenancePoint point) { if (maintenanceProbe != null) maintenanceProbe.accept(point); }
     private void atWrite(WritePoint point, ObjectKey key) { if (writeProbe != null) writeProbe.accept(point, key); }
 
@@ -249,18 +252,18 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         return reading(cancellation, i -> readCore(i, key, offset, length, false, false, cancellation));
     }
     ObjectRead readCore(StoreIndex idx, ObjectKey key, long offset, int requested, boolean fullSha, boolean keyCheck, Cancellation cancellation) throws IOException {
+        return readCore(idx, key, offset, requested, fullSha, keyCheck, cancellation, true, null);
+    }
+    private ObjectRead readCore(StoreIndex idx, ObjectKey key, long offset, int requested, boolean fullSha, boolean keyCheck, Cancellation cancellation, boolean retry, StoreIndex.Row known) throws IOException {
         StoreIndex.Row row;
-        try { row = idx.find(key); } catch (ClassCastException | IllegalArgumentException | ArithmeticException e) { return bad(ReadState.CORRUPT, "Invalid index row"); }
+        try { row = known != null ? known : idx.find(key); } catch (ClassCastException | IllegalArgumentException | ArithmeticException e) { return bad(ReadState.CORRUPT, "Invalid index row"); }
         if (row == null) return bad(ReadState.ABSENT, null);
         if (row.pack() < 1 || row.offset() < 64 || row.length() < 1 || row.length() > Format.MAX_PAYLOAD || row.sha().length != 32) return bad(ReadState.CORRUPT, "Invalid index row");
         if (requested < 0 && row.length() > Format.WHOLE_LIMIT && !fullSha) throw new StoreException("OBJECT_STORE_LIMIT", "Whole read exceeds 64 MiB; use ranges");
         Path path = packPath(row.pack());
-        if (!Files.exists(path)) {
-            StoreIndex.Row retry = idx.find(key);
-            if (retry != null && (retry.pack() != row.pack() || retry.offset() != row.offset())) return readCore(idx, key, offset, requested, fullSha, keyCheck, cancellation);
-            return bad(ReadState.LOST, "Pack file missing");
-        }
+        atRead(ReadPoint.ROW_FOUND, key);
         try (FileChannel file = FileChannel.open(path, READ)) {
+            atRead(ReadPoint.PACK_OPENED, key);
             Format.Entry entry;
             try { entry = Format.entry(Format.read(file, row.offset(), 96), options.kind()); }
             catch (StoreException e) { return bad(ReadState.CORRUPT, e.code()); }
@@ -286,7 +289,14 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             }
             if (requested < 0 && entry.length() <= 1 << 20 && !Arrays.equals(Format.hash("SHA-256", result), entry.sha())) return bad(ReadState.CORRUPT, "SHA-256 mismatch");
             return new ObjectRead(ReadState.PRESENT, info, result, null);
-        } catch (NoSuchFileException e) { return bad(ReadState.LOST, "Pack retired during read; retry"); }
+        } catch (NoSuchFileException e) {
+            if (retry) {
+                StoreIndex.Row current = idx.find(key);
+                if (current != null && (current.pack() != row.pack() || current.offset() != row.offset()))
+                    return readCore(idx, key, offset, requested, fullSha, keyCheck, cancellation, false, current);
+            }
+            return bad(ReadState.LOST, "Pack file missing");
+        }
     }
     static ObjectRead bad(ReadState state, String problem) { return new ObjectRead(state, null, null, problem); }
     @Override public CompletableFuture<List<PutResult>> put(List<PutObject> batch, boolean commitNow, Cancellation cancellation) {

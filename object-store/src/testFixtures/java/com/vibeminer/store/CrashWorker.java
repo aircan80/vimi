@@ -15,10 +15,11 @@ public final class CrashWorker {
             }).join();
             throw new IllegalStateException("Requested rebuild boundary was not reached");
         }
-        if (operation.equals("scan")) {
+        if (operation.equals("scan") || operation.equals("compact")) {
             ObjectStore scanning = ObjectStore.open(Path.of(args[0])).join();
             scanning.maintenanceProbe = point -> { if (point.name().equals(args[1])) stopAt(args[1]); };
-            scanning.scan(Cancellation.NONE).join();
+            if (operation.equals("compact")) scanning.compact(0, 1, Cancellation.NONE).join();
+            else scanning.scan(Cancellation.NONE).join();
             throw new IllegalStateException("Requested scan boundary was not reached");
         }
         WritePoint requested = WritePoint.valueOf(args[1]);
