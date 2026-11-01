@@ -24,6 +24,11 @@ public final class StoreCommitSubscription implements AutoCloseable {
         return queue.poll();
     }
 
+    public StoreCommit poll(long timeout, java.util.concurrent.TimeUnit unit)
+            throws InterruptedException {
+        return queue.poll(timeout, unit);
+    }
+
     public boolean takeMissed() {
         return missed.getAndSet(false);
     }
