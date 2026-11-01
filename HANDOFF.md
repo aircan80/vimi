@@ -427,3 +427,22 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
   hands-on Windows/macOS work so they can switch machines.
 - Local validation: 356 cases (67 unit, 189 integration, 59 crash, 41 interoperability),
   formatting, Checkstyle, compiler lint and assembly passed. Hosted checks follow.
+
+## Native SQLite readiness (#26)
+
+- PR #34 passed three-platform CI and was fast-forwarded into main at 51b6e41.
+  #25 remains open for native read-only-media validation under #24.
+- SqliteLibrary preflights library loading and required C symbols before openCore
+  creates store files. Failed loads are retained as ordinary, repeatable
+  OBJECT_STORE_NATIVE_LIBRARY errors with actionable architecture/path guidance;
+  NativeSqlite initialization is not attempted after a failed dependency preflight.
+- Fresh JVM probes cover missing, invalid and unrelated libraries, explicit override
+  startup, and Unix default-name startup. Windows default lookup is not exercised
+  because hosted jobs supply an explicit DLL; override checks require sqliteLibrary.
+- docs/native-sqlite.md defines the current consumer-supplied native library strategy,
+  upstream provenance, build requirements and remaining clean-machine/native evidence.
+  No native binaries, JavaFX dependencies or launchers were added to the component.
+- #24/#25/#26 remain open until native-machine and final release-readiness evidence
+  is available. Notify the user before hands-on Windows/macOS work.
+- Linux validation: 361 cases (67 unit, 194 integration, 59 crash, 41 interoperability),
+  formatting, Checkstyle, compiler lint and assembly passed with an explicit native override.

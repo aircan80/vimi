@@ -16,6 +16,8 @@ Disk operations also need native SQLite: `libsqlite3.so.0` on Linux,
 `libsqlite3.dylib` on macOS, or `sqlite3.dll` on Windows. Install it through your
 platform package manager, or supply `-PsqliteLibrary=/absolute/path/to/library`
 when running Gradle tests. Use a library matching your JDK's architecture.
+See [native SQLite distribution and diagnostics](docs/native-sqlite.md) for supported
+build requirements, startup errors, provenance and platform validation.
 
 On Windows use `gradlew.bat` wherever the examples below use `./gradlew`.
 To review the code in IntelliJ IDEA, open this repository root as a Gradle project

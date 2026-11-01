@@ -19,28 +19,14 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.concurrent.CancellationException;
 
 /** Small internal SQLite C API adapter. All native allocations have bounded, lexical lifetimes. */
 @SuppressWarnings("restricted") // Intentional FFM access; launch with --enable-native-access.
 final class NativeSqlite implements AutoCloseable {
     private static final Linker LINKER = Linker.nativeLinker();
-    private static final SymbolLookup LIB = library();
+    private static final SymbolLookup LIB = SqliteLibrary.lookup();
     private static final MemorySegment TRANSIENT = MemorySegment.ofAddress(-1);
-
-    private static SymbolLookup library() {
-        String configured = System.getProperty("vibeminer.sqlite.library");
-        if (configured != null) {
-            return SymbolLookup.libraryLookup(Path.of(configured), Arena.global());
-        }
-        String os = System.getProperty("os.name").toLowerCase(Locale.ROOT);
-        return SymbolLookup.libraryLookup(
-                os.contains("win")
-                        ? "sqlite3.dll"
-                        : os.contains("mac") ? "libsqlite3.dylib" : "libsqlite3.so.0",
-                Arena.global());
-    }
 
     static MethodHandle function(
             SymbolLookup lookup, String name, MemoryLayout result, MemoryLayout... args) {

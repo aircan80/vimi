@@ -358,6 +358,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                     store.maintenanceProbe = probe;
                     store.io.fault = fault;
                     try {
+                        SqliteLibrary.lookup();
                         store.openCore();
                         return store;
                     } catch (Throwable e) {
@@ -373,6 +374,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 () -> {
                     ObjectStore store = new ObjectStore(folder, options, true);
                     try {
+                        SqliteLibrary.lookup();
                         store.openCore();
                         return new ReadOnlyStore(store);
                     } catch (Throwable e) {
