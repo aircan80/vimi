@@ -58,6 +58,10 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     final PackReaders<FileChannel> packReaders;
     final SessionHashes sessionHashes = new SessionHashes();
     final ThreadPoolExecutor readers = Async.pool("vimi-store-read", 8);
+    final ThreadPoolExecutor verificationWorkers =
+            Async.pool(
+                    "vimi-store-verify",
+                    PreparedPut.parallelism(Runtime.getRuntime().availableProcessors()));
     private final Object lifecycle = new Object();
     private boolean accepting = true;
     private CompletableFuture<Void> closing;
@@ -85,6 +89,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     java.util.function.Consumer<MaintenancePoint> maintenanceProbe;
     java.util.function.BiConsumer<ReadPoint, ObjectKey> readProbe;
     java.util.function.Consumer<ObjectKey> wholeShaProbe;
+    java.util.function.Consumer<Boolean> verificationProbe;
 
     private record Committed<T>(T result, CompletableFuture<Void> durable) {}
 
@@ -662,6 +667,17 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             boolean grouped,
             boolean commitNow,
             Async.Work<T> work) {
+        return write(bytes, cancellation, grouped, commitNow, work, null, null);
+    }
+
+    private <T> CompletableFuture<T> write(
+            long bytes,
+            Cancellation cancellation,
+            boolean grouped,
+            boolean commitNow,
+            Async.Work<T> work,
+            Runnable preparation,
+            CompletableFuture<?> readiness) {
         synchronized (lifecycle) {
             if (!accepting) {
                 return CompletableFuture.failedFuture(closed());
@@ -702,7 +718,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                                     && pending != null
                                     && (commitNow
                                             || pending.expired(commitClock.getAsLong())
-                                            || writer.state().queued() == 0)) {
+                                            || !writer.hasReadyWork())) {
                                 commitPending();
                             }
                             return result;
@@ -719,7 +735,9 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                         } finally {
                             grouping = false;
                         }
-                    });
+                    },
+                    preparation,
+                    readiness);
         }
     }
 
@@ -995,6 +1013,57 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                     new StoreException(
                             "OBJECT_STORE_LIMIT", "Put batch exceeds 4096 objects or 256 MiB"));
         }
+        return enqueuePut(bytes, () -> owned, commitNow, cancellation);
+    }
+
+    private CompletableFuture<List<PutResult>> enqueuePut(
+            long bytes,
+            java.util.function.Supplier<List<PutObject>> inputs,
+            boolean commitNow,
+            Cancellation cancellation) {
+        CompletableFuture<List<PreparedPut>> prepared = new CompletableFuture<>();
+        Runnable preparation =
+                () ->
+                        Async.submit(
+                                        verificationWorkers,
+                                        () -> {
+                                            var observer = verificationProbe;
+                                            try {
+                                                if (observer != null) {
+                                                    observer.accept(true);
+                                                }
+                                                List<PutObject> owned = inputs.get();
+                                                long actualBytes = 0;
+                                                for (PutObject item : owned) {
+                                                    actualBytes += item.data().length;
+                                                }
+                                                if (owned.size() > 4096
+                                                        || actualBytes > 256L << 20) {
+                                                    throw new StoreException(
+                                                            "OBJECT_STORE_LIMIT",
+                                                            "Put batch exceeds 4096 objects or 256 MiB");
+                                                }
+                                                List<PreparedPut> result = new ArrayList<>();
+                                                for (PutObject item : owned) {
+                                                    result.add(
+                                                            PreparedPut.prepare(
+                                                                    verifier, item, cancellation));
+                                                }
+                                                return List.copyOf(result);
+                                            } finally {
+                                                if (observer != null) {
+                                                    observer.accept(false);
+                                                }
+                                            }
+                                        })
+                                .whenComplete(
+                                        (result, error) -> {
+                                            if (error == null) {
+                                                prepared.complete(result);
+                                            } else {
+                                                prepared.completeExceptionally(error);
+                                            }
+                                        });
         return finish(
                 write(
                         bytes,
@@ -1004,9 +1073,9 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                         () -> {
                             List<CompletableFuture<Void>> commits = new ArrayList<>();
                             List<PutResult> results = new ArrayList<>();
-                            for (PutObject p : owned) {
-                                Refusal refusal =
-                                        verifier.check(p.key(), p.data(), p.declaredLength());
+                            for (PreparedPut proof : prepared.join()) {
+                                PutObject p = proof.input();
+                                Refusal refusal = proof.refusal();
                                 if (refusal != null) {
                                     results.add(
                                             new PutResult(
@@ -1023,10 +1092,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                                                     p.key(), PutOutcome.ALREADY_PRESENT, null));
                                     continue;
                                 }
-                                History.Entry history =
-                                        p.key().type() == 6
-                                                ? History.parse(p.data(), p.key())
-                                                : null;
+                                History.Entry history = proof.history();
                                 if (history != null && !present(history.document())) {
                                     results.add(
                                             new PutResult(
@@ -1043,14 +1109,17 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                                                 false,
                                                 p.data(),
                                                 null,
-                                                history));
+                                                history,
+                                                proof));
                                 results.add(new PutResult(p.key(), PutOutcome.STORED, null));
                             }
                             return new Committed<>(
                                     List.copyOf(results),
                                     CompletableFuture.allOf(
                                             commits.toArray(CompletableFuture[]::new)));
-                        }));
+                        },
+                        preparation,
+                        prepared));
     }
 
     /** Append to the active pack; puts share a durability future until their group commits. */
@@ -1063,6 +1132,19 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             Path source,
             History.Entry history)
             throws IOException {
+        return append(key, length, origin, tombstone, bytes, source, history, null);
+    }
+
+    private CompletableFuture<Void> append(
+            ObjectKey key,
+            long length,
+            Origin origin,
+            boolean tombstone,
+            byte[] bytes,
+            Path source,
+            History.Entry history,
+            PreparedPut prepared)
+            throws IOException {
         long size = Format.entrySize(length);
         int number = activePack(size);
         Object[] pack =
@@ -1073,8 +1155,9 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         Format.Entry entry;
         boolean handedOff = false;
         try (FileChannel file = FileChannel.open(packPath(number), READ, WRITE)) {
-            MessageDigest sha = Format.digest("SHA-256");
-            byte[] table = new byte[Format.blocks(length) * 4];
+            MessageDigest sha = prepared == null ? Format.digest("SHA-256") : null;
+            byte[] table =
+                    prepared == null ? new byte[Format.blocks(length) * 4] : prepared.table();
             try {
                 atWrite(WritePoint.ENTRY_STARTED, key);
                 if (source == null) {
@@ -1095,19 +1178,14 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                                 start + 96 + first,
                                 Arrays.copyOfRange(content, first, content.length));
                     }
-                    sha.update(content);
-                    for (int block = 0; block < Format.blocks(length); block++) {
-                        Format.le(table)
-                                .putInt(
-                                        block * 4,
-                                        (int)
-                                                Format.crc(
-                                                        content,
-                                                        block * Format.BLOCK,
-                                                        Math.min(
-                                                                Format.BLOCK,
-                                                                content.length
-                                                                        - block * Format.BLOCK)));
+                    if (prepared == null) {
+                        sha.update(content);
+                        for (int block = 0; block < Format.blocks(length); block++) {
+                            int startAt = block * Format.BLOCK;
+                            int count = Math.min(Format.BLOCK, content.length - startAt);
+                            Format.le(table)
+                                    .putInt(block * 4, (int) Format.crc(content, startAt, count));
+                        }
                     }
                 } else {
                     ObjectCheck check = verifier.begin(key, length);
@@ -1149,7 +1227,13 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 atWrite(WritePoint.PAYLOAD_WRITTEN, key);
                 entry =
                         new Format.Entry(
-                                key, length, sha.digest(), now(), origin, sequence, tombstone);
+                                key,
+                                length,
+                                prepared == null ? sha.digest() : prepared.sha(),
+                                now(),
+                                origin,
+                                sequence,
+                                tombstone);
                 io.write(file, packPath(number), start + 96 + length, table);
                 atWrite(WritePoint.TABLE_WRITTEN, key);
                 io.write(file, packPath(number), start, entry.header());
@@ -1312,7 +1396,10 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     @Override
     public CompletableFuture<List<PutResult>> appendHistory(
             History.Observation observation, Cancellation cancellation) {
-        return put(History.objects(observation), true, cancellation);
+        History.validateObservation(observation);
+        // Reserve both retained observation bytes and the generated owned PutObject copy.
+        long retained = 2L * observation.replyLength() + 1136;
+        return enqueuePut(retained, () -> History.objects(observation), true, cancellation);
     }
 
     @Override
@@ -1468,6 +1555,9 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                                 Throwable failure = null;
                                 try {
                                     while (!writer.awaitTermination(1, TimeUnit.SECONDS)) {}
+                                    verificationWorkers.shutdown();
+                                    while (!verificationWorkers.awaitTermination(
+                                            1, TimeUnit.SECONDS)) {}
                                     while (!readers.awaitTermination(1, TimeUnit.SECONDS)) {}
                                     for (Staging staged : List.copyOf(stagings.values())) {
                                         staged.release(false);
@@ -1526,6 +1616,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         readDays.clear();
         writer.shutdown();
         readers.shutdown();
+        verificationWorkers.shutdown();
         try {
             if (database != null) {
                 database.close();

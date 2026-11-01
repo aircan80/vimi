@@ -11,6 +11,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -182,5 +183,84 @@ final class WriteQueueTest {
                         });
         release.countDown();
         assertEquals(0, closed.get(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void asynchronousPreparationDoesNotAllowLaterRequestsToOvertake() throws Exception {
+        CompletableFuture<Void> prepared = new CompletableFuture<>();
+        List<Integer> order = Collections.synchronizedList(new ArrayList<>());
+        var first =
+                queue.submit(
+                        1,
+                        Cancellation.NONE,
+                        () -> {
+                            order.add(1);
+                            return 1;
+                        },
+                        () -> {},
+                        prepared);
+        var second =
+                queue.submit(
+                        1,
+                        Cancellation.NONE,
+                        () -> {
+                            order.add(2);
+                            return 2;
+                        });
+        assertFalse(first.isDone());
+        assertFalse(second.isDone());
+        assertFalse(queue.hasReadyWork());
+        prepared.complete(null);
+        assertEquals(1, first.get(5, TimeUnit.SECONDS));
+        assertEquals(2, second.get(5, TimeUnit.SECONDS));
+        assertEquals(List.of(1, 2), order);
+    }
+
+    @Test
+    void waitingAdmissionDoesNotStartPreparationAndCancellationRemovesIt() throws Exception {
+        block(0);
+        queue.submit(0, Cancellation.NONE, () -> 1);
+        queue.submit(0, Cancellation.NONE, () -> 2);
+        Cancellation token = new Cancellation();
+        AtomicBoolean started = new AtomicBoolean();
+        var result =
+                queue.submit(1, token, () -> 3, () -> started.set(true), new CompletableFuture<>());
+        assertFalse(started.get());
+        token.cancel();
+        assertThrows(CancellationException.class, result::join);
+        assertFalse(started.get());
+        assertEquals(0, queue.state().retainedBytes());
+    }
+
+    @Test
+    void shutdownDrainsAdmittedPreparationBeforeStoppingWriter() throws Exception {
+        CompletableFuture<Void> prepared = new CompletableFuture<>();
+        var accepted = queue.submit(1, Cancellation.NONE, () -> 42, () -> {}, prepared);
+        queue.shutdown();
+        assertFalse(queue.awaitTermination(0, TimeUnit.SECONDS));
+        prepared.complete(null);
+        assertEquals(42, accepted.get(5, TimeUnit.SECONDS));
+        assertTrue(queue.awaitTermination(5, TimeUnit.SECONDS));
+        assertEquals(0, queue.state().retainedBytes());
+    }
+
+    @Test
+    void preparationFailurePublishesFailureAndDoesNotStrandTheQueue() throws Exception {
+        CompletableFuture<Void> prepared = new CompletableFuture<>();
+        var failed =
+                queue.submit(
+                        1,
+                        Cancellation.NONE,
+                        () -> {
+                            prepared.join();
+                            return 1;
+                        },
+                        () -> {
+                            throw new IllegalStateException("Synthetic preparation failure");
+                        },
+                        prepared);
+        assertThrows(CompletionException.class, failed::join);
+        assertEquals(42, queue.submit(1, Cancellation.NONE, () -> 42).get(5, TimeUnit.SECONDS));
+        assertEquals(0, queue.state().retainedBytes());
     }
 }

@@ -247,6 +247,16 @@ Range reads do not populate proofs, forced verification bypasses them, and corru
 or scan clears them. Generation stamps prevent an old in-flight hash from publishing
 after a clear. Concurrent cold reads may duplicate SHA work outside the cache lock.
 
+Put identity verification, SHA-256 and block-table preparation run on per-store CPU
+workers, at most half the processors with a minimum of one. Admission remains FIFO
+and one 512 MiB retained-input budget spans waiting, preparation and I/O; unaccepted
+waiters do no CPU work. The serial writer yields until its head request is prepared
+and flushes an existing group rather than waiting for another batch's CPU work.
+Accepted preparations drain on close. History key generation also runs on CPU workers;
+lightweight argument/shape checks stay on the caller. Refusals retain precedence over
+cancellation, and per-object result order is preserved. See
+[verification measurements](docs/verification-performance.md) for the opt-in benchmark.
+
 ## Current limits
 
 This is a functioning initial port, not full performance/behavior parity. Writes
@@ -265,7 +275,7 @@ Once admitted, each operation applies its existing cancellation semantics (inclu
 per-object `CANCELED` results). Close rejects unaccepted waiters and drains accepted
 writes. Result continuations run outside the disk writer and admission locks.
 Reader and opener queues still reject overflow rather than waiting for room.
-Parallel caller verification is not implemented. Scan's merge holds one open handle per
+ Scan's merge holds one open handle per
 pack; compaction retains moved-row metadata per source pack. Cancellation checks
 occur between entries/blocks/pages. Active SQLite execution also checks the request's
 cancellation token through a progress callback every approximately 1,000 VM instructions;

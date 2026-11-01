@@ -97,6 +97,7 @@ final class GroupCommitTest {
                 };
         var first = store.put(List.of(object(1)));
         var second = store.put(List.of(object(2)));
+        store.writer.preparations().get(5, TimeUnit.SECONDS);
         release.countDown();
         try {
             assertTrue(secondWritten.await(5, TimeUnit.SECONDS));
@@ -153,6 +154,7 @@ final class GroupCommitTest {
                 };
         var first = store.put(List.of(object(1)), commitNow, Cancellation.NONE);
         var second = store.put(List.of(object(2)));
+        store.writer.preparations().get(5, TimeUnit.SECONDS);
         release.countDown();
         first.get(5, TimeUnit.SECONDS);
         second.get(5, TimeUnit.SECONDS);
@@ -182,6 +184,7 @@ final class GroupCommitTest {
         }
         var first = store.put(List.of(object(1)));
         var second = store.put(List.of(object(2)));
+        store.writer.preparations().get(5, TimeUnit.SECONDS);
         release.countDown();
         failure(first, "OBJECT_STORE_WRITE_FAILED");
         failure(second, "OBJECT_STORE_WRITE_FAILED");
@@ -215,6 +218,7 @@ final class GroupCommitTest {
         blockWriter();
         var put = store.put(List.of(object(1), object(2)));
         var delete = store.delete(List.of(object(1).key(), object(2).key()));
+        store.writer.preparations().get(5, TimeUnit.SECONDS);
         release.countDown();
         put.get(5, TimeUnit.SECONDS);
         delete.get(5, TimeUnit.SECONDS);
@@ -228,6 +232,7 @@ final class GroupCommitTest {
         blockWriter();
         var put = store.put(List.of(object(1), object(2)));
         var closed = store.closeAsync();
+        store.writer.preparations().get(5, TimeUnit.SECONDS);
         release.countDown();
         closed.get(5, TimeUnit.SECONDS);
         assertEquals(PutOutcome.STORED, put.get(5, TimeUnit.SECONDS).getFirst().outcome());
@@ -278,6 +283,7 @@ final class GroupCommitTest {
                 };
         var put = store.put(List.of(object(1)));
         var scan = store.scan(Cancellation.NONE);
+        store.writer.preparations().get(5, TimeUnit.SECONDS);
         release.countDown();
         put.get(5, TimeUnit.SECONDS);
         scan.get(5, TimeUnit.SECONDS);
@@ -306,6 +312,7 @@ final class GroupCommitTest {
                 };
         var first = store.put(List.of(object(1)));
         var second = store.put(List.of(object(2)));
+        store.writer.preparations().get(5, TimeUnit.SECONDS);
         release.countDown();
         failure(first, "OBJECT_STORE_WRITE_FAILED");
         failure(second, "OBJECT_STORE_WRITE_FAILED");

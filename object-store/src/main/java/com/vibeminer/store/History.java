@@ -20,6 +20,10 @@ public final class History {
             reply = reply.clone();
         }
 
+        int replyLength() {
+            return reply.length;
+        }
+
         @Override
         public byte[] reply() {
             return reply.clone();
@@ -47,11 +51,19 @@ public final class History {
         }
     }
 
-    public static List<PutObject> objects(Observation observation) {
-        byte[] reply = observation.reply();
-        if (reply.length == 0) {
+    static void validateObservation(Observation observation) {
+        if (observation.replyLength() == 0) {
             throw new IllegalArgumentException("Reply must not be empty");
         }
+        validate(observation.kind(), observation.product(), observation.region());
+        if (observation.url() != null && observation.url().length() > 1024) {
+            throw new IllegalArgumentException("URL exceeds 1024 UTF-8 bytes");
+        }
+    }
+
+    public static List<PutObject> objects(Observation observation) {
+        validateObservation(observation);
+        byte[] reply = observation.reply;
         ObjectKey document = new ObjectKey(ObjectKey.HISTORY_DOCUMENT, Format.hash("MD5", reply));
         byte[] record =
                 encode(
@@ -71,6 +83,9 @@ public final class History {
     public static byte[] encode(
             int kind, String product, String region, Instant at, String url, ObjectKey document) {
         validate(kind, product, region);
+        if (url != null && url.length() > 1024) {
+            throw new IllegalArgumentException("URL exceeds 1024 UTF-8 bytes");
+        }
         try {
             ByteBuffer encoded =
                     StandardCharsets.UTF_8

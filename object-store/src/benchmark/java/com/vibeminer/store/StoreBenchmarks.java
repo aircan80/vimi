@@ -12,6 +12,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** Opt-in deterministic workloads; reports no user paths or machine identifiers. */
 public final class StoreBenchmarks {
@@ -53,6 +54,16 @@ public final class StoreBenchmarks {
         Options options = new Options(StoreTypes.Kind.CDN, 1L << 20, Clock.systemUTC());
         try {
             store = ObjectStore.open(directory, options).join();
+            AtomicInteger active = new AtomicInteger();
+            AtomicInteger peak = new AtomicInteger();
+            store.verificationProbe =
+                    beginning -> {
+                        if (beginning) {
+                            peak.accumulateAndGet(active.incrementAndGet(), Math::max);
+                        } else {
+                            active.decrementAndGet();
+                        }
+                    };
             long began = System.nanoTime();
             List<CompletableFuture<?>> writes = new ArrayList<>();
             for (PutObject object : objects) {
@@ -68,7 +79,17 @@ public final class StoreBenchmarks {
             }
             CompletableFuture.allOf(writes.toArray(CompletableFuture[]::new)).join();
             report("write", began, count, (long) count * bytes);
+            System.out.printf(
+                    Locale.ROOT,
+                    "verification,workers=%d,peak=%d%n",
+                    store.verificationWorkers.getCorePoolSize(),
+                    peak.get());
             if (mode.equals("write")) {
+                for (PutObject object : objects) {
+                    if (!Arrays.equals(object.data(), store.read(object.key()).join().bytes())) {
+                        throw new AssertionError("Prepared write payload differs");
+                    }
+                }
                 return;
             }
             began = System.nanoTime();

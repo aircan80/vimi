@@ -346,11 +346,37 @@ The higher-level generated-record store and network clients are separate work.
 - PR #30 was fast-forwarded into main at fa49f7f. Current branch: storage/session-sha-cache.
   Next work is #23 parallel verification and #19 bounded maintenance/benchmarks.
 
+## Parallel verification (#23)
+
+- Writer admission reserves FIFO slots and the existing 512 MiB payload budget before
+  preparation starts. Only admitted requests prepare; canceled/unaccepted waiters
+  clear their input references without CPU or disk work.
+- Per-store verification workers use max(1, processors/2), with a bounded task queue.
+  Identity verification, whole-object SHA and block tables move off caller/writer
+  threads. History key creation also prepares on CPU workers after cheap shape checks;
+  its reservation covers retained observation bytes and the generated owned copy.
+- WriteQueue yields when the FIFO head is unprepared, wakes from completion, and drains
+  accepted preparation on close before shutting down the CPU pool. A ready group flushes
+  when the next request still needs CPU work. Results/refusal/cancellation order remain.
+- Added seven unit and seven integration cases for prepared FIFO, cancellation,
+  shutdown/failure wakeup, owned bytes, CPU bounds, out-of-order completion, group
+  commit while the next preparation is delayed, and asynchronous history generation.
+- Validation: 340 cases (67 unit, 173 integration, 59 crash, 41 interop), formatting,
+  Checkstyle, compiler lint and assembly. Three-platform CI follows.
+- Opt-in benchmark plumbing was delivered early by the #19 agent. 16 concurrent 4 MiB
+  writes showed two active verifiers with four reported CPUs; every stored payload
+  was reread and compared. Commands and illustrative numbers are in
+  docs/verification-performance.md; normal tests never execute benchmarks.
+- PR #31 was fast-forwarded to main at 6eaf1b8. Continue merging after green checks
+  autonomously by fast-forward or squash. #19 is developing independently in the
+  maintenance_bounds agent/worktree and will rebase onto this work before integration.
+
 ## Remaining parity work
 
 This is not yet full reference parity. See README's Current limits. In particular:
-- Caller-side parallel verification remains. Session SHA proofs, pack-handle caching,
-  group commits and bounded read-day tracking are implemented (see above).
+- Bounded maintenance resources/benchmarks (#19) and broader platform readiness remain.
+  Parallel verification, session SHA proofs, leased channels, group commits and
+  read-day tracking are implemented (see above).
 - Reader/opener queue overflow still fails with a limit error. Writer admission waits
   asynchronously within explicit request/payload bounds (see above).
 - SQLite progress cancellation covers active VM work; lock waits retain the five-second

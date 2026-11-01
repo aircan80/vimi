@@ -1,7 +1,10 @@
 package com.vibeminer.store;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -40,6 +43,17 @@ final class WriteQueue {
     }
 
     <T> CompletableFuture<T> submit(long bytes, Cancellation cancellation, Async.Work<T> work) {
+        return submit(bytes, cancellation, work, null, null);
+    }
+
+    <T> CompletableFuture<T> submit(
+            long bytes,
+            Cancellation cancellation,
+            Async.Work<T> work,
+            Runnable preparation,
+            CompletableFuture<?> readiness) {
+        Request<T> request;
+        boolean admitted;
         synchronized (monitor) {
             if (closed) {
                 return CompletableFuture.failedFuture(ObjectStore.closed());
@@ -54,7 +68,8 @@ final class WriteQueue {
             if (mustWait && waiting.size() >= waitingLimit) {
                 return limit("Writer admission-waiter budget is in use");
             }
-            Request<T> request = new Request<>(bytes, work);
+            request = new Request<>(bytes, work, preparation, readiness);
+            admitted = !mustWait;
             retainedBytes += bytes;
             if (mustWait) {
                 request.waiting = true;
@@ -63,11 +78,57 @@ final class WriteQueue {
             } else {
                 queued.addLast(request);
             }
-            if (!draining && !queued.isEmpty()) {
+        }
+        if (admitted) {
+            start(request);
+        }
+        return request.result;
+    }
+
+    private void start(Request<?> request) {
+        Runnable preparation;
+        CompletableFuture<?> readiness;
+        synchronized (monitor) {
+            preparation = request.preparation;
+            request.preparation = null;
+            readiness = request.readiness;
+        }
+        if (preparation != null) {
+            readiness.whenComplete((ignored, error) -> wake());
+            try {
+                preparation.run();
+            } catch (Throwable error) {
+                readiness.completeExceptionally(error);
+            }
+        }
+        wake();
+    }
+
+    private void wake() {
+        synchronized (monitor) {
+            if (!draining && !queued.isEmpty() && queued.getFirst().ready()) {
                 draining = true;
                 worker.execute(this::drain);
+            } else if (closed && !draining && queued.isEmpty()) {
+                worker.shutdown();
             }
-            return request.result;
+        }
+    }
+
+    boolean hasReadyWork() {
+        synchronized (monitor) {
+            return !queued.isEmpty() && queued.getFirst().ready();
+        }
+    }
+
+    // Internal deterministic preparation barrier for diagnostics and component tests.
+    CompletableFuture<Void> preparations() {
+        synchronized (monitor) {
+            return CompletableFuture.allOf(
+                    queued.stream()
+                            .map(request -> request.readiness)
+                            .filter(Objects::nonNull)
+                            .toArray(CompletableFuture[]::new));
         }
     }
 
@@ -89,28 +150,40 @@ final class WriteQueue {
         request.waiting = false;
         request.registration.close();
         request.work = null;
+        request.preparation = null;
+        request.readiness = null;
         retainedBytes -= request.bytes;
     }
 
     private void drain() {
         while (true) {
             Request<?> request;
+            List<Request<?>> promoted = new ArrayList<>();
             synchronized (monitor) {
-                request = queued.pollFirst();
-                if (request == null) {
+                request = queued.peekFirst();
+                if (request == null || !request.ready()) {
                     draining = false;
+                    if (closed && request == null) {
+                        worker.shutdown();
+                    }
                     return;
                 }
+                queued.removeFirst();
                 while (queued.size() < queueLimit && !waiting.isEmpty()) {
                     Request<?> admitted = waiting.removeFirst();
                     admitted.waiting = false;
                     admitted.registration.close();
                     queued.addLast(admitted);
+                    promoted.add(admitted);
                 }
+            }
+            for (Request<?> admitted : promoted) {
+                start(admitted);
             }
             Runnable publish = request.perform();
             synchronized (monitor) {
                 request.work = null;
+                request.readiness = null;
                 retainedBytes -= request.bytes;
             }
             // User continuations must never occupy the sole disk writer or an admission lock.
@@ -130,7 +203,9 @@ final class WriteQueue {
                 discard(request);
                 rejected.addLast(request);
             }
-            worker.shutdown();
+            if (!draining && queued.isEmpty()) {
+                worker.shutdown();
+            }
         }
         for (Request<?> request : rejected) {
             request.fail(ObjectStore.closed());
@@ -151,12 +226,24 @@ final class WriteQueue {
         final long bytes;
         final CompletableFuture<T> result = new CompletableFuture<>();
         Async.Work<T> work;
+        Runnable preparation;
+        CompletableFuture<?> readiness;
         boolean waiting;
         Cancellation.Registration registration = () -> {};
 
-        Request(long bytes, Async.Work<T> work) {
+        Request(
+                long bytes,
+                Async.Work<T> work,
+                Runnable preparation,
+                CompletableFuture<?> readiness) {
             this.bytes = bytes;
             this.work = work;
+            this.preparation = preparation;
+            this.readiness = readiness;
+        }
+
+        boolean ready() {
+            return readiness == null || readiness.isDone();
         }
 
         Runnable perform() {
