@@ -575,3 +575,16 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
 - See object-access/README.md for nullable metadata parity and throughput differences
   (sequential presence queries and individual durable delivery puts). Native Windows
   testing remains deferred; hosted Windows checks remain enabled.
+
+## Layer 3 integration
+
+- Parallel catalog and resolver slices are integrated in builds/: durable SQLite
+  catalog, offline route reconstruction, v2 identities, build opening/resolution,
+  TACT/BLTE/ENCODING/ROOT/archive parsers, shared cache/ledger, downloaded figures
+  and bounded download jobs. Layer 3 calls layer 2 interfaces for object I/O.
+- Local combined check/assemble passes, including 87 builds unit, 18 integration
+  and 2 C# compatibility cases. Layer 2 adds 91 cases; the real pipeline covers
+  disk observations through catalog/resolution and offline reconstruction.
+- Original storage crash and both storage compatibility suites remain green.
+  See builds/README.md and builds/RESOLVER.md for resource bounds and performance
+  qualifications. Native Windows certification is deferred. Layers 4–7 remain.
