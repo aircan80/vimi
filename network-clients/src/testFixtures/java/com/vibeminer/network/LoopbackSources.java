@@ -15,6 +15,8 @@ import okhttp3.mockwebserver.RecordedRequest;
 public final class LoopbackSources implements AutoCloseable {
     private final MockWebServer server = new MockWebServer();
     private final NetworkClients clients;
+    private final java.util.concurrent.ConcurrentLinkedQueue<String> transportFailures =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
 
     public LoopbackSources(NetworkOptions options, Dispatcher dispatcher) throws IOException {
         this(options, dispatcher, false);
@@ -23,7 +25,28 @@ public final class LoopbackSources implements AutoCloseable {
     public LoopbackSources(NetworkOptions options, Dispatcher dispatcher, boolean http2)
             throws IOException {
         server.setDispatcher(dispatcher);
-        OkHttpClient.Builder transport = new OkHttpClient.Builder().proxy(java.net.Proxy.NO_PROXY);
+        OkHttpClient.Builder transport =
+                new OkHttpClient.Builder()
+                        .proxy(java.net.Proxy.NO_PROXY)
+                        .eventListener(
+                                new okhttp3.EventListener() {
+                                    @Override
+                                    public void callFailed(
+                                            okhttp3.Call call, java.io.IOException error) {
+                                        StringBuilder detail = new StringBuilder();
+                                        for (Throwable cause = error;
+                                                cause != null;
+                                                cause = cause.getCause()) {
+                                            if (!detail.isEmpty()) {
+                                                detail.append(" <- ");
+                                            }
+                                            detail.append(cause.getClass().getSimpleName())
+                                                    .append(": ")
+                                                    .append(cause.getMessage());
+                                        }
+                                        transportFailures.add(detail.toString());
+                                    }
+                                });
         if (http2) {
             var certificate =
                     new okhttp3.tls.HeldCertificate.Builder()
@@ -68,6 +91,10 @@ public final class LoopbackSources implements AutoCloseable {
 
     public RecordedRequest takeRequest() throws InterruptedException {
         return server.takeRequest(5, TimeUnit.SECONDS);
+    }
+
+    public java.util.List<String> transportFailures() {
+        return java.util.List.copyOf(transportFailures);
     }
 
     public int requestCount() {

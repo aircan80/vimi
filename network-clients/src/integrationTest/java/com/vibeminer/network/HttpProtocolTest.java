@@ -694,7 +694,13 @@ final class HttpProtocolTest {
                                                         .setBody("ttp")
                                                         .addHeader("Content-Range", "bytes 1-3/5")),
                         true)) {
-            var reply = fixture.clients().fetch(ONE, whole()).join();
+            NetworkTypes.Reply reply;
+            try {
+                reply = fixture.clients().fetch(ONE, whole()).join();
+            } catch (CompletionException error) {
+                throw new AssertionError(
+                        "TLS fixture failure: " + fixture.transportFailures(), error);
+            }
             assertEquals("h2", reply.httpVersion());
             var part =
                     fixture.clients()
