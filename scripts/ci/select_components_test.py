@@ -94,7 +94,11 @@ class SelectionTest(unittest.TestCase):
 
 class RequiredGateTest(unittest.TestCase):
     def test_actual_workflow_gate_accepts_only_success_or_documentation_skip(self):
-        workflow = Path(__file__).resolve().parents[2] / ".github/workflows/unit-tests.yml"
+        workflows = Path(__file__).resolve().parents[2] / ".github/workflows"
+        for workflow in ["unit-tests.yml", "integration-tests.yml"]:
+            self.check_gate(workflows / workflow)
+
+    def check_gate(self, workflow):
         gate = textwrap.dedent(workflow.read_text(encoding="utf-8").split(
             "      - name: Require selected platforms to pass", 1
         )[1].split("        run: |\n", 1)[1])
@@ -109,6 +113,7 @@ class RequiredGateTest(unittest.TestCase):
                         result = subprocess.run(["bash", "-eo", "pipefail", "-c", gate], env={
                             **os.environ, "OBJECT_STORE": selected,
                             "SELECTION_RESULT": selection_status, "UNIT_RESULT": unit_status,
+                            "INTEGRATION_RESULT": unit_status,
                         })
                         self.assertEqual(expected, result.returncode == 0)
 

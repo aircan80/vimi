@@ -1,0 +1,128 @@
+name: Integration tests
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-tests-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Select affected components
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      object_store: ${{ steps.select.outputs.object_store }}
+    steps:
+      - name: Check out source and comparison history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify selection rules
+        run: python3 -m unittest discover -s scripts/ci -p '*_test.py'
+      - name: Select affected components
+        id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: >-
+          python3 scripts/ci/select_components.py
+          --event "$EVENT_NAME" --base "$BASE_SHA" --head "$HEAD_SHA"
+          >> "$GITHUB_OUTPUT"
+
+  integration:
+    name: Integration / ${{ matrix.platform }}
+    needs: [changes]
+    if: ${{ needs.changes.outputs.object_store == 'true' }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Linux
+            runner: ubuntu-24.04
+          - platform: Windows
+            runner: windows-2025
+          - platform: macOS
+            runner: macos-15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@0723195856401067f7a2779048b490ace7a47d7c # v5.0.2
+      - name: Install Java 25 and restore Gradle dependencies
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          java-package: jdk
+          cache: gradle
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+          cache-dependency-path: |
+            **/*.gradle
+            **/*gradle.lockfile
+            gradle.properties
+            gradle/wrapper/gradle-wrapper.properties
+          overwrite-settings: false
+      - name: Install Linux SQLite
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libsqlite3-0
+      - name: Install macOS SQLite
+        if: ${{ runner.os == 'macOS' }}
+        run: brew install sqlite
+      - name: Locate and diagnose native SQLite
+        id: sqlite
+        run: python scripts/ci/native_sqlite.py --directory "$RUNNER_TEMP/vimi-sqlite"
+      - name: Run object-store integration tests
+        env:
+          SQLITE_LIBRARY: ${{ steps.sqlite.outputs.library }}
+        run: ./gradlew :object-store:integrationTest "-PsqliteLibrary=$SQLITE_LIBRARY" --no-daemon --console=plain
+      - name: Retain integration test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: integration-reports-${{ matrix.platform }}
+          path: |
+            object-store/build/reports/tests/integrationTest/
+            object-store/build/test-results/integrationTest/TEST-*.xml
+          if-no-files-found: warn
+          retention-days: 7
+
+  required:
+    name: Integration tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: ${{ always() }}
+    needs: [changes, integration]
+    steps:
+      - name: Require selected platforms to pass
+        env:
+          SELECTION_RESULT: ${{ needs.changes.result }}
+          OBJECT_STORE: ${{ needs.changes.outputs.object_store }}
+          INTEGRATION_RESULT: ${{ needs.integration.result }}
+        run: |
+          test "$SELECTION_RESULT" = success
+          if [ "$OBJECT_STORE" = false ]; then
+            test "$INTEGRATION_RESULT" = skipped
+          else
+            test "$OBJECT_STORE" = true
+            test "$INTEGRATION_RESULT" = success
+          fi

@@ -67,3 +67,25 @@ in #14 and #20. Three-platform unit jobs and affected-component selection implem
 GitHub-hosted jobs are permitted on all three platforms. Before hands-on native
 Windows/macOS development or debugging, notify the maintainer so development can
 move to the appropriate machine.
+
+## Native integration jobs
+
+The independent `Integration tests` workflow uses the same conservative component
+selection and an always-running `Integration tests` aggregate check. Its platform
+jobs run `:object-store:integrationTest` separately from the fast unit task and
+retain independent `integration-reports-*` XML/HTML artifacts for seven days.
+Every disk test uses temporary synthetic stores.
+
+Ubuntu 24.04 uses an x64 JDK and the distribution's `libsqlite3-0` package. Windows
+2025 uses an x64 JDK and the official SQLite 3.54.1 x64 DLL archive, verified against
+SQLite's published SHA3-256 before extracting only `sqlite3.dll`. macOS 15 uses a
+JDK matching its hosted runner architecture and Homebrew's SQLite library matching
+that architecture. The native setup helper prints the actual platform, pointer
+width, SQLite version and selected library path, then passes an absolute path via
+`-PsqliteLibrary`. Missing libraries, unsupported architectures and checksum
+failures stop the job instead of skipping its tests.
+
+The CI library locations are dependencies of hosted test jobs, not an application
+SQLite packaging policy. Native packaging/read-only-media and hands-on platform
+validation remain separate storage stories. These workflows have not yet been
+validated on hosted runners while workflow publication authorization is pending.
