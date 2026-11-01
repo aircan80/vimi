@@ -1,6 +1,9 @@
 package com.vibeminer.store;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -8,6 +11,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -36,12 +42,19 @@ final class SqliteLibraryTest {
     }
 
     @Test
-    void unrelatedNativeLibraryReportsMissingSqliteSymbols() throws Exception {
-        String directory = System.getProperty("os.name").startsWith("Windows") ? "bin" : "lib";
-        Path library =
-                Path.of(System.getProperty("java.home"), directory, System.mapLibraryName("java"));
-        assertTrue(Files.isRegularFile(library), "JDK native library is required for this probe");
-        runChild(library.toString(), "failure");
+    void missingRequiredSqliteSymbolIsRejected() {
+        IllegalArgumentException error =
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () ->
+                                SqliteLibrary.requireSymbols(
+                                        name ->
+                                                name.equals("sqlite3_step")
+                                                        ? Optional.empty()
+                                                        : Optional.of(
+                                                                java.lang.foreign.MemorySegment
+                                                                        .NULL)));
+        assertTrue(error.getMessage().contains("sqlite3_step"));
     }
 
     @Test
@@ -95,16 +108,12 @@ final class SqliteLibraryTest {
                 expectFailure(ObjectStore.open(store));
                 expectFailure(ObjectStore.openReadOnly(store, new StoreTypes.Options()));
             }
-            assertTrue(!Files.exists(store), "Dependency failure must not create a store");
+            assertFalse(Files.exists(store), "Dependency failure must not create a store");
         }
 
-        private static void expectFailure(java.util.concurrent.CompletableFuture<?> future) {
-            java.util.concurrent.CompletionException error =
-                    org.junit.jupiter.api.Assertions.assertThrows(
-                            java.util.concurrent.CompletionException.class, future::join);
-            StoreException failure =
-                    org.junit.jupiter.api.Assertions.assertInstanceOf(
-                            StoreException.class, error.getCause());
+        private static void expectFailure(CompletableFuture<?> future) {
+            CompletionException error = assertThrows(CompletionException.class, future::join);
+            StoreException failure = assertInstanceOf(StoreException.class, error.getCause());
             assertEquals("OBJECT_STORE_NATIVE_LIBRARY", failure.code());
             assertTrue(failure.getMessage().contains("JDK architecture"));
             assertTrue(failure.getMessage().contains("-Dvibeminer.sqlite.library"));

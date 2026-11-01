@@ -54,8 +54,8 @@ SQLite class initialization. A successfully loaded library stays loaded for the 
 ./gradlew :object-store:integrationTest --tests '*SqliteLibraryTest' -PsqliteLibrary=/absolute/path/to/library
 ```
 
-Fresh JVM probes cover a missing path, a non-library file, an unrelated native library,
-explicit override startup and default-name startup. The default-name case skips on
+Fresh JVM probes cover a missing path, a non-library file, explicit override startup
+and default-name startup. A controlled symbol lookup checks rejection of a missing C symbol. The default-name case skips on
 Windows, where CI supplies its DLL by absolute path. The override case requires the
 Gradle property. These probes do not replace clean-machine/native testing under #24.
 Run the broader disk, crash and interoperability suites before accepting a new native

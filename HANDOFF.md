@@ -436,8 +436,8 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
   creates store files. Failed loads are retained as ordinary, repeatable
   OBJECT_STORE_NATIVE_LIBRARY errors with actionable architecture/path guidance;
   NativeSqlite initialization is not attempted after a failed dependency preflight.
-- Fresh JVM probes cover missing, invalid and unrelated libraries, explicit override
-  startup, and Unix default-name startup. Windows default lookup is not exercised
+- Fresh JVM probes cover missing and invalid libraries, explicit override startup,
+  and Unix default-name startup; a controlled lookup checks missing C symbols. Windows default lookup is not exercised
   because hosted jobs supply an explicit DLL; override checks require sqliteLibrary.
 - docs/native-sqlite.md defines the current consumer-supplied native library strategy,
   upstream provenance, build requirements and remaining clean-machine/native evidence.
