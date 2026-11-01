@@ -127,6 +127,7 @@ final class Maintenance {
                     else if (index.find(e.key()) != null) duplicates++;
                     apply(index, w.pack, w.at, e, sound.history());
                 }
+                s.atMaintenance(MaintenancePoint.REPLAY_ENTRY);
                 w.at = w.end; w.advance(s, problems); if (w.entry != null) queue.add(w);
             }
             for (Walk w : walks) index.pack(w.pack, 1, w.end, liveBytes(index, w.pack, w.file, w.end));
@@ -137,24 +138,34 @@ final class Maintenance {
         } finally { for (Walk w : walks) w.close(); }
     }
     static ScanReport scan(ObjectStore s, Cancellation cancel) throws IOException {
+        cancel.check();
         var files = s.diskPacks(); preflight(s, files);
+        cancel.check();
         final ScanReport[] result = new ScanReport[1];
         s.database.transaction(true, () -> {
             for (Object[] p : s.database.query("SELECT seq,committed_length,live_bytes FROM packs WHERE state=0"))
                 s.index.pack(Math.toIntExact((long)p[0]), 1, (long)p[1], (long)p[2]);
         });
+        s.atMaintenance(MaintenancePoint.SCAN_SEALED);
+        cancel.check();
         try {
             s.database.transaction(true, () -> {
                 s.database.exec("CREATE TEMP TABLE saved_reads AS SELECT k,last_read FROM objects WHERE last_read IS NOT NULL");
                 s.database.exec("DELETE FROM objects"); s.database.exec("DELETE FROM history"); s.database.exec("DELETE FROM packs");
+                s.atMaintenance(MaintenancePoint.SCAN_CLEARED);
                 s.index.objectCount = s.index.objectDigest = s.index.historyCount = s.index.historyDigest = 0;
                 try { result[0] = replay(s, s.index, files, cancel); }
                 catch (IOException e) { throw new java.io.UncheckedIOException(e); }
+                s.atMaintenance(MaintenancePoint.SCAN_REPLAYED);
+                cancel.check();
                 s.database.exec("UPDATE objects SET last_read=(SELECT last_read FROM saved_reads r WHERE r.k=objects.k)");
                 s.database.exec("DROP TABLE saved_reads");
             });
         } finally { s.index.load(); }
-        s.database.exec("PRAGMA wal_checkpoint(PASSIVE)"); return result[0];
+        s.atMaintenance(MaintenancePoint.SCAN_COMMITTED);
+        s.database.exec("PRAGMA wal_checkpoint(PASSIVE)");
+        s.atMaintenance(MaintenancePoint.SCAN_CHECKPOINTED);
+        return result[0];
     }
     static VerifyReport verify(ObjectStore s, StoreIndex index, boolean full, Cancellation cancel) throws IOException {
         long checked = 0, bytes = 0, corruptCount = 0, lostCount = 0;

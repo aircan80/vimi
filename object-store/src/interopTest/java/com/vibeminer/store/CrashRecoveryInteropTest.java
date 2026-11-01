@@ -38,6 +38,27 @@ final class CrashRecoveryInteropTest {
             assertNull(store.scrub(true,NONE).join().indexProblem());
         } finally { store.closeAsync().join(); }
     }
+    @ParameterizedTest @EnumSource(value=MaintenancePoint.class,names={"REBUILD_CREATED","REPLAY_ENTRY","REBUILD_REPLAYED","REBUILD_CHECKPOINTED","REBUILD_BEFORE_REPLACE","REBUILD_REPLACED"})
+    void csharpRecoversInterruptedJavaRebuild(MaintenancePoint point) throws Exception {
+        CrashFixture.prepare(folder);
+        try(NativeSqlite db=new NativeSqlite(folder.resolve("objects.sqlite3"),false)){db.exec("UPDATE store SET row_check=row_check+1");}
+        CrashProcess.killJava(folder,point.name(),"rebuild");
+        Path output=folder.resolveSibling(folder.getFileName()+"-rebuild-output.txt");
+        try {
+            Process process=new ProcessBuilder(command("recover-rebuild",folder.toString(),"false"))
+                .redirectErrorStream(true).redirectOutput(output.toFile()).start();
+            try {
+                assertTrue(process.waitFor(20,TimeUnit.SECONDS),"C# rebuild recovery timed out");
+                assertEquals(0,process.exitValue(),Files.readString(output));
+            } finally {if(process.isAlive()){process.destroyForcibly();process.waitFor(10,TimeUnit.SECONDS);}}
+        } finally {Files.deleteIfExists(output);}
+        ObjectStore store=ObjectStore.open(folder).join();
+        try {
+            assertFalse(store.openReport().fullIndexCheck());assertEquals(3,store.stats().join().objects());
+            assertArrayEquals(CrashFixture.baseline(),store.read(key(CrashFixture.baseline()),NONE).join().bytes());
+            assertNull(store.scrub(true,NONE).join().indexProblem());
+        } finally {store.closeAsync().join();}
+    }
     @ParameterizedTest @ValueSource(strings={"EntryStarted","EntryHalfWritten","EntryWritten","AfterPackSync","InsideIndexCommit","AfterIndexCommit"})
     void javaRecoversKilledCsharpWriter(String point) throws Exception {
         CrashFixture.prepare(folder);

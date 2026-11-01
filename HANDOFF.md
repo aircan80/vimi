@@ -93,9 +93,26 @@ The higher-level generated-record store and network clients are separate work.
 - Added bidirectional process-kill recovery against the original C# implementation.
   The harness uses its existing `VibeMiner.Objects.Testing` friend assembly name.
 - Existing fast unit and default check commands do not launch crash workers or .NET.
-- Rebuild/compaction crash points and injected I/O failures remain stories #11, #12, #13.
+- Rebuild/scan safety is covered next by #11; compaction and injected I/O failures
+  remain stories #12 and #13.
 - Append crash-safety story #6 is implemented and validated with 99 passing tests
   across the component suites. Rebuild/compaction and injected I/O failure work follows.
+
+## Rebuild/scan crash-safety story implementation (#11)
+
+- Preserve the old main index until atomic replacement by the rebuilt index. Previously
+  the old main file was deleted immediately before the move, creating an avoidable gap.
+- Added per-instance internal maintenance probes, including a same-package open helper
+  for observing rebuilds before open completes. There is no public fault switch.
+- Added 12 child-process kill cases covering temporary-index rebuild creation, replay,
+  checkpoint/replacement and live scan sealing, row replacement, commit and checkpoint.
+- Added 11 integration cases for cancellation/exception rollback, retry, reader visibility,
+  malformed/unlisted/foreign/newer packs and replacement failure preserving the main file.
+- Added six C# recoveries of interrupted Java rebuilds; the existing reference source is
+  unchanged. All 128 unit/integration/crash/interoperability cases pass on Linux.
+- Story #6 is committed locally as `e091a60`; the #11 implementation is the next commit.
+  These local commits have not been pushed. Next work is compaction safety (#12), then
+  injected storage failures (#13). Keep updating GitHub issues with progress and evidence.
 
 ## Remaining parity work
 

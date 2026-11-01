@@ -8,15 +8,25 @@ import com.vibeminer.store.StoreTypes.*;
 public final class CrashWorker {
     private CrashWorker() { }
     public static void main(String[] args) throws Exception {
-        WritePoint requested = WritePoint.valueOf(args[1]); String operation = args[2];
+        String operation = args[2];
+        if (operation.equals("rebuild")) {
+            ObjectStore.open(Path.of(args[0]), new Options(), point -> {
+                if (point.name().equals(args[1])) stopAt(args[1]);
+            }).join();
+            throw new IllegalStateException("Requested rebuild boundary was not reached");
+        }
+        if (operation.equals("scan")) {
+            ObjectStore scanning = ObjectStore.open(Path.of(args[0])).join();
+            scanning.maintenanceProbe = point -> { if (point.name().equals(args[1])) stopAt(args[1]); };
+            scanning.scan(Cancellation.NONE).join();
+            throw new IllegalStateException("Requested scan boundary was not reached");
+        }
+        WritePoint requested = WritePoint.valueOf(args[1]);
         ObjectKey target = CrashFixture.targetKey(operation);
         ObjectStore store = ObjectStore.open(Path.of(args[0])).join();
         store.writeProbe = (point, key) -> {
             if (point != requested || !key.equals(target)) return;
-            System.out.println("READY " + requested); System.out.flush();
-            try { if (System.in.read() < 0) throw new IllegalStateException("Parent disconnected before termination"); }
-            catch (java.io.IOException e) { throw new java.io.UncheckedIOException(e); }
-            throw new IllegalStateException("Parent should terminate the blocked writer");
+            stopAt(requested.name());
         };
         switch (operation) {
             case "put" -> store.put(List.of(new PutObject(target, CrashFixture.target())), true, Cancellation.NONE).join();
@@ -31,5 +41,11 @@ public final class CrashWorker {
         }
         store.closeAsync().join();
         throw new IllegalStateException("Requested crash boundary was not reached");
+    }
+    private static void stopAt(String requested) {
+        System.out.println("READY " + requested); System.out.flush();
+        try { if (System.in.read() < 0) throw new IllegalStateException("Parent disconnected before termination"); }
+        catch (java.io.IOException e) { throw new java.io.UncheckedIOException(e); }
+        throw new IllegalStateException("Parent should terminate the blocked writer");
     }
 }

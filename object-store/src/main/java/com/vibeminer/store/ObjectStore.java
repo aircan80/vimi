@@ -34,6 +34,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     long stagingBytes;
     // Package-private, instance-scoped test seam. No property, public option or global hook.
     java.util.function.BiConsumer<WritePoint, ObjectKey> writeProbe;
+    java.util.function.Consumer<MaintenancePoint> maintenanceProbe;
+    void atMaintenance(MaintenancePoint point) { if (maintenanceProbe != null) maintenanceProbe.accept(point); }
     private void atWrite(WritePoint point, ObjectKey key) { if (writeProbe != null) writeProbe.accept(point, key); }
 
     private ObjectStore(Path path, Options options, boolean readOnly) {
@@ -44,8 +46,13 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     }
     public static CompletableFuture<ObjectStore> open(Path folder) { return open(folder, new Options()); }
     public static CompletableFuture<ObjectStore> open(Path folder, Options options) {
+        return open(folder, options, null);
+    }
+    // Used only by same-package tests to observe rebuilds before open completes.
+    static CompletableFuture<ObjectStore> open(Path folder, Options options, java.util.function.Consumer<MaintenancePoint> probe) {
         return Async.submit(OPENERS, () -> {
             ObjectStore store = new ObjectStore(folder, options, false);
+            store.maintenanceProbe = probe;
             try { store.openCore(); return store; } catch (Throwable e) { store.release(); throw translate(e, "OBJECT_STORE_INDEX_UNREADABLE"); }
         });
     }
@@ -126,11 +133,18 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 Path rebuilding = folder.resolve("objects.sqlite3.rebuild");
                 try (NativeSqlite db = new NativeSqlite(rebuilding, false)) {
                     StoreIndex target = new StoreIndex(db); target.create(packId, now(), options.kind().ordinal());
+                    atMaintenance(MaintenancePoint.REBUILD_CREATED);
                     Maintenance.replay(this, target, files, Cancellation.NONE);
+                    atMaintenance(MaintenancePoint.REBUILD_REPLAYED);
                     db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+                    atMaintenance(MaintenancePoint.REBUILD_CHECKPOINTED);
                 }
-                deleteIndexFiles();
+                atMaintenance(MaintenancePoint.REBUILD_BEFORE_REPLACE);
+                // Keep the previous main index until the atomic switch. An interruption
+                // must not create a gap between deleting the old file and installing the new one.
+                for (String suffix : List.of("-wal", "-shm")) Files.deleteIfExists(folder.resolve("objects.sqlite3" + suffix));
                 Files.move(rebuilding, indexPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                atMaintenance(MaintenancePoint.REBUILD_REPLACED);
                 Format.syncDirectory(folder);
             } else {
                 deleteIndexFiles();

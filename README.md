@@ -92,8 +92,15 @@ C#, and kills C# writers and recovers them in Java. The C# harness uses the
 reference assembly's existing friend-test access under the assembly name
 `VibeMiner.Objects.Testing`; no reference source is changed.
 
-These tests model process termination, not a physical power cut. Rebuild/compaction
-crash boundaries and injected storage failures remain separate stories.
+The crash suite also terminates temporary-index rebuilds during creation, replay,
+checkpoint and atomic replacement, and live scans before/after their commit. Disk
+integration tests check cancellation/exception rollback, old-versus-new reader
+visibility, repeatable scans and malformed/foreign/newer pack preflight. The old
+main index is retained until the replacement is installed atomically. C# recovery
+is checked after each Java rebuild termination point.
+
+These tests model process termination, not a physical power cut. Compaction crash
+boundaries and injected storage failures remain separate stories.
 
 ## Build
 
@@ -180,6 +187,6 @@ contracts without native or file dependencies.
 Linux ARM64 native SQLite and cross-language writer locks have been exercised.
 Windows and macOS need native-platform CI, including read-only media behavior and
 SQLite packaging. Recovery tests simulate durable unindexed tails and torn bytes;
-append process-kill boundaries are tested, but rebuild/compaction kill boundaries,
+append and rebuild process-kill boundaries are tested, but compaction kill boundaries,
 injected I/O failures and real power-cut testing remain to be completed. No higher layer, generated-record abstraction
 or network client is included.

@@ -17,9 +17,9 @@ if (args[0] == "crash-writer") {
     await child.PutAsync([new(new ObjectKey(ObjectKeyType.Config,MD5.HashData(bytes)),bytes.Length,bytes)],true);
     throw new Exception("Requested crash boundary was not reached");
 }
-if (args[0] == "recover-crash") {
+if (args[0] is "recover-crash" or "recover-rebuild") {
     await using var recovered = await ObjectStore.OpenAsync(Path.GetFullPath(args[1]));
-    if (!recovered.OpenReport.FullIndexCheck) throw new Exception("Killed Java writer was incorrectly marked clean");
+    if (args[0] == "recover-crash" && !recovered.OpenReport.FullIndexCheck) throw new Exception("Killed Java writer was incorrectly marked clean");
     var baseline = Encoding.ASCII.GetBytes("committed baseline"); var target = Encoding.ASCII.GetBytes("crash target");
     var read = await recovered.ReadAsync(new(ObjectKeyType.Config,MD5.HashData(baseline)));
     if (read.State != ReadState.Present || !read.Bytes!.SequenceEqual(baseline)) throw new Exception("Committed baseline was lost");
@@ -30,7 +30,7 @@ if (args[0] == "recover-crash") {
     if ((await recovered.ReadHistoryAsync(new())).Count != 1) throw new Exception("Committed history was lost");
     var verified = await recovered.VerifyAsync(true);
     if (verified.CorruptCount != 0 || verified.LostCount != 0) throw new Exception("Recovered store failed verification");
-    Console.WriteLine("C# recovered a killed Java writer"); return;
+    Console.WriteLine("C# recovered an interrupted Java store"); return;
 }
 if (args[0] == "verify-vectors") {
     using var input = JsonDocument.Parse(await File.ReadAllTextAsync(args[1]));
