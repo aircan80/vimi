@@ -36,9 +36,19 @@ ROOT name hashes use Jenkins lookup3 and .NET-compatible invariant simple casing
 including dotless i and non-expanding sharp s. Golden ASCII/Unicode values were
 obtained by compiling the original C# `RootNameHash.cs` without modification.
 
-This is the byte-array BLTE metadata decode path consumed by the C# opener. The
-reference's internal streaming BLTE overload is not exposed here. Layer 4's
-range-aware file decoding remains separate work.
+Large metadata is not restricted to layer 2's whole-read limit. When layer 2
+returns PRESENT with a known length and no whole byte array (the normal shape for
+objects over its default 64 MiB whole-read boundary), the opener acquires bounded
+ranges and opens the metadata normally, up to its configured metadata bounds.
+This is the same public path as pinned C# `BuildOpener.ReadAsync`: it allocates a
+bounded encoded array, fills it with ranges, and passes that array to BLTE decode.
+C#'s byte-array BLTE overload itself wraps an input MemoryStream and collects the
+decoded bytes; its separate internal stream overload is not used by public build
+opening. There is no additional large-metadata capability missing because of that
+overload. Neither implementation's public opener claims to avoid retaining the
+full encoded metadata array; streaming it would be a memory optimization, not a
+prerequisite for opening supported large metadata. Layer 4's range-aware file
+decoding remains separate work.
 
 ## Resource and lifecycle bounds
 
@@ -67,9 +77,17 @@ are immutable snapshots.
 ./gradlew :builds:check :builds:assemble -PsqliteLibrary=/absolute/path/to/sqlite-library
 ```
 
-The resolver's 44 fast tests require no SQLite, HTTP or .NET. They include shared
+The resolver's 49 fast tests require no SQLite, HTTP or .NET. They include shared
 contracts against `BuildOpener` over a scripted layer 2 boundary and
 `MemoryBuilds`, complete synthetic binary metadata, corruption/bounds tests,
 source-state mapping, range-only reads, shared-open cancellation, FIFO admission,
-LRU reuse and reentrant close. The full builds module also includes separate
-catalog persistence/interop checks documented by its owner.
+LRU reuse and reentrant close. Five additional public-path tests model a configured
+whole-read boundary smaller than the synthetic metadata: build config, CDN config,
+ENCODING, ROOT, archive index and file-index all open through exact bounded ranges.
+They verify request identity/declared length/interactive priority, no full encoded
+body returned by layer 2, truncated-range refusal, failed range-proof propagation,
+aggregate BLTE authentication and cancellation while a range is pending. The
+boundary is deliberately small to test the same public result shape without a
+large resident fixture; it is not a measurement of production-size memory use.
+The full builds module also includes separate catalog persistence/interop checks
+documented by its owner.
