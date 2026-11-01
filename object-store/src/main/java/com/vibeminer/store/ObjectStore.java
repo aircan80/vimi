@@ -32,15 +32,14 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.NavigableMap;
 import java.util.Set;
-import java.util.TreeMap;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -87,6 +86,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     // Package-private, instance-scoped test seam. No property, public option or global hook.
     java.util.function.BiConsumer<WritePoint, ObjectKey> writeProbe;
     java.util.function.Consumer<MaintenancePoint> maintenanceProbe;
+    java.util.function.Consumer<Maintenance.Resources> maintenanceResourcesProbe;
     java.util.function.BiConsumer<ReadPoint, ObjectKey> readProbe;
     java.util.function.Consumer<ObjectKey> wholeShaProbe;
     java.util.function.Consumer<Boolean> verificationProbe;
@@ -404,23 +404,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         return packs.resolve(String.format(Locale.ROOT, "pack-%06d.vmp", number));
     }
 
-    NavigableMap<Integer, Path> diskPacks() throws IOException {
-        NavigableMap<Integer, Path> files = new TreeMap<>();
-        if (!Files.isDirectory(packs)) {
-            return files;
-        }
-        try (var paths = Files.list(packs)) {
-            for (Path path : paths.toList()) {
-                String name = path.getFileName().toString();
-                if (name.matches("pack-[0-9]{6}\\.vmp")) {
-                    int number = Integer.parseInt(name.substring(5, 11));
-                    if (number > 0) {
-                        files.put(number, path);
-                    }
-                }
-            }
-        }
-        return files;
+    PackFiles diskPacks() throws IOException {
+        return PackFiles.discover(packs);
     }
 
     int allocatePack() {
@@ -437,7 +422,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         } else if (!Files.exists(indexPath)) {
             throw new StoreException("OBJECT_STORE_MISSING", "No complete index");
         }
-        NavigableMap<Integer, Path> files = diskPacks();
+        PackFiles files = diskPacks();
         if (!files.isEmpty()) {
             nextPack = files.lastKey() + 1;
         }
@@ -482,9 +467,13 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 if (version == 1 && candidate.validate(packId, false, Cancellation.NONE)) {
                     full = candidate.clean == 0;
                     valid = !full || candidate.fullCheck(Cancellation.NONE);
-                    for (Object[] p : check.query("SELECT seq FROM packs")) {
-                        nextPack = Math.max(nextPack, Math.toIntExact((long) p[0]) + 1);
-                    }
+                    nextPack =
+                            Math.max(
+                                    nextPack,
+                                    Math.toIntExact(
+                                                    check.scalar(
+                                                            "SELECT coalesce(max(seq),0) FROM packs"))
+                                            + 1);
                 }
                 if (immutable && candidate.clean != 1) {
                     valid = false;
@@ -548,9 +537,11 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         database.exec("PRAGMA synchronous=NORMAL");
         index = new StoreIndex(database);
         index.load();
-        for (Object[] p : database.query("SELECT seq FROM packs")) {
-            nextPack = Math.max(nextPack, Math.toIntExact((long) p[0]) + 1);
-        }
+        nextPack =
+                Math.max(
+                        nextPack,
+                        Math.toIntExact(database.scalar("SELECT coalesce(max(seq),0) FROM packs"))
+                                + 1);
         // Protect newer active tails before clearing the clean-close marker.
         for (Object[] row :
                 database.query("SELECT seq,committed_length FROM packs WHERE state=0")) {
@@ -570,11 +561,10 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                     index.save();
                 });
         long recovered = 0, truncated = 0;
-        Set<Integer> listed = new HashSet<>();
-        for (Object[] row :
-                database.query("SELECT seq,state,committed_length,live_bytes FROM packs")) {
+        BitSet listed = new BitSet(PackFiles.MAX_PACK + 1);
+        for (Object[] row : PackRows.all(database, "seq,state,committed_length,live_bytes")) {
             int number = Math.toIntExact((long) row[0]), state = Math.toIntExact((long) row[1]);
-            listed.add(number);
+            listed.set(number);
             long committed = (long) row[2], live = (long) row[3];
             Path path = packPath(number);
             if (state >= 2) {
@@ -584,13 +574,14 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 continue;
             }
             if (!Files.exists(path)) {
-                problems.add("Missing pack " + number);
+                Maintenance.problem(problems, "Missing pack " + number);
                 if (state == 0) {
                     index.pack(number, 1, committed, live);
                 }
             } else if (Files.size(path) < committed
                     || state == 1 && Files.size(path) != committed) {
-                problems.add("Pack length differs from committed length: " + number);
+                Maintenance.problem(
+                        problems, "Pack length differs from committed length: " + number);
                 if (state == 0) {
                     index.pack(number, 1, committed, live);
                 }
@@ -601,12 +592,12 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             }
         }
         for (var item : diskPacks().entrySet()) {
-            if (!listed.contains(item.getKey())) {
+            if (!listed.get(item.getKey())) {
                 if (Files.size(item.getValue()) <= 64) {
                     io.delete(item.getValue());
                     io.syncDirectory(packs);
                 } else {
-                    problems.add("Unlisted pack " + item.getKey());
+                    Maintenance.problem(problems, "Unlisted pack " + item.getKey());
                 }
             }
         }

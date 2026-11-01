@@ -16,16 +16,21 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Comparator;
 import java.util.List;
-import java.util.NavigableMap;
-import java.util.PriorityQueue;
 
-/** Pack replay uses one entry per pack in its merge queue and bounded payload buffers. */
+/** Disk-backed replay/copy metadata with bounded Java pages, readers and payload buffers. */
 final class Maintenance {
     private Maintenance() {}
 
     record Sound(boolean valid, boolean identity, History.Entry history) {}
+
+    record Resources(String operation, int openPackHandles, int javaRows) {}
+
+    private static void resources(ObjectStore store, String operation, int handles, int rows) {
+        if (store.maintenanceResourcesProbe != null) {
+            store.maintenanceResourcesProbe.accept(new Resources(operation, handles, rows));
+        }
+    }
 
     static Sound sound(
             ObjectStore s,
@@ -69,7 +74,7 @@ final class Maintenance {
                 history == null ? null : History.parse(history, e.key()));
     }
 
-    static void preflight(ObjectStore s, NavigableMap<Integer, Path> files) throws IOException {
+    static void preflight(ObjectStore s, PackFiles files) throws IOException {
         byte[] id = null;
         for (var item : files.entrySet()) {
             try (FileChannel file = FileChannel.open(item.getValue(), READ)) {
@@ -155,7 +160,7 @@ final class Maintenance {
                         s.index.save();
                     });
             if (truncated > 0) {
-                problems.add("Truncated tail of pack " + pack + " by " + truncated + " bytes");
+                problem(problems, "Truncated tail of pack " + pack + " by " + truncated + " bytes");
             }
             return new long[] {recovered, truncated};
         }
@@ -185,101 +190,165 @@ final class Maintenance {
         return bytes;
     }
 
-    private static final class Walk implements AutoCloseable {
-        final int pack;
-        final FileChannel file;
-        long at = 64, end = 64;
-        Format.Entry entry;
-
-        Walk(int pack, Path path) throws IOException {
-            this.pack = pack;
-            file = FileChannel.open(path, READ);
-        }
-
-        void advance(ObjectStore s, List<String> problems) throws IOException {
-            if (at == file.size()) {
-                entry = null;
-                return;
-            }
-            entry = Format.entry(Format.read(file, at, 96), s.kind());
-            if (entry == null || entry.size() > file.size() - at) {
-                problems.add("Torn header in pack " + pack + " at " + at);
-                entry = null;
-            } else {
-                end = at + entry.size();
-            }
-        }
-
-        public void close() throws IOException {
-            file.close();
+    static void problem(List<String> problems, String message) {
+        if (problems.size() < 99) {
+            problems.add(message);
+        } else if (problems.size() == 99) {
+            problems.add("Additional problems omitted");
         }
     }
 
-    static ScanReport replay(
-            ObjectStore s, StoreIndex index, NavigableMap<Integer, Path> files, Cancellation cancel)
+    private static void advance(
+            ObjectStore s,
+            NativeSqlite db,
+            PackReaders<FileChannel> readers,
+            int pack,
+            long at,
+            List<String> problems,
+            boolean insert)
             throws IOException {
-        List<Walk> walks = new ArrayList<>();
+        Format.Entry entry = null;
+        long end = at;
+        try (var lease = readers.acquire(pack)) {
+            if (lease == null) {
+                throw new java.nio.file.NoSuchFileException(s.packPath(pack).toString());
+            }
+            FileChannel file = lease.handle();
+            if (at != file.size()) {
+                entry = Format.entry(Format.read(file, at, 96), s.kind());
+                if (entry == null || entry.size() > file.size() - at) {
+                    problem(problems, "Torn header in pack " + pack + " at " + at);
+                    entry = null;
+                } else {
+                    end = at + entry.size();
+                }
+            }
+            resources(s, "replay", readers.state().openHandles(), 1);
+        }
+        if (insert) {
+            db.exec(
+                    "INSERT INTO temp.replay_heads VALUES(?,?,?,?,?,?)",
+                    pack,
+                    at,
+                    end,
+                    entry == null ? null : entry.sequence(),
+                    entry == null ? null : entry.header(),
+                    end);
+        } else {
+            db.exec(
+                    "UPDATE temp.replay_heads SET at=?,end=?,seq=?,header=?,valid_end=? WHERE pack=?",
+                    at,
+                    end,
+                    entry == null ? null : entry.sequence(),
+                    entry == null ? null : entry.header(),
+                    end,
+                    pack);
+        }
+    }
+
+    static ScanReport replay(ObjectStore s, StoreIndex index, PackFiles files, Cancellation cancel)
+            throws IOException {
         List<String> problems = new ArrayList<>();
-        PriorityQueue<Walk> queue =
-                new PriorityQueue<>(
-                        Comparator.<Walk>comparingLong(w -> w.entry.sequence())
-                                .thenComparingInt(w -> w.pack));
-        long entries = 0, duplicates = 0, tombstones = 0, corrupt = 0, unverifiable = 0, next = 1;
-        try {
+        long entries = 0,
+                duplicates = 0,
+                tombstones = 0,
+                corrupt = 0,
+                unverifiable = 0,
+                next = 1,
+                packs = 0;
+        try (MaintenanceSpool spool = MaintenanceSpool.replay(index.db);
+                PackReaders<FileChannel> readers =
+                        new PackReaders<>(
+                                s.options.packHandles(),
+                                pack -> FileChannel.open(files.get(pack), READ))) {
+            NativeSqlite metadata = spool.database();
+            // Replay heads are sorted on disk, not retained as one Java object/descriptor per pack.
             for (var item : files.entrySet()) {
                 cancel.check();
-                Walk w = new Walk(item.getKey(), item.getValue());
-                walks.add(w);
-                Format.Pack p = Format.pack(Format.read(w.file, 0, 64), w.pack, s.kind());
-                if (p == null) {
-                    problems.add("Invalid pack header " + w.pack);
-                    w.close();
-                    walks.removeLast();
-                    continue;
+                try (var lease = readers.acquire(item.getKey())) {
+                    if (lease == null) {
+                        throw new java.nio.file.NoSuchFileException(item.getValue().toString());
+                    }
+                    Format.Pack header =
+                            Format.pack(
+                                    Format.read(lease.handle(), 0, 64), item.getKey(), s.kind());
+                    if (header == null) {
+                        problem(problems, "Invalid pack header " + item.getKey());
+                        continue;
+                    }
+                    if (!Arrays.equals(index.id, header.id())) {
+                        throw new StoreException("OBJECT_STORE_FOREIGN_PACK", "Foreign store id");
+                    }
                 }
-                if (!Arrays.equals(index.id, p.id())) {
-                    throw new StoreException("OBJECT_STORE_FOREIGN_PACK", "Foreign store id");
-                }
-                w.advance(s, problems);
-                if (w.entry != null) {
-                    queue.add(w);
-                }
+                packs++;
+                advance(s, index.db, readers, item.getKey(), 64, problems, true);
             }
-            while (!queue.isEmpty()) {
+            while (true) {
                 cancel.check();
-                Walk w = queue.remove();
-                Format.Entry e = w.entry;
+                var heads =
+                        metadata.query(
+                                "SELECT pack,at,end,header FROM temp.replay_heads WHERE header IS NOT NULL ORDER BY seq,pack LIMIT 1");
+                if (heads.isEmpty()) {
+                    break;
+                }
+                Object[] head = heads.getFirst();
+                int pack = Math.toIntExact((long) head[0]);
+                long at = (long) head[1], end = (long) head[2];
+                Format.Entry entry = Format.entry((byte[]) head[3], s.kind());
                 entries++;
-                next = Math.max(next, Math.addExact(e.sequence(), 1));
-                Sound sound = sound(s, w.file, w.at, e, true, cancel);
+                next = Math.max(next, Math.addExact(entry.sequence(), 1));
+                Sound sound;
+                try (var lease = readers.acquire(pack)) {
+                    if (lease == null) {
+                        throw new java.nio.file.NoSuchFileException(s.packPath(pack).toString());
+                    }
+                    resources(s, "replay", readers.state().openHandles(), 1);
+                    sound = sound(s, lease.handle(), at, entry, true, cancel);
+                }
                 if (!sound.valid()) {
                     corrupt++;
-                    if (problems.size() < 100) {
-                        problems.add("Corrupt entry " + w.pack + ":" + w.at);
-                    }
+                    problem(problems, "Corrupt entry " + pack + ":" + at);
                 } else if (!sound.identity()
-                        || e.key().type() == 6 && !e.tombstone() && sound.history() == null) {
+                        || entry.key().type() == 6
+                                && !entry.tombstone()
+                                && sound.history() == null) {
                     unverifiable++;
-                    if (problems.size() < 100) {
-                        problems.add("Unverifiable entry " + w.pack + ":" + w.at);
-                    }
+                    problem(problems, "Unverifiable entry " + pack + ":" + at);
                 } else {
-                    if (e.tombstone()) {
+                    if (entry.tombstone()) {
                         tombstones++;
-                    } else if (index.find(e.key()) != null) {
+                    } else if (index.find(entry.key()) != null) {
                         duplicates++;
                     }
-                    apply(index, w.pack, w.at, e, sound.history());
+                    apply(index, pack, at, entry, sound.history());
                 }
                 s.atMaintenance(MaintenancePoint.REPLAY_ENTRY);
-                w.at = w.end;
-                w.advance(s, problems);
-                if (w.entry != null) {
-                    queue.add(w);
-                }
+                advance(s, index.db, readers, pack, end, problems, false);
             }
-            for (Walk w : walks) {
-                index.pack(w.pack, 1, w.end, liveBytes(index, w.pack, w.file, w.end));
+            int cursor = 0;
+            while (true) {
+                var page =
+                        index.db.query(
+                                "SELECT pack,valid_end FROM temp.replay_heads WHERE pack>? ORDER BY pack LIMIT "
+                                        + MaintenanceSpool.PAGE_ROWS,
+                                cursor);
+                if (page.isEmpty()) {
+                    break;
+                }
+                resources(s, "replay", readers.state().openHandles(), page.size());
+                for (Object[] row : page) {
+                    cancel.check();
+                    int pack = Math.toIntExact((long) row[0]);
+                    long end = (long) row[1];
+                    try (var lease = readers.acquire(pack)) {
+                        if (lease == null) {
+                            throw new java.nio.file.NoSuchFileException(
+                                    s.packPath(pack).toString());
+                        }
+                        index.pack(pack, 1, end, liveBytes(index, pack, lease.handle(), end));
+                    }
+                    cursor = pack;
+                }
             }
             index.next = next;
             index.save();
@@ -287,10 +356,10 @@ final class Maintenance {
                     index.db.scalar(
                             "SELECT count(*) FROM history h LEFT JOIN objects o ON o.k=CAST(x'0500'||h.document AS BLOB) WHERE o.k IS NULL");
             if (dangling > 0) {
-                problems.add("History rows with missing documents: " + dangling);
+                problem(problems, "History rows with missing documents: " + dangling);
             }
             return new ScanReport(
-                    walks.size(),
+                    packs,
                     entries,
                     index.objectCount,
                     duplicates,
@@ -298,10 +367,6 @@ final class Maintenance {
                     corrupt,
                     unverifiable,
                     problems);
-        } finally {
-            for (Walk w : walks) {
-                w.close();
-            }
         }
     }
 
@@ -311,6 +376,7 @@ final class Maintenance {
         preflight(s, files);
         cancel.check();
         s.sessionHashes.clear();
+        MaintenanceSpool.configure(s.database);
         final ScanReport[] result = new ScanReport[1];
         s.database.transaction(
                 true,
@@ -329,7 +395,9 @@ final class Maintenance {
                     true,
                     () -> {
                         s.database.exec(
-                                "CREATE TEMP TABLE saved_reads AS SELECT k,last_read FROM objects WHERE last_read IS NOT NULL");
+                                "CREATE TEMP TABLE saved_reads(k BLOB PRIMARY KEY,last_read INTEGER) WITHOUT ROWID");
+                        s.database.exec(
+                                "INSERT INTO temp.saved_reads SELECT k,last_read FROM objects WHERE last_read IS NOT NULL");
                         s.database.exec("DELETE FROM objects");
                         s.database.exec("DELETE FROM history");
                         s.database.exec("DELETE FROM packs");
@@ -345,7 +413,7 @@ final class Maintenance {
                         s.atMaintenance(MaintenancePoint.SCAN_REPLAYED);
                         cancel.check();
                         s.database.exec(
-                                "UPDATE objects SET last_read=(SELECT last_read FROM saved_reads r WHERE r.k=objects.k)");
+                                "UPDATE objects SET last_read=(SELECT last_read FROM saved_reads r WHERE r.k=objects.k) WHERE k IN (SELECT k FROM saved_reads)");
                         s.database.exec("DROP TABLE saved_reads");
                     });
         } catch (Throwable error) {
@@ -472,145 +540,206 @@ final class Maintenance {
 
     static CompactReport compact(ObjectStore s, double fraction, int maxPacks, Cancellation cancel)
             throws IOException {
+        if (maxPacks == 0) {
+            return new CompactReport(0, 0, 0, 0, 0);
+        }
+        cancel.check();
         int count = 0, attempted = 0;
         long before = 0, after = 0, moved = 0, skipped = 0;
-        var candidates =
-                s.database.query(
-                        "SELECT seq,committed_length,live_bytes FROM packs WHERE state=1 AND committed_length-64-live_bytes>0 ORDER BY committed_length-64-live_bytes DESC");
-        for (Object[] p : candidates) {
-            if (attempted >= maxPacks) {
-                break;
-            }
-            cancel.check();
-            int source = Math.toIntExact((long) p[0]);
-            long length = (long) p[1];
-            if (s.corruptPacks.contains(source)
-                    || length - 64 - (long) p[2] < fraction * (length - 64)) {
-                continue;
-            }
-            attempted++;
-            int target = s.allocatePack();
-            Path targetPath = s.packPath(target);
-            boolean switched = false;
-            Throwable failedCopy = null;
-            List<StoreIndex.Row> rows = new ArrayList<>();
-            long end = 64;
-            s.database.transaction(true, () -> s.index.pack(target, 2, 64, 0));
-            try {
-                s.atMaintenance(MaintenancePoint.COMPACT_TARGET_LISTED);
-                cancel.check();
-                boolean bad = false, corrupt = false;
-                try (FileChannel input = FileChannel.open(s.packPath(source), READ);
-                        FileChannel output = FileChannel.open(targetPath, CREATE_NEW, WRITE)) {
-                    s.io.write(
-                            output,
-                            targetPath,
-                            0,
-                            Format.pack(target, s.index.id, s.now(), s.kind()));
-                    for (long at = 64; at < length; ) {
-                        cancel.check();
-                        Format.Entry e = Format.entry(Format.read(input, at, 96), s.kind());
-                        if (e == null || e.size() > length - at) {
-                            bad = true;
-                            break;
-                        }
-                        StoreIndex.Row row = s.index.find(e.key());
-                        boolean live =
-                                !e.tombstone()
-                                        && row != null
-                                        && row.pack() == source
-                                        && row.offset() == at;
-                        if (e.tombstone() || live) {
-                            if (!copyEntry(s, input, at, e, output, targetPath, end, cancel)) {
-                                bad = corrupt = true;
-                                break;
-                            }
-                            if (live) {
-                                rows.add(
-                                        new StoreIndex.Row(
-                                                e.key(), target, end, e.length(), e.sha()));
-                            }
-                            end += e.size();
-                        }
-                        at += e.size();
-                    }
-                    if (!bad) {
-                        s.io.sync(output, targetPath);
-                        s.io.syncDirectory(s.packs);
-                    }
+        try (MaintenanceSpool candidates = MaintenanceSpool.candidates(s.database)) {
+            long candidateCursor = 0;
+            candidatesLoop:
+            while (true) {
+                var page =
+                        candidates
+                                .database()
+                                .query(
+                                        "SELECT pack,length,live,ordinal FROM temp.compaction_candidates WHERE ordinal>? ORDER BY ordinal LIMIT 1",
+                                        candidateCursor);
+                if (page.isEmpty()) {
+                    break;
                 }
-                if (bad) {
-                    if (corrupt) {
-                        skipped++;
-                        s.corruptPacks.add(source);
+                resources(s, "compaction", 0, page.size());
+                for (Object[] p : page) {
+                    candidateCursor = (long) p[3];
+                    if (attempted >= maxPacks) {
+                        break candidatesLoop;
                     }
-                    continue;
-                }
-                s.atMaintenance(MaintenancePoint.COMPACT_COPIED);
-                s.atMaintenance(MaintenancePoint.COMPACT_BEFORE_SWITCH);
-                cancel.check();
-                long finalEnd = end;
-                s.database.transaction(
-                        true,
-                        () -> {
-                            for (StoreIndex.Row row : rows) {
-                                StoreIndex.Row old = s.index.find(row.key());
-                                s.index.objectDigest ^= old.mix() ^ row.mix();
-                                s.database.exec(
-                                        "UPDATE objects SET pack=?,offset=? WHERE k=?",
-                                        target,
-                                        row.offset(),
-                                        row.key().indexBytes());
-                            }
-                            s.index.pack(target, 1, finalEnd, finalEnd - 64);
-                            s.index.pack(source, 3, length, (long) p[2]);
-                            s.index.save();
-                            s.atMaintenance(MaintenancePoint.COMPACT_SWITCHING);
-                            cancel.check();
-                        });
-                switched = true;
-                s.atMaintenance(MaintenancePoint.COMPACT_SWITCHED);
-                s.packReaders.invalidate(source);
-                s.io.delete(s.packPath(source));
-                // Catch a stale-row acquisition between retirement and unlink.
-                s.packReaders.invalidate(source);
-                s.io.syncDirectory(s.packs);
-                s.atMaintenance(MaintenancePoint.COMPACT_OLD_DELETED);
-                s.database.uncancelled(
-                        () -> s.database.exec("DELETE FROM packs WHERE seq=?", source));
-                s.atMaintenance(MaintenancePoint.COMPACT_SOURCE_UNLISTED);
-            } catch (Throwable error) {
-                failedCopy = error;
-                // Both committed and unknown outcomes need their files intact until reopen resolves
-                // state.
-                if (error instanceof NativeSqlite.TransactionFailure transaction
-                        && transaction.outcome != NativeSqlite.Outcome.ROLLED_BACK) {
-                    switched = true;
-                }
-                throw error;
-            } finally {
-                if (!switched) {
-                    try {
+                    cancel.check();
+                    int source = Math.toIntExact((long) p[0]);
+                    long length = (long) p[1];
+                    if (s.corruptPacks.contains(source)
+                            || length - 64 - (long) p[2] < fraction * (length - 64)) {
+                        continue;
+                    }
+                    attempted++;
+                    int target = s.allocatePack();
+                    Path targetPath = s.packPath(target);
+                    boolean switched = false;
+                    Throwable failedCopy = null;
+                    long movedRows = 0;
+                    long end = 64;
+                    try (MaintenanceSpool moves = MaintenanceSpool.moves(s.database)) {
+                        s.database.transaction(true, () -> s.index.pack(target, 2, 64, 0));
                         try {
-                            s.io.delete(targetPath);
+                            s.atMaintenance(MaintenancePoint.COMPACT_TARGET_LISTED);
+                            cancel.check();
+                            boolean bad = false, corrupt = false;
+                            try (FileChannel input = FileChannel.open(s.packPath(source), READ);
+                                    FileChannel output =
+                                            FileChannel.open(targetPath, CREATE_NEW, WRITE)) {
+                                resources(s, "compaction", 2, 1);
+                                s.io.write(
+                                        output,
+                                        targetPath,
+                                        0,
+                                        Format.pack(target, s.index.id, s.now(), s.kind()));
+                                for (long at = 64; at < length; ) {
+                                    cancel.check();
+                                    Format.Entry e =
+                                            Format.entry(Format.read(input, at, 96), s.kind());
+                                    if (e == null || e.size() > length - at) {
+                                        bad = true;
+                                        break;
+                                    }
+                                    StoreIndex.Row row = s.index.find(e.key());
+                                    boolean live =
+                                            !e.tombstone()
+                                                    && row != null
+                                                    && row.pack() == source
+                                                    && row.offset() == at;
+                                    if (e.tombstone() || live) {
+                                        if (!copyEntry(
+                                                s, input, at, e, output, targetPath, end, cancel)) {
+                                            bad = corrupt = true;
+                                            break;
+                                        }
+                                        if (live) {
+                                            moves.database()
+                                                    .exec(
+                                                            "INSERT INTO temp.compaction_moves(k,offset) VALUES(?,?)",
+                                                            e.key().indexBytes(),
+                                                            end);
+                                            movedRows++;
+                                        }
+                                        end += e.size();
+                                    }
+                                    at += e.size();
+                                }
+                                if (!bad) {
+                                    s.io.sync(output, targetPath);
+                                    s.io.syncDirectory(s.packs);
+                                }
+                            }
+                            if (bad) {
+                                if (corrupt) {
+                                    skipped++;
+                                    s.corruptPacks.add(source);
+                                }
+                                continue;
+                            }
+                            s.atMaintenance(MaintenancePoint.COMPACT_COPIED);
+                            s.atMaintenance(MaintenancePoint.COMPACT_BEFORE_SWITCH);
+                            cancel.check();
+                            long finalEnd = end;
+                            s.database.transaction(
+                                    true,
+                                    () -> {
+                                        byte[] cursor = null;
+                                        while (true) {
+                                            List<Object[]> movedPage =
+                                                    cursor == null
+                                                            ? moves.database()
+                                                                    .query(
+                                                                            "SELECT k,offset FROM temp.compaction_moves ORDER BY k LIMIT "
+                                                                                    + MaintenanceSpool
+                                                                                            .PAGE_ROWS)
+                                                            : moves.database()
+                                                                    .query(
+                                                                            "SELECT k,offset FROM temp.compaction_moves WHERE k>? ORDER BY k LIMIT "
+                                                                                    + MaintenanceSpool
+                                                                                            .PAGE_ROWS,
+                                                                            cursor);
+                                            if (movedPage.isEmpty()) {
+                                                break;
+                                            }
+                                            resources(s, "compaction", 0, movedPage.size());
+                                            for (Object[] movedRow : movedPage) {
+                                                ObjectKey key =
+                                                        ObjectKey.fromIndex((byte[]) movedRow[0]);
+                                                StoreIndex.Row old = s.index.find(key);
+                                                StoreIndex.Row row =
+                                                        new StoreIndex.Row(
+                                                                key,
+                                                                target,
+                                                                (long) movedRow[1],
+                                                                old.length(),
+                                                                old.sha());
+                                                s.index.objectDigest ^= old.mix() ^ row.mix();
+                                                s.database.exec(
+                                                        "UPDATE objects SET pack=?,offset=? WHERE k=?",
+                                                        target,
+                                                        row.offset(),
+                                                        row.key().indexBytes());
+                                                cursor = key.indexBytes();
+                                            }
+                                        }
+                                        s.index.pack(target, 1, finalEnd, finalEnd - 64);
+                                        s.index.pack(source, 3, length, (long) p[2]);
+                                        s.index.save();
+                                        s.atMaintenance(MaintenancePoint.COMPACT_SWITCHING);
+                                        cancel.check();
+                                    });
+                            switched = true;
+                            s.atMaintenance(MaintenancePoint.COMPACT_SWITCHED);
+                            s.packReaders.invalidate(source);
+                            s.io.delete(s.packPath(source));
+                            // Catch a stale-row acquisition between retirement and unlink.
+                            s.packReaders.invalidate(source);
+                            s.io.syncDirectory(s.packs);
+                            s.atMaintenance(MaintenancePoint.COMPACT_OLD_DELETED);
                             s.database.uncancelled(
-                                    () -> s.database.exec("DELETE FROM packs WHERE seq=?", target));
-                        } catch (Throwable cleanup) {
-                            if (failedCopy != null) {
-                                failedCopy.addSuppressed(cleanup);
-                            } else {
-                                throw cleanup;
+                                    () -> s.database.exec("DELETE FROM packs WHERE seq=?", source));
+                            s.atMaintenance(MaintenancePoint.COMPACT_SOURCE_UNLISTED);
+                        } catch (Throwable error) {
+                            failedCopy = error;
+                            // Both committed and unknown outcomes need their files intact until
+                            // reopen resolves
+                            // state.
+                            if (error instanceof NativeSqlite.TransactionFailure transaction
+                                    && transaction.outcome != NativeSqlite.Outcome.ROLLED_BACK) {
+                                switched = true;
+                            }
+                            throw error;
+                        } finally {
+                            if (!switched) {
+                                try {
+                                    try {
+                                        s.io.delete(targetPath);
+                                        s.database.uncancelled(
+                                                () ->
+                                                        s.database.exec(
+                                                                "DELETE FROM packs WHERE seq=?",
+                                                                target));
+                                    } catch (Throwable cleanup) {
+                                        if (failedCopy != null) {
+                                            failedCopy.addSuppressed(cleanup);
+                                        } else {
+                                            throw cleanup;
+                                        }
+                                    }
+                                } finally {
+                                    s.reloadIndex(failedCopy);
+                                }
                             }
                         }
-                    } finally {
-                        s.reloadIndex(failedCopy);
+                        count++;
+                        before += length;
+                        after += end;
+                        moved += movedRows;
                     }
                 }
             }
-            count++;
-            before += length;
-            after += end;
-            moved += rows.size();
         }
         return new CompactReport(count, before, after, moved, skipped);
     }

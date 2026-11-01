@@ -135,7 +135,7 @@ final class StoreIndex {
     }
 
     boolean validate(byte[] packId, boolean full, Cancellation cancellation) {
-        try {
+        try (PackRows.Snapshot snapshot = new PackRows.Snapshot(db)) {
             for (var item : COLUMNS.entrySet()) {
                 StringJoiner actual = new StringJoiner(",");
                 for (Object[] col : db.query("PRAGMA table_info(" + item.getKey() + ")")) {
@@ -145,7 +145,7 @@ final class StoreIndex {
                     return false;
                 }
             }
-            List<Object[]> stores = db.query("SELECT * FROM store");
+            List<Object[]> stores = db.query("SELECT * FROM store LIMIT 2");
             if (stores.size() != 1) {
                 return false;
             }
@@ -169,7 +169,7 @@ final class StoreIndex {
                 return false;
             }
             int active = 0;
-            for (Object[] p : db.query("SELECT * FROM packs")) {
+            for (Object[] p : snapshot.rows("*")) {
                 for (Object value : p) {
                     if (!(value instanceof Long)) {
                         return false;
@@ -177,6 +177,7 @@ final class StoreIndex {
                 }
                 long seq = (long) p[0], state = (long) p[1], committed = (long) p[2];
                 if (seq < 1
+                        || seq > PackFiles.MAX_PACK
                         || state < 0
                         || state > 3
                         || committed < 64
@@ -200,7 +201,10 @@ final class StoreIndex {
     }
 
     boolean fullCheck(Cancellation cancellation) {
-        db.exec("BEGIN");
+        boolean ownSnapshot = !db.inTransaction();
+        if (ownSnapshot) {
+            db.exec("BEGIN");
+        }
         try {
             load(); // Pin one snapshot for store totals, integrity check and every page.
             List<Object[]> integrity = db.query("PRAGMA integrity_check");
@@ -255,7 +259,9 @@ final class StoreIndex {
                     && hc == historyCount
                     && hd == historyDigest;
         } finally {
-            db.exec("ROLLBACK");
+            if (ownSnapshot) {
+                db.uncancelled(() -> db.exec("ROLLBACK"));
+            }
         }
     }
 
