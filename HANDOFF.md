@@ -446,3 +446,12 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
   is available. Notify the user before hands-on Windows/macOS work.
 - Linux validation: 361 cases (67 unit, 194 integration, 59 crash, 41 interoperability),
   formatting, Checkstyle, compiler lint and assembly passed with an explicit native override.
+
+## Moving between machines
+
+- docs/continue-macos.md and docs/continue-windows.md contain setup, native checks,
+  agent prompts and return-to-Linux steps. README links both guides.
+- Before leaving a machine, update this file and issues with tested commit, platform,
+  tool versions, results/skips, outstanding branch/PR and exact next step; commit/push.
+- On arrival, inspect local changes, fetch and fast-forward clean main, then read this
+  handoff and issue updates. Never reset local work to synchronize machines.

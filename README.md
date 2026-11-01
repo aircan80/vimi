@@ -5,6 +5,9 @@ component is a layer 1 object-store library; the JavaFX GUI belongs in layer 7.
 
 ## Setup
 
+Switching development machines? Follow the [macOS continuation guide](docs/continue-macos.md)
+or [Windows continuation guide](docs/continue-windows.md), including the return handoff steps.
+
 Install a **full Java 25 JDK** for your machine's architecture and set `JAVA_HOME`
 to its directory. A runtime alone is insufficient. The checked-in Gradle 9.1.0
 wrapper downloads the pinned distribution on first use and verifies its SHA-256.
