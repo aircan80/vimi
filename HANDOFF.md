@@ -234,8 +234,32 @@ The higher-level generated-record store and network clients are separate work.
   cases. Existing failure, cancellation, crash and C# compatibility suites remain green.
 - Validation: 270 cases (40 unit, 131 integration, 59 crash, 40 interop), formatting,
   Checkstyle, compiler lint and assembly on Linux. This completes Asynchronous behavior.
-- CI foundation is proceeding independently in a separate agent/worktree. Hosted runs
-  currently need the GitHub login's workflow scope; no main push has been performed.
+- CI foundation is on branch ci/foundation in a separate worktree; workflow publication
+  authorization is resolved and hosted runs have executed. Main has not been pushed
+  or merged. See the CI foundation/native handoff below.
+
+## CI foundation and native macOS handoff
+
+- Use branch `ci/foundation` for the next machine's work. Fetch origin and switch to
+  that branch (tracking origin/ci/foundation on a fresh clone); main still has the
+  older published baseline. Draft PR #28 contains the full reviewed storage/CI scope.
+- For BOTH author and committer use name `aircan80` and email
+  `329744803+aircan80@users.noreply.github.com` on every commit. Preserve the user's
+  private email. All source, issues, workflow logs and artifacts are public.
+- #9 unit jobs pass on hosted Linux, Windows and macOS. #15 selection is verified by
+  real documentation-only skips and an intentional synthetic failing-unit branch;
+  all required aggregates behave correctly. Synthetic branch changes are never merged.
+- #14 native integration passes on hosted Linux and Windows (131 cases each), but
+  macOS fails in WriterLock.java opening/reopening the writer lock. The native SQLite
+  installation step succeeds. #24 tracks that storage-platform defect; #14 stays open.
+- The user was notified to switch to a native macOS machine before hands-on debugging.
+  Reproduce with a full Java 25 JDK and Homebrew SQLite using the integration task
+  and an explicit `-PsqliteLibrary` path as documented in docs/ci.md. Do not skip tests.
+- #20 Linux crash and C# interoperation jobs pass (59/40 cases). CI supplies an absolute
+  dotnet executable path; the reference is a pinned public sparse checkout with locked
+  Release restore/build. #20 stays open while its #14 dependency is unresolved.
+- Hosted evidence, temporary validation runs, stable check names and future expansion
+  policy are recorded in docs/ci.md. No branch protection or release settings changed.
 
 ## Remaining parity work
 

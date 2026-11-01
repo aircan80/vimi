@@ -78,17 +78,19 @@ Every disk test uses temporary synthetic stores.
 
 Ubuntu 24.04 uses an x64 JDK and the distribution's `libsqlite3-0` package. Windows
 2025 uses an x64 JDK and the official SQLite 3.54.1 x64 DLL archive, verified against
-SQLite's published SHA3-256 before extracting only `sqlite3.dll`. macOS 15 uses a
-JDK matching its hosted runner architecture and Homebrew's SQLite library matching
-that architecture. The native setup helper prints the actual platform, pointer
+SQLite's published SHA3-256 before extracting only `sqlite3.dll`. Hosted macOS 15
+validation runs on ARM64, with an architecture-matched JDK and Homebrew SQLite. The native setup helper prints the actual platform, pointer
 width, SQLite version and selected library path, then passes an absolute path via
 `-PsqliteLibrary`. Missing libraries, unsupported architectures and checksum
 failures stop the job instead of skipping its tests.
 
 The CI library locations are dependencies of hosted test jobs, not an application
 SQLite packaging policy. Native packaging/read-only-media and hands-on platform
-validation remain separate storage stories. These workflows have not yet been
-validated on hosted runners while workflow publication authorization is pending.
+validation remain separate storage stories. Hosted Linux and Windows integration
+jobs pass. Hosted macOS integration reaches the store but fails opening/reopening
+the native writer lock; this production-platform defect is tracked in #24 and
+keeps #14 open. Do not suppress those failures or claim macOS storage validation.
+Before debugging that code, switch to a native macOS development machine.
 
 ## Crash and reference compatibility jobs
 
@@ -105,7 +107,7 @@ root build properties, editor settings and `global.json`. It installs the specif
 .NET SDK 10.0.402 and builds only `VibeMiner.Objects` in Release with locked NuGet
 restore. Java and reference checkouts occupy sibling `vimi/` and `vibeminer/`
 directories, as required by the existing reference harness. The Java invocation is
-:object-store:interopTest` with the absolute `dotnet` executable resolved from
+`:object-store:interopTest` with the absolute `dotnet` executable resolved from
 `command -v dotnet`, plus an explicit SQLite library path. The harness expects an
 absolute executable path; a bare `-Pdotnet=dotnet` is not sufficient.
 Missing reference source, SDK, dependencies or assembly fails rather than skipping.
@@ -126,3 +128,34 @@ For storage changes, the recommended required aggregates are `Unit tests`,
 failed/canceled selection or selected tests; platform-job names are conditional
 and should not be required individually. Branch protection itself is unchanged.
 The workflows publish test reports only, never releases.
+
+
+## Hosted validation evidence
+
+Workflow publication authorization is resolved. Draft [PR #28](https://github.com/aircan80/vimi/pull/28)
+contains the completed storage baseline and CI foundation, without merging main.
+
+- [Unit push run](https://github.com/aircan80/vimi/actions/runs/41341340081) and
+  [unit PR run](https://github.com/aircan80/vimi/actions/runs/41341346777) pass on all
+  three platforms (40 unit cases per platform).
+- [Native integration run](https://github.com/aircan80/vimi/actions/runs/41341133993)
+  passes on Linux and Windows (131 cases each), and reports the macOS writer-lock
+  defect. The aggregate correctly remains red.
+- [Storage compatibility run](https://github.com/aircan80/vimi/actions/runs/41341340057)
+  passes 59 crash and 40 C# interoperation cases on Linux after the absolute-dotnet
+  invocation fix. #20's implementation is validated; its #14 dependency remains open.
+- A temporary documentation-only branch produced successful
+  [unit](https://github.com/aircan80/vimi/actions/runs/41341228034),
+  [integration](https://github.com/aircan80/vimi/actions/runs/41341227994) and
+  [compatibility](https://github.com/aircan80/vimi/actions/runs/41341228020) aggregate
+  checks while expensive jobs were skipped.
+- A separate synthetic unit failure on that temporary branch made all platform
+  jobs and the [unit aggregate](https://github.com/aircan80/vimi/actions/runs/41341376398)
+  fail. Its retained report has 41 cases and exactly one intentional failure.
+  That experiment is not merged; its temporary branch is deleted after validation.
+
+The unit positive/failure and compatibility artifacts were downloaded and inspected;
+the expected XML/HTML reports are present, with synthetic data and no private local
+paths or credential patterns found by the report privacy scan. CI helper tests also
+cover 288 aggregate-status combinations. Branch protection and release publication
+remain unchanged.
