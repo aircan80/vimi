@@ -1,7 +1,7 @@
 # vimi
 
 Java desktop port of VibeMiner using its seven-layer architecture. The first
-component is a layer 1 object-store library; the JavaFX GUI belongs in layer 7.
+components cover layer 1 storage/networking and layer 2 object access; the JavaFX GUI belongs in layer 7.
 
 ## Setup
 
@@ -12,8 +12,8 @@ Install a **full Java 25 JDK** for your machine's architecture and set `JAVA_HOM
 to its directory. A runtime alone is insufficient. The checked-in Gradle 9.1.0
 wrapper downloads the pinned distribution on first use and verifies its SHA-256.
 JUnit 5.13.4 test dependencies download from Maven Central; resolved versions are
-recorded in `object-store/gradle.lockfile`. Production Java code has no external
-Java dependencies. Later builds can run with `--offline` after these downloads.
+recorded in `object-store/gradle.lockfile`. The object-store production code has no external Java dependencies; other modules
+lock their HTTP, JSON or compression dependencies. Later builds can run with `--offline` after these downloads.
 
 Disk operations also need native SQLite: `libsqlite3.so.0` on Linux,
 `libsqlite3.dylib` on macOS, or `sqlite3.dll` on Windows. Install it through your
@@ -344,3 +344,9 @@ failures are tested. Real power-cut testing has not been performed. The generate
 [`generated-store/`](generated-store/README.md). Layer 1 network primitives are
 implemented in [`network-clients/`](network-clients/README.md); higher-layer
 coordination is separate work.
+
+## Layer 2 object access
+
+`object-access/` implements cached object retrieval, bounded concurrent batches,
+verified BLTE ranges, observations and commit feeds over layer 1. See
+[its API, tests and throughput qualifications](object-access/README.md).

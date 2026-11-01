@@ -1,6 +1,6 @@
 # Continuous integration
 
-The `Unit tests` workflow runs `:object-store:test :generated-store:test :network-clients:test` on GitHub-hosted
+The `Unit tests` workflow runs `:object-store:test :generated-store:test :network-clients:test :object-access:test` on GitHub-hosted
 `ubuntu-24.04`, `windows-2025` and `macos-15` runners. Each job installs a full
 Temurin Java 25 JDK matching the runner architecture. The fast tasks need neither
 native SQLite nor .NET nor the original C# checkout. Generated record tests use
@@ -11,7 +11,7 @@ enabled; formatting and native integration are separate checks.
 Run the same task locally with:
 
 ```sh
-./gradlew :object-store:test :generated-store:test :network-clients:test --no-daemon --console=plain
+./gradlew :object-store:test :generated-store:test :network-clients:test :object-access:test --no-daemon --console=plain
 ```
 
 Use `gradlew.bat` in a Windows terminal. Hosted jobs use the checked-in Unix
@@ -33,8 +33,8 @@ python3 -m unittest discover -s scripts/ci -p '*_test.py'
 ```
 
 The validation group contains `object-store`, its consumer `generated-store`,
-and the independent `network-clients` component. The historical `object_store` selector output conservatively
-selects all three components. Any code, public-interface, test, fixture,
+the independent `network-clients` component, and their layer 2 `object-access` consumer. The historical `object_store` selector output conservatively
+selects all four components. Any code, public-interface, test, fixture,
 Gradle, dependency, wrapper, configuration, workflow or unknown-path change selects
 all components on all three platforms. Markdown/reStructuredText, root license
 notices and documentation images skip them; executable/build/workflow directories
@@ -48,7 +48,7 @@ When another component is introduced, add its root and consumer relationships to
 the selector before making selection narrower. Public-interface and shared-fixture
 changes must select affected consumers too; shared build/wrapper/workflow changes
 must continue to select all components. The generated-store consumes object-store;
-changes to any component currently run all three.
+changes to any component currently run all four.
 
 Each platform retains JUnit XML and HTML test reports for seven days, including
 failing test reports. Open the run's artifacts named `unit-reports-Linux`,
@@ -77,7 +77,7 @@ move to the appropriate machine.
 
 The independent `Integration tests` workflow uses the same conservative component
 selection and an always-running `Integration tests` aggregate check. Its platform
-jobs run `:object-store:integrationTest :generated-store:check :network-clients:check` separately from the
+jobs run `:object-store:integrationTest :generated-store:check :network-clients:check :object-access:check` separately from the
 fast unit workflow and
 retain independent `integration-reports-*` XML/HTML artifacts for seven days.
 Every disk test uses temporary synthetic stores.

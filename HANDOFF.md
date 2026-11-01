@@ -565,3 +565,13 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
   opening/resolution). Coordinate shared APIs before integration. These are active
   development branches, not completed/parity-certified components. Root owns shared
   Gradle/CI integration and supplied observation/range helpers to layer 2.
+
+## Layer 2 integration
+
+- Network PR #39 merged fast-forward at dfe3ea9 after all hosted checks passed.
+- Layer 2 object-access now implements concurrent cached batches, verified ranges,
+  observation adapters, history/commit feeds and bounded lifecycle/scheduling.
+  Local checks pass: 79 unit + 12 disk cases, formatting, lint and assembly.
+- See object-access/README.md for nullable metadata parity and throughput differences
+  (sequential presence queries and individual durable delivery puts). Native Windows
+  testing remains deferred; hosted Windows checks remain enabled.
