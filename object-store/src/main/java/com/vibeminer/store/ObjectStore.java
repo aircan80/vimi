@@ -448,7 +448,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                             throw writeFailure;
                         }
                         try {
-                            return work.run();
+                            return database.withCancellation(cancellation, work);
                         } catch (StoreIndex.MalformedRow error) {
                             throw new StoreException(
                                     "OBJECT_STORE_INDEX_UNREADABLE",
@@ -474,7 +474,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                     () -> {
                         cancellation.check();
                         try (NativeSqlite db = openReader()) {
-                            return work.run(new StoreIndex(db));
+                            return db.withCancellation(
+                                    cancellation, () -> work.run(new StoreIndex(db)));
                         } catch (NativeSqlite.Failure e) {
                             throw translate(e, "OBJECT_STORE_INDEX_UNREADABLE");
                         }
@@ -536,7 +537,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
 
     void reloadIndex(Throwable primary) {
         try {
-            index.load();
+            database.uncancelled(index::load);
         } catch (Throwable reload) {
             if (primary != null) {
                 primary.addSuppressed(reload);
@@ -903,7 +904,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 try {
                     io.truncate(file, packPath(number), start);
                     io.sync(file, packPath(number));
-                    index.load();
+                    database.uncancelled(index::load);
                 } catch (Throwable cut) {
                     error.addSuppressed(cut);
                     writeFailure = storeFailure(error);

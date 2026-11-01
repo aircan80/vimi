@@ -234,7 +234,13 @@ Reader and opener queues still reject overflow rather than waiting for room.
 Read-day updates, the pack-handle cache, parallel caller verification and the
 session SHA cache are not implemented. Scan's merge holds one open handle per
 pack; compaction retains moved-row metadata per source pack. Cancellation checks
-occur between entries/blocks/pages and do not interrupt an active SQLite statement.
+occur between entries/blocks/pages. Active SQLite execution also checks the request's
+cancellation token through a progress callback every approximately 1,000 VM instructions;
+interruption completes with `CancellationException`. The callback is scoped to the
+statement and removed before its native resources are released. Rollback, commit and
+post-commit cleanup complete independently of cancellation, preserving durable outcomes.
+SQLite lock waits retain the existing five-second busy timeout; the progress callback
+does not run while SQLite is waiting on a lock.
 The memory fake supports CDN/generated reader/writer/history and resumable staging
 contracts without native or file dependencies.
 

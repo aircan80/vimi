@@ -193,14 +193,35 @@ The higher-level generated-record store and network clients are separate work.
 - Next: #17, interrupt active SQLite work safely on cancellation. Group commits
   remain separate in #21. Commits remain local until a push is requested.
 
+## Active SQLite cancellation (#17)
+
+- Reader and writer operation scopes pass explicit tokens to NativeSqlite. A per-statement
+  SQLite progress handler checks cancellation roughly every 1,000 VM instructions.
+  SQLITE_INTERRUPT caused by the token becomes CancellationException.
+- Callbacks run only on the connection's owning thread. They capture no native handle,
+  unregister before their confined arena closes, and never unwind Java exceptions across
+  native frames. Token cancellation never invokes a native API, so late cancellation
+  cannot access a closed connection or interrupt another request.
+- Rollback, COMMIT, synchronous-mode restoration, in-memory index reload and post-commit
+  maintenance cleanup are uncancelable. Existing uncertain-outcome protections remain.
+  Prepared statements finalize even when preparation fails or cancellation interrupts.
+- Nine new disk/native cases cover long queries, explicit and automatic rollback,
+  connection reuse/disposal, callback errors, public put/scan retry, reader isolation,
+  close during cancellation and durable writes with late cancellation.
+- Validation: 244 passing cases (37 unit, 116 integration, 51 crash, 40 interop),
+  formatting, Checkstyle, compiler lint and assembly on Linux. Lock waiting still uses
+  the five-second SQLite busy timeout; progress callbacks do not run during lock waits.
+- Next story: #21 group commits. Native Windows/macOS work has not begun.
+
 ## Remaining parity work
 
 This is not yet full reference parity. See README's Current limits. In particular:
 - Group commits, read-day accounting, pack-handle/session SHA caches and caller-side
   parallel verification remain. Current writes commit individually.
 - Reader/opener queue overflow still fails with a limit error. Writer admission waits
-  asynchronously within explicit request/payload bounds (see below).
-- Cancellation does not interrupt running SQLite statements.
+  asynchronously within explicit request/payload bounds (see above).
+- SQLite progress cancellation covers active VM work; lock waits retain the five-second
+  busy timeout. Rollback/commit and durability cleanup remain uncancelable.
 - Replay holds a file handle per pack; compaction holds moved-row metadata per source.
 - Native-platform/read-only-media validation and optional broader fault-boundary
   expansion remain; process-kill and deterministic I/O failure suites now exist.

@@ -354,7 +354,7 @@ final class Maintenance {
             s.reloadIndex(failedScan);
         }
         s.atMaintenance(MaintenancePoint.SCAN_COMMITTED);
-        s.database.exec("PRAGMA wal_checkpoint(PASSIVE)");
+        s.database.uncancelled(() -> s.database.exec("PRAGMA wal_checkpoint(PASSIVE)"));
         s.atMaintenance(MaintenancePoint.SCAN_CHECKPOINTED);
         return result[0];
     }
@@ -571,7 +571,8 @@ final class Maintenance {
                 s.io.delete(s.packPath(source));
                 s.io.syncDirectory(s.packs);
                 s.atMaintenance(MaintenancePoint.COMPACT_OLD_DELETED);
-                s.database.exec("DELETE FROM packs WHERE seq=?", source);
+                s.database.uncancelled(
+                        () -> s.database.exec("DELETE FROM packs WHERE seq=?", source));
                 s.atMaintenance(MaintenancePoint.COMPACT_SOURCE_UNLISTED);
             } catch (Throwable error) {
                 failedCopy = error;
@@ -587,7 +588,8 @@ final class Maintenance {
                     try {
                         try {
                             s.io.delete(targetPath);
-                            s.database.exec("DELETE FROM packs WHERE seq=?", target);
+                            s.database.uncancelled(
+                                    () -> s.database.exec("DELETE FROM packs WHERE seq=?", target));
                         } catch (Throwable cleanup) {
                             if (failedCopy != null) {
                                 failedCopy.addSuppressed(cleanup);
