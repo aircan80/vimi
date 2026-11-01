@@ -61,6 +61,7 @@ dependencies {
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     integrationTestImplementation testFixtures(project(':builds'))
+    integrationTestImplementation testFixtures(project(':network-clients'))
     interopTestImplementation testFixtures(project(':builds'))
 }
 
