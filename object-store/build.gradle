@@ -1,6 +1,14 @@
+buildscript {
+    configurations.classpath {
+        resolutionStrategy.activateDependencyLocking()
+    }
+}
+
 plugins {
     id 'java-library'
     id 'java-test-fixtures'
+    id 'checkstyle'
+    id 'com.diffplug.spotless' version '8.10.4'
 }
 
 group = 'com.vibeminer'
@@ -23,7 +31,7 @@ java {
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
-    options.compilerArgs += ['-Xlint:unchecked,deprecation', '-Werror']
+    options.compilerArgs += ['-Xlint:all', '-Werror']
 }
 
 sourceSets {
@@ -127,4 +135,21 @@ tasks.register('interopTest', Test) {
 // CI's check includes Java integration tests. Interop is explicitly requested separately.
 tasks.named('check') {
     dependsOn tasks.named('integrationTest')
+}
+
+spotless {
+    java {
+        target 'src/**/*.java'
+        forbidWildcardImports()
+        googleJavaFormat('1.30.0').aosp()
+        removeUnusedImports()
+        trimTrailingWhitespace()
+        endWithNewline()
+    }
+}
+
+checkstyle {
+    toolVersion = '10.26.1'
+    configFile = rootProject.file('config/checkstyle/checkstyle.xml')
+    maxWarnings = 0
 }

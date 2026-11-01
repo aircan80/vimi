@@ -21,6 +21,31 @@ On Windows use `gradlew.bat` wherever the examples below use `./gradlew`.
 To review the code in IntelliJ IDEA, open this repository root as a Gradle project
 and select the Java 25 JDK for both the project and Gradle JVM.
 
+## Java code quality
+
+Java source and every test suite use four-space AOSP formatting through Spotless
+8.10.4 and google-java-format 1.30.0. Imports are explicit and unused imports are
+removed. Control-flow bodies use braces. Checkstyle 10.26.1 enforces braces,
+one statement per line, modifier ordering, filenames and absence of empty statements.
+Compiler checks use `-Xlint:all -Werror`; intentional FFM restricted calls are
+suppressed only in the native adapters, with their native-access requirement documented.
+
+```sh
+./gradlew :object-store:spotlessApply          # format production and test Java
+./gradlew :object-store:spotlessCheck          # check formatting without editing
+./gradlew :object-store:checkstyleMain :object-store:test  # focused style + fast tests
+./gradlew :object-store:check                  # all Java style, unit and disk checks
+```
+
+Formatting/style checks are incremental and included in `check`. The `test` task
+still runs only the fast unit suite. The first build resolves the pinned build
+plugins and quality tools automatically; their plugin/Checkstyle dependency
+versions are recorded in the component's Gradle lockfiles.
+
+In IntelliJ IDEA, use the Spotless Gradle tasks or the google-java-format plugin
+with its AOSP style so editor formatting agrees with the build. Prefer explicit
+imports and braces rather than applying every optional IDE inspection mechanically.
+
 ## Fast development checks
 
 Run the changed component's fast tests by default:

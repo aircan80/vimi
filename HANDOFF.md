@@ -49,7 +49,7 @@ The higher-level generated-record store and network clients are separate work.
 
 ## Validation performed
 
-- Gradle compiled the component with selected lint warnings as errors and built JARs.
+- Gradle compiled the component with compiler lint warnings as errors and built JARs.
 - Unit tests cover the published format example and shared in-memory contracts.
 - Integration tests cover shared disk contracts, reads/ranges, history, cancellation,
   concurrent reads, corruption, staging, durable unindexed tails, truncation and rebuilds.
@@ -155,6 +155,26 @@ The higher-level generated-record store and network clients are separate work.
   Next milestone: Asynchronous behavior (#16 backpressure, #17 SQLite cancellation,
   #21 group commits), following their dependencies. Native platform work requires
   notifying the user before switching to Windows/macOS; development is primarily Linux.
+
+## Java review and cleanup
+
+- Applied pinned Spotless/google-java-format AOSP formatting to production and tests:
+  four spaces, explicit/unused-import cleanup, normal line breaks and control-flow braces.
+- Added Checkstyle rules and `-Xlint:all -Werror` across all Java compilations. Only
+  intentional FFM restricted calls are suppressed in NativeSqlite and WriterLock.
+  Exception types declare serialVersionUID. Plugin/tool versions and dependencies
+  are pinned/locked. Formatting/style checks participate in `check`, not fast `test`.
+- Fixed malformed object-index row parsing so reads/Verify report corruption rather
+  than leaking parsing exceptions; scrub detects and repairs the bad rows. Invalid
+  cursor keys report OBJECT_STORE_INDEX_UNREADABLE. Added eight disk regressions.
+- Key equality/order/hash avoid temporary index-byte arrays; two new unit cases cover
+  unsigned ordering, hash compatibility, equality and ownership across byte boundaries.
+- Hoisted the store-kind query out of the per-entry pack-accounting loop.
+- Validation: 219 passing cases (26 unit, 102 integration, 51 crash, 40 interop), all
+  formatting/style tasks and all compiler lint checks on Linux.
+- Review implementation covers #27 and is committed before asynchronous work begins.
+  Future asynchronous/performance and native-platform work remains tracked; the review
+  does not complete those milestones.
 
 ## Remaining parity work
 
