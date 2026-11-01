@@ -97,6 +97,30 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
         this(reader, writer, history, shared, cdn, observations, Verification.CDN, new Options());
     }
 
+    public CachingObjectSource(
+            ObjectReader reader,
+            ObjectWriter writer,
+            HistoryLog history,
+            ObjectReader shared,
+            CdnClient cdn,
+            List<ObservationSource> observations,
+            ObjectVerifier verifier,
+            Options options,
+            CdnClient interactiveCdn) {
+        this(
+                Objects.requireNonNull(reader),
+                Objects.requireNonNull(writer),
+                Objects.requireNonNull(history),
+                history,
+                shared,
+                Objects.requireNonNull(cdn),
+                observations,
+                verifier,
+                options,
+                false,
+                Objects.requireNonNull(interactiveCdn));
+    }
+
     private CachingObjectSource(
             ObjectReader reader,
             ObjectWriter writer,
@@ -352,6 +376,26 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
         List<CompletableFuture<ObjectResult>> answers = new ArrayList<>();
         java.util.Set<ObjectKey> reported = new java.util.HashSet<>();
         synchronized (claims) {
+            List<CompletableFuture<?>> abandoned = new ArrayList<>();
+            for (ObjectRequest wanted : copy) {
+                Claim old = claims.get(wanted.key());
+                if (old != null && old.answer.isDone()) {
+                    claims.remove(wanted.key(), old);
+                } else if (old != null && old.group.token.isCanceled()) {
+                    abandoned.add(old.answer.handle((value, error) -> null));
+                }
+            }
+            if (!abandoned.isEmpty()) {
+                return waitFor(
+                                CompletableFuture.allOf(
+                                        abandoned.toArray(CompletableFuture[]::new)),
+                                token)
+                        .thenCompose(
+                                ignored ->
+                                        request(
+                                                copy, context, priority, progress, token,
+                                                withBytes));
+            }
             for (ObjectRequest wanted : copy) {
                 Claim claim = claims.get(wanted.key());
                 if (claim == null) {
@@ -415,6 +459,29 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
         }
         return CompletableFuture.allOf(answers.toArray(CompletableFuture[]::new))
                 .thenApply(ignored -> answers.stream().map(CompletableFuture::join).toList());
+    }
+
+    private static <T> CompletableFuture<T> waitFor(
+            CompletableFuture<T> shared, Cancellation token) {
+        CompletableFuture<T> result = new CompletableFuture<>();
+        Cancellation.Registration registration =
+                token.onCancel(
+                        () ->
+                                Thread.startVirtualThread(
+                                        () ->
+                                                result.completeExceptionally(
+                                                        new java.util.concurrent
+                                                                .CancellationException())));
+        shared.whenComplete(
+                (value, error) -> {
+                    registration.close();
+                    if (error == null) {
+                        result.complete(value);
+                    } else {
+                        result.completeExceptionally(unwrap(error));
+                    }
+                });
+        return result;
     }
 
     @Override
@@ -591,7 +658,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                             .join();
             observe(reply);
             return reply.bytes();
-        } catch (CompletionException e) {
+        } catch (RuntimeException e) {
             Throwable failure = unwrap(e);
             if (failure instanceof CdnException cdnFailure) {
                 observe(cdnFailure);
@@ -757,7 +824,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                 drop(request.key(), token);
             }
             return null;
-        } catch (CompletionException e) {
+        } catch (RuntimeException e) {
             Throwable failure = unwrap(e);
             if (failure instanceof StoreException store
                     && store.code().equals("OBJECT_STORE_LIMIT")) {
@@ -784,7 +851,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                     }
                     drop(request.key(), token);
                     return null;
-                } catch (CompletionException refused) {
+                } catch (RuntimeException refused) {
                     Throwable actual = unwrap(refused);
                     if (actual instanceof StoreException limit
                             && limit.code().equals("OBJECT_STORE_LIMIT")) {
@@ -813,7 +880,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                             .filter(r -> r.outcome() == StoreTypes.DeleteOutcome.DELETED)
                             .map(StoreTypes.DeleteResult::key)
                             .toList());
-        } catch (CompletionException e) {
+        } catch (RuntimeException e) {
             if (!(unwrap(e) instanceof StoreException)) {
                 throw e;
             }
@@ -855,7 +922,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                 var result = stage.commit(token.storeToken()).join();
                 publish(List.of(result));
                 return putResult(result, ServedFrom.SHARED_STORE, request.declaredLength(), null);
-            } catch (CompletionException e) {
+            } catch (RuntimeException e) {
                 Throwable error = unwrap(e);
                 if (error instanceof StoreException failure) {
                     if (stage != null && failure.code().equals("OBJECT_STORE_STAGING_REJECTED")) {
@@ -963,7 +1030,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
             group.progress.transferred(reply.length());
             return deliver(
                     request, reply.bytes(), StoreTypes.Origin.CDN, ServedFrom.CDN, group.token);
-        } catch (CompletionException e) {
+        } catch (RuntimeException e) {
             Throwable error = unwrap(e);
             if (error instanceof CdnException cdnFailure) {
                 observe(cdnFailure);
@@ -1038,7 +1105,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                     continue;
                 }
                 return putResult(result, ServedFrom.CDN, request.declaredLength(), null);
-            } catch (CompletionException e) {
+            } catch (RuntimeException e) {
                 Throwable error = unwrap(e);
                 if (error instanceof CdnException cdnFailure) {
                     observe(cdnFailure);
@@ -1189,7 +1256,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                             refused.code());
                 }
             }
-        } catch (CompletionException e) {
+        } catch (RuntimeException e) {
             Throwable error = unwrap(e);
             if (error instanceof com.vibeminer.network.NetworkException network) {
                 for (var member : alive) {
@@ -1259,7 +1326,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                             .join();
             publish(puts);
             return putResult(puts.getFirst(), served, declared, bytes);
-        } catch (CompletionException e) {
+        } catch (RuntimeException e) {
             Throwable error = unwrap(e);
             if (error instanceof StoreException failed) {
                 return failure(
@@ -1357,6 +1424,16 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                             ObjectState.REFUSED;
                     default -> ObjectState.UNAVAILABLE;
                 };
+        String code = "CDN_" + failure.overall();
+        if (failure.overall() == NetworkTypes.Failure.VERIFICATION_FAILED) {
+            for (int i = failure.attempts().size() - 1; i >= 0; i--) {
+                String refusal = failure.attempts().get(i).code();
+                if (refusal != null) {
+                    code = refusal;
+                    break;
+                }
+            }
+        }
         return new ObjectResult(
                 key,
                 state,
@@ -1364,7 +1441,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                 null,
                 null,
                 null,
-                failure.code() == null ? "CDN_" + failure.overall() : failure.code(),
+                code,
                 failure.getMessage(),
                 failure.attempts().getLast().observedAt());
     }
@@ -1422,7 +1499,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                                                 null,
                                                 null,
                                                 null);
-                            } catch (CompletionException e) {
+                            } catch (RuntimeException e) {
                                 Throwable error = unwrap(e);
                                 if (error instanceof CdnException failure) {
                                     ObjectResult mapped = fromCdn(null, failure);
@@ -1501,7 +1578,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                 }
             }
             return new ObservationResult(ObjectState.PRESENT, observation, true, null, null, null);
-        } catch (CompletionException e) {
+        } catch (RuntimeException e) {
             Throwable error = unwrap(e);
             if (error instanceof StoreException failure) {
                 return new ObservationResult(

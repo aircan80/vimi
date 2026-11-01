@@ -135,6 +135,34 @@ public final class MemoryObjectSource implements ObjectSource, StoreCommits {
                         key,
                         bytes,
                         request.declaredLength() == null ? bytes.length : request.declaredLength());
+        if (refusal != null && from == ServedFrom.SHARED_STORE) {
+            if (context == null) {
+                return failure(key, ObjectState.UNAVAILABLE, "OBJECT_ACCESS_NO_CDN_CONTEXT");
+            }
+            bytes = remote.get(key);
+            from = ServedFrom.CDN;
+            origin = StoreTypes.Origin.CDN;
+            transfers++;
+            if (bytes == null) {
+                return new ObjectResult(
+                        key,
+                        ObjectState.NOT_FOUND,
+                        null,
+                        null,
+                        null,
+                        null,
+                        "CDN_NOT_FOUND",
+                        "Missing synthetic object",
+                        Instant.EPOCH);
+            }
+            refusal =
+                    Verification.CDN.check(
+                            key,
+                            bytes,
+                            request.declaredLength() == null
+                                    ? bytes.length
+                                    : request.declaredLength());
+        }
         if (refusal != null) {
             return failure(key, ObjectState.REFUSED, refusal.code());
         }

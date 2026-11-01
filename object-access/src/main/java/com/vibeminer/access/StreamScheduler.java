@@ -171,7 +171,7 @@ public final class StreamScheduler {
             }
             long capacity = options.interactiveInFlightBytes();
             long charge = Math.min(ticket.bytes, capacity);
-            if (interactiveBytes + charge > capacity) {
+            if (charge > capacity - interactiveBytes) {
                 break;
             }
             interactive.removeFirst();
@@ -182,7 +182,7 @@ public final class StreamScheduler {
                 && backgroundActive < backgroundLimit) {
             Ticket<?> ticket = background.peekFirst();
             long charge = Math.min(ticket.bytes, options.inFlightBytes());
-            if (backgroundBytes + charge > options.inFlightBytes()) {
+            if (charge > options.inFlightBytes() - backgroundBytes) {
                 break;
             }
             background.removeFirst();

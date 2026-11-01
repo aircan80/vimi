@@ -53,6 +53,8 @@ dependencies {
     api project(':network-clients')
     testFixturesImplementation testFixtures(project(':object-store'))
     testFixturesImplementation testFixtures(project(':network-clients'))
+    testImplementation testFixtures(project(':object-store'))
+    testImplementation testFixtures(project(':network-clients'))
     testImplementation platform('org.junit:junit-bom:5.13.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
@@ -64,6 +66,11 @@ tasks.withType(Test).configureEach {
     useJUnitPlatform()
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     maxParallelForks = 1
+    def sqliteLibrary = providers.gradleProperty('sqliteLibrary')
+    if (sqliteLibrary.isPresent()) {
+        systemProperty 'vibeminer.sqlite.library', sqliteLibrary.get()
+        inputs.file(sqliteLibrary).withPropertyName('sqliteLibrary')
+    }
     testLogging {
         events 'failed', 'skipped'
         exceptionFormat = 'full'

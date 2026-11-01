@@ -128,6 +128,25 @@ public abstract class ObjectSourceContracts {
     }
 
     @Test
+    void badSharedBytesAreSkippedBeforeTryingTheCdn() {
+        byte[] good = bytes("correct"), bad = bytes("damaged");
+        ObjectKey key = key(good);
+        fixture.shared(key, bad);
+        fixture.remote(key, good);
+        var result =
+                fixture.source
+                        .getKey(
+                                new ObjectRequest(key),
+                                CONTEXT,
+                                FetchPriority.INTERACTIVE,
+                                Cancellation.NONE)
+                        .join();
+        assertEquals(ObjectState.PRESENT, result.state());
+        assertEquals(ServedFrom.CDN, result.servedFrom());
+        assertArrayEquals(good, result.bytes());
+    }
+
+    @Test
     void duplicateBatchRequestsReturnOrderedMetadataWithoutPayloads() {
         byte[] first = bytes("first"), second = bytes("second");
         var a = new ObjectRequest(key(first));
