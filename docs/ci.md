@@ -89,8 +89,8 @@ SQLite packaging policy. Native packaging/read-only-media and hands-on platform
 validation remain separate storage stories. The initial macOS integration failure
 was traced by a native ARM64 investigation to the variadic `open()` binding in
 WriterLock (#24). The binding now marks the third argument as variadic, with
-regressions for permissions, reopening and exclusion. Hosted validation of the
-applied correction is recorded below when available.
+regressions for permissions, reopening and exclusion. Hosted Java 25
+unit and integration validation now passes on all three platforms (see below).
 
 If the faulty binding already created a lock file without owner read/write access,
 correcting the call does not change that existing file's permissions. Stop all
@@ -136,7 +136,6 @@ failed/canceled selection or selected tests; platform-job names are conditional
 and should not be required individually. Branch protection itself is unchanged.
 The workflows publish test reports only, never releases.
 
-
 ## Hosted validation evidence
 
 Workflow publication authorization is resolved. Draft [PR #28](https://github.com/aircan80/vimi/pull/28)
@@ -145,12 +144,13 @@ contains the completed storage baseline and CI foundation, without merging main.
 - [Unit push run](https://github.com/aircan80/vimi/actions/runs/41341340081) and
   [unit PR run](https://github.com/aircan80/vimi/actions/runs/41341346777) pass on all
   three platforms (40 unit cases per platform).
-- [Native integration run](https://github.com/aircan80/vimi/actions/runs/41341133993)
-  passes on Linux and Windows (131 cases each), and reports the macOS writer-lock
-  defect. The aggregate correctly remains red.
-- [Storage compatibility run](https://github.com/aircan80/vimi/actions/runs/41341340057)
-  passes 59 crash and 40 C# interoperation cases on Linux after the absolute-dotnet
-  invocation fix. #20's implementation is validated; its #14 dependency remains open.
+- [Corrected native integration run](https://github.com/aircan80/vimi/actions/runs/41343070437)
+  passes on Linux, Windows and macOS. Linux/macOS run 135 cases; Windows explicitly
+  skips the two POSIX-only lock-metadata checks and runs the remaining cases.
+  The initial macOS writer-lock ABI defect is fixed in b673fb9 with four regressions.
+- [Corrected storage compatibility run](https://github.com/aircan80/vimi/actions/runs/41343070401)
+  passes 59 crash and 40 C# interoperation cases on Linux. Both push and pull-request
+  runs pass. #14 and #20 are complete; the CI foundation milestone is closed.
 - A temporary documentation-only branch produced successful
   [unit](https://github.com/aircan80/vimi/actions/runs/41341228034),
   [integration](https://github.com/aircan80/vimi/actions/runs/41341227994) and

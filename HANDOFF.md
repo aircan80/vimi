@@ -262,13 +262,15 @@ The higher-level generated-record store and network clients are separate work.
   identifiers. Only a sanitized diagnosis and aggregate results are public.
 - Existing malformed lock permissions need manual owner read/write restoration with
   all writers stopped; never delete/replace an existing lock inode. See docs/ci.md.
-- Linux Java 25 validation passes 274 cases (40 unit, 135 integration, 59 crash,
-  40 interop), formatting, Checkstyle, compiler lint and assembly. Hosted
-  three-platform validation of the correction follows.
+- Fix b673fb9 passes Linux Java 25 validation: 274 cases (40 unit, 135 integration,
+  59 crash, 40 interop), formatting, Checkstyle, compiler lint and assembly. Hosted
+  push/PR unit and native integration jobs now pass on all three platforms. Windows
+  skips two POSIX-only metadata checks; generic lock checks run on all platforms.
   Keep #24 open for the rest of native platform validation beyond this one defect.
 - #20 Linux crash and C# interoperation jobs pass (59/40 cases). CI supplies an absolute
   dotnet executable path; the reference is a pinned public sparse checkout with locked
-  Release restore/build. #20 stays open while its #14 dependency is unresolved.
+  Release restore/build. #14 and #20 are closed; CI foundation milestone is complete.
+  PR #28 is ready for review; main and release publishing remain unchanged.
 - Hosted evidence, temporary validation runs, stable check names and future expansion
   policy are recorded in docs/ci.md. No branch protection or release settings changed.
 

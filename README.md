@@ -252,9 +252,10 @@ does not run while SQLite is waiting on a lock.
 The memory fake supports CDN/generated reader/writer/history and resumable staging
 contracts without native or file dependencies.
 
-Linux ARM64 native SQLite and cross-language writer locks have been exercised.
-Windows and macOS need native-platform CI, including read-only media behavior and
-SQLite packaging. Recovery tests simulate durable unindexed tails and torn bytes;
+Native integration passes in hosted CI on Linux, Windows and macOS; unit tests run
+on all three platforms. Linux ARM64/x64 and cross-language writer locks have been
+exercised. Broader native Windows/macOS interoperability, read-only media behavior
+and SQLite packaging remain platform-readiness work. Recovery tests simulate durable unindexed tails and torn bytes;
 append, rebuild and compaction process-kill boundaries and deterministic I/O
 failures are tested. Real power-cut testing has not been performed. No higher layer, generated-record abstraction
 or network client is included.
