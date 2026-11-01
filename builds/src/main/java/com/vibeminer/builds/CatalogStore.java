@@ -44,6 +44,7 @@ final class CatalogStore implements AutoCloseable {
             message TEXT NOT NULL, row INTEGER, PRIMARY KEY(entry, ordinal)) WITHOUT ROWID;
         """;
     private final NativeSqlite db;
+    private boolean failed;
 
     private CatalogStore(NativeSqlite db) {
         this.db = db;
@@ -138,6 +139,11 @@ final class CatalogStore implements AutoCloseable {
 
     private <T> T use(Cancellation token, Supplier<T> work) {
         token.check();
+        if (failed) {
+            throw new CatalogStoreException(
+                    "CATALOG_UNREADABLE",
+                    "Reopen the catalog after an uncertain transaction failure");
+        }
         try {
             return db.withCancellation(token, work::get);
         } catch (java.util.concurrent.CancellationException e) {
@@ -145,6 +151,9 @@ final class CatalogStore implements AutoCloseable {
         } catch (CatalogStoreException e) {
             throw e;
         } catch (Exception e) {
+            if (e instanceof NativeSqlite.TransactionFailure) {
+                failed = true;
+            }
             throw new CatalogStoreException(
                     "CATALOG_UNREADABLE", "The catalog cache cannot be read or updated", e);
         }
