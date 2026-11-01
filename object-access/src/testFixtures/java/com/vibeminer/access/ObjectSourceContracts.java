@@ -177,6 +177,26 @@ public abstract class ObjectSourceContracts {
     }
 
     @Test
+    void progressObserversCannotFailCommittedResults() {
+        byte[] value = bytes("observer");
+        ObjectKey key = key(value);
+        fixture.remote(key, value);
+        var results =
+                fixture.source
+                        .getKeys(
+                                List.of(new ObjectRequest(key)),
+                                CONTEXT,
+                                FetchPriority.BACKGROUND,
+                                event -> {
+                                    throw new AssertionError("observer");
+                                },
+                                Cancellation.NONE)
+                        .join();
+        assertEquals(ObjectState.PRESENT, results.getFirst().state());
+        assertEquals(List.of(true), fixture.source.hasKeys(List.of(key), Cancellation.NONE).join());
+    }
+
+    @Test
     void badKeyBytesAreRefusedWithoutWritingAndOneBadObjectDoesNotFailAnother() {
         byte[] good = bytes("good"), bad = bytes("bad");
         ObjectKey wrong = key(bytes("expected"));

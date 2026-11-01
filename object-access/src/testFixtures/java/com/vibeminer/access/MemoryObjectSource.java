@@ -187,7 +187,11 @@ public final class MemoryObjectSource implements ObjectSource, StoreCommits {
                                 request.key(), ignored -> get(request, context, token));
                     }
                     if (progress != null) {
-                        progress.accept(new ObjectProgress(values.size(), values.size(), 0));
+                        try {
+                            progress.accept(new ObjectProgress(values.size(), values.size(), 0));
+                        } catch (Throwable ignored) {
+                            /* Observers cannot fail durable work. */
+                        }
                     }
                     return requests.stream().map(r -> values.get(r.key()).withoutBytes()).toList();
                 });

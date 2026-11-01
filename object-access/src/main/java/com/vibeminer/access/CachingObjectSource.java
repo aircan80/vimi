@@ -39,7 +39,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -59,9 +58,9 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
     private final StoreCommitFeed commits = new StoreCommitFeed();
     private final StreamScheduler streams;
     private final Map<ObjectKey, Claim> claims = new HashMap<>();
-    private final ConcurrentHashMap<String, java.time.Instant> failedHosts =
-            new ConcurrentHashMap<>();
-    private volatile boolean closed;
+    private final HostRanking hosts;
+    private final AccessLifetime lifetime = new AccessLifetime();
+    private final AtomicInteger pendingGroups = new AtomicInteger();
     private BlteRangeReader ranged;
 
     public CachingObjectSource(
@@ -144,6 +143,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
         this.options = Objects.requireNonNull(options);
         this.localOnly = localOnly;
         streams = new StreamScheduler(options);
+        hosts = new HostRanking(options.clock(), options.hostCooldown());
         for (ObservationSource source : List.copyOf(observations)) {
             for (ObservationKind kind : source.kinds()) {
                 if (observationSources.putIfAbsent(kind, source) != null) {
@@ -198,22 +198,21 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
         final CdnContext context;
         final boolean withBytes;
         final Progress progress;
+        final FetchPriority initialPriority;
+        final AtomicBoolean finished = new AtomicBoolean();
+        volatile BatchPump pump;
         StreamScheduler.Ticket<Void> ticket;
-        final CompletableFuture<StreamScheduler.Ticket<Void>> ticketReady =
-                new CompletableFuture<>();
-
-        FetchPriority priority() {
-            return ticketReady.join().priority();
-        }
 
         Group(
                 CdnContext context,
                 boolean withBytes,
                 Consumer<ObjectProgress> progress,
-                long total) {
+                long total,
+                FetchPriority priority) {
             this.context = context;
             this.withBytes = withBytes;
             this.progress = new Progress(progress, total);
+            this.initialPriority = priority;
         }
 
         void abandoned() {
@@ -223,6 +222,238 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                 }
             }
         }
+
+        void finish(Throwable error) {
+            if (!finished.compareAndSet(false, true)) {
+                return;
+            }
+            for (Claim claim : owned) {
+                if (!claim.answer.isDone()) {
+                    claim.fail(
+                            error != null
+                                    ? error
+                                    : claim.waiters.get() == 0
+                                            ? new java.util.concurrent.CancellationException()
+                                            : new IllegalStateException(
+                                                    "Transfer ended without settling key"));
+                }
+            }
+            pendingGroups.decrementAndGet();
+            lifetime.release();
+        }
+    }
+
+    /** One logical network transfer: one loose object or one merged archive range. */
+    private final class Transfer {
+        final Group parent;
+        final List<Claim> members;
+        final CdnContext context;
+        final Progress progress;
+        final long reservation;
+        final int order;
+        final Cancellation token = new Cancellation();
+        final Consumer<Transfer> action;
+        final AtomicBoolean finished = new AtomicBoolean();
+        final Cancellation.Registration parentCancellation;
+        volatile StreamScheduler.Ticket<Void> ticket;
+
+        Transfer(Group parent, List<Claim> members, long reservation, Consumer<Transfer> action) {
+            this.parent = parent;
+            this.members = List.copyOf(members);
+            this.context = parent.context;
+            this.progress = parent.progress;
+            this.reservation = Math.max(1, reservation);
+            this.order = members.getFirst().request.order();
+            this.action = action;
+            parentCancellation = parent.token.onCancel(token::cancel);
+            for (Claim claim : members) {
+                claim.transfer = this;
+            }
+        }
+
+        FetchPriority priority() {
+            return parent.initialPriority == FetchPriority.INTERACTIVE
+                            || members.stream().anyMatch(c -> c.urgent)
+                    ? FetchPriority.INTERACTIVE
+                    : FetchPriority.BACKGROUND;
+        }
+
+        void promote() {
+            var current = ticket;
+            if (current != null) {
+                current.promote();
+            }
+        }
+
+        void abandoned() {
+            if (members.stream().allMatch(c -> c.waiters.get() == 0)) {
+                token.cancel();
+            }
+        }
+
+        boolean start() {
+            boolean establishedBlock = false;
+            if (finished.get()) {
+                return true;
+            }
+            try {
+                if (members.stream().allMatch(c -> c.waiters.get() == 0)) {
+                    token.cancel();
+                }
+                StreamScheduler.Ticket<Void> submitted =
+                        streams.submit(
+                                priority(),
+                                reservation,
+                                token,
+                                () -> {
+                                    action.accept(this);
+                                    return null;
+                                });
+                ticket = submitted;
+                if (submitted.rejected()) {
+                    Throwable error =
+                            submitted.future().handle((value, failure) -> unwrap(failure)).join();
+                    if (error instanceof IllegalStateException
+                            && "OBJECT_ACCESS_LIMIT".equals(error.getMessage())) {
+                        parent.pump.block();
+                        establishedBlock = true;
+                        streams.whenAvailable(token)
+                                .whenComplete(
+                                        (ignored, failure) ->
+                                                Thread.startVirtualThread(
+                                                        () -> {
+                                                            if (failure != null) {
+                                                                finish(failure);
+                                                                parent.pump.unblock();
+                                                            } else if (start()) {
+                                                                parent.pump.unblock();
+                                                            }
+                                                        }));
+                        return false;
+                    }
+                    finish(error);
+                    return true;
+                }
+                if (priority() == FetchPriority.INTERACTIVE) {
+                    submitted.promote();
+                }
+                submitted.future().whenComplete((ignored, error) -> finish(error));
+                return true;
+            } catch (Throwable error) {
+                finish(error);
+                if (establishedBlock) {
+                    parent.pump.unblock();
+                }
+                return true;
+            }
+        }
+
+        void finish(Throwable error) {
+            if (!finished.compareAndSet(false, true)) {
+                return;
+            }
+            parentCancellation.close();
+            for (Claim claim : members) {
+                if (!claim.answer.isDone()) {
+                    claim.fail(
+                            error != null
+                                    ? error
+                                    : claim.waiters.get() == 0
+                                            ? new java.util.concurrent.CancellationException()
+                                            : new IllegalStateException(
+                                                    "Transfer ended without settling key"));
+                }
+            }
+            parent.pump.done();
+        }
+    }
+
+    /** Nonblocking bounded fan-out: coordinator never occupies a worker while children need it. */
+    private final class BatchPump {
+        final Group parent;
+        final List<Transfer> work;
+        final int window;
+        final Object gate = new Object();
+        final AtomicBoolean draining = new AtomicBoolean();
+        int next, active, done, activeOrder;
+        boolean blocked;
+
+        BatchPump(Group parent, List<Transfer> work) {
+            this.parent = parent;
+            this.work = List.copyOf(work);
+            this.window = Math.max(1, options.maxBackground() + options.interactive());
+        }
+
+        void block() {
+            synchronized (gate) {
+                blocked = true;
+            }
+        }
+
+        void unblock() {
+            synchronized (gate) {
+                blocked = false;
+            }
+            drain();
+        }
+
+        void done() {
+            boolean all;
+            synchronized (gate) {
+                active--;
+                done++;
+                all = done == work.size();
+            }
+            if (all) {
+                parent.finish(null);
+            } else {
+                drain();
+            }
+        }
+
+        boolean ready() {
+            synchronized (gate) {
+                return !blocked
+                        && active < window
+                        && next < work.size()
+                        && (active == 0 || work.get(next).order == activeOrder);
+            }
+        }
+
+        void drain() {
+            if (work.isEmpty()) {
+                parent.finish(null);
+                return;
+            }
+            if (!draining.compareAndSet(false, true)) {
+                return;
+            }
+            do {
+                try {
+                    while (true) {
+                        Transfer transfer;
+                        synchronized (gate) {
+                            if (blocked
+                                    || active >= window
+                                    || next == work.size()
+                                    || active > 0 && work.get(next).order != activeOrder) {
+                                break;
+                            }
+                            transfer = work.get(next++);
+                            if (active == 0) {
+                                activeOrder = transfer.order;
+                            }
+                            active++;
+                        }
+                        if (!transfer.start()) {
+                            break;
+                        }
+                    }
+                } finally {
+                    draining.set(false);
+                }
+            } while (ready() && draining.compareAndSet(false, true));
+        }
     }
 
     private final class Claim {
@@ -230,7 +461,8 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
         final Group group;
         final CompletableFuture<ObjectResult> answer = new CompletableFuture<>();
         final AtomicInteger waiters = new AtomicInteger();
-        volatile boolean wantBytes;
+        volatile boolean wantBytes, urgent;
+        volatile Transfer transfer;
 
         Claim(ObjectRequest request, Group group) {
             this.request = request;
@@ -244,8 +476,14 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                 wantBytes = true;
             }
             waiters.incrementAndGet();
-            if (priority == FetchPriority.INTERACTIVE && group.ticket != null) {
-                group.ticket.promote();
+            if (priority == FetchPriority.INTERACTIVE) {
+                urgent = true;
+                Transfer operation = transfer;
+                if (operation != null) {
+                    operation.promote();
+                } else if (group.ticket != null) {
+                    group.ticket.promote();
+                }
             }
             CompletableFuture<ObjectResult> result = new CompletableFuture<>();
             AtomicBoolean left = new AtomicBoolean();
@@ -255,6 +493,10 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                         if (left.compareAndSet(false, true)
                                 && waiters.decrementAndGet() == 0
                                 && !answer.isDone()) {
+                            Transfer operation = transfer;
+                            if (operation != null) {
+                                operation.abandoned();
+                            }
                             group.abandoned();
                         }
                     };
@@ -289,8 +531,8 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
         }
 
         void complete(ObjectResult result) {
-            answer.complete(wantBytes ? result : result.withoutBytes());
             synchronized (claims) {
+                answer.complete(wantBytes ? result : result.withoutBytes());
                 claims.remove(request.key(), this);
             }
         }
@@ -338,7 +580,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                 if (value != null) {
                     try {
                         consumer.accept(value);
-                    } catch (RuntimeException ignored) {
+                    } catch (Throwable ignored) {
                         /* Progress cannot fail durable work. */
                     }
                 }
@@ -360,10 +602,6 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
         Objects.requireNonNull(priority);
         Objects.requireNonNull(token);
         List<ObjectRequest> copy = List.copyOf(requests);
-        if (closed) {
-            return CompletableFuture.failedFuture(
-                    new IllegalStateException("OBJECT_ACCESS_CLOSED"));
-        }
         if (token.isCanceled()) {
             return CompletableFuture.failedFuture(new java.util.concurrent.CancellationException());
         }
@@ -372,7 +610,8 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                         context,
                         withBytes,
                         progress,
-                        copy.stream().map(ObjectRequest::key).distinct().count());
+                        copy.stream().map(ObjectRequest::key).distinct().count(),
+                        priority);
         List<CompletableFuture<ObjectResult>> answers = new ArrayList<>();
         java.util.Set<ObjectKey> reported = new java.util.HashSet<>();
         synchronized (claims) {
@@ -381,7 +620,9 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                 Claim old = claims.get(wanted.key());
                 if (old != null && old.answer.isDone()) {
                     claims.remove(wanted.key(), old);
-                } else if (old != null && old.group.token.isCanceled()) {
+                } else if (old != null
+                        && (old.group.token.isCanceled()
+                                || old.transfer != null && old.transfer.token.isCanceled())) {
                     abandoned.add(old.answer.handle((value, error) -> null));
                 }
             }
@@ -410,6 +651,18 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                 }
             }
             if (!group.owned.isEmpty()) {
+                int groups = pendingGroups.incrementAndGet();
+                if (groups > options.queued() + options.maxBackground() + options.interactive()) {
+                    pendingGroups.decrementAndGet();
+                    for (Claim claim : group.owned) {
+                        claim.fail(new IllegalStateException("OBJECT_ACCESS_LIMIT"));
+                    }
+                    return CompletableFuture.allOf(answers.toArray(CompletableFuture[]::new))
+                            .thenApply(
+                                    ignored ->
+                                            answers.stream().map(CompletableFuture::join).toList());
+                }
+                lifetime.retain();
                 long reservation =
                         group.owned.stream()
                                 .mapToLong(
@@ -437,22 +690,14 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                                     load(group);
                                     return null;
                                 });
-                group.ticketReady.complete(group.ticket);
                 group.ticket
                         .future()
                         .whenComplete(
                                 (ignored, error) -> {
-                                    for (Claim c : group.owned) {
-                                        if (!c.answer.isDone()) {
-                                            c.fail(
-                                                    error != null
-                                                            ? error
-                                                            : c.waiters.get() == 0
-                                                                    ? new java.util.concurrent
-                                                                            .CancellationException()
-                                                                    : new IllegalStateException(
-                                                                            "Transfer ended without settling key"));
-                                        }
+                                    if (error != null) {
+                                        group.finish(error);
+                                    } else if (group.pump == null) {
+                                        group.finish(null);
                                     }
                                 });
             }
@@ -487,6 +732,11 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
     @Override
     public CompletableFuture<ObjectResult> getKey(
             ObjectRequest request, CdnContext context, FetchPriority priority, Cancellation token) {
+        return lifetime.run(() -> getKeyCore(request, context, priority, token));
+    }
+
+    private CompletableFuture<ObjectResult> getKeyCore(
+            ObjectRequest request, CdnContext context, FetchPriority priority, Cancellation token) {
         return request(List.of(request), context, priority, null, token, true)
                 .thenCompose(
                         results -> {
@@ -519,12 +769,31 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
             FetchPriority priority,
             Consumer<ObjectProgress> progress,
             Cancellation token) {
+        return lifetime.run(() -> getKeysCore(requests, context, priority, progress, token));
+    }
+
+    private CompletableFuture<List<ObjectResult>> getKeysCore(
+            List<ObjectRequest> requests,
+            CdnContext context,
+            FetchPriority priority,
+            Consumer<ObjectProgress> progress,
+            Cancellation token) {
         return request(requests, context, priority, progress, token, false)
                 .thenApply(results -> results.stream().map(ObjectResult::withoutBytes).toList());
     }
 
     @Override
     public CompletableFuture<ObjectResult> getRange(
+            ObjectRequest request,
+            long offset,
+            int length,
+            CdnContext context,
+            FetchPriority priority,
+            Cancellation token) {
+        return lifetime.run(() -> getRangeCore(request, offset, length, context, priority, token));
+    }
+
+    private CompletableFuture<ObjectResult> getRangeCore(
             ObjectRequest request,
             long offset,
             int length,
@@ -538,91 +807,118 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
             return CompletableFuture.failedFuture(
                     new IllegalArgumentException("Range past the object's end"));
         }
-        CompletableFuture<StoreTypes.ObjectRead> stored =
-                reader == null
-                        ? CompletableFuture.completedFuture(null)
-                        : reader.readRange(request.key(), offset, length, token.storeToken());
-        return stored.thenCompose(
-                read -> {
-                    if (read != null && read.state() == StoreTypes.ReadState.PRESENT) {
-                        return CompletableFuture.completedFuture(
-                                present(
-                                        request.key(),
-                                        ServedFrom.STORE,
-                                        read.info().origin(),
-                                        read.info().length(),
-                                        read.bytes()));
-                    }
-                    if (context != null && canRange(request) && (shared == null)) {
-                        BlteRangeReader helper;
-                        synchronized (this) {
-                            if (ranged == null) {
-                                ranged =
-                                        new BlteRangeReader(
-                                                (key,
-                                                        start,
-                                                        count,
-                                                        total,
-                                                        check,
-                                                        route,
-                                                        rank,
-                                                        cancel) ->
-                                                        streams.submit(
-                                                                        rank,
-                                                                        count,
-                                                                        cancel,
-                                                                        () ->
-                                                                                fetchRange(
-                                                                                        route, key,
-                                                                                        start,
-                                                                                        count,
-                                                                                        total,
-                                                                                        check, rank,
-                                                                                        cancel))
-                                                                .future(),
-                                                Math.min(
-                                                        options.interactiveInFlightBytes(),
-                                                        options.inMemoryObjectBytes()));
+        return streams.submit(
+                        priority,
+                        1,
+                        token,
+                        () -> {
+                            StoreTypes.ObjectRead read =
+                                    reader == null
+                                            ? null
+                                            : reader.readRange(
+                                                            request.key(),
+                                                            offset,
+                                                            length,
+                                                            token.storeToken())
+                                                    .join();
+                            if (read != null && read.state() == StoreTypes.ReadState.PRESENT) {
+                                return CompletableFuture.completedFuture(
+                                        present(
+                                                request.key(),
+                                                ServedFrom.STORE,
+                                                read.info().origin(),
+                                                read.info().length(),
+                                                read.bytes()));
                             }
-                            helper = ranged;
-                        }
-                        return helper.read(request, offset, length, context, priority, token)
-                                .thenCompose(
-                                        bytes ->
-                                                bytes == null
-                                                        ? wholeRange(
-                                                                request, offset, length, context,
-                                                                priority, token)
-                                                        : CompletableFuture.completedFuture(
-                                                                present(
-                                                                        request.key(),
-                                                                        ServedFrom.CDN,
-                                                                        StoreTypes.Origin.CDN,
-                                                                        request.declaredLength(),
-                                                                        bytes)))
-                                .exceptionallyCompose(
-                                        error -> {
-                                            Throwable cause = unwrap(error);
-                                            if (cause instanceof CdnException failure) {
-                                                return CompletableFuture.completedFuture(
-                                                        fromCdn(request.key(), failure));
-                                            }
-                                            if (cause
-                                                    instanceof
-                                                    com.vibeminer.network.NetworkException
-                                                            network) {
-                                                return CompletableFuture.completedFuture(
-                                                        failure(
-                                                                request.key(),
-                                                                ObjectState.UNAVAILABLE,
-                                                                network.code(),
-                                                                network.getMessage()));
-                                            }
-                                            return CompletableFuture.failedFuture(cause);
-                                        });
-                    }
-                    return wholeRange(request, offset, length, context, priority, token);
-                });
+                            if (read != null && read.state() != StoreTypes.ReadState.ABSENT) {
+                                if (writer == null) {
+                                    return CompletableFuture.completedFuture(
+                                            failure(
+                                                    request.key(),
+                                                    ObjectState.REFUSED,
+                                                    "OBJECT_ACCESS_" + read.state(),
+                                                    read.problem()));
+                                }
+                                drop(request.key(), token);
+                            }
+                            if (context != null
+                                    && canRange(request)
+                                    && (shared == null
+                                            || !shared.has(request.key(), token.storeToken())
+                                                    .join())) {
+                                BlteRangeReader helper;
+                                synchronized (this) {
+                                    if (ranged == null) {
+                                        ranged =
+                                                new BlteRangeReader(
+                                                        (key,
+                                                                start,
+                                                                count,
+                                                                total,
+                                                                check,
+                                                                route,
+                                                                rank,
+                                                                cancel) ->
+                                                                streams.submit(
+                                                                                rank,
+                                                                                count,
+                                                                                cancel,
+                                                                                () ->
+                                                                                        fetchRange(
+                                                                                                route,
+                                                                                                key,
+                                                                                                start,
+                                                                                                count,
+                                                                                                total,
+                                                                                                check,
+                                                                                                rank,
+                                                                                                cancel))
+                                                                        .future(),
+                                                        Math.min(
+                                                                options.interactiveInFlightBytes(),
+                                                                options.inMemoryObjectBytes()));
+                                    }
+                                    helper = ranged;
+                                }
+                                return helper.read(
+                                                request, offset, length, context, priority, token)
+                                        .thenCompose(
+                                                bytes ->
+                                                        bytes == null
+                                                                ? wholeRange(
+                                                                        request, offset, length,
+                                                                        context, priority, token)
+                                                                : CompletableFuture.completedFuture(
+                                                                        present(
+                                                                                request.key(),
+                                                                                ServedFrom.CDN,
+                                                                                StoreTypes.Origin
+                                                                                        .CDN,
+                                                                                request
+                                                                                        .declaredLength(),
+                                                                                bytes)));
+                            }
+                            return wholeRange(request, offset, length, context, priority, token);
+                        })
+                .future()
+                .thenCompose(value -> value)
+                .exceptionallyCompose(
+                        error -> {
+                            Throwable cause = unwrap(error);
+                            if (cause instanceof CdnException failure) {
+                                return CompletableFuture.completedFuture(
+                                        fromCdn(request.key(), failure));
+                            }
+                            if (cause instanceof com.vibeminer.network.NetworkException network) {
+                                return CompletableFuture.completedFuture(
+                                        failure(
+                                                request.key(),
+                                                ObjectState.UNAVAILABLE,
+                                                network.code(),
+                                                network.getMessage()));
+                            }
+                            return CompletableFuture.failedFuture(cause);
+                        });
     }
 
     private boolean canRange(ObjectRequest request) {
@@ -646,7 +942,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
             var reply =
                     client(priority)
                             .fetch(
-                                    order(context.route()),
+                                    order(context.route(), priority),
                                     NetworkTypes.Request.range(
                                             NetworkTypes.ObjectKind.DATA,
                                             new CdnKey(key.bytes()),
@@ -674,7 +970,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
             CdnContext context,
             FetchPriority priority,
             Cancellation token) {
-        return getKey(request, context, priority, token)
+        return getKeyCore(request, context, priority, token)
                 .thenCompose(
                         result -> {
                             if (!result.isPresent()) {
@@ -763,40 +1059,67 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
             }
         }
         missing.sort(Comparator.comparingInt(c -> c.request.order()));
+        List<Transfer> work = new ArrayList<>();
         Map<Integer, List<Claim>> groups = new LinkedHashMap<>();
-        for (Claim c : missing) {
-            groups.computeIfAbsent(c.request.order(), ignored -> new ArrayList<>()).add(c);
+        for (Claim claim : missing) {
+            groups.computeIfAbsent(claim.request.order(), ignored -> new ArrayList<>()).add(claim);
         }
         for (List<Claim> ordered : groups.values()) {
             Map<CdnKey, Claim> indexed = new LinkedHashMap<>();
-            List<RangePlanner.ObjectToPlan> planObjects = new ArrayList<>();
-            for (Claim c : ordered) {
-                if (c.request.locations().isEmpty()) {
-                    c.complete(loose(c.request, group));
+            List<RangePlanner.ObjectToPlan> planned = new ArrayList<>();
+            for (Claim claim : ordered) {
+                if (claim.request.locations().isEmpty()) {
+                    long bytes =
+                            claim.request.declaredLength() == null
+                                    ? 4L << 20
+                                    : claim.request.declaredLength() > options.inMemoryObjectBytes()
+                                            ? 1L << 20
+                                            : claim.request.declaredLength();
+                    work.add(
+                            new Transfer(
+                                    group,
+                                    List.of(claim),
+                                    bytes,
+                                    transfer -> {
+                                        if (claim.waiters.get() > 0) {
+                                            claim.complete(loose(claim.request, transfer));
+                                        }
+                                    }));
                 } else {
-                    CdnKey key = new CdnKey(c.request.key().bytes());
-                    indexed.put(key, c);
-                    planObjects.add(
+                    CdnKey key = new CdnKey(claim.request.key().bytes());
+                    indexed.put(key, claim);
+                    planned.add(
                             new RangePlanner.ObjectToPlan(
-                                    key, c.request.declaredLength(), c.request.locations()));
+                                    key,
+                                    claim.request.declaredLength(),
+                                    claim.request.locations()));
                 }
             }
             RangePlanner.Plan plan =
                     RangePlanner.plan(
-                            planObjects, group.context.archives(), new RangePlanner.Options());
+                            planned, group.context.archives(), new RangePlanner.Options());
             for (var rejected : plan.rejected()) {
-                Claim c = indexed.get(rejected.key());
-                c.complete(
+                Claim claim = indexed.get(rejected.key());
+                claim.complete(
                         failure(
-                                c.request.key(),
+                                claim.request.key(),
                                 ObjectState.REFUSED,
                                 rejected.code(),
                                 rejected.message()));
             }
             for (var range : plan.ranges()) {
-                range(range, indexed, group, null, null);
+                List<Claim> members =
+                        range.members().stream().map(member -> indexed.get(member.key())).toList();
+                work.add(
+                        new Transfer(
+                                group,
+                                members,
+                                range.length(),
+                                transfer -> range(range, indexed, transfer, null, null)));
             }
         }
+        group.pump = new BatchPump(group, work);
+        group.pump.drain();
     }
 
     private ObjectResult local(ObjectRequest request, boolean withBytes, Cancellation token) {
@@ -821,6 +1144,13 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                         read.bytes());
             }
             if (read.state() != StoreTypes.ReadState.ABSENT) {
+                if (writer == null) {
+                    return failure(
+                            request.key(),
+                            ObjectState.REFUSED,
+                            "OBJECT_ACCESS_" + read.state(),
+                            read.problem());
+                }
                 drop(request.key(), token);
             }
             return null;
@@ -906,13 +1236,22 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                                 .join();
                 while (stage.length() < stage.declaredLength()) {
                     int count = (int) Math.min(4L << 20, stage.declaredLength() - stage.length());
-                    var read =
-                            shared.readRange(
-                                            request.key(),
-                                            stage.length(),
-                                            count,
-                                            token.storeToken())
-                                    .join();
+                    StoreTypes.ObjectRead read;
+                    try {
+                        read =
+                                shared.readRange(
+                                                request.key(),
+                                                stage.length(),
+                                                count,
+                                                token.storeToken())
+                                        .join();
+                    } catch (RuntimeException failed) {
+                        if (unwrap(failed) instanceof StoreException) {
+                            stage.abandon().join();
+                            return null;
+                        }
+                        throw failed;
+                    }
                     if (read.state() != StoreTypes.ReadState.PRESENT) {
                         stage.abandon().join();
                         return null;
@@ -921,6 +1260,9 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                 }
                 var result = stage.commit(token.storeToken()).join();
                 publish(List.of(result));
+                if (result.outcome() == StoreTypes.PutOutcome.REFUSED) {
+                    return null;
+                }
                 return putResult(result, ServedFrom.SHARED_STORE, request.declaredLength(), null);
             } catch (RuntimeException e) {
                 Throwable error = unwrap(e);
@@ -942,7 +1284,17 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                 }
             }
         }
-        var read = shared.read(request.key(), token.storeToken()).join();
+        StoreTypes.ObjectRead read;
+        try {
+            read = shared.read(request.key(), token.storeToken()).join();
+        } catch (RuntimeException error) {
+            Throwable cause = unwrap(error);
+            if (cause instanceof StoreException limit
+                    && limit.code().equals("OBJECT_STORE_LIMIT")) {
+                return null;
+            }
+            throw error;
+        }
         if (read.state() != StoreTypes.ReadState.PRESENT) {
             return null;
         }
@@ -998,7 +1350,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
         return null;
     }
 
-    private ObjectResult loose(ObjectRequest request, Group group) {
+    private ObjectResult loose(ObjectRequest request, Transfer group) {
         if (request.declaredLength() != null
                 && request.declaredLength() > options.inMemoryObjectBytes()) {
             return large(request, group);
@@ -1008,7 +1360,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
             var reply =
                     client(priority)
                             .fetch(
-                                    order(group.context.route()),
+                                    order(group.context.route(), group.priority()),
                                     NetworkTypes.Request.whole(
                                             kind(request.key()),
                                             new CdnKey(request.key().bytes()),
@@ -1047,7 +1399,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
         }
     }
 
-    private ObjectResult large(ObjectRequest request, Group group) {
+    private ObjectResult large(ObjectRequest request, Transfer group) {
         if (writer == null) {
             return failure(
                     request.key(),
@@ -1057,7 +1409,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
         }
         List<NetworkTypes.Attempt> attempts = new ArrayList<>();
         String refused = null;
-        for (String host : order(group.context.route()).hosts()) {
+        for (String host : order(group.context.route(), group.priority()).hosts()) {
             group.token.check();
             ObjectStaging stage = null;
             try {
@@ -1119,7 +1471,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                 } else if (error instanceof StoreException store) {
                     if (store.code().equals("OBJECT_STORE_STAGING_REJECTED")) {
                         refused = store.getMessage();
-                        failedHosts.put(host, options.clock().instant());
+                        hosts.sentBadBytes(host);
                     } else {
                         return failure(
                                 request.key(),
@@ -1149,7 +1501,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
     private void range(
             RangePlanner.Range range,
             Map<CdnKey, Claim> members,
-            Group group,
+            Transfer group,
             String exclude,
             String previousCode) {
         List<RangePlanner.Member> alive =
@@ -1177,7 +1529,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                                                         m.offsetInRange() - first,
                                                         m.size()))
                                 .toList());
-        CdnRoute route = order(group.context.route());
+        CdnRoute route = order(group.context.route(), group.priority());
         if (exclude != null) {
             List<String> other = route.hosts().stream().filter(h -> !h.equals(exclude)).toList();
             if (other.isEmpty()) {
@@ -1236,7 +1588,7 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
                                     ServedFrom.CDN,
                                     group.token));
                 } else {
-                    failedHosts.put(reply.host(), options.clock().instant());
+                    hosts.sentBadBytes(reply.host());
                     var member =
                             actual.members().stream()
                                     .filter(m -> m.key().equals(part.key()))
@@ -1389,30 +1741,17 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
         return priority == FetchPriority.INTERACTIVE ? interactiveCdn : cdn;
     }
 
-    private CdnRoute order(CdnRoute route) {
-        var now = options.clock().instant();
-        List<String> ordered = new ArrayList<>(route.hosts());
-        ordered.sort(
-                Comparator.comparing(
-                        h -> {
-                            var at = failedHosts.get(h);
-                            return at != null && at.plus(options.hostCooldown()).isAfter(now);
-                        }));
-        return route.withHosts(ordered);
+    private CdnRoute order(CdnRoute route, FetchPriority priority) {
+        return hosts.order(route, priority);
     }
 
     private void observe(NetworkTypes.Reply reply) {
-        for (var attempt : reply.failed()) {
-            failedHosts.put(attempt.host(), options.clock().instant());
-        }
-        failedHosts.remove(reply.host());
+        hosts.observe(reply);
         streams.observe(null);
     }
 
     private void observe(CdnException failure) {
-        for (var attempt : failure.attempts()) {
-            failedHosts.put(attempt.host(), options.clock().instant());
-        }
+        hosts.observe(failure);
         streams.observe(failure.failure());
     }
 
@@ -1466,6 +1805,11 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
 
     @Override
     public CompletableFuture<ObservationResult> observe(
+            ObservationRequest request, Cancellation token) {
+        return lifetime.run(() -> observeCore(request, token));
+    }
+
+    private CompletableFuture<ObservationResult> observeCore(
             ObservationRequest request, Cancellation token) {
         Objects.requireNonNull(request);
         String problem = request.problem();
@@ -1529,6 +1873,11 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
 
     @Override
     public CompletableFuture<ObservationResult> record(
+            Observation observation, Cancellation token) {
+        return lifetime.run(() -> recordCore(observation, token));
+    }
+
+    private CompletableFuture<ObservationResult> recordCore(
             Observation observation, Cancellation token) {
         String problem = ObservationRequest.recordProblem(observation);
         if (problem != null) {
@@ -1595,6 +1944,10 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
 
     @Override
     public CompletableFuture<List<Boolean>> hasKeys(List<ObjectKey> keys, Cancellation token) {
+        return lifetime.run(() -> hasKeysCore(keys, token));
+    }
+
+    private CompletableFuture<List<Boolean>> hasKeysCore(List<ObjectKey> keys, Cancellation token) {
         List<ObjectKey> owned = List.copyOf(keys);
         return streams.submit(
                         FetchPriority.INTERACTIVE,
@@ -1615,12 +1968,21 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
 
     @Override
     public CompletableFuture<Long> countPresent(List<ObjectKey> keys, Cancellation token) {
-        return hasKeys(keys, token)
+        return lifetime.run(() -> countPresentCore(keys, token));
+    }
+
+    private CompletableFuture<Long> countPresentCore(List<ObjectKey> keys, Cancellation token) {
+        return hasKeysCore(keys, token)
                 .thenApply(values -> values.stream().filter(Boolean::booleanValue).count());
     }
 
     @Override
     public CompletableFuture<List<History.Entry>> readHistory(
+            History.Query query, Cancellation token) {
+        return lifetime.run(() -> readHistoryCore(query, token));
+    }
+
+    private CompletableFuture<List<History.Entry>> readHistoryCore(
             History.Query query, Cancellation token) {
         return streams.submit(
                         FetchPriority.INTERACTIVE,
@@ -1637,7 +1999,6 @@ public final class CachingObjectSource implements ObjectSource, StoreCommits {
 
     /** Drains access work only. Composition owns lower stores and network clients. */
     public CompletableFuture<Void> closeAsync() {
-        closed = true;
-        return streams.closeAsync();
+        return lifetime.close(streams::closeAsync);
     }
 }

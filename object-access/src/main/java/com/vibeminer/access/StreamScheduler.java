@@ -24,6 +24,57 @@ public final class StreamScheduler {
     private long backgroundBytes, interactiveBytes;
     private boolean closed;
     private CompletableFuture<Void> closing;
+    private final ArrayList<CapacityWaiter> capacityWaiters = new ArrayList<>();
+
+    private static final class CapacityWaiter {
+        final CompletableFuture<Void> future = new CompletableFuture<>();
+        Cancellation.Registration registration;
+    }
+
+    CompletableFuture<Void> whenAvailable(Cancellation token) {
+        if (token.isCanceled()) {
+            return CompletableFuture.failedFuture(new java.util.concurrent.CancellationException());
+        }
+        CapacityWaiter waiter = new CapacityWaiter();
+        synchronized (gate) {
+            if (closed) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("OBJECT_ACCESS_CLOSED"));
+            }
+            if (interactive.size() + background.size() < options.queued()) {
+                return CompletableFuture.completedFuture(null);
+            }
+            capacityWaiters.add(waiter);
+            waiter.registration =
+                    token.onCancel(
+                            () -> {
+                                synchronized (gate) {
+                                    capacityWaiters.remove(waiter);
+                                }
+                                Thread.startVirtualThread(
+                                        () ->
+                                                waiter.future.completeExceptionally(
+                                                        new java.util.concurrent
+                                                                .CancellationException()));
+                            });
+        }
+        return waiter.future;
+    }
+
+    private void signalCapacity() {
+        if (capacityWaiters.isEmpty()
+                || interactive.size() + background.size() >= options.queued()) {
+            return;
+        }
+        var waiting = List.copyOf(capacityWaiters);
+        capacityWaiters.clear();
+        for (CapacityWaiter waiter : waiting) {
+            if (waiter.registration != null) {
+                waiter.registration.close();
+            }
+            Thread.startVirtualThread(() -> waiter.future.complete(null));
+        }
+    }
 
     public StreamScheduler(Options options) {
         this.options = options;
@@ -77,7 +128,7 @@ public final class StreamScheduler {
         private Supplier<T> work;
         private final CompletableFuture<T> future = new CompletableFuture<>();
         private Cancellation.Registration registration;
-        private boolean running, finished, reserve, byteInteractive;
+        private boolean running, finished, reserve, byteInteractive, rejected;
         private long charged;
 
         private Ticket(
@@ -86,6 +137,12 @@ public final class StreamScheduler {
             this.bytes = bytes;
             this.cancellation = cancellation;
             this.work = work;
+        }
+
+        boolean rejected() {
+            synchronized (gate) {
+                return rejected;
+            }
         }
 
         public CompletableFuture<T> future() {
@@ -124,6 +181,7 @@ public final class StreamScheduler {
         synchronized (gate) {
             if (closed || interactive.size() + background.size() >= options.queued()) {
                 ticket.finished = true;
+                ticket.rejected = true;
                 ticket.work = null;
                 ticket.future.completeExceptionally(
                         new IllegalStateException(
@@ -188,6 +246,7 @@ public final class StreamScheduler {
             background.removeFirst();
             accept(ticket, false, charge, starts);
         }
+        signalCapacity();
         return starts;
     }
 
@@ -284,6 +343,17 @@ public final class StreamScheduler {
                 return closing;
             }
             closed = true;
+            var waiting = List.copyOf(capacityWaiters);
+            capacityWaiters.clear();
+            for (CapacityWaiter waiter : waiting) {
+                if (waiter.registration != null) {
+                    waiter.registration.close();
+                }
+                Thread.startVirtualThread(
+                        () ->
+                                waiter.future.completeExceptionally(
+                                        new IllegalStateException("OBJECT_ACCESS_CLOSED")));
+            }
             closing = new CompletableFuture<>();
             completeClosingIfDrained();
             return closing;

@@ -209,6 +209,25 @@ final class SchedulerAndCancellationTest {
         assertEquals(1, called.get());
     }
 
+    @Test
+    void canceledCapacityWaitIsAnExceptionalFutureRatherThanASynchronousThrow() {
+        StreamScheduler scheduler = new StreamScheduler(options(1, 1, 1, 1, 10));
+        try {
+            Cancellation token = new Cancellation();
+            token.cancel();
+            var waiting = scheduler.whenAvailable(token);
+            assertTrue(
+                    waiting.handle(
+                                    (value, error) ->
+                                            error
+                                                    instanceof
+                                                    java.util.concurrent.CancellationException)
+                            .join());
+        } finally {
+            scheduler.closeAsync().join();
+        }
+    }
+
     private static void cross(CyclicBarrier barrier) {
         try {
             barrier.await(5, TimeUnit.SECONDS);
