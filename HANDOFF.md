@@ -557,14 +557,13 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
   per host/hop instead of hidden reconnects, and five-minute idle pool eviction
   rather than absolute pooled-connection lifetime. Windows native testing remains
   deferred; hosted jobs still test all three platforms.
-- Work branch: `network/layer-one-clients`; hosted validation/integration follows.
+- Network PR #39 merged fast-forward at dfe3ea9 after all hosted workflows passed.
 - User explicitly authorized parallel layer 2/3 agents and automatic ff-only or
   squash integration after checks. Isolated branches/worktrees:
   `parallel/object-access` (layer 2), `parallel/build-catalog` (layer 3 catalog,
   persistence, tracking/jobs), `parallel/build-resolver` (layer 3 format parsers,
-  opening/resolution). Coordinate shared APIs before integration. These are active
-  development branches, not completed/parity-certified components. Root owns shared
-  Gradle/CI integration and supplied observation/range helpers to layer 2.
+  opening/resolution). Coordinate shared APIs before integration. These development branches are now integrated through PRs #42 and #43. Root owns
+  shared Gradle/CI integration and supplied observation/range helpers to layer 2.
 
 ## Layer 2 integration
 
@@ -588,3 +587,19 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
 - Original storage crash and both storage compatibility suites remain green.
   See builds/README.md and builds/RESOLVER.md for resource bounds and performance
   qualifications. Native Windows certification is deferred. Layers 4–7 remain.
+
+## Completed parallel integration
+
+- PR #42 merged fast-forward at a90ae1e; PR #43 merged fast-forward at fb25a13.
+  Issues #40 and #41 are closed. All authors/committers use the requested GitHub
+  noreply address. The preexisting untracked root md file remains untouched.
+- All 709 local cases pass with no failures/errors/skips across five modules,
+  including crash and C# exchange suites. Hosted layer 2 PR checks passed:
+  unit41364172473, integration41364172472, compatibility41364172465.
+- Hosted layer 3 branch checks passed: unit41364218024, integration41364218140,
+  compatibility41364218043. Unit/integration matrices cover Linux, macOS and
+  Windows; crash/reference compatibility run on Linux. Exact tested commits were
+  fast-forwarded without merge commits.
+- Layers 1–3 are implemented within the documented resource/performance bounds.
+  Next implementation scope is layers 4–7. Native Windows testing and platform/
+  release issues remain deferred; large real-data performance is not certified.
