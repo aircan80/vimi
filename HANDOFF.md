@@ -524,4 +524,15 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
 - No reachability collector is introduced: shared segments must not be deleted
   without checking live manifests, matching the reference scope. Network clients
   and layer 2 remain separate work. Native Windows machine testing stays deferred.
-- Work branch: `storage/generated-records`; hosted checks and integration follow.
+- PR #37 passed push and PR workflows: unit and integration on Linux, Windows
+  and macOS, plus Linux crash and both Java/C# compatibility suites. Evidence:
+  https://github.com/aircan80/vimi/actions/runs/41359793753 (unit),
+  https://github.com/aircan80/vimi/actions/runs/41359793759 (integration),
+  https://github.com/aircan80/vimi/actions/runs/41359793826 (compatibility).
+  Fast-forwarded main to `a0963173dfd919da63e60520c38a836adc4624f3` and pushed.
+  The existing untracked `md` file remains untouched.
+- Next component is C# `VibeMiner.Cdn`: routes/keys and pure range planning,
+  bounded whole/streaming HTTP fetches and version-service replies, followed by
+  WoWDBDefs/listfile clients. These layer 1 clients do not choose local vs network;
+  that policy belongs to layer 2 ObjectAccess. Scope against the pinned seven-layer
+  reference, with fakes/shared contracts and deterministic local HTTP fixtures.
