@@ -1,0 +1,103 @@
+buildscript {
+    configurations.classpath {
+        resolutionStrategy.activateDependencyLocking()
+    }
+}
+
+plugins {
+    id 'java-library'
+    id 'java-test-fixtures'
+    id 'checkstyle'
+    id 'com.diffplug.spotless' version '8.10.4'
+}
+
+group = 'com.vibeminer'
+version = '0.1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+dependencyLocking {
+    lockAllConfigurations()
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+    withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs += ['-Xlint:all', '-Werror']
+}
+
+sourceSets {
+    integrationTest {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+}
+
+configurations {
+    integrationTestImplementation.extendsFrom testImplementation
+    integrationTestRuntimeOnly.extendsFrom testRuntimeOnly
+}
+
+dependencies {
+    testFixturesApi platform('org.junit:junit-bom:5.13.4')
+    testFixturesApi 'org.junit.jupiter:junit-jupiter-api'
+    api project(':object-store')
+    api project(':network-clients')
+    testFixturesImplementation testFixtures(project(':object-store'))
+    testFixturesImplementation testFixtures(project(':network-clients'))
+    testImplementation platform('org.junit:junit-bom:5.13.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    integrationTestImplementation testFixtures(project(':object-access'))
+}
+
+// Fast unit and in-memory contract tests are the normal development command.
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    maxParallelForks = 1
+    testLogging {
+        events 'failed', 'skipped'
+        exceptionFormat = 'full'
+    }
+
+}
+
+tasks.register('integrationTest', Test) {
+    description = 'Runs loopback HTTP contracts, streaming, timeouts and cancellation tests.'
+    group = 'verification'
+    testClassesDirs = sourceSets.integrationTest.output.classesDirs
+    classpath = sourceSets.integrationTest.runtimeClasspath
+    shouldRunAfter tasks.named('test')
+}
+
+// CI's check includes Java integration tests. Interop is explicitly requested separately.
+tasks.named('check') {
+    dependsOn tasks.named('integrationTest')
+}
+
+spotless {
+    java {
+        target 'src/**/*.java'
+        forbidWildcardImports()
+        googleJavaFormat('1.30.0').aosp()
+        removeUnusedImports()
+        trimTrailingWhitespace()
+        endWithNewline()
+    }
+}
+
+checkstyle {
+    toolVersion = '10.26.1'
+    configFile = rootProject.file('config/checkstyle/checkstyle.xml')
+    maxWarnings = 0
+}
+
