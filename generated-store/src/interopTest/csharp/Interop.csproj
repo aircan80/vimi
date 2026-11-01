@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>Vimi.Generated.Interop</AssemblyName>
+    <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="VibeMiner.Generated"><HintPath>../../../../../vibeminer/src/backend/VibeMiner.Generated/bin/Release/net10.0/VibeMiner.Generated.dll</HintPath></Reference>
+    <Reference Include="VibeMiner.Objects"><HintPath>../../../../../vibeminer/src/backend/VibeMiner.Objects/bin/Release/net10.0/VibeMiner.Objects.dll</HintPath></Reference>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.13" />
+    <PackageReference Include="ZstdSharp.Port" Version="0.8.6" />
+  </ItemGroup>
+</Project>

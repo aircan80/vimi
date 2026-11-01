@@ -1,0 +1,7 @@
+Generated-store compression uses com.github.luben:zstd-jni:1.5.7-6.
+Upstream: https://github.com/luben/zstd-jni/tree/v1.5.7-6
+The dependency contains architecture-specific native zstd libraries and JNI bindings.
+The generated-store JAR does not shade or copy those binaries; retain the dependency
+JAR and its notices when distributing. License texts are also included here:
+LICENSE-zstd-jni (BSD 2-Clause) and LICENSE-zstd (BSD 3-Clause).
+The vimi project license is GPL-3.0, in the repository LICENSE file.

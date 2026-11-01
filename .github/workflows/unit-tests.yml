@@ -80,8 +80,8 @@ jobs:
             gradle.properties
             gradle/wrapper/gradle-wrapper.properties
           overwrite-settings: false
-      - name: Run object-store unit tests
-        run: ./gradlew :object-store:test --no-daemon --console=plain
+      - name: Run storage component unit tests
+        run: ./gradlew :object-store:test :generated-store:test --no-daemon --console=plain
       - name: Retain unit test reports
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -90,6 +90,8 @@ jobs:
           path: |
             object-store/build/reports/tests/test/
             object-store/build/test-results/test/TEST-*.xml
+            generated-store/build/reports/tests/test/
+            generated-store/build/test-results/test/TEST-*.xml
           if-no-files-found: warn
           retention-days: 7
 

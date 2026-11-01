@@ -493,3 +493,35 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
   generated-record abstraction against `VibeMiner.Generated`, then network clients
   and layer 2 object access. Resume Windows checks with `docs/continue-windows.md`
   when the user chooses; no Windows validation is claimed in the meantime.
+
+## Generated store and record files (#36)
+
+- Added `generated-store/`, a separate layer 1 library porting the pinned C#
+  `VibeMiner.Generated` component. It uses object-store as an implementation
+  dependency; a standalone consumer compile passed with only the generated JAR
+  on its compile classpath. No object-store types leak through the public API.
+- `GeneratedStore`/`DiskGeneratedStore` provide caller-chosen SHA-256-prefix keys,
+  immutable messages, error mapping, batch prevalidation/splitting, stats,
+  compaction and asynchronous close. Default generated packs are 256 MiB.
+- Ported VMRF format 1: checksummed/content-sized zstd blocks, compressed manifest,
+  1024-entry ID chunks, content-addressed segments and manifest-last publication.
+  Added pages, unsigned-ID and ceiling lookup, and asynchronous sequential cursors
+  with bounded coalesced reads. Writers/cursors reject concurrent calls.
+- Record CPU/I/O waits run on a shared bounded worker pool; continuations complete
+  off those workers. Explicit cancellation, owned input arrays, queue overflow,
+  writer failure/close races and queued-cancellation retry are covered.
+- Added memory fake/shared disk contracts and four bidirectional C# exchange/lock
+  cases. Local macOS ARM64: 33 unit, 14 integration and 4 interoperability cases
+  (51 new cases), zero skips/failures/errors. Root check/assemble, formatting,
+  Checkstyle, compiler lint and 13 CI-helper tests passed. Existing object-store
+  unit/integration checks remain green; its implementation was unchanged.
+- Pinned/locked zstd-jni 1.5.7-6 supplies native zstd binaries; upstream BSD notices
+  are included in the generated JAR. SQLite still uses the existing external
+  library strategy. See `generated-store/README.md` for exact commands and bounds.
+- Hosted workflows now check both storage components with the existing conservative
+  selector/aggregate names, including generated-store quality checks and Linux
+  C# exchange. The pinned sparse reference includes VibeMiner.Generated.
+- No reachability collector is introduced: shared segments must not be deleted
+  without checking live manifests, matching the reference scope. Network clients
+  and layer 2 remain separate work. Native Windows machine testing stays deferred.
+- Work branch: `storage/generated-records`; hosted checks and integration follow.

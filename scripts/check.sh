@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-# Fast component tests by default; pass Gradle options such as --tests '*FormatTest'.
-exec ./gradlew :object-store:test "$@"
+# Fast storage suites. Use a direct component task when filtering by class.
+exec ./gradlew :object-store:test :generated-store:test "$@"

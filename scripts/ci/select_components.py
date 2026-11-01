@@ -24,8 +24,9 @@ def documentation_only(path):
 
 
 def select(paths):
-    # Only object-store exists today. Unknown paths deliberately select it as well.
-    # Add component roots and their consumer graph here when the next component exists.
+    # Conservatively select both storage components: generated-store consumes object-store.
+    # The historical object_store output gates the complete storage validation group.
+    # Unknown paths also select both; narrow only with explicit consumer-graph rules.
     return any(not documentation_only(path) for path in paths)
 
 

@@ -1,2 +1,3 @@
 rootProject.name = 'vimi'
 include 'object-store'
+include 'generated-store'

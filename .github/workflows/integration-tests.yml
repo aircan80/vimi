@@ -91,10 +91,10 @@ jobs:
       - name: Locate and diagnose native SQLite
         id: sqlite
         run: python scripts/ci/native_sqlite.py --directory "$RUNNER_TEMP/vimi-sqlite"
-      - name: Run object-store integration tests
+      - name: Run storage component integration tests
         env:
           SQLITE_LIBRARY: ${{ steps.sqlite.outputs.library }}
-        run: ./gradlew :object-store:integrationTest "-PsqliteLibrary=$SQLITE_LIBRARY" --no-daemon --console=plain
+        run: ./gradlew :object-store:integrationTest :generated-store:check "-PsqliteLibrary=$SQLITE_LIBRARY" --no-daemon --console=plain
       - name: Retain integration test reports
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -103,6 +103,8 @@ jobs:
           path: |
             object-store/build/reports/tests/integrationTest/
             object-store/build/test-results/integrationTest/TEST-*.xml
+            generated-store/build/reports/
+            generated-store/build/test-results/
           if-no-files-found: warn
           retention-days: 7
 

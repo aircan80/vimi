@@ -262,6 +262,23 @@ lightweight argument/shape checks stay on the caller. Refusals retain precedence
 cancellation, and per-object result order is preserved. See
 [verification measurements](docs/verification-performance.md) for the opt-in benchmark.
 
+## Generated data (layer 1)
+
+The [`generated-store`](generated-store/README.md) module reuses the pack engine in
+an independent `generated-v1/` store, exposing a separate interface for derived
+bytes. It also ports C# VMRF record files: compressed segments, ordered records,
+paging, ID lookup and sequential reads. It includes a memory fake, shared memory/disk
+contracts and opt-in bidirectional C# compatibility tests. Root `check`/`assemble`
+include both modules; `scripts/check.sh` runs both fast suites.
+
+```sh
+./gradlew :generated-store:test
+./gradlew :generated-store:check :generated-store:assemble
+```
+
+See the module README for usage, bounds, compression provenance and the reference
+build needed for `:generated-store:interopTest`.
+
 ## Current limits
 
 This is a functioning initial port, not full performance/behavior parity. Writes
@@ -304,5 +321,6 @@ maintainer and does not block further component development; hosted Windows chec
 continue. Clean-machine SQLite startup and final release-readiness review remain
 open. Recovery tests simulate durable unindexed tails and torn bytes;
 append, rebuild and compaction process-kill boundaries and deterministic I/O
-failures are tested. Real power-cut testing has not been performed. No higher layer, generated-record abstraction
-or network client is included.
+failures are tested. Real power-cut testing has not been performed. The generated-store wrapper and compressed record files are implemented in
+[`generated-store/`](generated-store/README.md). No higher layer or network client
+is included.
