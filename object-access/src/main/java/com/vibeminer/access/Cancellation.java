@@ -1,7 +1,9 @@
 package com.vibeminer.access;
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Explicit cancellation shared by access-layer scheduling and its lower-layer requests. */
@@ -12,7 +14,8 @@ public final class Cancellation {
     private final com.vibeminer.store.Cancellation store = new com.vibeminer.store.Cancellation();
     private final com.vibeminer.network.Cancellation network =
             new com.vibeminer.network.Cancellation();
-    private final CopyOnWriteArrayList<Runnable> listeners = new CopyOnWriteArrayList<>();
+    private final Object monitor = new Object();
+    private final Map<Object, Runnable> listeners = new HashMap<>();
 
     public Cancellation() {
         this(true);
@@ -23,13 +26,38 @@ public final class Cancellation {
     }
 
     public void cancel() {
-        if (mutable && canceled.compareAndSet(false, true)) {
-            store.cancel();
-            network.cancel();
-            for (Runnable listener : listeners) {
-                listener.run();
-            }
+        if (!mutable || !canceled.compareAndSet(false, true)) {
+            return;
+        }
+        ArrayList<Runnable> notify;
+        synchronized (monitor) {
+            notify = new ArrayList<>(listeners.values());
             listeners.clear();
+        }
+        Throwable first = null;
+        for (Runnable action : java.util.List.<Runnable>of(store::cancel, network::cancel)) {
+            try {
+                action.run();
+            } catch (RuntimeException | Error error) {
+                if (first == null) {
+                    first = error;
+                }
+            }
+        }
+        for (Runnable listener : notify) {
+            try {
+                listener.run();
+            } catch (RuntimeException | Error error) {
+                if (first == null) {
+                    first = error;
+                }
+            }
+        }
+        if (first instanceof RuntimeException error) {
+            throw error;
+        }
+        if (first instanceof Error error) {
+            throw error;
         }
     }
 
@@ -58,13 +86,22 @@ public final class Cancellation {
     }
 
     public Registration onCancel(Runnable listener) {
+        java.util.Objects.requireNonNull(listener);
         if (!mutable) {
             return () -> {};
         }
-        listeners.add(listener);
-        if (isCanceled() && listeners.remove(listener)) {
-            listener.run();
+        Object key = new Object();
+        synchronized (monitor) {
+            if (!canceled.get()) {
+                listeners.put(key, listener);
+                return () -> {
+                    synchronized (monitor) {
+                        listeners.remove(key);
+                    }
+                };
+            }
         }
-        return () -> listeners.remove(listener);
+        listener.run();
+        return () -> {};
     }
 }
