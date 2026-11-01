@@ -32,6 +32,7 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -67,6 +68,10 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     OpenReport openReport;
     final Map<ObjectKey, Staging> stagings = new HashMap<>();
     long stagingBytes;
+    final ReadDays readDays = new ReadDays();
+    ReadDays.Scheduler readDayScheduler = ReadDays::schedule;
+    private ReadDays.Wakeup readDayWakeup;
+    private boolean readDayFlushPending;
     private PendingWrites pending;
     private boolean grouping;
     java.util.function.LongSupplier commitClock = System::nanoTime;
@@ -105,11 +110,90 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         return state != null ? state : index.find(key) != null;
     }
 
+    private void trackRead(ObjectKey key) {
+        if (readOnly) {
+            return;
+        }
+        readDays.offer(key);
+        synchronized (lifecycle) {
+            scheduleReadDays();
+        }
+    }
+
+    // lifecycle guards scheduling only; readers never perform SQLite work or wait for a writer
+    // slot.
+    private void scheduleReadDays() {
+        if (!accepting || writeFailure != null || readDays.isEmpty() || readDayFlushPending) {
+            return;
+        }
+        readDayFlushPending = true;
+        try {
+            readDayWakeup = readDayScheduler.schedule(this::onReadDayTimer, 30, TimeUnit.SECONDS);
+        } catch (RuntimeException error) {
+            // Accounting is best effort. A later read/commit/close can still flush the keys.
+            readDayFlushPending = false;
+        }
+    }
+
+    private void onReadDayTimer() {
+        synchronized (lifecycle) {
+            readDayWakeup = null;
+            if (!accepting || writeFailure != null) {
+                return;
+            }
+            write(() -> null)
+                    .whenComplete(
+                            (ignored, error) -> {
+                                synchronized (lifecycle) {
+                                    readDayFlushPending = false;
+                                    scheduleReadDays();
+                                }
+                            });
+        }
+    }
+
+    private void updateReadDays(List<ObjectKey> keys) {
+        long day = Math.floorDiv(options.clock().instant().getEpochSecond(), 86_400);
+        // Stay below even SQLite builds with a 999-parameter limit; avoid preparing per key.
+        for (int start = 0; start < keys.size(); start += 256) {
+            int count = Math.min(256, keys.size() - start);
+            Object[] parameters = new Object[count + 2];
+            parameters[0] = day;
+            for (int i = 0; i < count; i++) {
+                parameters[i + 1] = keys.get(start + i).indexBytes();
+            }
+            parameters[count + 1] = day;
+            String placeholders = String.join(",", Collections.nCopies(count, "?"));
+            database.exec(
+                    "UPDATE objects SET last_read=? WHERE k IN ("
+                            + placeholders
+                            + ") AND (last_read IS NULL OR last_read<?)",
+                    parameters);
+        }
+    }
+
+    private void flushReadDays() {
+        List<ObjectKey> keys = readDays.drain();
+        if (keys.isEmpty()) {
+            return;
+        }
+        try {
+            database.uncancelled(() -> database.transaction(false, () -> updateReadDays(keys)));
+        } catch (NativeSqlite.TransactionFailure failure) {
+            // An unresolved transaction must not be reused by subsequent data writes.
+            throw stopWriting(failure);
+        } catch (NativeSqlite.Failure failure) {
+            // Confirmed rollback of this best-effort metadata must not fail reads or later writes.
+        }
+    }
+
     private void commitPending() throws IOException {
         PendingWrites batch = pending;
         if (batch == null) {
+            flushReadDays();
             return;
         }
+        List<ObjectKey> readKeys = readDays.drain();
         boolean committed = false;
         try (FileChannel file = FileChannel.open(packPath(batch.pack), READ, WRITE)) {
             io.sync(file, packPath(batch.pack));
@@ -129,6 +213,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                                                     entry.history());
                                         }
                                         index.save();
+                                        updateReadDays(readKeys);
                                         for (var entry : batch.entries) {
                                             atWrite(WritePoint.INDEX_UPDATED, entry.header().key());
                                         }
@@ -842,6 +927,10 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                     && !Arrays.equals(Format.hash("SHA-256", result), entry.sha())) {
                 return bad(ReadState.CORRUPT, "SHA-256 mismatch");
             }
+            // Empty range probes and maintenance verification are not payload reads.
+            if (requested < 0 || length > 0) {
+                trackRead(key);
+            }
             return new ObjectRead(ReadState.PRESENT, info, result, null);
         } catch (NoSuchFileException e) {
             if (retry) {
@@ -1341,6 +1430,10 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 return closing;
             }
             accepting = false;
+            if (readDayWakeup != null) {
+                readDayWakeup.cancel();
+                readDayWakeup = null;
+            }
             writer.shutdown();
             readers.shutdown();
             closing =
@@ -1355,6 +1448,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                                     }
                                     if (database != null && writeFailure == null) {
                                         try {
+                                            flushReadDays();
                                             database.transaction(
                                                     true,
                                                     () -> {
@@ -1389,6 +1483,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     }
 
     private void release() {
+        readDays.clear();
         writer.shutdown();
         readers.shutdown();
         try {

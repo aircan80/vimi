@@ -221,6 +221,15 @@ and dispatch rendering to the JavaFX thread. Always close the store to checkpoin
 its index and release the cross-process writer lock. Read-only access is exposed
 through `ObjectStore.openReadOnly` and a separate interface without write methods.
 
+Successful whole and nonempty range reads on writable stores enqueue best-effort
+read-day notifications without waiting for writer admission or SQLite. Duplicate keys
+coalesce; at most 65,536 distinct keys wait, with excess notifications dropped. The
+writer persists Unix days during group commits, after a 30-second idle wakeup, or
+on close after accepted readers finish. Days never decrease if the clock moves back.
+Has, empty ranges, verification and read-only stores do not update tracking. Scan
+preserves existing days; confirmed metadata-only SQL failures may drop notifications
+without failing reads or stopping safe writes.
+
 ## Current limits
 
 This is a functioning initial port, not full performance/behavior parity. Writes
@@ -239,8 +248,8 @@ Once admitted, each operation applies its existing cancellation semantics (inclu
 per-object `CANCELED` results). Close rejects unaccepted waiters and drains accepted
 writes. Result continuations run outside the disk writer and admission locks.
 Reader and opener queues still reject overflow rather than waiting for room.
-Read-day updates, the pack-handle cache, parallel caller verification and the
-session SHA cache are not implemented. Scan's merge holds one open handle per
+The pack-handle cache, parallel caller verification and the session SHA cache
+are not implemented. Scan's merge holds one open handle per
 pack; compaction retains moved-row metadata per source pack. Cancellation checks
 occur between entries/blocks/pages. Active SQLite execution also checks the request's
 cancellation token through a progress callback every approximately 1,000 VM instructions;

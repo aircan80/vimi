@@ -3,6 +3,36 @@ using System.Text;
 using System.Text.Json;
 using VibeMiner.Objects;
 
+if (args[0] == "read-days") {
+    var directory = Path.GetFullPath(args[1]);
+    var payload = Encoding.ASCII.GetBytes("read-day compatibility");
+    var key = new ObjectKey(ObjectKeyType.Config, MD5.HashData(payload));
+    await using var tracked = await ObjectStore.OpenAsync(directory,
+        new ObjectStoreOptions { Time = new ReadDayClock() });
+    void CheckDay(long expected) {
+        using var connection = new Microsoft.Data.Sqlite.SqliteConnection(
+            new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder {
+                DataSource = Path.Combine(directory, "objects.sqlite3"),
+                Mode = Microsoft.Data.Sqlite.SqliteOpenMode.ReadOnly,
+                Pooling = false
+            }.ToString());
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT last_read FROM objects WHERE k=$key";
+        command.Parameters.AddWithValue("$key", key.ToIndexKey());
+        if (Convert.ToInt64(command.ExecuteScalar()) != expected)
+            throw new Exception("Read-day value differs across runtimes");
+    }
+    CheckDay(20000);
+    await tracked.ScanAsync();
+    CheckDay(20000);
+    var read = await tracked.ReadAsync(key);
+    if (read.State != ReadState.Present || !read.Bytes!.SequenceEqual(payload))
+        throw new Exception("Read-day payload differs");
+    Console.WriteLine("C# preserved Java read days and queued the next fixed day");
+    return;
+}
+
 // The harness assembly uses the original library's existing InternalsVisibleTo test seam.
 if (args[0] is "crash-writer" or "crash-compactor") {
     var requested = Enum.Parse<StorePoint>(args[2]);
@@ -121,4 +151,8 @@ if (args[0] == "exchange") {
     Console.WriteLine("C# read Java data/history, wrote data/history and rebuilt the index");
 } else if (args[0] == "hold") {
     Console.WriteLine("READY"); await Console.In.ReadLineAsync();
+}
+
+sealed class ReadDayClock : TimeProvider {
+    public override DateTimeOffset GetUtcNow() => DateTimeOffset.FromUnixTimeSeconds(20001L * 86400);
 }

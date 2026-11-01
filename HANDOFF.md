@@ -2,6 +2,10 @@
 
 ## Agreed direction
 
+- Use fast-forward-only merges and pulls; do not create merge commits. PR #28 was
+  integrated by fast-forwarding main to 7004cd2 and pushing it. Future feature work
+  uses branches based on that reviewed main baseline.
+
 - vimi (short for VibeMiner) is a Java desktop port of `../vibeminer`.
 - Use its **new seven-layer architecture** only; ignore the legacy C# architecture.
 - JavaFX is the selected GUI toolkit. No CLI application initially.
@@ -274,11 +278,32 @@ The higher-level generated-record store and network clients are separate work.
 - Hosted evidence, temporary validation runs, stable check names and future expansion
   policy are recorded in docs/ci.md. No branch protection or release settings changed.
 
+## Bounded read-day accounting (#7)
+
+- ReadDays strictly caps concurrent admission at 65,536 unique keys, coalesces duplicate
+  reads and drops excess notifications. Read paths do no SQLite work or writer admission.
+- Successful whole/nonempty range reads count; Has, verification, empty ranges and
+  read-only stores do not. Updates use the clock's Unix day at flush and never decrease
+  persisted days. Negative epoch days use floor division.
+- Updates share pending data commits and flush before maintenance, on a single coalesced
+  30-second wakeup, and after accepted readers finish on close. The timer has at most
+  one scheduled/in-flight flush per store, is canceled on close, and retries a saturated
+  writer queue later. Timer scheduling is injectable for deterministic tests.
+- SQL updates use bounded 256-key chunks. Confirmed metadata-only rollback drops that
+  best-effort update without failing reads/close or stopping later writes; unresolved
+  transaction outcomes retain the existing stop-writing protections.
+- Scan preserves days. A fixed-clock C# round trip proves preservation/advancement in
+  both runtimes and that an older Java clock cannot overwrite a newer C# day.
+- Validation: 293 cases (44 unit, 149 integration, 59 crash, 41 interop), formatting,
+  Checkstyle, compiler lint and assembly on Linux. Hosted checks run on the feature PR.
+- Next performance/resource story: #18 pack-handle caching, then #8 session SHA caching,
+  #23 parallel verification and #19 bounded maintenance resources.
+
 ## Remaining parity work
 
 This is not yet full reference parity. See README's Current limits. In particular:
-- Read-day accounting, pack-handle/session SHA caches and caller-side parallel
-  verification remain. Group commits are implemented (see above).
+- Pack-handle/session SHA caches and caller-side parallel verification remain.
+  Group commits and bounded read-day tracking are implemented (see above).
 - Reader/opener queue overflow still fails with a limit error. Writer admission waits
   asynchronously within explicit request/payload bounds (see above).
 - SQLite progress cancellation covers active VM work; lock waits retain the five-second
