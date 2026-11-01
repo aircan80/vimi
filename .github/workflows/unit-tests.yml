@@ -15,8 +15,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Select affected components
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      object_store: ${{ steps.select.outputs.object_store }}
+    steps:
+      - name: Check out source and comparison history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify selection rules
+        run: python3 -m unittest discover -s scripts/ci -p '*_test.py'
+      - name: Select affected components
+        id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: >-
+          python3 scripts/ci/select_components.py
+          --event "$EVENT_NAME" --base "$BASE_SHA" --head "$HEAD_SHA"
+          >> "$GITHUB_OUTPUT"
+
   unit:
     name: Unit / ${{ matrix.platform }}
+    needs: [changes]
+    if: ${{ needs.changes.outputs.object_store == 'true' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     strategy:
@@ -71,9 +98,18 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     if: ${{ always() }}
-    needs: [unit]
+    needs: [changes, unit]
     steps:
-      - name: Require every platform to pass
+      - name: Require selected platforms to pass
         env:
+          SELECTION_RESULT: ${{ needs.changes.result }}
+          OBJECT_STORE: ${{ needs.changes.outputs.object_store }}
           UNIT_RESULT: ${{ needs.unit.result }}
-        run: test "$UNIT_RESULT" = success
+        run: |
+          test "$SELECTION_RESULT" = success
+          if [ "$OBJECT_STORE" = false ]; then
+            test "$UNIT_RESULT" = skipped
+          else
+            test "$OBJECT_STORE" = true
+            test "$UNIT_RESULT" = success
+          fi

@@ -1,0 +1,117 @@
+"""Boundary cases for CI selection, including Git path handling and fallbacks."""
+
+import contextlib
+import io
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import textwrap
+import unittest
+from unittest.mock import patch
+
+import select_components as selection
+
+
+class SelectionTest(unittest.TestCase):
+    def test_documentation_changes_skip_expensive_jobs(self):
+        self.assertFalse(selection.select(["README.md", "HANDOFF.md", "docs/format.md"]))
+        self.assertFalse(selection.select(["object-store/README.md", "docs/example.svg", "LICENSE"]))
+
+    def test_component_and_public_interface_changes_select_component(self):
+        for path in [
+            "object-store/src/main/java/com/vibeminer/store/ObjectWriter.java",
+            "object-store/src/test/java/com/vibeminer/store/FormatTest.java",
+            "object-store/src/testFixtures/java/Contract.java",
+            "object-store/build.gradle",
+            "object-store/gradle.lockfile",
+        ]:
+            with self.subTest(path=path):
+                self.assertTrue(selection.select([path]))
+
+    def test_shared_changes_and_unknown_paths_select_broad_checks(self):
+        for path in [
+            "build.gradle", "settings.gradle", "gradle.properties", "gradlew.bat",
+            "gradle/wrapper/gradle-wrapper.jar", "config/checkstyle/checkstyle.xml",
+            ".github/workflows/unit-tests.yml", "scripts/ci/select_components.py",
+            "future-component/src/Thing.java", "docs/executable-example.java",
+        ]:
+            with self.subTest(path=path):
+                self.assertTrue(selection.select([path]))
+
+    def test_executable_directories_do_not_skip_based_on_markdown_extension(self):
+        self.assertTrue(selection.select([".github/README.md"]))
+        self.assertTrue(selection.select(["scripts/instructions.md"]))
+
+    def test_mixed_documentation_and_code_runs_tests(self):
+        self.assertTrue(selection.select(["README.md", "object-store/build.gradle"]))
+
+    def test_no_changes_skip_tests(self):
+        self.assertFalse(selection.select([]))
+
+    def test_git_paths_preserve_spaces_newlines_and_deletions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            previous = Path.cwd()
+            os.chdir(temporary)
+            try:
+                subprocess.run(["git", "init", "--quiet"], check=True)
+                path = Path("docs/odd name\nfile.md")
+                path.parent.mkdir()
+                path.write_text("first", encoding="utf-8")
+                base = self.commit()
+                path.unlink()
+                Path("code.java").write_text("code", encoding="utf-8")
+                head = self.commit()
+                self.assertEqual({str(path), "code.java"}, set(selection.changed_paths(base, head)))
+                self.assertEqual(["code.java"], selection.changed_paths(selection.ZERO_SHA, head))
+                self.assertTrue(selection.select(selection.changed_paths(base, head)))
+            finally:
+                os.chdir(previous)
+
+    @staticmethod
+    def commit():
+        subprocess.run(["git", "add", "--all"], check=True)
+        subprocess.run([
+            "git", "-c", "user.name=CI Fixture", "-c", "user.email=ci@example.invalid",
+            "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Fixture",
+        ], check=True)
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+
+    def test_missing_base_falls_back_to_running_tests(self):
+        output = io.StringIO()
+        with patch("sys.argv", ["select", "--event", "push", "--base", "missing", "--head", "a" * 40]):
+            with contextlib.redirect_stdout(output):
+                selection.main()
+        self.assertEqual("object_store=true\n", output.getvalue())
+
+    def test_manual_dispatch_always_selects_tests(self):
+        output = io.StringIO()
+        with patch("sys.argv", ["select", "--event", "workflow_dispatch", "--head", "a" * 40]):
+            with contextlib.redirect_stdout(output):
+                selection.main()
+        self.assertEqual("object_store=true\n", output.getvalue())
+
+
+class RequiredGateTest(unittest.TestCase):
+    def test_actual_workflow_gate_accepts_only_success_or_documentation_skip(self):
+        workflow = Path(__file__).resolve().parents[2] / ".github/workflows/unit-tests.yml"
+        gate = textwrap.dedent(workflow.read_text(encoding="utf-8").split(
+            "      - name: Require selected platforms to pass", 1
+        )[1].split("        run: |\n", 1)[1])
+        for selected in ["true", "false", ""]:
+            for selection_status in ["success", "failure", "cancelled", "skipped"]:
+                for unit_status in ["success", "failure", "cancelled", "skipped"]:
+                    expected = selection_status == "success" and (
+                        (selected == "true" and unit_status == "success")
+                        or (selected == "false" and unit_status == "skipped")
+                    )
+                    with self.subTest(selected=selected, selection=selection_status, unit=unit_status):
+                        result = subprocess.run(["bash", "-eo", "pipefail", "-c", gate], env={
+                            **os.environ, "OBJECT_STORE": selected,
+                            "SELECTION_RESULT": selection_status, "UNIT_RESULT": unit_status,
+                        })
+                        self.assertEqual(expected, result.returncode == 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

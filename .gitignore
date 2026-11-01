@@ -42,3 +42,6 @@ replay_pid*
 /artifacts/
 /object-store/src/interopTest/csharp/bin/
 /object-store/src/interopTest/csharp/obj/
+
+# CI helper bytecode
+/scripts/ci/__pycache__/

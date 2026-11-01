@@ -15,12 +15,35 @@ Run the same task locally with:
 Use `gradlew.bat` in a Windows terminal. Hosted jobs use the checked-in Unix
 launcher through the runner's Bash shell, including Git Bash on Windows.
 
-The initial workflow runs on branch pushes and pull requests targeting `main`.
-It also supports manual dispatch once present on the default branch. Each
-platform continues independently if another fails. The aggregate `Unit tests`
-check fails if any platform fails, is canceled or is unexpectedly skipped; this
-is the stable check name to require in branch protection. Required-check settings
-are recommendations until configured separately in the repository.
+The workflow runs on branch pushes and pull requests targeting `main`. It also
+supports manual dispatch once present on the default branch. Each platform
+continues independently if another fails. The aggregate `Unit tests` check always
+runs: it fails if change selection fails or a selected platform fails, is canceled
+or is unexpectedly skipped. Documentation-only changes pass this aggregate with
+the platform jobs deliberately skipped. Require only the stable `Unit tests`
+check in branch protection, rather than the conditional platform job names.
+Required-check settings are recommendations until configured separately.
+
+Selection rules live in `scripts/ci/select_components.py`; verify them with:
+
+```sh
+python3 -m unittest discover -s scripts/ci -p '*_test.py'
+```
+
+Currently only `object-store` exists. Any code, public-interface, test, fixture,
+Gradle, dependency, wrapper, configuration, workflow or unknown-path change selects
+its unit tests on all three platforms. Markdown/reStructuredText, root license
+notices and documentation images skip them; executable/build/workflow directories
+always select tests regardless of file extension. Mixed documentation and code
+changes select tests. Manual dispatch always selects tests; unavailable comparison
+history conservatively selects tests. Renames/deletions are included in comparison.
+The workflow itself has no path filter, so required checks never remain pending
+because GitHub skipped the entire workflow.
+
+When another component is introduced, add its root and consumer relationships to
+the selector before making selection narrower. Public-interface and shared-fixture
+changes must select affected consumers too; shared build/wrapper/workflow changes
+must continue to select all components. There are no other component consumers yet.
 
 Each platform retains JUnit XML and HTML test reports for seven days, including
 failing test reports. Open the run's artifacts named `unit-reports-Linux`,
@@ -39,8 +62,8 @@ lockfiles, wrapper configuration and Gradle properties.
 
 The workflow does not publish artifacts as releases or modify source/branches.
 Native integration, crash recovery and C# compatibility are tracked independently
-in #14 and #20. Affected-component selection and documentation-only skipping are
-tracked in #15; the first unit baseline deliberately checks every branch change.
+in #14 and #20. Three-platform unit jobs and affected-component selection implement
+#9 and #15 respectively.
 GitHub-hosted jobs are permitted on all three platforms. Before hands-on native
 Windows/macOS development or debugging, notify the maintainer so development can
 move to the appropriate machine.
