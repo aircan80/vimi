@@ -51,7 +51,13 @@ public final class Cancellation {
         return network;
     }
 
-    AutoCloseable onCancel(Runnable listener) {
+    @FunctionalInterface
+    public interface Registration extends AutoCloseable {
+        @Override
+        void close();
+    }
+
+    public Registration onCancel(Runnable listener) {
         if (!mutable) {
             return () -> {};
         }
