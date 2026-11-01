@@ -1,0 +1,115 @@
+plugins {
+    id 'java-library'
+    id 'java-test-fixtures'
+}
+
+group = 'com.vibeminer'
+version = '0.1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+dependencyLocking {
+    lockAllConfigurations()
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+    withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs += ['-Xlint:unchecked,deprecation', '-Werror']
+}
+
+sourceSets {
+    integrationTest {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+    interopTest {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+}
+
+configurations {
+    integrationTestImplementation.extendsFrom testImplementation
+    integrationTestRuntimeOnly.extendsFrom testRuntimeOnly
+    interopTestImplementation.extendsFrom testImplementation
+    interopTestRuntimeOnly.extendsFrom testRuntimeOnly
+}
+
+dependencies {
+    testImplementation platform('org.junit:junit-bom:5.13.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    integrationTestImplementation testFixtures(project(':object-store'))
+    interopTestImplementation testFixtures(project(':object-store'))
+}
+
+// Fast unit and in-memory contract tests are the normal development command.
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    maxParallelForks = 1
+    testLogging {
+        events 'failed', 'skipped'
+        exceptionFormat = 'full'
+    }
+    def sqliteLibrary = providers.gradleProperty('sqliteLibrary')
+    if (sqliteLibrary.isPresent()) {
+        systemProperty 'vibeminer.sqlite.library', sqliteLibrary.get()
+        inputs.file(sqliteLibrary).withPropertyName('sqliteLibrary')
+    }
+}
+
+tasks.register('integrationTest', Test) {
+    description = 'Runs disk-store contracts, recovery, corruption and staging tests.'
+    group = 'verification'
+    testClassesDirs = sourceSets.integrationTest.output.classesDirs
+    classpath = sourceSets.integrationTest.runtimeClasspath
+    shouldRunAfter tasks.named('test')
+}
+
+def repoRoot = rootProject.layout.projectDirectory
+def dotnetExecutable = providers.gradleProperty('dotnet').orElse(
+    repoRoot.file('../vibeminer/.local/toolchains/dotnet/dotnet').asFile.absolutePath)
+def csharpDirectory = layout.projectDirectory.dir('src/interopTest/csharp')
+def nugetSource = providers.gradleProperty('nugetSource')
+
+tasks.register('buildCsharpInterop', Exec) {
+    description = 'Builds the C# reference harness; requires the original built assembly and .NET 10.'
+    group = 'verification'
+    workingDir repoRoot
+    environment 'DOTNET_CLI_HOME', repoRoot.dir('.local/dotnet').asFile.absolutePath
+    environment 'DOTNET_CLI_TELEMETRY_OPTOUT', '1'
+    def arguments = [dotnetExecutable.get(), 'build', csharpDirectory.file('Interop.csproj').asFile.absolutePath,
+                     '-p:RestoreLockedMode=true', '-p:NuGetAudit=false', '--nologo']
+    if (nugetSource.isPresent()) arguments += ['--source', nugetSource.get()]
+    commandLine arguments
+}
+
+tasks.register('interopTest', Test) {
+    description = 'Runs Java/C# compatibility and writer-exclusion tests (opt in).'
+    group = 'verification'
+    dependsOn tasks.named('buildCsharpInterop')
+    testClassesDirs = sourceSets.interopTest.output.classesDirs
+    classpath = sourceSets.interopTest.runtimeClasspath
+    systemProperty 'vimi.dotnet', dotnetExecutable.get()
+    systemProperty 'vimi.interop.harness', csharpDirectory.file('bin/Debug/net10.0/Interop.dll').asFile.absolutePath
+    inputs.files(fileTree(csharpDirectory) { include '*.cs', '*.csproj', 'packages.lock.json' })
+    inputs.file(repoRoot.file('../vibeminer/src/backend/VibeMiner.Objects/bin/Release/net10.0/VibeMiner.Objects.dll'))
+    // C# runtime/native dependency changes must also cause compatibility checks to run.
+    inputs.files(fileTree(csharpDirectory.dir('bin/Debug/net10.0')))
+    shouldRunAfter tasks.named('integrationTest')
+}
+
+// CI's check includes Java integration tests. Interop is explicitly requested separately.
+tasks.named('check') {
+    dependsOn tasks.named('integrationTest')
+}

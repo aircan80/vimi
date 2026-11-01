@@ -1,0 +1,11 @@
+plugins {
+    id 'base'
+}
+
+// Root lifecycle tasks intentionally aggregate only the components that exist.
+tasks.named('check') {
+    dependsOn ':object-store:check'
+}
+tasks.named('assemble') {
+    dependsOn ':object-store:assemble'
+}

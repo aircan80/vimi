@@ -1,0 +1,148 @@
+# vimi
+
+Java desktop port of VibeMiner using its seven-layer architecture. The first
+component is a layer 1 object-store library; the JavaFX GUI belongs in layer 7.
+
+## Setup
+
+Install a **full Java 25 JDK** for your machine's architecture and set `JAVA_HOME`
+to its directory. A runtime alone is insufficient. The checked-in Gradle 9.1.0
+wrapper downloads the pinned distribution on first use and verifies its SHA-256.
+JUnit 5.13.4 test dependencies download from Maven Central; resolved versions are
+recorded in `object-store/gradle.lockfile`. Production Java code has no external
+Java dependencies. Later builds can run with `--offline` after these downloads.
+
+Disk operations also need native SQLite: `libsqlite3.so.0` on Linux,
+`libsqlite3.dylib` on macOS, or `sqlite3.dll` on Windows. Install it through your
+platform package manager, or supply `-PsqliteLibrary=/absolute/path/to/library`
+when running Gradle tests. Use a library matching your JDK's architecture.
+
+On Windows use `gradlew.bat` wherever the examples below use `./gradlew`.
+To review the code in IntelliJ IDEA, open this repository root as a Gradle project
+and select the Java 25 JDK for both the project and Gradle JVM.
+
+## Fast development checks
+
+Run the changed component's fast tests by default:
+
+```sh
+./gradlew :object-store:test
+# Narrow a check to one class or method:
+./gradlew :object-store:test --tests '*FormatTest'
+./gradlew :object-store:test --tests '*FormatTest.matchesPublishedFormatExample'
+```
+
+This suite checks the binary format and the in-memory reader/writer/history
+contracts without SQLite, disk stores, .NET, or the sibling checkout. Gradle skips
+unchanged compile and test tasks. Use `--rerun-tasks` to deliberately run them again.
+Tests produce HTML reports under `object-store/build/reports/tests/<task>/`.
+
+Choose additional checks based on the change:
+
+| Change | Checks |
+| --- | --- |
+| Object-store logic | `:object-store:test` |
+| Persistence, locking, staging, recovery or maintenance | Also `:object-store:integrationTest` |
+| Public interfaces or contracts | Also tests for components that consume those interfaces |
+| Disk format or cross-language behavior | Also `:object-store:interopTest` |
+| Documentation only | No tests unless a documented executable example changes |
+
+The disk suite runs the shared contracts against the actual store, plus temporary
+store tests for reads/ranges, history, cancellation, concurrency, corruption,
+staging, recovery, rebuild and compaction. Tests never use profile/user data.
+
+```sh
+./gradlew :object-store:integrationTest
+./gradlew check                 # all existing components' unit + integration tests
+./gradlew check :object-store:interopTest  # complete validation, including C#
+```
+
+`test`, `check` and normal builds never start .NET. Interoperability is opt in.
+Gradle does not automatically select downstream tests from changed interfaces;
+that impact selection is part of the development workflow until a CI policy is added.
+
+## Build
+
+```sh
+./gradlew :object-store:assemble
+```
+
+The component's JAR, source JAR and reusable test-fixtures JAR are written under
+`object-store/build/libs/`. There is no application entry point yet. The Bash
+scripts in `scripts/` delegate to these Gradle tasks; `scripts/check.sh` runs only
+fast tests, and `scripts/interop.sh` runs only interoperability checks.
+
+## Java/C# compatibility checks
+
+First build the original object-store project in a sibling `../vibeminer` checkout,
+producing `src/backend/VibeMiner.Objects/bin/Release/net10.0/VibeMiner.Objects.dll`.
+The C# harness references that assembly without modifying the sibling checkout.
+It requires the .NET 10 SDK and packages pinned in its `packages.lock.json`.
+
+```sh
+./gradlew :object-store:interopTest
+# Override the .NET executable and optionally use a local NuGet package source:
+./gradlew :object-store:interopTest -Pdotnet=/absolute/path/to/dotnet
+./gradlew :object-store:interopTest -PnugetSource=/absolute/path/to/nuget/packages
+```
+
+The default .NET executable is `../vibeminer/.local/toolchains/dotnet/dotnet`.
+On Windows set `-Pdotnet` to the installed `dotnet.exe` path.
+The harness checks bidirectional data/history exchange, rebuilds and writer
+exclusion. C# build output stays in the ignored `bin/` and `obj/` directories
+next to its project. The CLI home stays in ignored `.local/dotnet/`.
+
+## Component boundaries and layout
+
+Each substantial component is a Gradle subproject that produces its own library
+JAR and owns its tests. Consumers depend on role interfaces. Pack encoding,
+SQLite, locking and recovery are internal details of the object-store component.
+Future components will declare project dependencies, for example
+`implementation project(':object-store')`; fakes and shared contracts can be
+consumed with `testImplementation testFixtures(project(':object-store'))`.
+
+- `object-store/src/main/java`: public store interfaces/types and implementation.
+- `object-store/src/test/java`: fast unit and memory-contract tests.
+- `object-store/src/testFixtures/java`: reusable memory fake, assertions and contracts.
+- `object-store/src/integrationTest/java`: disk integration tests.
+- `object-store/src/interopTest/java`: cross-language compatibility tests.
+- `object-store/src/interopTest/csharp`: original implementation's C# test harness.
+- `docs/object-store-v1.md`: reference copy of the authoritative disk specification.
+- `scripts/`: convenience wrappers around component Gradle tasks.
+
+## Library use
+
+```java
+var store = ObjectStore.open(Path.of("/absolute/path/to/store")).join();
+try {
+    var result = store.read(key, Cancellation.NONE).join();
+} finally {
+    store.closeAsync().join();
+}
+```
+
+Imports come from `com.vibeminer.store`. Launch consumers with
+`--enable-native-access=ALL-UNNAMED` and optionally
+`-Dvibeminer.sqlite.library=/absolute/path/to/library`.
+The example waits for results for brevity; GUI callers should compose futures
+and dispatch rendering to the JavaFX thread. Always close the store to checkpoint
+its index and release the cross-process writer lock. Read-only access is exposed
+through `ObjectStore.openReadOnly` and a separate interface without write methods.
+
+## Current limits
+
+This is a functioning initial port, not full performance/behavior parity. Writes
+currently commit each object individually; `commitNow` has no additional effect.
+Queues reject overflow with `OBJECT_STORE_LIMIT` rather than waiting for room.
+Read-day updates, the pack-handle cache, parallel caller verification and the
+session SHA cache are not implemented. Scan's merge holds one open handle per
+pack; compaction retains moved-row metadata per source pack. Cancellation checks
+occur between entries/blocks/pages and do not interrupt an active SQLite statement.
+The memory fake covers reader/writer/history contracts but does not implement staging.
+
+Linux ARM64 native SQLite and cross-language writer locks have been exercised.
+Windows and macOS need native-platform CI, including read-only media behavior and
+SQLite packaging. Recovery tests simulate durable unindexed tails and torn bytes;
+process kill fault injection at every durability boundary and real power-cut
+testing have not been performed. No higher layer, generated-record abstraction
+or network client is included.

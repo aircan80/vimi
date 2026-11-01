@@ -1,0 +1,44 @@
+# Java build output
+/build/
+/target/
+**/build/
+*.class
+
+# Gradle local state
+.gradle/
+
+# IDE and editor state
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+.vscode/
+*~
+*.swp
+
+# OS metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local settings and credentials
+.env
+.env.*
+!.env.example
+/.local/
+/.aws/
+
+# Runtime output and local data stores
+*.log
+hs_err_pid*
+replay_pid*
+/data/
+/cdn-store-v1/
+/generated-v1/
+/catalog-v1/
+
+# Test and native build artifacts
+/artifacts/
+/object-store/src/interopTest/csharp/bin/
+/object-store/src/interopTest/csharp/obj/
