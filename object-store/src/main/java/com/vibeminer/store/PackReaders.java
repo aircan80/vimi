@@ -28,6 +28,7 @@ final class PackReaders<H extends Closeable> implements Closeable {
 
     private final class Entry {
         final H handle;
+        final Object identity = new Object();
         int leases = 1;
         boolean retired;
         boolean closed;
@@ -51,6 +52,15 @@ final class PackReaders<H extends Closeable> implements Closeable {
                     throw new IllegalStateException("Pack lease is released");
                 }
                 return entry.handle;
+            }
+        }
+
+        Object identity() {
+            synchronized (PackReaders.this) {
+                if (released) {
+                    throw new IllegalStateException("Pack lease is released");
+                }
+                return entry.identity;
             }
         }
 

@@ -239,6 +239,14 @@ drains accepted readers before disposing cached channels. Retired active leases 
 outside the retained-cache count and close at their last release. Supported-platform
 integration tests exercise concurrent write/delete sharing with leased channels.
 
+Whole reads of objects up to 1 MiB reuse successful session SHA proofs. Proofs are
+bound to the open-channel incarnation, pack/offset, key, length and expected digest;
+the set clears before exceeding 1,048,576 entries. Evicted/replaced channels and
+moved entries earn new proofs. Every read still validates its header and block CRCs.
+Range reads do not populate proofs, forced verification bypasses them, and corruption
+or scan clears them. Generation stamps prevent an old in-flight hash from publishing
+after a clear. Concurrent cold reads may duplicate SHA work outside the cache lock.
+
 ## Current limits
 
 This is a functioning initial port, not full performance/behavior parity. Writes
@@ -257,7 +265,7 @@ Once admitted, each operation applies its existing cancellation semantics (inclu
 per-object `CANCELED` results). Close rejects unaccepted waiters and drains accepted
 writes. Result continuations run outside the disk writer and admission locks.
 Reader and opener queues still reject overflow rather than waiting for room.
-Parallel caller verification and the session SHA cache are not implemented. Scan's merge holds one open handle per
+Parallel caller verification is not implemented. Scan's merge holds one open handle per
 pack; compaction retains moved-row metadata per source pack. Cancellation checks
 occur between entries/blocks/pages. Active SQLite execution also checks the request's
 cancellation token through a progress callback every approximately 1,000 VM instructions;

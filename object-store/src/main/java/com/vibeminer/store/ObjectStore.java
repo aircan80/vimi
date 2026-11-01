@@ -56,6 +56,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     final Verification verifier;
     final WriteQueue writer = new WriteQueue();
     final PackReaders<FileChannel> packReaders;
+    final SessionHashes sessionHashes = new SessionHashes();
     final ThreadPoolExecutor readers = Async.pool("vimi-store-read", 8);
     private final Object lifecycle = new Object();
     private boolean accepting = true;
@@ -83,6 +84,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     java.util.function.BiConsumer<WritePoint, ObjectKey> writeProbe;
     java.util.function.Consumer<MaintenancePoint> maintenanceProbe;
     java.util.function.BiConsumer<ReadPoint, ObjectKey> readProbe;
+    java.util.function.Consumer<ObjectKey> wholeShaProbe;
 
     private record Committed<T>(T result, CompletableFuture<Void> durable) {}
 
@@ -857,7 +859,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         try {
             row = known != null ? known : idx.find(key);
         } catch (ClassCastException | IllegalArgumentException | ArithmeticException e) {
-            return bad(ReadState.CORRUPT, "Invalid index row");
+            return corruptRead("Invalid index row");
         }
         if (row == null) {
             return bad(ReadState.ABSENT, null);
@@ -867,7 +869,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 || row.length() < 1
                 || row.length() > Format.MAX_PAYLOAD
                 || row.sha().length != 32) {
-            return bad(ReadState.CORRUPT, "Invalid index row");
+            return corruptRead("Invalid index row");
         }
         if (requested < 0 && row.length() > Format.WHOLE_LIMIT && !fullSha) {
             throw new StoreException("OBJECT_STORE_LIMIT", "Whole read exceeds 64 MiB; use ranges");
@@ -884,14 +886,14 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             try {
                 entry = Format.entry(Format.read(file, row.offset(), 96), options.kind());
             } catch (StoreException e) {
-                return bad(ReadState.CORRUPT, e.code());
+                return corruptRead(e.code());
             }
             if (entry == null
                     || entry.tombstone()
                     || !entry.key().equals(key)
                     || entry.length() != row.length()
                     || !Arrays.equals(entry.sha(), row.sha())) {
-                return bad(ReadState.CORRUPT, "Header differs from index");
+                return corruptRead("Header differs from index");
             }
             ObjectInfo info =
                     new ObjectInfo(
@@ -903,7 +905,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 Maintenance.Sound sound =
                         Maintenance.sound(this, file, row.offset(), entry, keyCheck, cancellation);
                 if (!sound.valid() || keyCheck && !sound.identity()) {
-                    return bad(ReadState.CORRUPT, "Entry integrity or identity failed");
+                    return corruptRead("Entry integrity or identity failed");
                 }
                 return new ObjectRead(ReadState.PRESENT, info, null, null);
             }
@@ -924,17 +926,25 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 if (bytes.length != count
                         || check.length != 4
                         || Format.le(check).getInt() != (int) Format.crc(bytes)) {
-                    return bad(ReadState.CORRUPT, "Block CRC mismatch");
+                    return corruptRead("Block CRC mismatch");
                 }
                 int from = (int) Math.max(0, offset - blockAt),
                         take = Math.min(count - from, length - copied);
                 System.arraycopy(bytes, from, result, copied, take);
                 copied += take;
             }
-            if (requested < 0
-                    && entry.length() <= 1 << 20
-                    && !Arrays.equals(Format.hash("SHA-256", result), entry.sha())) {
-                return bad(ReadState.CORRUPT, "SHA-256 mismatch");
+            if (requested < 0 && entry.length() <= SessionHashes.MAX_LENGTH) {
+                SessionHashes.Check check =
+                        sessionHashes.begin(SessionHashes.Identity.of(lease.identity(), row));
+                if (check != null) {
+                    if (wholeShaProbe != null) {
+                        wholeShaProbe.accept(key);
+                    }
+                    if (!Arrays.equals(Format.hash("SHA-256", result), entry.sha())) {
+                        return corruptRead("SHA-256 mismatch");
+                    }
+                    sessionHashes.verified(check);
+                }
             }
             // Empty range probes and maintenance verification are not payload reads.
             if (requested < 0 || length > 0) {
@@ -960,6 +970,12 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             }
             return bad(ReadState.LOST, "Pack file missing");
         }
+    }
+
+    private ObjectRead corruptRead(String problem) {
+        // Reject in-flight old proofs too: repairs must earn a fresh whole-read SHA check.
+        sessionHashes.clear();
+        return bad(ReadState.CORRUPT, problem);
     }
 
     static ObjectRead bad(ReadState state, String problem) {
@@ -1506,6 +1522,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     }
 
     private void release() {
+        sessionHashes.clear();
         readDays.clear();
         writer.shutdown();
         readers.shutdown();

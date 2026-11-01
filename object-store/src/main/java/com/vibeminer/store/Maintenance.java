@@ -310,6 +310,7 @@ final class Maintenance {
         var files = s.diskPacks();
         preflight(s, files);
         cancel.check();
+        s.sessionHashes.clear();
         final ScanReport[] result = new ScanReport[1];
         s.database.transaction(
                 true,
@@ -353,6 +354,7 @@ final class Maintenance {
         } finally {
             s.reloadIndex(failedScan);
         }
+        s.sessionHashes.clear();
         s.atMaintenance(MaintenancePoint.SCAN_COMMITTED);
         s.database.uncancelled(() -> s.database.exec("PRAGMA wal_checkpoint(PASSIVE)"));
         s.atMaintenance(MaintenancePoint.SCAN_CHECKPOINTED);

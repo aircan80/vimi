@@ -2,7 +2,9 @@
 
 ## Agreed direction
 
-- Integrate changes only by fast-forward or squash; never create merge commits.
+- Continue approved roadmap work and merge it autonomously after relevant checks
+  pass; no repeated merge approval is needed. Use fast-forward or squash only,
+  never create merge commits.
   Ordinary merges/pulls are configured fast-forward-only. PR #28 was
   integrated by fast-forwarding main to 7004cd2 and pushing it. Future feature work
   uses branches based on that reviewed main baseline.
@@ -324,11 +326,31 @@ The higher-level generated-record store and network clients are separate work.
 - Next: #8 session SHA caching, then #23 parallel verification and #19 maintenance
   resource bounds. Broader platform readiness is still tracked separately.
 
+## Session SHA proofs (#8)
+
+- SessionHashes caches successful whole-read SHA checks only for lengths up to 1 MiB.
+  Every header and block CRC is still checked; ranges do not populate the set and
+  Verify always performs its full integrity pass. Failed SHA checks never publish.
+- Proof identity includes an opaque channel-incarnation token (not a channel reference),
+  pack/offset, key, length and expected SHA bits. Moves, replacements/reopens and row
+  changes cannot inherit a proof. Entries never retain native handles or payloads.
+- At most 1,048,576 entries are retained, clearing before a new entry exceeds capacity.
+  Corruption and scan also clear proofs. Opaque generation stamps prevent a hash that
+  started before a clear from publishing afterward. Cold reads hash outside the short
+  metadata lock and can duplicate work concurrently, as in the reference.
+- Added five unit and ten integration cases for bounds, concurrent clear/publication,
+  cache hits, mandatory CRCs, failed SHA, forced Verify, scan races, moved/replaced
+  entries, changed expected digests, eligibility boundaries and reopen sessions.
+- Validation: 326 cases (60 unit, 166 integration, 59 crash, 41 interop), formatting,
+  Checkstyle, compiler lint and assembly on Linux; hosted checks follow.
+- PR #30 was fast-forwarded into main at fa49f7f. Current branch: storage/session-sha-cache.
+  Next work is #23 parallel verification and #19 bounded maintenance/benchmarks.
+
 ## Remaining parity work
 
 This is not yet full reference parity. See README's Current limits. In particular:
-- Session SHA caching and caller-side parallel verification remain. Pack-handle
-  caching, group commits and bounded read-day tracking are implemented (see above).
+- Caller-side parallel verification remains. Session SHA proofs, pack-handle caching,
+  group commits and bounded read-day tracking are implemented (see above).
 - Reader/opener queue overflow still fails with a limit error. Writer admission waits
   asynchronously within explicit request/payload bounds (see above).
 - SQLite progress cancellation covers active VM work; lock waits retain the five-second
