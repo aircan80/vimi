@@ -33,6 +33,8 @@ class SelectionTest(unittest.TestCase):
             "network-clients/src/testFixtures/java/com/vibeminer/network/MemorySources.java",
             "network-clients/build.gradle",
             "network-clients/gradle.lockfile",
+            "object-access/src/main/java/com/vibeminer/access/ObjectSource.java",
+            "object-access/build.gradle",
         ]:
             with self.subTest(path=path):
                 self.assertTrue(selection.select([path]))
