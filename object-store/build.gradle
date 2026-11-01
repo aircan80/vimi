@@ -35,6 +35,10 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 sourceSets {
+    benchmark {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
     integrationTest {
         compileClasspath += sourceSets.main.output
         runtimeClasspath += sourceSets.main.output
@@ -152,4 +156,20 @@ checkstyle {
     toolVersion = '10.26.1'
     configFile = rootProject.file('config/checkstyle/checkstyle.xml')
     maxWarnings = 0
+}
+
+// Explicitly opt in; benchmark workloads are never part of test/check.
+tasks.register('benchmark', JavaExec) {
+    description = 'Measures deterministic temporary-store reads, writes, rebuild and compaction.'
+    group = 'verification'
+    classpath = sourceSets.benchmark.runtimeClasspath
+    mainClass = 'com.vibeminer.store.StoreBenchmarks'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args providers.gradleProperty('benchmarkObjects').orElse('64').get(),
+         providers.gradleProperty('benchmarkBytes').orElse('65536').get(),
+         providers.gradleProperty('benchmarkMode').orElse('all').get()
+    def sqliteLibrary = providers.gradleProperty('sqliteLibrary')
+    if (sqliteLibrary.isPresent()) {
+        systemProperty 'vibeminer.sqlite.library', sqliteLibrary.get()
+    }
 }
