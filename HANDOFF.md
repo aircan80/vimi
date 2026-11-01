@@ -536,3 +536,32 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
   WoWDBDefs/listfile clients. These layer 1 clients do not choose local vs network;
   that policy belongs to layer 2 ObjectAccess. Scope against the pinned seven-layer
   reference, with fakes/shared contracts and deterministic local HTTP fixtures.
+
+## Layer 1 network primitives and parallel higher layers
+
+- Added `network-clients/`, independent of storage: CDN keys/routes, range planning,
+  version tables, and separate CDN/version/WoWDBDefs/listfile interfaces implemented
+  by `NetworkClients`. Bounded per-source queues, explicit cancellation, exact
+  ranges/lengths, streaming backpressure, provenance, redirect/encoding restrictions,
+  and header/idle/total deadlines are implemented.
+- Public `BlteChunkTable` in object-store exposes independent authenticated header
+  and chunk proofs, including merged-range slices and lengths above stored-object
+  limits. This C# primitive was previously only private verification logic in Java.
+  Existing pack encoding and store implementation remain unchanged.
+- Local macOS checks pass: 50 network unit, 44 loopback/TLS/HTTP2 integration and
+  five standalone BLTE cases (99 new cases); root check/assemble and pinned quality
+  checks pass. Fast network tests do not contact external services; test fixtures
+  publish an independent memory fake and shared consumer contracts.
+- Runtime HTTP/JSON dependencies and transitives are locked, with upstream notices.
+  See `network-clients/README.md` for bounds and differences: one explicit attempt
+  per host/hop instead of hidden reconnects, and five-minute idle pool eviction
+  rather than absolute pooled-connection lifetime. Windows native testing remains
+  deferred; hosted jobs still test all three platforms.
+- Work branch: `network/layer-one-clients`; hosted validation/integration follows.
+- User explicitly authorized parallel layer 2/3 agents and automatic ff-only or
+  squash integration after checks. Isolated branches/worktrees:
+  `parallel/object-access` (layer 2), `parallel/build-catalog` (layer 3 catalog,
+  persistence, tracking/jobs), `parallel/build-resolver` (layer 3 format parsers,
+  opening/resolution). Coordinate shared APIs before integration. These are active
+  development branches, not completed/parity-certified components. Root owns shared
+  Gradle/CI integration and supplied observation/range helpers to layer 2.

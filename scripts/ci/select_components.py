@@ -24,9 +24,9 @@ def documentation_only(path):
 
 
 def select(paths):
-    # Conservatively select both storage components: generated-store consumes object-store.
-    # The historical object_store output gates the complete storage validation group.
-    # Unknown paths also select both; narrow only with explicit consumer-graph rules.
+    # Conservatively select all layer 1 components; generated-store consumes object-store.
+    # The historical object_store output gates the complete validation group, including networking.
+    # Unknown paths also select all; narrow only with explicit consumer-graph rules.
     return any(not documentation_only(path) for path in paths)
 
 

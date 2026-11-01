@@ -197,6 +197,8 @@ Future components will declare project dependencies, for example
 `implementation project(':object-store')`; fakes and shared contracts can be
 consumed with `testImplementation testFixtures(project(':object-store'))`.
 
+- `network-clients/`: layer 1 HTTP clients, routes/range planning, fakes and loopback tests.
+- `generated-store/`: generated-data wrapper and compressed record files.
 - `object-store/src/main/java`: public store interfaces/types and implementation.
 - `object-store/src/test/java`: fast unit and memory-contract tests.
 - `object-store/src/testFixtures/java`: reusable memory fake, assertions and contracts.
@@ -279,6 +281,23 @@ include both modules; `scripts/check.sh` runs both fast suites.
 See the module README for usage, bounds, compression provenance and the reference
 build needed for `:generated-store:interopTest`.
 
+## Layer 1 networking
+
+[`network-clients/`](network-clients/README.md) ports the C# CDN, version-service,
+WoWDBDefs and wow-listfile boundaries, plus route/table parsing and range planning.
+It has bounded asynchronous queues, explicit cancellation, streaming backpressure,
+strict response checks, an independent fake and shared local-HTTP contracts.
+It has no storage dependency: cache/network selection and history recording belong
+to the layer 2 object-access component.
+
+```sh
+./gradlew :network-clients:test
+./gradlew :network-clients:check :network-clients:assemble
+```
+
+Root check/assemble and hosted unit/integration workflows include all layer 1
+components. Network tests use isolated servers and never call public services.
+
 ## Current limits
 
 This is a functioning initial port, not full performance/behavior parity. Writes
@@ -322,5 +341,6 @@ continue. Clean-machine SQLite startup and final release-readiness review remain
 open. Recovery tests simulate durable unindexed tails and torn bytes;
 append, rebuild and compaction process-kill boundaries and deterministic I/O
 failures are tested. Real power-cut testing has not been performed. The generated-store wrapper and compressed record files are implemented in
-[`generated-store/`](generated-store/README.md). No higher layer or network client
-is included.
+[`generated-store/`](generated-store/README.md). Layer 1 network primitives are
+implemented in [`network-clients/`](network-clients/README.md); higher-layer
+coordination is separate work.

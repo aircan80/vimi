@@ -1,0 +1,11 @@
+vimi network-clients uses these locked runtime dependencies without shading:
+- com.squareup.okhttp3:okhttp:4.12.0 — https://github.com/square/okhttp/tree/parent-4.12.0
+- com.fasterxml.jackson.core:jackson-core:2.20.1 — https://github.com/FasterXML/jackson-core/tree/jackson-core-2.20.1
+- Transitive Okio, Kotlin runtime and JetBrains annotations dependencies (see gradle.lockfile).
+The primary dependencies use Apache License 2.0; the dependency JARs retain their
+own copyright, license and additional third-party notices. Jackson's upstream
+notices and bundled-parser notices are also retained alongside this file.
+MockWebServer and okhttp-tls are test-only fixture dependencies.
+Distribute dependencies with their original notices intact. No native library,
+HTTP implementation code or third-party bytecode is shaded into this JAR.
+The vimi project license is GPL-3.0, in the repository LICENSE file.

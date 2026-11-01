@@ -29,6 +29,10 @@ class SelectionTest(unittest.TestCase):
             "generated-store/src/testFixtures/java/com/vibeminer/generated/MemoryGeneratedStore.java",
             "generated-store/build.gradle",
             "generated-store/gradle.lockfile",
+            "network-clients/src/main/java/com/vibeminer/network/CdnClient.java",
+            "network-clients/src/testFixtures/java/com/vibeminer/network/MemorySources.java",
+            "network-clients/build.gradle",
+            "network-clients/gradle.lockfile",
         ]:
             with self.subTest(path=path):
                 self.assertTrue(selection.select([path]))

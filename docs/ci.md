@@ -1,6 +1,6 @@
 # Continuous integration
 
-The `Unit tests` workflow runs `:object-store:test :generated-store:test` on GitHub-hosted
+The `Unit tests` workflow runs `:object-store:test :generated-store:test :network-clients:test` on GitHub-hosted
 `ubuntu-24.04`, `windows-2025` and `macos-15` runners. Each job installs a full
 Temurin Java 25 JDK matching the runner architecture. The fast tasks need neither
 native SQLite nor .NET nor the original C# checkout. Generated record tests use
@@ -11,7 +11,7 @@ enabled; formatting and native integration are separate checks.
 Run the same task locally with:
 
 ```sh
-./gradlew :object-store:test :generated-store:test --no-daemon --console=plain
+./gradlew :object-store:test :generated-store:test :network-clients:test --no-daemon --console=plain
 ```
 
 Use `gradlew.bat` in a Windows terminal. Hosted jobs use the checked-in Unix
@@ -32,11 +32,11 @@ Selection rules live in `scripts/ci/select_components.py`; verify them with:
 python3 -m unittest discover -s scripts/ci -p '*_test.py'
 ```
 
-The storage validation group contains `object-store` and its consumer
-`generated-store`. The historical `object_store` selector output conservatively
-selects both components. Any code, public-interface, test, fixture,
+The validation group contains `object-store`, its consumer `generated-store`,
+and the independent `network-clients` component. The historical `object_store` selector output conservatively
+selects all three components. Any code, public-interface, test, fixture,
 Gradle, dependency, wrapper, configuration, workflow or unknown-path change selects
-both components on all three platforms. Markdown/reStructuredText, root license
+all components on all three platforms. Markdown/reStructuredText, root license
 notices and documentation images skip them; executable/build/workflow directories
 always select tests regardless of file extension. Mixed documentation and code
 changes select tests. Manual dispatch always selects tests; unavailable comparison
@@ -48,7 +48,7 @@ When another component is introduced, add its root and consumer relationships to
 the selector before making selection narrower. Public-interface and shared-fixture
 changes must select affected consumers too; shared build/wrapper/workflow changes
 must continue to select all components. The generated-store consumes object-store;
-changes to either currently run both.
+changes to any component currently run all three.
 
 Each platform retains JUnit XML and HTML test reports for seven days, including
 failing test reports. Open the run's artifacts named `unit-reports-Linux`,
@@ -77,7 +77,7 @@ move to the appropriate machine.
 
 The independent `Integration tests` workflow uses the same conservative component
 selection and an always-running `Integration tests` aggregate check. Its platform
-jobs run `:object-store:integrationTest :generated-store:check` separately from the
+jobs run `:object-store:integrationTest :generated-store:check :network-clients:check` separately from the
 fast unit workflow and
 retain independent `integration-reports-*` XML/HTML artifacts for seven days.
 Every disk test uses temporary synthetic stores.
@@ -184,3 +184,14 @@ job builds the pinned `VibeMiner.Generated` reference (which also builds Objects
 and runs both modules’ opt-in interoperability suites. Record-file exchange checks
 metadata, all rows, pages, unsigned-ID lookup and bidirectional writer exclusion.
 Native Windows validation remains deferred; hosted Windows jobs continue.
+
+## Layer 1 network coverage
+
+The network-clients fast suite runs pure routes/keys, table grammar, range planning,
+admission/lifecycle tests and shared fake contracts. Integration runs the same
+contracts against isolated loopback HTTP servers, plus TLS/HTTP2, exact range and
+length checks, source bounds, signed-URL redaction, redirect policies, truncated
+transfers, header/idle/total deadlines, cancellation, sink backpressure and source
+concurrency. Tests never contact Blizzard or GitHub or require live credentials.
+The existing stable aggregates and conservative selector include these checks;
+network changes also retain the storage compatibility gate.
