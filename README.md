@@ -275,8 +275,8 @@ Once admitted, each operation applies its existing cancellation semantics (inclu
 per-object `CANCELED` results). Close rejects unaccepted waiters and drains accepted
 writes. Result continuations run outside the disk writer and admission locks.
 Reader and opener queues still reject overflow rather than waiting for room.
- Scan's merge holds one open handle per
-pack; compaction retains moved-row metadata per source pack. Cancellation checks
+ Replay uses a bounded channel cache and disk-backed merge heads; compaction
+spools moved-row metadata. See [maintenance bounds and benchmarks](docs/maintenance-resources.md). Cancellation checks
 occur between entries/blocks/pages. Active SQLite execution also checks the request's
 cancellation token through a progress callback every approximately 1,000 VM instructions;
 interruption completes with `CancellationException`. The callback is scoped to the

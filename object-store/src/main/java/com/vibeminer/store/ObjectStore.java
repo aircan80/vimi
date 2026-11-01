@@ -35,11 +35,9 @@ import java.util.Arrays;
 import java.util.BitSet;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -82,7 +80,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     java.util.function.LongSupplier commitClock = System::nanoTime;
 
     final StoreIo io = new StoreIo();
-    final Set<Integer> corruptPacks = new HashSet<>();
+    final BitSet corruptPacks = new BitSet(PackFiles.MAX_PACK + 1);
     // Package-private, instance-scoped test seam. No property, public option or global hook.
     java.util.function.BiConsumer<WritePoint, ObjectKey> writeProbe;
     java.util.function.Consumer<MaintenancePoint> maintenanceProbe;
@@ -602,8 +600,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             }
         }
         if (Files.isDirectory(staging)) {
-            try (var paths = Files.list(staging)) {
-                for (Path path : paths.toList()) {
+            try (var paths = Files.newDirectoryStream(staging)) {
+                for (Path path : paths) {
                     if (path.getFileName().toString().matches("[0-9a-f]{36}\\.part")
                             && Files.getLastModifiedTime(path).toMillis() < now() - 7L * 86400000) {
                         io.delete(path);

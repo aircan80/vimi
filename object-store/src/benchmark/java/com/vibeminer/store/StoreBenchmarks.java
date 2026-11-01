@@ -76,6 +76,10 @@ public final class StoreBenchmarks {
                                                         "Benchmark did not store a unique synthetic object");
                                             }
                                         }));
+                if (writes.size() == WriteQueue.QUEUED_REQUESTS) {
+                    CompletableFuture.allOf(writes.toArray(CompletableFuture[]::new)).join();
+                    writes.clear();
+                }
             }
             CompletableFuture.allOf(writes.toArray(CompletableFuture[]::new)).join();
             report("write", began, count, (long) count * bytes);

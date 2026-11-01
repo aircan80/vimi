@@ -18,7 +18,18 @@ final class PackRows {
             this.db = db;
             owned = !db.inTransaction();
             if (owned) {
-                db.exec("BEGIN");
+                try {
+                    db.exec("BEGIN");
+                } catch (RuntimeException | Error error) {
+                    if (db.inTransaction()) {
+                        try {
+                            db.uncancelled(() -> db.exec("ROLLBACK"));
+                        } catch (RuntimeException | Error cleanup) {
+                            error.addSuppressed(cleanup);
+                        }
+                    }
+                    throw error;
+                }
             }
         }
 
@@ -28,7 +39,7 @@ final class PackRows {
 
         @Override
         public void close() {
-            if (owned) {
+            if (owned && db.inTransaction()) {
                 db.uncancelled(() -> db.exec("ROLLBACK"));
             }
         }

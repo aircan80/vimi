@@ -374,14 +374,17 @@ The higher-level generated-record store and network clients are separate work.
 ## Remaining parity work
 
 This is not yet full reference parity. See README's Current limits. In particular:
-- Bounded maintenance resources/benchmarks (#19) and broader platform readiness remain.
+- Broader platform readiness remains. Bounded maintenance resources/benchmarks (#19)
+  use FILE temporary tables, fixed pack-ID bitmaps and 256-row pages; see
+  docs/maintenance-resources.md.
   Parallel verification, session SHA proofs, leased channels, group commits and
   read-day tracking are implemented (see above).
 - Reader/opener queue overflow still fails with a limit error. Writer admission waits
   asynchronously within explicit request/payload bounds (see above).
 - SQLite progress cancellation covers active VM work; lock waits retain the five-second
   busy timeout. Rollback/commit and durability cleanup remain uncancelable.
-- Replay holds a file handle per pack; compaction holds moved-row metadata per source.
+- Replay retains the configured channel capacity plus one transient cold-open handle;
+  compaction copies with two channels. SQLite temp cache is a 2 MiB target.
 - Native-platform/read-only-media validation and optional broader fault-boundary
   expansion remain; process-kill and deterministic I/O failure suites now exist.
 - Validate native Windows/macOS locking and SQLite packaging in platform CI.
@@ -392,3 +395,16 @@ This is not yet full reference parity. See README's Current limits. In particula
 The user renamed `~/Development/vj` to `~/Development/vimi` and initialized Git on `main`.
 `.gitignore` exists. The user will create/connect the GitHub repository themselves.
 Do not modify the existing `AGENTS.md` without a separate request.
+
+## Bounded maintenance (#19)
+
+Replay now spools merge heads into SQLite FILE temp tables and leases channels from
+its configured cache. Compaction spools candidate ordering/move metadata; open and
+validation page pack metadata in consistent read snapshots. Pack identifiers use
+fixed bitmaps and directory enumeration streams. Diagnostic text explicitly marks
+truncation; verification result key lists remain complete/output-sized.
+
+Combined local validation after #23: 351 cases (67 unit, 184 integration, 59 crash,
+41 interoperability), formatting, lint and assembly passed. Opt-in benchmark ran
+three 64 × 64 KiB trials; measured environment, results and resource qualifications
+are in docs/maintenance-resources.md. Benchmarks do not execute during check/test.

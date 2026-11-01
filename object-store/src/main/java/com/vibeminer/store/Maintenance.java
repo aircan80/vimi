@@ -568,7 +568,7 @@ final class Maintenance {
                     cancel.check();
                     int source = Math.toIntExact((long) p[0]);
                     long length = (long) p[1];
-                    if (s.corruptPacks.contains(source)
+                    if (s.corruptPacks.get(source)
                             || length - 64 - (long) p[2] < fraction * (length - 64)) {
                         continue;
                     }
@@ -634,7 +634,7 @@ final class Maintenance {
                             if (bad) {
                                 if (corrupt) {
                                     skipped++;
-                                    s.corruptPacks.add(source);
+                                    s.corruptPacks.set(source);
                                 }
                                 continue;
                             }

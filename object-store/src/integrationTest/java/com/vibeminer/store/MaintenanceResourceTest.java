@@ -262,4 +262,22 @@ final class MaintenanceResourceTest {
         assertFalse(once.get());
         assertEquals(2, store.stats().join().objects());
     }
+
+    @Test
+    void failedReadSnapshotBeginDoesNotLeakATransaction() throws Exception {
+        open(128, 2);
+        store.put(List.of(object(1))).join();
+        AtomicBoolean once = new AtomicBoolean(true);
+        try (NativeSqlite reader = store.openReader()) {
+            reader.afterStatementProbe =
+                    sql -> {
+                        if (sql.equals("BEGIN") && once.getAndSet(false)) {
+                            throw new NativeSqlite.Failure(10, "Injected snapshot begin failure");
+                        }
+                    };
+            assertFalse(new StoreIndex(reader).validate(store.index.id, false, Cancellation.NONE));
+            assertFalse(reader.inTransaction());
+            assertTrue(new StoreIndex(reader).validate(store.index.id, false, Cancellation.NONE));
+        }
+    }
 }
