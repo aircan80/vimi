@@ -141,3 +141,10 @@ JavaFX thread with `join()`.
 Native Windows machine validation remains deferred. These components do not claim
 application-level or release certification. Higher layers, JavaFX screens, desktop
 packaging and broader large-real-data performance measurements remain separate.
+
+The [resolver qualification](RESOLVER.md) distinguishes its internal stream helper
+from public behavior: as in C#, metadata above the default 64 MiB whole-read
+boundary is fetched through verified ranges into a bounded encoded array (up to
+the configured 512 MiB cap). Supported large metadata is not refused merely for
+crossing the whole-read boundary. Full encoded-array retention and Java collection
+overhead remain explicit memory characteristics.

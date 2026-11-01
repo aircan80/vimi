@@ -1,7 +1,8 @@
 # vimi
 
 Java desktop port of VibeMiner using its seven-layer architecture. The first
-components cover layer 1 storage/networking and layer 2 object access; the JavaFX GUI belongs in layer 7.
+components cover layer 1 primitives, layer 2 object access and layer 3 builds.
+The JavaFX GUI belongs in layer 7 and is not implemented yet.
 
 ## Setup
 
@@ -197,6 +198,8 @@ Future components will declare project dependencies, for example
 `implementation project(':object-store')`; fakes and shared contracts can be
 consumed with `testImplementation testFixtures(project(':object-store'))`.
 
+- `builds/`: layer 3 discovery/catalog, metadata opening/resolution and download tracking.
+- `object-access/`: layer 2 local/shared/CDN coordination, observations and commit feeds.
 - `network-clients/`: layer 1 HTTP clients, routes/range planning, fakes and loopback tests.
 - `generated-store/`: generated-data wrapper and compressed record files.
 - `object-store/src/main/java`: public store interfaces/types and implementation.
@@ -298,6 +301,28 @@ to the layer 2 object-access component.
 Root check/assemble and hosted unit/integration workflows include all layer 1
 components. Network tests use isolated servers and never call public services.
 
+## Object access and builds
+
+[`object-access/`](object-access/README.md) is the layer 2 boundary for local,
+shared-store and CDN acquisition, observation recording and commit/history access.
+[`builds/`](builds/README.md) provides the layer 3 history-derived catalog, build
+opening/resolution, downloaded figures and background download-all jobs. Production
+layer 3 code uses layer 2 contracts; lower-layer values flow through that boundary.
+
+```sh
+./gradlew :object-access:test :builds:test
+./gradlew :object-access:check :builds:check :builds:assemble -PsqliteLibrary=/absolute/path/to/sqlite-library
+```
+
+Their fakes/shared contracts are published as test fixtures. A real pipeline test
+covers persisted observations, catalog projection, opening/resolution, commit
+visibility and repeated offline reopen/rebuild without network requests. The
+optional `:builds:interopTest` exchanges catalog caches with the pinned C# Builds
+reference; see the module README for its Release-build prerequisite.
+
+Layer 4 files, layer 5 formats, layer 6 game concepts and the JavaFX application
+remain separate work. Native Windows machine certification stays deferred.
+
 ## Current limits
 
 This is a functioning initial port, not full performance/behavior parity. Writes
@@ -342,11 +367,5 @@ open. Recovery tests simulate durable unindexed tails and torn bytes;
 append, rebuild and compaction process-kill boundaries and deterministic I/O
 failures are tested. Real power-cut testing has not been performed. The generated-store wrapper and compressed record files are implemented in
 [`generated-store/`](generated-store/README.md). Layer 1 network primitives are
-implemented in [`network-clients/`](network-clients/README.md); higher-layer
-coordination is separate work.
-
-## Layer 2 object access
-
-`object-access/` implements cached object retrieval, bounded concurrent batches,
-verified BLTE ranges, observations and commit feeds over layer 1. See
-[its API, tests and throughput qualifications](object-access/README.md).
+implemented in [`network-clients/`](network-clients/README.md). Layers 2 and 3
+are implemented separately; layers 4–7 and application packaging remain future work.

@@ -1,6 +1,6 @@
 # Continuous integration
 
-The `Unit tests` workflow runs `:object-store:test :generated-store:test :network-clients:test :object-access:test` on GitHub-hosted
+The `Unit tests` workflow runs `:object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test` on GitHub-hosted
 `ubuntu-24.04`, `windows-2025` and `macos-15` runners. Each job installs a full
 Temurin Java 25 JDK matching the runner architecture. The fast tasks need neither
 native SQLite nor .NET nor the original C# checkout. Generated record tests use
@@ -11,7 +11,7 @@ enabled; formatting and native integration are separate checks.
 Run the same task locally with:
 
 ```sh
-./gradlew :object-store:test :generated-store:test :network-clients:test :object-access:test --no-daemon --console=plain
+./gradlew :object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test --no-daemon --console=plain
 ```
 
 Use `gradlew.bat` in a Windows terminal. Hosted jobs use the checked-in Unix
@@ -33,8 +33,9 @@ python3 -m unittest discover -s scripts/ci -p '*_test.py'
 ```
 
 The validation group contains `object-store`, its consumer `generated-store`,
-the independent `network-clients` component, and their layer 2 `object-access` consumer. The historical `object_store` selector output conservatively
-selects all four components. Any code, public-interface, test, fixture,
+and the independent `network-clients` component, plus layer 2 `object-access` and
+its layer 3 consumer `builds`. The historical `object_store` selector output conservatively
+selects all five components. Any code, public-interface, test, fixture,
 Gradle, dependency, wrapper, configuration, workflow or unknown-path change selects
 all components on all three platforms. Markdown/reStructuredText, root license
 notices and documentation images skip them; executable/build/workflow directories
@@ -47,8 +48,9 @@ because GitHub skipped the entire workflow.
 When another component is introduced, add its root and consumer relationships to
 the selector before making selection narrower. Public-interface and shared-fixture
 changes must select affected consumers too; shared build/wrapper/workflow changes
-must continue to select all components. The generated-store consumes object-store;
-changes to any component currently run all four.
+must continue to select all components. The generated-store consumes object-store; object-access consumes object-store
+and network-clients; builds consumes object-access;
+changes to any component currently run all five.
 
 Each platform retains JUnit XML and HTML test reports for seven days, including
 failing test reports. Open the run's artifacts named `unit-reports-Linux`,
@@ -77,7 +79,7 @@ move to the appropriate machine.
 
 The independent `Integration tests` workflow uses the same conservative component
 selection and an always-running `Integration tests` aggregate check. Its platform
-jobs run `:object-store:integrationTest :generated-store:check :network-clients:check :object-access:check` separately from the
+jobs run `:object-store:integrationTest :generated-store:check :network-clients:check :object-access:check :builds:check` separately from the
 fast unit workflow and
 retain independent `integration-reports-*` XML/HTML artifacts for seven days.
 Every disk test uses temporary synthetic stores.
@@ -115,10 +117,10 @@ dispatch and a Monday 05:00 UTC schedule force both suites. Scheduled/manual eve
 become available after the workflow reaches the default branch.
 
 The interoperation job checks out public `aircan80/vibeminer` at commit
-`4fd92d2a36add50c9b82e1c92bf72706e8d0df2b`, sparse to the layer 1 object and generated projects,
+`4fd92d2a36add50c9b82e1c92bf72706e8d0df2b`, sparse to the Objects, Generated, Cdn, ObjectAccess and Builds projects,
 root build properties, editor settings and `global.json`. It installs the specified
 .NET SDK 10.0.402 and builds `VibeMiner.Generated` and its `VibeMiner.Objects`
-dependency in Release with locked NuGet
+dependency, then `VibeMiner.Builds` and its ObjectAccess/Cdn dependencies, in Release with locked NuGet
 restore. Java and reference checkouts occupy sibling `vimi/` and `vibeminer/`
 directories, as required by the existing reference harness. The Java invocation is
 `:object-store:interopTest` with the absolute `dotnet` executable resolved from
@@ -195,3 +197,16 @@ transfers, header/idle/total deadlines, cancellation, sink backpressure and sour
 concurrency. Tests never contact Blizzard or GitHub or require live credentials.
 The existing stable aggregates and conservative selector include these checks;
 network changes also retain the storage compatibility gate.
+
+## Layer 2 and layer 3 coverage
+
+Unit jobs include object-access contracts/scheduler/fan-out/cancellation tests and
+builds discovery/parsing/resolution/tracking tests. Integration jobs run both
+modules' check tasks, including source/disk contracts and a composition-root
+pipeline through actual storage, source coordination, catalog projection, build
+resolution and offline reopen/reconstruction. Builds uses the same externally
+supplied SQLite library; no second bundled native dependency is introduced.
+
+The Linux compatibility job additionally runs `:builds:interopTest` against the
+pinned C# schema v1 catalog, and retains its XML/HTML reports. Tests use temporary
+synthetic fixtures; they do not perform live service requests or use user data.
