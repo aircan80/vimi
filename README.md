@@ -21,6 +21,8 @@ On Windows use `gradlew.bat` wherever the examples below use `./gradlew`.
 To review the code in IntelliJ IDEA, open this repository root as a Gradle project
 and select the Java 25 JDK for both the project and Gradle JVM.
 
+GitHub-hosted unit checks and their reports are described in [CI documentation](docs/ci.md).
+
 ## Java code quality
 
 Java source and every test suite use four-space AOSP formatting through Spotless

@@ -1,0 +1,79 @@
+name: Unit tests
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unit-tests-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Unit / ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Linux
+            runner: ubuntu-24.04
+          - platform: Windows
+            runner: windows-2025
+          - platform: macOS
+            runner: macos-15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@0723195856401067f7a2779048b490ace7a47d7c # v5.0.2
+      - name: Install Java 25 and restore Gradle dependencies
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          java-package: jdk
+          cache: gradle
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+          cache-dependency-path: |
+            **/*.gradle
+            **/*gradle.lockfile
+            gradle.properties
+            gradle/wrapper/gradle-wrapper.properties
+          overwrite-settings: false
+      - name: Run object-store unit tests
+        run: ./gradlew :object-store:test --no-daemon --console=plain
+      - name: Retain unit test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unit-reports-${{ matrix.platform }}
+          path: |
+            object-store/build/reports/tests/test/
+            object-store/build/test-results/test/TEST-*.xml
+          if-no-files-found: warn
+          retention-days: 7
+
+  required:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    if: ${{ always() }}
+    needs: [unit]
+    steps:
+      - name: Require every platform to pass
+        env:
+          UNIT_RESULT: ${{ needs.unit.result }}
+        run: test "$UNIT_RESULT" = success
