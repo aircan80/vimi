@@ -183,7 +183,7 @@ final class SqliteCancellationTest {
     }
 
     @Test
-    void publicPutCancellationRollsBackPackAndAllowsRetry() throws Exception {
+    void publicPutCancellationBeforeAppendAllowsRetry() throws Exception {
         ObjectStore store = ObjectStore.open(folder).join();
         Cancellation token = new Cancellation();
         try (Gate gate = new Gate()) {
@@ -191,7 +191,8 @@ final class SqliteCancellationTest {
             store.database.progressProbe = gate::pause;
             store.database.statementProbe =
                     sql -> {
-                        if (sql.startsWith("INSERT INTO objects") && inject.getAndSet(false)) {
+                        if (sql.startsWith("SELECT k,pack,offset,length,sha256 FROM objects")
+                                && inject.getAndSet(false)) {
                             store.database.query(LONG_QUERY);
                         }
                     };

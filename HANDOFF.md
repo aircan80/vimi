@@ -213,11 +213,35 @@ The higher-level generated-record store and network clients are separate work.
   the five-second SQLite busy timeout; progress callbacks do not run during lock waits.
 - Next story: #21 group commits. Native Windows/macOS work has not begun.
 
+## Group commits (#21)
+
+- PendingWrites owns writer-only metadata and shared durability futures; payloads live
+  in the active pack, not a second memory buffer. Puts share groups across queued
+  requests; duplicate keys and history documents resolve against pending entries.
+- Groups close at 128 entries, 16 MiB of entry bytes, 250 ms after processing a request,
+  commitNow, queue idle and required operation/pack-roll boundaries. Timing uses a
+  monotonic clock with a deterministic package-private test seam.
+- One pack sync precedes one NORMAL index transaction. Pack rolls retain FULL metadata
+  transitions. Readers see only committed rows. Stored-object futures wait for all
+  their groups and publish away from the writer thread.
+- Cancellation skips objects before append; already-appended entries commit even after
+  token cancellation. Public pre-append SQL cancellation remains interruptible. Delete
+  closes previous puts, batches tombstones and commits at the request end. Staging and
+  maintenance flush pending puts before running.
+- Group errors fail every pending owner after rollback/truncate/sync; uncertain commits
+  preserve bytes and stop writes as before. Close drains accepted requests and groups.
+- Added three policy unit cases, fifteen disk cases and eight multi-entry process-kill
+  cases. Existing failure, cancellation, crash and C# compatibility suites remain green.
+- Validation: 270 cases (40 unit, 131 integration, 59 crash, 40 interop), formatting,
+  Checkstyle, compiler lint and assembly on Linux. This completes Asynchronous behavior.
+- CI foundation is proceeding independently in a separate agent/worktree. Hosted runs
+  currently need the GitHub login's workflow scope; no main push has been performed.
+
 ## Remaining parity work
 
 This is not yet full reference parity. See README's Current limits. In particular:
-- Group commits, read-day accounting, pack-handle/session SHA caches and caller-side
-  parallel verification remain. Current writes commit individually.
+- Read-day accounting, pack-handle/session SHA caches and caller-side parallel
+  verification remain. Group commits are implemented (see above).
 - Reader/opener queue overflow still fails with a limit error. Writer admission waits
   asynchronously within explicit request/payload bounds (see above).
 - SQLite progress cancellation covers active VM work; lock waits retain the five-second

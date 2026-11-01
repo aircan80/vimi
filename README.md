@@ -224,7 +224,13 @@ through `ObjectStore.openReadOnly` and a separate interface without write method
 ## Current limits
 
 This is a functioning initial port, not full performance/behavior parity. Writes
-currently commit each object individually; `commitNow` has no additional effect.
+share group commits: 128 entries, 16 MiB of entry bytes, 250 ms checked after each
+request, queue idle, or `commitNow` closes the group. Pack rolls, deletes, staging
+and maintenance establish commit boundaries. The pack is synced before the index
+transaction; stored-object futures complete only after commit, and readers cannot
+see pending rows. Cancellation skips unappended objects; appended objects still
+commit. A failed group rolls back its entire pending tail and fails its pending
+owners. Pack metadata transitions retain FULL durability.
 The serial writer supports 64 ready requests plus 64 asynchronous admission waiters.
 Its 512 MiB retained-input budget includes active, ready and waiting payloads.
 Exceeding either the waiter or payload budget returns `OBJECT_STORE_LIMIT`.

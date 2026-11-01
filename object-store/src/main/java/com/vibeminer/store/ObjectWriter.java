@@ -13,6 +13,11 @@ import java.util.concurrent.CompletableFuture;
  * their per-operation cancellation semantics. Close drains accepted work and rejects waiters.
  */
 public interface ObjectWriter {
+    /**
+     * Stored objects become visible and this future completes only after their groups commit.
+     * commitNow closes the group after this request; idle queues also flush immediately.
+     * Cancellation skips objects not yet appended; appended objects still commit.
+     */
     CompletableFuture<List<PutResult>> put(
             List<PutObject> batch, boolean commitNow, Cancellation cancellation);
 

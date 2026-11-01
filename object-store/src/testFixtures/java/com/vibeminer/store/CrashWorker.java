@@ -50,6 +50,16 @@ public final class CrashWorker {
                     stopAt(requested.name());
                 };
         switch (operation) {
+            case "group" ->
+                    store.put(
+                                    List.of(
+                                            new PutObject(
+                                                    StoreAssertions.key(CrashFixture.groupFirst()),
+                                                    CrashFixture.groupFirst()),
+                                            new PutObject(target, CrashFixture.target())),
+                                    true,
+                                    Cancellation.NONE)
+                            .join();
             case "put" ->
                     store.put(
                                     List.of(new PutObject(target, CrashFixture.target())),
