@@ -1,0 +1,6 @@
+# This is a Gradle generated file for dependency locking.
+# Manual edits can break the build and are not advised.
+# This file is expected to be part of source control.
+com.fasterxml.jackson.core:jackson-core:2.20.1=compileClasspath
+com.fasterxml.jackson:jackson-bom:2.20.1=compileClasspath
+empty=annotationProcessor
