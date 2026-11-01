@@ -66,12 +66,19 @@ public final class BlteChunkTable {
     }
 
     public Refusal checkChunk(int index, byte[] bytes) {
-        if (bytes.length != chunkLength(index)) {
+        return checkChunk(index, bytes, 0, bytes.length);
+    }
+
+    /** Checks a chunk in a merged range without allocating another payload copy. */
+    public Refusal checkChunk(int index, byte[] bytes, int offset, int length) {
+        Objects.checkFromIndexSize(offset, length, bytes.length);
+        if (length != chunkLength(index)) {
             return Verification.refusal("OBJECT_SIZE_MISMATCH");
         }
+        MessageDigest md5 = Format.digest("MD5");
+        md5.update(bytes, offset, length);
         return MessageDigest.isEqual(
-                        Format.hash("MD5", bytes),
-                        Arrays.copyOfRange(header, 20 + 24 * index, 36 + 24 * index))
+                        md5.digest(), Arrays.copyOfRange(header, 20 + 24 * index, 36 + 24 * index))
                 ? null
                 : Verification.refusal("OBJECT_BLTE_INVALID");
     }

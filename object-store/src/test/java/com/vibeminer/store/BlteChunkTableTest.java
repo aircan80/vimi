@@ -44,6 +44,7 @@ final class BlteChunkTableTest {
         assertEquals(1, table.chunkAt(length - 1));
         assertEquals(1, table.chunkAt(header.length + 3L));
         assertNull(table.checkChunk(0, a));
+        assertNull(table.checkChunk(0, new byte[] {9, 'N', 1, 2, 9}, 1, 3));
         assertEquals("OBJECT_SIZE_MISMATCH", table.checkChunk(1, a).code());
         b[0] ^= 1;
         assertEquals("OBJECT_BLTE_INVALID", table.checkChunk(1, b).code());
