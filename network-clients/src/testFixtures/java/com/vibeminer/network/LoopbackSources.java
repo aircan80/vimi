@@ -52,6 +52,8 @@ public final class LoopbackSources implements AutoCloseable {
                     new okhttp3.tls.HeldCertificate.Builder()
                             .commonName("localhost")
                             .addSubjectAlternativeName("localhost")
+                            .addSubjectAlternativeName("127.0.0.1")
+                            .addSubjectAlternativeName("::1")
                             .build();
             var serverTls =
                     new okhttp3.tls.HandshakeCertificates.Builder()
@@ -64,7 +66,7 @@ public final class LoopbackSources implements AutoCloseable {
             server.useHttps(serverTls.sslSocketFactory(), false);
             transport.sslSocketFactory(clientTls.sslSocketFactory(), clientTls.trustManager());
         }
-        server.start();
+        server.start(java.net.InetAddress.getByName("127.0.0.1"), 0);
         java.util.function.Function<URI, URI> target =
                 uri ->
                         server.url(
@@ -74,6 +76,9 @@ public final class LoopbackSources implements AutoCloseable {
                                                 + (uri.getRawQuery() == null
                                                         ? ""
                                                         : "?" + uri.getRawQuery()))
+                                .newBuilder()
+                                .host("127.0.0.1")
+                                .build()
                                 .uri();
         OkHttpClient supplied = transport.build();
         clients =
