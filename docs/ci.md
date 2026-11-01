@@ -105,7 +105,9 @@ root build properties, editor settings and `global.json`. It installs the specif
 .NET SDK 10.0.402 and builds only `VibeMiner.Objects` in Release with locked NuGet
 restore. Java and reference checkouts occupy sibling `vimi/` and `vibeminer/`
 directories, as required by the existing reference harness. The Java invocation is
-`:object-store:interopTest -Pdotnet=dotnet`, with an explicit SQLite library path.
+:object-store:interopTest` with the absolute `dotnet` executable resolved from
+`command -v dotnet`, plus an explicit SQLite library path. The harness expects an
+absolute executable path; a bare `-Pdotnet=dotnet` is not sufficient.
 Missing reference source, SDK, dependencies or assembly fails rather than skipping.
 No repository secret or private-source access is needed; the reference is public.
 Reference-version updates require reviewing the pinned commit and rerunning the

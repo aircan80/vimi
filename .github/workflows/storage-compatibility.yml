@@ -157,7 +157,9 @@ jobs:
       - name: Run Java-CSharp interoperability tests
         env:
           SQLITE_LIBRARY: ${{ steps.sqlite.outputs.library }}
-        run: ./gradlew :object-store:interopTest -Pdotnet=dotnet "-PsqliteLibrary=$SQLITE_LIBRARY" --no-daemon --console=plain
+        run: |
+          dotnet_executable="$(command -v dotnet)"
+          ./gradlew :object-store:interopTest "-Pdotnet=$dotnet_executable" "-PsqliteLibrary=$SQLITE_LIBRARY" --no-daemon --console=plain
       - name: Retain interoperability test reports
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
