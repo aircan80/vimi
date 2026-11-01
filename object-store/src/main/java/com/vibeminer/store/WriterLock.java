@@ -4,6 +4,7 @@ import static java.lang.foreign.ValueLayout.ADDRESS;
 import static java.lang.foreign.ValueLayout.JAVA_INT;
 
 import java.lang.foreign.Arena;
+import java.lang.foreign.FunctionDescriptor;
 import java.lang.foreign.Linker;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
@@ -60,9 +61,15 @@ final class WriterLock implements AutoCloseable {
                     throw busy();
                 }
             } else {
+                // open(path, flags, mode) has a variadic mode argument. In particular, the
+                // macOS ARM64 ABI passes it differently from a fixed third argument.
                 MethodHandle open =
-                        NativeSqlite.function(
-                                lookup, "open", JAVA_INT, ADDRESS, JAVA_INT, JAVA_INT);
+                        Linker.nativeLinker()
+                                .downcallHandle(
+                                        lookup.find("open").orElseThrow(),
+                                        FunctionDescriptor.of(
+                                                JAVA_INT, ADDRESS, JAVA_INT, JAVA_INT),
+                                        Linker.Option.firstVariadicArg(2));
                 MethodHandle flock =
                         NativeSqlite.function(lookup, "flock", JAVA_INT, JAVA_INT, JAVA_INT);
                 release = NativeSqlite.function(lookup, "close", JAVA_INT, JAVA_INT);

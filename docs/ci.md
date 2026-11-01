@@ -86,11 +86,18 @@ failures stop the job instead of skipping its tests.
 
 The CI library locations are dependencies of hosted test jobs, not an application
 SQLite packaging policy. Native packaging/read-only-media and hands-on platform
-validation remain separate storage stories. Hosted Linux and Windows integration
-jobs pass. Hosted macOS integration reaches the store but fails opening/reopening
-the native writer lock; this production-platform defect is tracked in #24 and
-keeps #14 open. Do not suppress those failures or claim macOS storage validation.
-Before debugging that code, switch to a native macOS development machine.
+validation remain separate storage stories. The initial macOS integration failure
+was traced by a native ARM64 investigation to the variadic `open()` binding in
+WriterLock (#24). The binding now marks the third argument as variadic, with
+regressions for permissions, reopening and exclusion. Hosted validation of the
+applied correction is recorded below when available.
+
+If the faulty binding already created a lock file without owner read/write access,
+correcting the call does not change that existing file's permissions. Stop all
+writers, then restore owner read/write permission on that store's `writer.lock`
+with `chmod u+rw /path/to/store/writer.lock`. Do not delete or replace the lock file:
+locks belong to its inode. The library preserves existing file permissions and
+never changes them automatically.
 
 ## Crash and reference compatibility jobs
 

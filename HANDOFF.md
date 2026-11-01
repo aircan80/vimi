@@ -249,12 +249,23 @@ The higher-level generated-record store and network clients are separate work.
 - #9 unit jobs pass on hosted Linux, Windows and macOS. #15 selection is verified by
   real documentation-only skips and an intentional synthetic failing-unit branch;
   all required aggregates behave correctly. Synthetic branch changes are never merged.
-- #14 native integration passes on hosted Linux and Windows (131 cases each), but
-  macOS fails in WriterLock.java opening/reopening the writer lock. The native SQLite
-  installation step succeeds. #24 tracks that storage-platform defect; #14 stays open.
-- The user was notified to switch to a native macOS machine before hands-on debugging.
-  Reproduce with a full Java 25 JDK and Homebrew SQLite using the integration task
-  and an explicit `-PsqliteLibrary` path as documented in docs/ci.md. Do not skip tests.
+- Initial #14 macOS integration failed opening/reopening WriterLock. The user supplied
+  a native macOS ARM64 investigation archive. Its checksums match; the reported
+  temporary correction passes 40 unit, 131 integration and 59 crash cases using
+  JDK 26 with --release 25, outside Gradle. It did not run C# interoperation.
+- Applied the focused fix: mark Unix open's mode argument with firstVariadicArg(2).
+  This follows Java 25 FFM's variadic ABI contract. Added four native regressions:
+  fresh POSIX owner read/write mode, reopen, held exclusion/reacquisition, and
+  preserving an existing lock inode/content/permissions. POSIX-only checks are
+  explicitly conditional on filesystem support; generic lock tests run on Windows.
+- The raw archive/reports stay outside the repo: they contain private machine
+  identifiers. Only a sanitized diagnosis and aggregate results are public.
+- Existing malformed lock permissions need manual owner read/write restoration with
+  all writers stopped; never delete/replace an existing lock inode. See docs/ci.md.
+- Linux Java 25 validation passes 274 cases (40 unit, 135 integration, 59 crash,
+  40 interop), formatting, Checkstyle, compiler lint and assembly. Hosted
+  three-platform validation of the correction follows.
+  Keep #24 open for the rest of native platform validation beyond this one defect.
 - #20 Linux crash and C# interoperation jobs pass (59/40 cases). CI supplies an absolute
   dotnet executable path; the reference is a pinned public sparse checkout with locked
   Release restore/build. #20 stays open while its #14 dependency is unresolved.
