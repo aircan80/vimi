@@ -58,12 +58,42 @@ validation, the 64 MiB generated limit, and encoded staging above 64 MiB. Tests 
 ```sh
 ./gradlew :object-store:integrationTest
 ./gradlew check                 # all existing components' unit + integration tests
-./gradlew check :object-store:interopTest  # complete validation, including C#
+./gradlew check :object-store:crashTest :object-store:interopTest  # all current suites
 ```
 
-`test`, `check` and normal builds never start .NET. Interoperability is opt in.
+`test`, `check` and normal builds never start .NET or crash-test child processes.
+Crash and interoperability suites are opt in.
 Gradle does not automatically select downstream tests from changed interfaces;
 that impact selection is part of the development workflow until a CI policy is added.
+
+## Crash recovery checks
+
+```sh
+./gradlew :object-store:crashTest
+# Limit to one operation when developing a recovery fix:
+./gradlew :object-store:crashTest --tests '*AppendCrashTest.putSurvivesOrTruncatesAtEachBoundary*'
+```
+
+The crash suite starts a child Java writer on an isolated temporary store, waits
+for an explicit write-boundary handshake, and forcibly terminates it without a
+clean shutdown. On Unix this is a process kill, not an exception that rolls back
+inside the writer. Covered boundaries include partial payloads, completed headers,
+pack fsync, uncommitted index updates and completed index commits. Tests exercise
+puts, tombstones, history records and staged copies, then check recovery, clean-close
+markers, repeated reopening, continued writes and index replay. Each child has
+bounded handshake/termination waits and is cleaned up on failure.
+
+Instrumentation is package-private and instance-scoped, with no public option or
+environment/property switch. The executable worker and parent harness live only
+in test fixtures. Production writes retain their normal unsplit payload-write path.
+
+The interoperability suite additionally kills Java writers and recovers them in
+C#, and kills C# writers and recovers them in Java. The C# harness uses the
+reference assembly's existing friend-test access under the assembly name
+`VibeMiner.Objects.Testing`; no reference source is changed.
+
+These tests model process termination, not a physical power cut. Rebuild/compaction
+crash boundaries and injected storage failures remain separate stories.
 
 ## Build
 
@@ -110,7 +140,8 @@ consumed with `testImplementation testFixtures(project(':object-store'))`.
 - `object-store/src/test/java`: fast unit and memory-contract tests.
 - `object-store/src/testFixtures/java`: reusable memory fake, assertions and contracts.
 - `object-store/src/integrationTest/java`: disk integration tests.
-- `object-store/src/interopTest/java`: cross-language compatibility tests.
+- `object-store/src/crashTest/java`: opt-in child-process termination tests.
+- `object-store/src/interopTest/java`: cross-language compatibility and recovery tests.
 - `object-store/src/interopTest/csharp`: original implementation's C# test harness.
 - `docs/object-store-v1.md`: reference copy of the authoritative disk specification.
 - `scripts/`: convenience wrappers around component Gradle tasks.
@@ -149,6 +180,6 @@ contracts without native or file dependencies.
 Linux ARM64 native SQLite and cross-language writer locks have been exercised.
 Windows and macOS need native-platform CI, including read-only media behavior and
 SQLite packaging. Recovery tests simulate durable unindexed tails and torn bytes;
-process kill fault injection at every durability boundary and real power-cut
-testing have not been performed. No higher layer, generated-record abstraction
+append process-kill boundaries are tested, but rebuild/compaction kill boundaries,
+injected I/O failures and real power-cut testing remain to be completed. No higher layer, generated-record abstraction
 or network client is included.

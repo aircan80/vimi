@@ -3,6 +3,35 @@ using System.Text;
 using System.Text.Json;
 using VibeMiner.Objects;
 
+// The harness assembly uses the original library's existing InternalsVisibleTo test seam.
+if (args[0] == "crash-writer") {
+    var requested = Enum.Parse<StorePoint>(args[2]);
+    var options = new ObjectStoreOptions { Fault = point => {
+        if (point != requested) return;
+        Console.WriteLine($"READY {requested}"); Console.Out.Flush();
+        if (Console.In.ReadLine() is null) throw new Exception("Parent disconnected before termination");
+        throw new Exception("Parent should terminate the blocked writer");
+    }};
+    await using var child = await ObjectStore.OpenAsync(Path.GetFullPath(args[1]), options);
+    var bytes = Encoding.ASCII.GetBytes("crash target");
+    await child.PutAsync([new(new ObjectKey(ObjectKeyType.Config,MD5.HashData(bytes)),bytes.Length,bytes)],true);
+    throw new Exception("Requested crash boundary was not reached");
+}
+if (args[0] == "recover-crash") {
+    await using var recovered = await ObjectStore.OpenAsync(Path.GetFullPath(args[1]));
+    if (!recovered.OpenReport.FullIndexCheck) throw new Exception("Killed Java writer was incorrectly marked clean");
+    var baseline = Encoding.ASCII.GetBytes("committed baseline"); var target = Encoding.ASCII.GetBytes("crash target");
+    var read = await recovered.ReadAsync(new(ObjectKeyType.Config,MD5.HashData(baseline)));
+    if (read.State != ReadState.Present || !read.Bytes!.SequenceEqual(baseline)) throw new Exception("Committed baseline was lost");
+    bool expected = bool.Parse(args[2]);
+    var targetRead = await recovered.ReadAsync(new(ObjectKeyType.Config,MD5.HashData(target)));
+    if ((targetRead.State == ReadState.Present) != expected) throw new Exception("Recovered target visibility differs");
+    if (expected && !targetRead.Bytes!.SequenceEqual(target)) throw new Exception("Recovered bytes differ");
+    if ((await recovered.ReadHistoryAsync(new())).Count != 1) throw new Exception("Committed history was lost");
+    var verified = await recovered.VerifyAsync(true);
+    if (verified.CorruptCount != 0 || verified.LostCount != 0) throw new Exception("Recovered store failed verification");
+    Console.WriteLine("C# recovered a killed Java writer"); return;
+}
 if (args[0] == "verify-vectors") {
     using var input = JsonDocument.Parse(await File.ReadAllTextAsync(args[1]));
     int count = 0;

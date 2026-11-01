@@ -32,6 +32,9 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     OpenReport openReport;
     final Map<ObjectKey, Staging> stagings = new HashMap<>();
     long stagingBytes;
+    // Package-private, instance-scoped test seam. No property, public option or global hook.
+    java.util.function.BiConsumer<WritePoint, ObjectKey> writeProbe;
+    private void atWrite(WritePoint point, ObjectKey key) { if (writeProbe != null) writeProbe.accept(point, key); }
 
     private ObjectStore(Path path, Options options, boolean readOnly) {
         if (!path.isAbsolute()) throw new IllegalArgumentException("Store folder must be absolute");
@@ -300,9 +303,17 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         try (FileChannel file = FileChannel.open(packPath(number), READ, WRITE)) {
             MessageDigest sha = Format.digest("SHA-256"); byte[] table = new byte[Format.blocks(length) * 4];
             try {
+                atWrite(WritePoint.ENTRY_STARTED, key);
                 if (source == null) {
                     byte[] content = tombstone ? new byte[0] : bytes;
-                    Format.write(file, start + 96, content); sha.update(content);
+                    if (writeProbe == null) Format.write(file, start + 96, content);
+                    else if (content.length > 0) {
+                        int first = Math.max(1, content.length / 2);
+                        Format.write(file, start + 96, Arrays.copyOfRange(content, 0, first));
+                        atWrite(WritePoint.PAYLOAD_PARTIAL, key);
+                        Format.write(file, start + 96 + first, Arrays.copyOfRange(content, first, content.length));
+                    }
+                    sha.update(content);
                     for (int block = 0; block < Format.blocks(length); block++) Format.le(table).putInt(block * 4, (int)Format.crc(content, block * Format.BLOCK, Math.min(Format.BLOCK, content.length - block * Format.BLOCK)));
                 } else {
                     ObjectCheck check = verifier.begin(key, length);
@@ -312,12 +323,19 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                             byte[] data = readStaged(input, (long)block * Format.BLOCK, (int)Math.min(Format.BLOCK, length - (long)block * Format.BLOCK));
                             Refusal r = check.append(data); if (r != null) throw new StoreException(r.code(), r.message());
                             sha.update(data); Format.le(table).putInt(block * 4, (int)Format.crc(data)); Format.write(file, start + 96 + (long)block * Format.BLOCK, data);
+                            if (block == 0) atWrite(WritePoint.PAYLOAD_PARTIAL, key);
                         }
                         Refusal r = check.complete(); if (r != null) throw new StoreException(r.code(), r.message());
                     }
                 }
+                atWrite(WritePoint.PAYLOAD_WRITTEN, key);
                 entry = new Format.Entry(key, length, sha.digest(), now(), origin, sequence, tombstone);
-                Format.write(file, start + 96 + length, table); Format.write(file, start, entry.header()); file.force(true);
+                Format.write(file, start + 96 + length, table);
+                atWrite(WritePoint.TABLE_WRITTEN, key);
+                Format.write(file, start, entry.header());
+                atWrite(WritePoint.HEADER_WRITTEN, key);
+                file.force(true);
+                atWrite(WritePoint.PACK_SYNCED, key);
                 Format.Entry committed = entry;
                 database.transaction(false, () -> {
                     StoreIndex.Row previous = index.find(key);
@@ -331,6 +349,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                         }
                     } else if (!tombstone) index.insert(new StoreIndex.Row(key, number, start, length, committed.sha()), history);
                     index.next = sequence + 1; index.pack(number, 0, start + size, newLive); index.save();
+                    atWrite(WritePoint.INDEX_UPDATED, key);
                 });
             } catch (Throwable error) {
                 try { file.truncate(start); file.force(true); index.load(); }
@@ -338,6 +357,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 if (source != null && error instanceof StoreException s && !s.code().equals("OBJECT_STORE_WRITE_FAILED")) throw s;
                 throw translate(error, "OBJECT_STORE_WRITE_FAILED");
             }
+            // Outside rollback scope: after commit, the entry must never be truncated.
+            atWrite(WritePoint.INDEX_COMMITTED, key);
         }
     }
     private static FileChannel openStaged(Path path) {

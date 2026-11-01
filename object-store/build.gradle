@@ -31,6 +31,10 @@ sourceSets {
         compileClasspath += sourceSets.main.output
         runtimeClasspath += sourceSets.main.output
     }
+    crashTest {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
     interopTest {
         compileClasspath += sourceSets.main.output
         runtimeClasspath += sourceSets.main.output
@@ -40,6 +44,8 @@ sourceSets {
 configurations {
     integrationTestImplementation.extendsFrom testImplementation
     integrationTestRuntimeOnly.extendsFrom testRuntimeOnly
+    crashTestImplementation.extendsFrom testImplementation
+    crashTestRuntimeOnly.extendsFrom testRuntimeOnly
     interopTestImplementation.extendsFrom testImplementation
     interopTestRuntimeOnly.extendsFrom testRuntimeOnly
 }
@@ -49,6 +55,7 @@ dependencies {
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     integrationTestImplementation testFixtures(project(':object-store'))
+    crashTestImplementation testFixtures(project(':object-store'))
     interopTestImplementation testFixtures(project(':object-store'))
 }
 
@@ -76,6 +83,14 @@ tasks.register('integrationTest', Test) {
     shouldRunAfter tasks.named('test')
 }
 
+tasks.register('crashTest', Test) {
+    description = 'Kills child writers at deterministic durability boundaries (opt in).'
+    group = 'verification'
+    testClassesDirs = sourceSets.crashTest.output.classesDirs
+    classpath = sourceSets.crashTest.runtimeClasspath
+    shouldRunAfter tasks.named('integrationTest')
+}
+
 def repoRoot = rootProject.layout.projectDirectory
 def dotnetExecutable = providers.gradleProperty('dotnet').orElse(
     repoRoot.file('../vibeminer/.local/toolchains/dotnet/dotnet').asFile.absolutePath)
@@ -101,7 +116,7 @@ tasks.register('interopTest', Test) {
     testClassesDirs = sourceSets.interopTest.output.classesDirs
     classpath = sourceSets.interopTest.runtimeClasspath
     systemProperty 'vimi.dotnet', dotnetExecutable.get()
-    systemProperty 'vimi.interop.harness', csharpDirectory.file('bin/Debug/net10.0/Interop.dll').asFile.absolutePath
+    systemProperty 'vimi.interop.harness', csharpDirectory.file('bin/Debug/net10.0/VibeMiner.Objects.Testing.dll').asFile.absolutePath
     inputs.files(fileTree(csharpDirectory) { include '*.cs', '*.csproj', 'packages.lock.json' })
     inputs.file(repoRoot.file('../vibeminer/src/backend/VibeMiner.Objects/bin/Release/net10.0/VibeMiner.Objects.dll'))
     // C# runtime/native dependency changes must also cause compatibility checks to run.

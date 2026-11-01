@@ -81,6 +81,22 @@ The higher-level generated-record store and network clients are separate work.
   passes 54 unit, integration and interoperability tests; native Windows/macOS
   validation remains in the platform milestone.
 
+## Append crash-safety story implementation (#6)
+
+- Added package-private, per-store write observation points with no public fault switch.
+  Production payload writes are not split unless the test observer is installed.
+- Added a child writer and bounded parent handshake/force-kill harness in test fixtures.
+- `:object-store:crashTest` is opt in and covers partial payload, table/header completion,
+  pack sync, uncommitted index changes and committed index changes for puts, deletes,
+  history and staged copies. Recovery checks include dirty/clean markers, preservation,
+  truncation/replay, repeated reopen, continued writes and a subsequent scan.
+- Added bidirectional process-kill recovery against the original C# implementation.
+  The harness uses its existing `VibeMiner.Objects.Testing` friend assembly name.
+- Existing fast unit and default check commands do not launch crash workers or .NET.
+- Rebuild/compaction crash points and injected I/O failures remain stories #11, #12, #13.
+- Append crash-safety story #6 is implemented and validated with 99 passing tests
+  across the component suites. Rebuild/compaction and injected I/O failure work follows.
+
 ## Remaining parity work
 
 This is not yet full reference parity. See README's Current limits. In particular:
