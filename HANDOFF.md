@@ -482,6 +482,14 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
   [#26](https://github.com/aircan80/vimi/issues/26#issuecomment-6564992261).
   All remain open for outstanding Windows and final readiness criteria. This Mac
   was an existing development environment, not a pristine-machine startup test.
-- Next: switch to native Windows and follow `docs/continue-windows.md`, including
-  isolated native ACL/media checks and default-name SQLite startup evidence.
-  After Windows, reconcile final clean-machine/parity/release-readiness criteria.
+- The user subsequently deferred native Windows testing to a future session.
+  Do not require a Windows machine switch before continuing development. Keep
+  hosted Windows checks enabled and #24/#25 open for the deferred evidence.
+- Object-store implementation is the completed development baseline; this is not
+  a claim of completed platform/release certification. Clean-machine SQLite startup
+  and final parity/readiness review remain tracked by #26. The higher-level
+  generated-record abstraction and network clients are separate layer 1 work.
+- Next: continue the remaining layer 1 components, starting by scoping the
+  generated-record abstraction against `VibeMiner.Generated`, then network clients
+  and layer 2 object access. Resume Windows checks with `docs/continue-windows.md`
+  when the user chooses; no Windows validation is claimed in the meantime.

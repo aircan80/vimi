@@ -297,8 +297,12 @@ on all three platforms. Linux ARM64/x64 and cross-language writer locks have bee
 exercised. Linux permission tests cover clean read-only media (including absent/empty WAL),
 rejection of unclean immutable indexes and inaccessible WAL commits, and live secondary
 reader visibility. POSIX permission cases skip when the filesystem lacks POSIX permissions
-or the process can bypass them. Native Windows/macOS read-only-media validation, broader
-interoperability and SQLite packaging remain platform-readiness work. Recovery tests simulate durable unindexed tails and torn bytes;
+or the process can bypass them. Native macOS ARM64 validation passed all 361 unit,
+integration, crash and Java/C# interoperability cases with zero skips, including
+all read-only permission checks. Native Windows validation is deferred by the
+maintainer and does not block further component development; hosted Windows checks
+continue. Clean-machine SQLite startup and final release-readiness review remain
+open. Recovery tests simulate durable unindexed tails and torn bytes;
 append, rebuild and compaction process-kill boundaries and deterministic I/O
 failures are tested. Real power-cut testing has not been performed. No higher layer, generated-record abstraction
 or network client is included.
