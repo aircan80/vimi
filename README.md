@@ -230,6 +230,15 @@ Has, empty ranges, verification and read-only stores do not update tracking. Sca
 preserves existing days; confirmed metadata-only SQL failures may drop notifications
 without failing reads or stopping safe writes.
 
+Pack read channels are cached and leased per read. `Options.packHandles()` defaults
+to 64; the existing three-argument Options constructor keeps that default, and the
+four-argument constructor accepts a positive capacity. Only idle least-recently-used
+entries are evicted. When all slots are pinned, an uncached channel closes when its
+lease ends. Compaction retires source entries without closing active leases; close
+drains accepted readers before disposing cached channels. Retired active leases are
+outside the retained-cache count and close at their last release. Supported-platform
+integration tests exercise concurrent write/delete sharing with leased channels.
+
 ## Current limits
 
 This is a functioning initial port, not full performance/behavior parity. Writes
@@ -248,8 +257,7 @@ Once admitted, each operation applies its existing cancellation semantics (inclu
 per-object `CANCELED` results). Close rejects unaccepted waiters and drains accepted
 writes. Result continuations run outside the disk writer and admission locks.
 Reader and opener queues still reject overflow rather than waiting for room.
-The pack-handle cache, parallel caller verification and the session SHA cache
-are not implemented. Scan's merge holds one open handle per
+Parallel caller verification and the session SHA cache are not implemented. Scan's merge holds one open handle per
 pack; compaction retains moved-row metadata per source pack. Cancellation checks
 occur between entries/blocks/pages. Active SQLite execution also checks the request's
 cancellation token through a progress callback every approximately 1,000 VM instructions;

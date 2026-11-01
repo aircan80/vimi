@@ -568,7 +568,10 @@ final class Maintenance {
                         });
                 switched = true;
                 s.atMaintenance(MaintenancePoint.COMPACT_SWITCHED);
+                s.packReaders.invalidate(source);
                 s.io.delete(s.packPath(source));
+                // Catch a stale-row acquisition between retirement and unlink.
+                s.packReaders.invalidate(source);
                 s.io.syncDirectory(s.packs);
                 s.atMaintenance(MaintenancePoint.COMPACT_OLD_DELETED);
                 s.database.uncancelled(

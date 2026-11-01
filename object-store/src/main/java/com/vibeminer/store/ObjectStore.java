@@ -55,6 +55,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     final boolean readOnly;
     final Verification verifier;
     final WriteQueue writer = new WriteQueue();
+    final PackReaders<FileChannel> packReaders;
     final ThreadPoolExecutor readers = Async.pool("vimi-store-read", 8);
     private final Object lifecycle = new Object();
     private boolean accepting = true;
@@ -320,6 +321,10 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         staging = folder.resolve("staging");
         indexPath = folder.resolve("objects.sqlite3");
         verifier = options.kind() == Kind.CDN ? Verification.CDN : Verification.GENERATED;
+        // Default FileChannel sharing permits concurrent writers/deletion on supported JDKs.
+        packReaders =
+                new PackReaders<>(
+                        options.packHandles(), number -> FileChannel.open(packPath(number), READ));
     }
 
     public static CompletableFuture<ObjectStore> open(Path folder) {
@@ -869,7 +874,11 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         }
         Path path = packPath(row.pack());
         atRead(ReadPoint.ROW_FOUND, key);
-        try (FileChannel file = FileChannel.open(path, READ)) {
+        try (var lease = packReaders.acquire(row.pack())) {
+            if (lease == null) {
+                throw new NoSuchFileException(path.toString());
+            }
+            FileChannel file = lease.handle();
             atRead(ReadPoint.PACK_OPENED, key);
             Format.Entry entry;
             try {
@@ -1440,6 +1449,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                     Async.submit(
                             command -> Thread.ofVirtual().name("vimi-store-close").start(command),
                             () -> {
+                                Throwable failure = null;
                                 try {
                                     while (!writer.awaitTermination(1, TimeUnit.SECONDS)) {}
                                     while (!readers.awaitTermination(1, TimeUnit.SECONDS)) {}
@@ -1473,9 +1483,22 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                                     }
                                     return null;
                                 } catch (IOException | NativeSqlite.Failure error) {
-                                    throw translate(error, "OBJECT_STORE_WRITE_FAILED");
+                                    RuntimeException translated =
+                                            translate(error, "OBJECT_STORE_WRITE_FAILED");
+                                    failure = translated;
+                                    throw translated;
+                                } catch (Exception | Error error) {
+                                    failure = error;
+                                    throw error;
                                 } finally {
-                                    release();
+                                    try {
+                                        release();
+                                    } catch (RuntimeException | Error cleanup) {
+                                        if (failure == null) {
+                                            throw cleanup;
+                                        }
+                                        failure.addSuppressed(cleanup);
+                                    }
                                 }
                             });
             return closing;
@@ -1491,8 +1514,14 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 database.close();
             }
         } finally {
-            if (lock != null) {
-                lock.close();
+            try {
+                packReaders.close();
+            } catch (IOException error) {
+                throw translate(error, "OBJECT_STORE_WRITE_FAILED");
+            } finally {
+                if (lock != null) {
+                    lock.close();
+                }
             }
         }
     }

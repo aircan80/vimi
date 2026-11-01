@@ -136,17 +136,25 @@ public final class StoreTypes {
             long liveBytes,
             Instant createdAt) {}
 
-    public record Options(Kind kind, long maxPackBytes, Clock clock) {
+    /** packHandles bounds retained read channels; existing constructors default to 64. */
+    public record Options(Kind kind, long maxPackBytes, Clock clock, int packHandles) {
         public Options {
             java.util.Objects.requireNonNull(kind);
             java.util.Objects.requireNonNull(clock);
+            if (packHandles < 1) {
+                throw new IllegalArgumentException("Pack handle capacity must be positive");
+            }
             if (maxPackBytes < 64) {
                 throw new IllegalArgumentException("Pack limit must be at least 64 bytes");
             }
         }
 
+        public Options(Kind kind, long maxPackBytes, Clock clock) {
+            this(kind, maxPackBytes, clock, 64);
+        }
+
         public Options() {
-            this(Kind.CDN, 2L << 30, Clock.systemUTC());
+            this(Kind.CDN, 2L << 30, Clock.systemUTC(), 64);
         }
     }
 }

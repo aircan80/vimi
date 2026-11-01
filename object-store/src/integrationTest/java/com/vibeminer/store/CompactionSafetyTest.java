@@ -173,6 +173,8 @@ final class CompactionSafetyTest {
     @MethodSource("readRaces")
     void concurrentReadSurvivesSourceRemoval(ReadPoint point, boolean range) throws Exception {
         ObjectKey key = key(CompactionFixture.kept());
+        // Exercise retirement of an already cached source, not just a cold file-open race.
+        assertEquals(ReadState.PRESENT, store.read(key, NONE).join().state());
         CountDownLatch paused = new CountDownLatch(1), release = new CountDownLatch(1);
         AtomicInteger lookups = new AtomicInteger();
         store.readProbe =
