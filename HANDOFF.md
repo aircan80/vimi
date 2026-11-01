@@ -455,3 +455,33 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
   tool versions, results/skips, outstanding branch/PR and exact next step; commit/push.
 - On arrival, inspect local changes, fetch and fast-forward clean main, then read this
   handoff and issue updates. Never reset local work to synchronize machines.
+
+## Native macOS validation (2026-11-01)
+
+- Validated checkout `66d06c20665924599da81b390469bf40631b7f98` on macOS 27.2,
+  ARM64, with Homebrew OpenJDK 25.0.5.0.3 and SQLite 3.54.1.
+- Java 25 and SQLite were already installed. Installed pinned ARM64 .NET SDK
+  10.0.402 under the sibling reference's `.local/toolchains/dotnet`.
+  Reference checkout `4fd92d2a36add50c9b82e1c92bf72706e8d0df2b` built in
+  Release with locked restore and zero warnings/errors.
+- Used `JAVA_HOME=/opt/homebrew/opt/openjdk@25/libexec/openjdk.jdk/Contents/Home`
+  and `GRADLE_USER_HOME=/private/tmp/vimi-gradle-home`. Downloaded Gradle 9.1.0
+  and locked dependencies; the temporary Gradle cache can be recreated.
+- Focused WriterLockTest, PackReaderCacheTest, ReadOnlyMediaTest and
+  SqliteLibraryTest passed. Full `:object-store:check :object-store:crashTest
+  :object-store:interopTest :object-store:assemble` passed with
+  `-PsqliteLibrary=/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib` and
+  `-Pdotnet` pointing to the installed reference-local SDK executable.
+- Results: 67 unit, 194 integration, 59 crash and 41 interoperability cases
+  (361 total), zero skips/failures/errors. Formatting, Checkstyle, compiler lint
+  and assembly passed. All five read-only-media cases ran without skips.
+- No source fix was needed. Pre-existing untracked `md` was untouched.
+  Fetched origin and confirmed main matches the tested commit. Published reviewed
+  aggregate evidence to [#24](https://github.com/aircan80/vimi/issues/24#issuecomment-6564991949),
+  [#25](https://github.com/aircan80/vimi/issues/25#issuecomment-6564992100) and
+  [#26](https://github.com/aircan80/vimi/issues/26#issuecomment-6564992261).
+  All remain open for outstanding Windows and final readiness criteria. This Mac
+  was an existing development environment, not a pristine-machine startup test.
+- Next: switch to native Windows and follow `docs/continue-windows.md`, including
+  isolated native ACL/media checks and default-name SQLite startup evidence.
+  After Windows, reconcile final clean-machine/parity/release-readiness criteria.
