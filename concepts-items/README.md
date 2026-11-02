@@ -55,3 +55,5 @@ without opening asset files. Existing `get` preserves full-detail compatibility
 and can be requested separately for asynchronous media enrichment. Item icons
 use NOT_REQUESTED and models NOT_READ; creature model IDs remain in display chains
 with no inspected model payload. Local queries still execute asynchronously.
+
+Java local query pages accept 1–500 rows (defaults remain 50). Existing request/cursor behavior within the C# range is unchanged; the Java browser uses 100-row pages.

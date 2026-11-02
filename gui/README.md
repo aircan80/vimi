@@ -268,3 +268,5 @@ explicitly. It renders authored Files/Tables/Items/Creatures fixtures to
 `gui/build/ui-review/`, checks the layer-projected tooltip and row navigation, and
 verifies stale/closed request retirement. It is not part of headless hosted checks.
 Committed screenshots in `docs/images/research-*.png` show fixtures, not live data.
+
+Items and Creatures use 100-row browser pages; both Java concept services accept up to 500. Query factories are checked against the service validators so a limit mismatch cannot silently empty the grid. Request failures and empty availability states appear inside the grid, as well as in the footer.

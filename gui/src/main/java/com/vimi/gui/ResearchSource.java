@@ -47,33 +47,27 @@ public final class ResearchSource implements ResearchDataSource {
                                         .toList(),
                                 null,
                                 "Known table outcomes · includes protected and absent tables");
-                    Long exact = ConceptQueries.tryParseId(term);
                     if (area.equals("Items")) {
                         if (work.itemsHandle() == null)
                             throw new IllegalStateException("Item data unavailable; see Overview");
                         var page =
                                 work.itemsHandle()
                                         .list(
-                                                new ItemQuery(
-                                                        exact == null ? term : "",
-                                                        exact,
-                                                        100,
-                                                        after),
+                                                itemQuery(term, after),
                                                 TableTypes.Priority.INTERACTIVE,
                                                 token)
                                         .join();
                         return new Page(
                                 page.entries().stream().map(ResearchPresentation::item).toList(),
                                 page.next(),
-                                state(page.state()) + message(page.message()));
+                                state(page.state()) + message(page.message()) + " · Item: " + state(page.item().state()) + " · ItemSparse: " + state(page.sparse().state()));
                     }
                     if (work.creaturesHandle() == null)
                         throw new IllegalStateException("Creature data unavailable; see Overview");
                     var page =
                             work.creaturesHandle()
                                     .list(
-                                            new CreatureTypes.CreatureQuery(
-                                                    exact == null ? term : "", exact, 100, after),
+                                            creatureQuery(term, after),
                                             TableTypes.Priority.INTERACTIVE,
                                             token)
                                     .join();
@@ -87,6 +81,18 @@ public final class ResearchSource implements ResearchDataSource {
                             state(page.state()) + message(page.message()));
                 },
                 command -> Thread.startVirtualThread(command));
+    }
+
+    static ItemQuery itemQuery(String term, String after) {
+        Long exact = ConceptQueries.tryParseId(term);
+        return new ItemQuery(exact == null ? term : "", exact,
+                100, after);
+    }
+
+    static CreatureTypes.CreatureQuery creatureQuery(String term, String after) {
+        Long exact = ConceptQueries.tryParseId(term);
+        return new CreatureTypes.CreatureQuery(exact == null ? term : "", exact,
+                100, after);
     }
 
     static Page files(

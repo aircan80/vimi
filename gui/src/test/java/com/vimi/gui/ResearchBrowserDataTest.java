@@ -30,6 +30,14 @@ public final class ResearchBrowserDataTest {
     }
 
     public static void main(String[] args) {
+        for (String term : List.of("", "Stamina", "100")) {
+            var itemQuery = ResearchSource.itemQuery(term, null);
+            com.vibeminer.concepts.items.ItemQueries.validate(itemQuery);
+            var creatureQuery = ResearchSource.creatureQuery(term, null);
+            com.vibeminer.concepts.creatures.CreatureQueries.validate(creatureQuery);
+            require(itemQuery.limit() == 100 && creatureQuery.limit() == 100,
+                    "Browser requests must respect service page limits");
+        }
         var files = new ArrayList<FileTypes.BuildFile>();
         for (int i = 1; i <= 2250; i++) files.add(file(i, i == 2110 ? "world/needle.m2" : null));
         var closes = new AtomicInteger();

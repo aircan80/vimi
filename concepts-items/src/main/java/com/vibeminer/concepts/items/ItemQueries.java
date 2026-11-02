@@ -7,7 +7,7 @@ import com.vibeminer.concepts.core.ConceptQueries;
 public final class ItemQueries {
     public static final String QUERY_POLICY = "ordinal-ignorecase-contains-v1",
             ORDER = "table-row-order-v1";
-    public static final int MAX_LIMIT = 50,
+    public static final int MAX_LIMIT = 500,
             MAX_QUERY_SCALARS = 128,
             MAX_QUERY_UTF8_BYTES = 512,
             MAX_QUERY_LENGTH = 256,
@@ -18,7 +18,7 @@ public final class ItemQueries {
     public static void validate(ItemQuery query) {
         java.util.Objects.requireNonNull(query);
         if (query.limit() < 1
-                || query.limit() > 50
+                || query.limit() > MAX_LIMIT
                 || !isValidQuery(query.query())
                 || query.exactId() != null
                         && (query.exactId() < 0

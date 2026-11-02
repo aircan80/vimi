@@ -258,7 +258,11 @@ class ItemsServiceTest {
             assertThrows(IllegalArgumentException.class, () -> h.get(-1, PRIORITY, TOKEN));
             assertThrows(
                     IllegalArgumentException.class,
-                    () -> h.list(new ItemQuery("", null, 51, null), PRIORITY, TOKEN));
+                    () ->
+                            h.list(
+                                    new ItemQuery("", null, ItemQueries.MAX_LIMIT + 1, null),
+                                    PRIORITY,
+                                    TOKEN));
             var canceled = new Cancellation();
             canceled.cancel();
             assertThrows(

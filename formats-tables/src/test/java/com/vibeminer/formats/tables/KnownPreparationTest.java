@@ -109,13 +109,14 @@ final class KnownPreparationTest {
     }
 
     @Test
-    void cancellationIsNotACompletedAssessment() {
+    void alreadyCanceledPassCannotComplete() {
         byte[] bytes = Db2Fixture.numeric("WDC5", 0, 32, 9, new long[0], false);
         var files = new MemoryFiles().add(BUILD, "enUS", file(100, bytes), bytes, List.of());
         try (var handle =
                 service(files, false).forBuild(BUILD, "enUS", Cancellation.NONE).join().tables()) {
             var token = new Cancellation();
-            var result = handle.prepareKnown(progress -> token.cancel(), token).join();
+            token.cancel();
+            var result = handle.prepareKnown(null, token).join();
             assertEquals(TableTypes.PreloadOutcome.CANCELED, result.outcome());
         }
     }

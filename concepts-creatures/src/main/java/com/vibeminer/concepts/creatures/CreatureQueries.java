@@ -10,7 +10,7 @@ import java.util.Objects;
 public final class CreatureQueries {
     public static final String QUERY_POLICY = "primary-name-ordinal-ignorecase-contains-v1",
             ORDER = "table-row-order-v1";
-    public static final int MAX_LIMIT = 50;
+    public static final int MAX_LIMIT = 500;
 
     private CreatureQueries() {}
 

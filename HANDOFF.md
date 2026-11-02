@@ -2,6 +2,10 @@
 
 ## Latest status — 2026-11-01
 
+- Research query fix: Items/Creatures now accept up to 500 rows in Java and
+  the browser requests 100. Both validators are exercised by GUI query tests.
+  Previously a 100-row UI request exceeded the inherited 50-row service limit;
+  failures now appear in the grid rather than looking like an empty catalog.
 - Live research UI replaces temporary list/text inspectors with compact Files,
   Tables, Items and Creatures grids, real-data inspectors, table-record paging,
   source navigation and asynchronous selected item icons. Filters are explicitly

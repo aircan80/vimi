@@ -369,8 +369,10 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                                             activity.setVisible(false);
                                             activity.setManaged(false);
                                             if (error != null) {
-                                                status.setText(
-                                                        "Unavailable: " + errorMessage(error));
+                                                status.setText("Unavailable: " + errorMessage(error));
+                                                filtering = true; rows.clear(); filtering = false;
+                                                grid.setPlaceholder(text("Unable to load " + area + "\n" + errorMessage(error), "muted"));
+                                                count.setText("Request failed");
                                                 return;
                                             }
                                             nextCursor = page.next();
@@ -392,6 +394,9 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                                                     });
                                             filtering = false;
                                             status.setText(page.status());
+                                            grid.setPlaceholder(text(page.rows().isEmpty()
+                                                    ? "No records returned\n" + page.status()
+                                                    : "No matching records on this page. Clear filters to show them.", "muted"));
                                             next.setDisable(nextCursor == null);
                                             previous.setDisable(history.isEmpty());
                                             applyFilters();
