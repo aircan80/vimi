@@ -1,4 +1,4 @@
-# Item attributes: Layer 6 contract and remaining calculation work
+# Item attributes: Layer 6 source and base calculation contract
 
 The Items game-concepts layer owns stat identification, pairing, amounts, scaling
 and provenance. Layer 7 renders supplied text/style; it must not interpret stat
@@ -21,32 +21,44 @@ in-game tooltip. Labels are currently English and reviewed stat IDs are bounded.
 Character context, bonus lists, enchantments, gems, scaling and derived armor or
 weapon damage are outside this first projection.
 
-## Allocation-based calculator remains to implement
+## Base allocation calculation
 
-C# and the original Java port expose `StatPercentEditor` and
-`StatPercentageOfSocket`, not a completed Retail tooltip calculator. The new
-projection returns `REQUIRES_CALCULATION` for that layout instead of fabricating
-amounts. The GUI displays this issue beside source facts.
+`BuildItems.inspect(id, priority, token)` is the separate selected-item call. It
+returns the unchanged source `ItemResult`, resolved attributes and an explicit
+calculation scope. The GUI renders those lines; it contains no budget formula.
+`getData` retains its table-only compatibility contract.
 
-The backend follow-up needs an explicit item context (at least build, base/effective
-item level, quality, inventory slot and relevant bonus/scaling context), versioned
-policies and lookups for the applicable budget, socket cost and scaling data. Some
-inputs may need additional format/table support. Missing/protected/unsupported
-inputs must preserve typed outcomes; absence must not be treated as zero. Numeric
-rounding and float precision require reviewed build-specific fixtures.
+The versioned `base-item-budget-v1` policy reads the base item level, quality and
+inventory slot, joins the corresponding `RandPropPoints` float budget, aligns
+`StatPercentEditor` and socket shares by original array slot, and reads the build's
+numeric `GameTables/*.txt` inputs through Files. Stamina and combat ratings use
+their category multipliers. Socket penalties use nearest-even rounding; final
+supported positive amounts use nearest-integer rounding. Exact input cells remain
+attached to each result. Parsed GameTable inputs persist in generated storage.
+`prepareAttributes` acquires these small gameplay inputs during preparation; icons,
+models and textures remain on demand.
 
-Reference evidence, reviewed 2026-11-01:
+The supported profile is **base source attributes**, excluding bonus lists,
+enchantments, gems and player-level scaling. Nonzero scaling/squish/offset context,
+unknown stat types, unsupported schemas, missing/protected budgets and missing
+multiplier rows remain explicit. Shields and holdables with multiplier-dependent
+stats remain unresolved because the reviewed reference implementations disagree
+on their category. Direct Classic values continue to use their existing path.
+This is not a certified reconstruction of every WoW build's final in-game tooltip;
+in particular, live WoW Forever 1.60.1.70707 numeric parity still needs validation.
+
+Tests cover reordered slots, semantic budget joins, socket penalties, stamina and
+rating multipliers, missing inputs and refusal to invent scaling values. The strict
+bounded GameTables reader rejects ambiguous columns, duplicate IDs, invalid UTF-8,
+non-finite numbers and malformed row shapes.
+
+Reference evidence:
 
 - The pinned C# `contracts/item-facts-v1.md` distinguishes direct Classic amounts
-  from Retail allocation inputs. Java retains that raw-fact contract.
-- [TrinityCore stat identifiers](https://github.com/TrinityCore/TrinityCore/blob/master/src/server/game/Entities/Item/ItemTemplate.h)
-  document the stat ID vocabulary; IDs are data identifiers, not translated labels.
+  from allocation inputs. Java retains that raw-fact contract.
 - [TrinityCore item logic](https://github.com/TrinityCore/TrinityCore/blob/master/src/server/game/Entities/Item/Item.cpp)
-  demonstrates that allocated stats depend on effective item level, random-property
-  budgets and socket costs, while effective level itself has squish/scaling rules.
-  This is research evidence, not a universal algorithm certified for every build.
-
-The calculator belongs in `concepts-items`, consuming lower-layer table/game-data
-services. Its result should extend the attribute contract with calculation scope,
-resolved inputs and unsupported reasons. GUI tooltip work does not certify that
-calculator as finished.
+  and [budget slot selection](https://github.com/TrinityCore/TrinityCore/blob/master/src/server/game/Entities/Item/ItemEnchantmentMgr.cpp)
+  describe item-level budgets and effective-level context.
+- [SimulationCraft allocation calculation](https://github.com/simulationcraft/simc/blob/midnight/engine/dbc/sc_item_data.cpp)
+  supplies the reviewed socket rounding and multiplier sequence for this bounded
+  base profile. It is research evidence, not proof of parity for every client.

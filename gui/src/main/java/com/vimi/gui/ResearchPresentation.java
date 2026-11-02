@@ -22,7 +22,16 @@ public final class ResearchPresentation {
         }
     }
 
-    public record Page(List<Row> rows, String next, String status) {
+    public record Page(
+            List<Row> rows,
+            String next,
+            String status,
+            long total,
+            com.vibeminer.concepts.items.ItemGridPage.Options itemOptions) {
+        public Page(List<Row> rows, String next, String status) {
+            this(rows, next, status, -1, null);
+        }
+
         public Page {
             rows = List.copyOf(rows);
         }
@@ -34,14 +43,7 @@ public final class ResearchPresentation {
             case "Tables" ->
                     List.of("FileDataID", "Table", "Readiness", "Readable rows", "Declared rows");
             case "Items" ->
-                    List.of(
-                            "Item ID",
-                            "Name",
-                            "Class ID",
-                            "Subclass ID",
-                            "Quality",
-                            "Slot",
-                            "Base iLvl");
+                    List.of("Item ID", "Name", "Class", "Subclass", "Quality", "Slot", "Base iLvl");
             default -> List.of("Creature ID", "Name", "Display slots", "Name status");
         };
     }
@@ -135,6 +137,38 @@ public final class ResearchPresentation {
                         ItemFacts.INVENTORY_TYPE.getOrDefault(slot, slot),
                         itemValue(item, "ItemLevel")),
                 item);
+    }
+
+    public static Row item(com.vibeminer.concepts.items.ItemListLabels value) {
+        var row = item(value.item());
+        var cells = new java.util.ArrayList<>(row.cells());
+        cells.set(2, classText(value.labels() == null ? null : value.labels().itemClass()));
+        cells.set(3, classText(value.labels() == null ? null : value.labels().subclass()));
+        return new Row(row.id(), row.name(), cells, row.source());
+    }
+
+    private static String classText(com.vibeminer.concepts.items.ItemClassLabel label) {
+        return label != null
+                        && label.state() == com.vibeminer.concepts.items.ItemClassLabelState.READY
+                        && label.text() != null
+                        && !label.text().isBlank()
+                ? label.text()
+                : "Unavailable";
+    }
+
+    public static Row item(com.vibeminer.concepts.items.ItemGridRow row) {
+        return new Row(
+                row.id(),
+                row.name(),
+                List.of(
+                        Long.toString(row.id()),
+                        row.name(),
+                        row.itemClass() == null ? "Unavailable" : row.itemClass(),
+                        row.subclass() == null ? "Unavailable" : row.subclass(),
+                        row.quality() == null ? "Unknown" : row.quality(),
+                        row.slot() == null ? "Unknown" : row.slot(),
+                        row.itemLevel() == null ? "Unknown" : row.itemLevel().toString()),
+                row);
     }
 
     public static Row creature(CreatureTypes.CreatureSummary creature) {

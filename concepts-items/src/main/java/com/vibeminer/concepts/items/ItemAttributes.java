@@ -75,6 +75,10 @@ public record ItemAttributes(State state, List<Attribute> attributes, List<Strin
                     Map.entry(73L, "Agility or Intellect"),
                     Map.entry(74L, "Strength or Intellect"));
 
+    public static String nameOf(long statId) {
+        return NAMES.get(statId);
+    }
+
     public static ItemAttributes from(ItemFactSet facts) {
         if (facts == null || facts.state() != ItemFactsState.READY) {
             return new ItemAttributes(

@@ -1,6 +1,6 @@
 # Item concepts (layer 6)
 
-`ItemsService` implements `Items` over layer 5 `Tables`, layer 4 `Files`, and `BlpImages`/`BuildModels`. It does not read lower object-store implementations. `forBuild` owns the tables handle; Files opens lazily only for icon/model detail. Close rejects new work, drains accepted operations, and closes both owned handles. Canceling a returned future does not bypass resource cleanup; explicit `Cancellation` reaches lower operations.
+`ItemsService` implements `Items` over layer 5 `Tables`, layer 4 `Files`, and `BlpImages`/`BuildModels`. It does not read lower object-store implementations. `forBuild` owns the tables handle; Files opens for explicitly requested gameplay calculation inputs and icon/model detail. Close rejects new work, drains accepted operations, and closes both owned handles. Canceling a returned future does not bypass resource cleanup; explicit `Cancellation` reaches lower operations.
 
 ```java
 Items items = new ItemsService(tables, files, images);
@@ -57,3 +57,29 @@ use NOT_REQUESTED and models NOT_READ; creature model IDs remain in display chai
 with no inspected model payload. Local queries still execute asynchronously.
 
 Java local query pages accept 1–500 rows (defaults remain 50). Existing request/cursor behavior within the C# range is unchanged; the Java browser uses 100-row pages.
+
+## Persistent local item grid
+
+Configure the additive `ItemsService(..., generated, indexDirectory, inputs)`
+constructor and query `BuildItems.grid(ItemGridQuery, priority, token)`. A disposable
+SQLite projection lives under the application's derived-data directory. Its identity
+includes build, locale, source table identities/schema, definition/key enrichment
+inputs and projection/label policy. Changed inputs produce a new index.
+
+Search, class/subclass, quality, slot and stable sort run across the entire prepared
+item catalog before SQL LIMIT/OFFSET. Responses contain the matching total, global
+filter choices and only lightweight current-page rows. Class and subclass labels
+come from the selected locale's tables; semantic IDs remain internal query values.
+The first preparation joins source rows transiently, commits the completed index
+atomically and releases that list. Reopen queries the saved index without scanning
+Item/ItemSparse again. Protected or otherwise unreadable source rows remain absent
+from this readable projection; source table coverage remains visible separately.
+
+Selected records use `inspect` for facts and Layer 6 base attributes. The GUI loads
+icons asynchronously for visible rows, independently of selection, with bounded
+concurrency and cache. Full media inspection remains a separate request. Existing
+`list`/`getData` APIs and C# fact goldens are preserved.
+
+Native SQLite integration tests include 1,200 synthetic items, filters beyond the
+first page, whole-catalog sorting/search, literal query values and a reopened index
+whose source provider rejects any attempt to rescan rows.

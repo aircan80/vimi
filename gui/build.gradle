@@ -140,3 +140,10 @@ tasks.register('researchBrowserUiTest', JavaExec) {
     mainClass = 'com.vimi.gui.ResearchBrowserUiTest'
     systemProperty 'vimi.uiReviewDirectory', layout.buildDirectory.dir('ui-review').get().asFile.absolutePath
 }
+
+tasks.register('iconRequestsTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.AsyncIconRequestsTest'
+}
+check.dependsOn iconRequestsTest

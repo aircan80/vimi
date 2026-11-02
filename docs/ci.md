@@ -1,6 +1,6 @@
 # Continuous integration
 
-The `Unit tests` workflow runs `:object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test :formats-tables:test :concepts-core:test :concepts-items:test :concepts-creatures:test :concepts-effects:test :gui:prototypeTest :gui:backendTest :gui:openingTest :gui:preparationTest :gui:localMetadataTest :gui:preparationStatusTest :gui:nativeWorkspaceTest :gui:overviewPresentationTest :gui:researchBrowserDataTest` on GitHub-hosted
+The `Unit tests` workflow runs `:object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test :formats-tables:test :concepts-core:test :concepts-items:test :concepts-creatures:test :concepts-effects:test :gui:prototypeTest :gui:backendTest :gui:openingTest :gui:preparationTest :gui:localMetadataTest :gui:preparationStatusTest :gui:nativeWorkspaceTest :gui:overviewPresentationTest :gui:researchBrowserDataTest :gui:iconRequestsTest` on GitHub-hosted
 `ubuntu-24.04`, `windows-2025` and `macos-15` runners. Each job installs a full
 Temurin Java 25 JDK matching the runner architecture. The fast tasks need neither
 native SQLite nor .NET nor the original C# checkout. Generated record tests use
@@ -11,7 +11,7 @@ enabled; formatting and native integration are separate checks.
 Run the same task locally with:
 
 ```sh
-./gradlew :object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test :formats-tables:test :concepts-core:test :concepts-items:test :concepts-creatures:test :concepts-effects:test :gui:prototypeTest :gui:backendTest :gui:openingTest :gui:preparationTest :gui:localMetadataTest :gui:preparationStatusTest :gui:nativeWorkspaceTest :gui:overviewPresentationTest :gui:researchBrowserDataTest --no-daemon --console=plain
+./gradlew :object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test :formats-tables:test :concepts-core:test :concepts-items:test :concepts-creatures:test :concepts-effects:test :gui:prototypeTest :gui:backendTest :gui:openingTest :gui:preparationTest :gui:localMetadataTest :gui:preparationStatusTest :gui:nativeWorkspaceTest :gui:overviewPresentationTest :gui:researchBrowserDataTest :gui:iconRequestsTest --no-daemon --console=plain
 ```
 
 Use `gradlew.bat` in a Windows terminal. Hosted jobs use the checked-in Unix

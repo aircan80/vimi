@@ -1,6 +1,8 @@
 package com.vimi.gui;
 
-import static com.vimi.gui.ResearchPresentation.*;
+import static com.vimi.gui.ResearchPresentation.file;
+import static com.vimi.gui.ResearchPresentation.matches;
+import static com.vimi.gui.ResearchPresentation.state;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.core.ConceptQueries;
@@ -8,6 +10,8 @@ import com.vibeminer.concepts.creatures.CreatureTypes;
 import com.vibeminer.concepts.items.ItemQuery;
 import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.tables.TableTypes;
+import com.vimi.gui.ResearchPresentation.Page;
+import com.vimi.gui.ResearchPresentation.Row;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -47,21 +51,9 @@ public final class ResearchSource implements ResearchDataSource {
                                         .toList(),
                                 null,
                                 "Known table outcomes · includes protected and absent tables");
-                    if (area.equals("Items")) {
-                        if (work.itemsHandle() == null)
-                            throw new IllegalStateException("Item data unavailable; see Overview");
-                        var page =
-                                work.itemsHandle()
-                                        .list(
-                                                itemQuery(term, after),
-                                                TableTypes.Priority.INTERACTIVE,
-                                                token)
-                                        .join();
-                        return new Page(
-                                page.entries().stream().map(ResearchPresentation::item).toList(),
-                                page.next(),
-                                state(page.state()) + message(page.message()) + " · Item: " + state(page.item().state()) + " · ItemSparse: " + state(page.sparse().state()));
-                    }
+                    if (area.equals("Items"))
+                        return items(new com.vibeminer.concepts.items.ItemGridQuery(), token)
+                                .join();
                     if (work.creaturesHandle() == null)
                         throw new IllegalStateException("Creature data unavailable; see Overview");
                     var page =
@@ -83,16 +75,42 @@ public final class ResearchSource implements ResearchDataSource {
                 command -> Thread.startVirtualThread(command));
     }
 
+    @Override
+    public CompletableFuture<Page> items(
+            com.vibeminer.concepts.items.ItemGridQuery query, Cancellation token) {
+        return CompletableFuture.supplyAsync(
+                () -> {
+                    var service = work().itemsHandle();
+                    if (service == null)
+                        throw new IllegalStateException("Item data unavailable; see Overview");
+                    var page = service.grid(query, TableTypes.Priority.INTERACTIVE, token).join();
+                    String next =
+                            query.offset() + page.rows().size() < page.matches()
+                                    ? Integer.toString(query.offset() + query.limit())
+                                    : null;
+                    return new Page(
+                            page.rows().stream().map(ResearchPresentation::item).toList(),
+                            next,
+                            state(page.state())
+                                    + " · "
+                                    + page.message()
+                                    + " · "
+                                    + page.available()
+                                    + " prepared readable items",
+                            page.matches(),
+                            page.options());
+                },
+                command -> Thread.startVirtualThread(command));
+    }
+
     static ItemQuery itemQuery(String term, String after) {
         Long exact = ConceptQueries.tryParseId(term);
-        return new ItemQuery(exact == null ? term : "", exact,
-                100, after);
+        return new ItemQuery(exact == null ? term : "", exact, 100, after);
     }
 
     static CreatureTypes.CreatureQuery creatureQuery(String term, String after) {
         Long exact = ConceptQueries.tryParseId(term);
-        return new CreatureTypes.CreatureQuery(exact == null ? term : "", exact,
-                100, after);
+        return new CreatureTypes.CreatureQuery(exact == null ? term : "", exact, 100, after);
     }
 
     static Page files(
@@ -150,7 +168,7 @@ public final class ResearchSource implements ResearchDataSource {
                                         CompletableFuture.completedFuture(row.source());
                                 case "Items" ->
                                         work.itemsHandle()
-                                                .getData(
+                                                .inspect(
                                                         row.id(),
                                                         TableTypes.Priority.INTERACTIVE,
                                                         token);

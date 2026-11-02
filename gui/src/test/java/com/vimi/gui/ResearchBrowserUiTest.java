@@ -2,7 +2,25 @@ package com.vimi.gui;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.creatures.CreatureTypes;
-import com.vibeminer.concepts.items.*;
+import com.vibeminer.concepts.items.ItemClassLabel;
+import com.vibeminer.concepts.items.ItemClassLabelState;
+import com.vibeminer.concepts.items.ItemClassLabels;
+import com.vibeminer.concepts.items.ItemDetail;
+import com.vibeminer.concepts.items.ItemFact;
+import com.vibeminer.concepts.items.ItemFactAgreement;
+import com.vibeminer.concepts.items.ItemFactSet;
+import com.vibeminer.concepts.items.ItemFactState;
+import com.vibeminer.concepts.items.ItemFactValue;
+import com.vibeminer.concepts.items.ItemFactsState;
+import com.vibeminer.concepts.items.ItemListLabels;
+import com.vibeminer.concepts.items.ItemName;
+import com.vibeminer.concepts.items.ItemNameState;
+import com.vibeminer.concepts.items.ItemResult;
+import com.vibeminer.concepts.items.ItemResultState;
+import com.vibeminer.concepts.items.ItemRowState;
+import com.vibeminer.concepts.items.ItemSourceValue;
+import com.vibeminer.concepts.items.ItemSparseState;
+import com.vibeminer.concepts.items.ItemSummary;
 import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.images.BlpImageTypes;
 import com.vibeminer.formats.tables.TableTypes;
@@ -56,7 +74,7 @@ public final class ResearchBrowserUiTest {
 
     private static final class Fixture implements ResearchDataSource {
         public String locale() {
-            return "enUS";
+            return "deDE";
         }
 
         final ItemSummary item =
@@ -71,10 +89,51 @@ public final class ResearchBrowserUiTest {
                                 new ItemSourceValue("ItemSparse", "OverallQualityID", 2, "4"),
                                 new ItemSourceValue("Item", "InventoryType", 3, "1"),
                                 new ItemSourceValue("ItemSparse", "ItemLevel", 4, "60")),
-                        null,
+                        1000L,
                         null,
                         ItemRowState.FOUND,
                         null);
+        final ItemSummary second =
+                new ItemSummary(
+                        101,
+                        false,
+                        null,
+                        new ItemName(ItemNameState.VALID, "Synthetic second helm"),
+                        item.values(),
+                        1001L,
+                        null,
+                        ItemRowState.FOUND,
+                        null);
+        final java.util.concurrent.CountDownLatch iconsStarted =
+                new java.util.concurrent.CountDownLatch(2);
+        final java.util.Set<Long> iconIds = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+        private static ItemClassLabels labels() {
+            return new ItemClassLabels(
+                    new ItemClassLabel(
+                            ItemClassLabelState.READY,
+                            List.of(),
+                            "Rüstung",
+                            null,
+                            null,
+                            null,
+                            0,
+                            null,
+                            null,
+                            null),
+                    new ItemClassLabel(
+                            ItemClassLabelState.READY,
+                            List.of(),
+                            "Platte",
+                            null,
+                            null,
+                            null,
+                            0,
+                            null,
+                            null,
+                            null));
+        }
+
         final TableTypes.Entry table =
                 new TableTypes.Entry(
                         200,
@@ -107,18 +166,47 @@ public final class ResearchBrowserUiTest {
                         List.of(new CreatureTypes.CreatureSourceValue("Classification", 0, "1")),
                         List.of());
 
+        final AtomicReference<com.vibeminer.concepts.items.ItemGridQuery> latestQuery =
+                new AtomicReference<>();
+
+        public CompletableFuture<ResearchPresentation.Page> items(
+                com.vibeminer.concepts.items.ItemGridQuery query, Cancellation token) {
+            latestQuery.set(query);
+            var choice = new com.vibeminer.concepts.items.ItemGridPage.Choice("4", "Rüstung");
+            var sub = new com.vibeminer.concepts.items.ItemGridPage.Choice("4:4", "Platte");
+            return page("Items", query.search(), null, token)
+                    .thenApply(
+                            page ->
+                                    new ResearchPresentation.Page(
+                                            page.rows(),
+                                            null,
+                                            page.status(),
+                                            1200,
+                                            new com.vibeminer.concepts.items.ItemGridPage.Options(
+                                                    List.of(choice),
+                                                    List.of(sub),
+                                                    List.of(),
+                                                    List.of())));
+        }
+
         public CompletableFuture<ResearchPresentation.Page> page(
                 String area, String query, String after, Cancellation token) {
             var row =
                     switch (area) {
                         case "Files" -> ResearchPresentation.file(file);
                         case "Tables" -> ResearchPresentation.table(table);
-                        case "Items" -> ResearchPresentation.item(item);
+                        case "Items" ->
+                                ResearchPresentation.item(new ItemListLabels(item, labels()));
                         default -> ResearchPresentation.creature(creature);
                     };
             return CompletableFuture.completedFuture(
                     new ResearchPresentation.Page(
-                            List.of(row),
+                            area.equals("Items")
+                                    ? List.of(
+                                            row,
+                                            ResearchPresentation.item(
+                                                    new ItemListLabels(second, labels())))
+                                    : List.of(row),
                             null,
                             "Authored UI fixture · no live build measurements"));
         }
@@ -202,12 +290,42 @@ public final class ResearchBrowserUiTest {
         }
 
         public CompletableFuture<BlpImageTypes.Result> icon(long id, Cancellation token) {
-            return CompletableFuture.failedFuture(new IllegalStateException("No fixture art"));
+            if (iconIds.add(id)) iconsStarted.countDown();
+            var pixels = new byte[] {30, (byte) 150, 100, (byte) 255};
+            var image =
+                    new com.vibeminer.formats.images.Blp2Types.Image(
+                            1,
+                            1,
+                            4,
+                            pixels,
+                            com.vibeminer.formats.images.Blp2Types.Encoding.BGRA8,
+                            8,
+                            0,
+                            0,
+                            1,
+                            1,
+                            List.of(),
+                            0);
+            return CompletableFuture.completedFuture(
+                    new BlpImageTypes.Result(
+                            BlpImageTypes.State.READY,
+                            image,
+                            BlpImageTypes.Cache.NONE,
+                            List.of(),
+                            null,
+                            null,
+                            null,
+                            null));
         }
     }
 
     private static TableView<?> grid(ResearchBrowser browser) {
         return (TableView<?>) browser.lookup("#research-results");
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static void addSort(TableView table, javafx.scene.control.TableColumn column) {
+        table.getSortOrder().add(column);
     }
 
     private static Button button(ResearchBrowser browser, String text) {
@@ -226,11 +344,12 @@ public final class ResearchBrowserUiTest {
             Path output = Path.of(System.getProperty("vimi.uiReviewDirectory", "build/ui-review"));
             Files.createDirectories(output);
             for (String area : List.of("Files", "Tables", "Items", "Creatures")) {
+                var fixture = new Fixture();
                 var browser = new AtomicReference<ResearchBrowser>();
                 var scene = new AtomicReference<Scene>();
                 fx(
                         () -> {
-                            var view = new ResearchBrowser(area, new Fixture(), name -> {});
+                            var view = new ResearchBrowser(area, fixture, name -> {});
                             browser.set(view);
                             var root = new javafx.scene.layout.BorderPane(view);
                             var title =
@@ -250,6 +369,20 @@ public final class ResearchBrowserUiTest {
                             view.ensureLoaded();
                         });
                 flush();
+                if (area.equals("Items")) {
+                    if (!fixture.iconsStarted.await(5, TimeUnit.SECONDS))
+                        throw new AssertionError("Unselected row did not request its icon");
+                    fx(
+                            () -> {
+                                var records = grid(browser.get()).getItems();
+                                if (records.size() != 2
+                                        || !((ResearchPresentation.Row) records.get(1))
+                                                .cell(2)
+                                                .equals("Rüstung"))
+                                    throw new AssertionError(
+                                            "Localized classification missing from grid");
+                            });
+                }
                 fx(() -> grid(browser.get()).getSelectionModel().selectFirst());
                 flush();
                 if (area.equals("Tables")) {
@@ -308,6 +441,58 @@ public final class ResearchBrowserUiTest {
                                 throw new RuntimeException(error);
                             }
                         });
+                if (area.equals("Items")) {
+                    fx(
+                            () -> {
+                                var box =
+                                        browser.get().lookupAll(".combo-box").stream()
+                                                .filter(
+                                                        node ->
+                                                                node
+                                                                                instanceof
+                                                                                javafx.scene.control
+                                                                                                        .ComboBox<
+                                                                                                ?>
+                                                                                        combo
+                                                                        && combo.getAccessibleText()
+                                                                                .startsWith(
+                                                                                        "Class ·"))
+                                                .map(
+                                                        node ->
+                                                                (javafx.scene.control.ComboBox<?>)
+                                                                        node)
+                                                .findFirst()
+                                                .orElseThrow();
+                                box.getSelectionModel().select(1);
+                            });
+                    flush();
+                    if (!"4".equals(fixture.latestQuery.get().itemClass()))
+                        throw new AssertionError("Class filter did not reach layer query");
+                    fx(
+                            () -> {
+                                var table = grid(browser.get());
+                                var column = table.getColumns().getLast();
+                                column.setSortType(
+                                        javafx.scene.control.TableColumn.SortType.DESCENDING);
+                                table.getSortOrder().clear();
+                                addSort(table, column);
+                            });
+                    flush();
+                    if (fixture.latestQuery.get().sort()
+                                    != com.vibeminer.concepts.items.ItemGridQuery.Sort.LEVEL
+                            || !fixture.latestQuery.get().descending())
+                        throw new AssertionError("Global sort did not reach layer query");
+                    fx(
+                            () -> {
+                                var input = (TextField) browser.get().lookup(".text-field");
+                                input.setText("beyond first page");
+                                input.fireEvent(new javafx.event.ActionEvent());
+                            });
+                    flush();
+                    if (!fixture.latestQuery.get().search().equals("beyond first page")
+                            || fixture.latestQuery.get().offset() != 0)
+                        throw new AssertionError("Search did not reset global query");
+                }
                 fx(() -> browser.get().close());
             }
             staleReplies();

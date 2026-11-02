@@ -13,6 +13,11 @@ interface ResearchDataSource {
     CompletableFuture<ResearchPresentation.Page> page(
             String area, String term, String after, Cancellation token);
 
+    default CompletableFuture<ResearchPresentation.Page> items(
+            com.vibeminer.concepts.items.ItemGridQuery query, Cancellation token) {
+        return page("Items", query.search(), Integer.toString(query.offset()), token);
+    }
+
     CompletableFuture<?> detail(String area, ResearchPresentation.Row row, Cancellation token);
 
     CompletableFuture<?> media(String area, ResearchPresentation.Row row, Cancellation token);

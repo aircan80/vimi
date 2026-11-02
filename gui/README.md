@@ -289,3 +289,10 @@ initialize on reopen; this is not a permanent ready flag.
 
 Native integration checks reopen both stores and forbid repeated full file-ID
 enumeration. Phase timing logs separate resolution-index opening and catalog work.
+
+Items uses a persisted derived SQLite grid: search, dropdown filters and sorting
+cover the complete prepared readable item set, and only the current 100-row page
+crosses the GUI boundary. Item details/attributes are requested independently when
+focused. Visible row icons load asynchronously without requiring focus. Class and
+subclass use labels from the selected build locale. Other browser grids retain
+their existing page-scoped dropdown/sort behavior for now.

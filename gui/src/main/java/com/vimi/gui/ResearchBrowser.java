@@ -1,16 +1,24 @@
 package com.vimi.gui;
 
-import static com.vimi.gui.ResearchPresentation.*;
+import static com.vimi.gui.ResearchPresentation.bytes;
+import static com.vimi.gui.ResearchPresentation.columns;
+import static com.vimi.gui.ResearchPresentation.qualityInk;
+import static com.vimi.gui.ResearchPresentation.state;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.creatures.CreatureTypes;
-import com.vibeminer.concepts.items.*;
+import com.vibeminer.concepts.items.ItemAttributes;
+import com.vibeminer.concepts.items.ItemFactState;
+import com.vibeminer.concepts.items.ItemResult;
+import com.vibeminer.concepts.items.ItemSummary;
 import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.tables.TableTypes;
+import com.vimi.gui.ResearchPresentation.Row;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 import javafx.animation.PauseTransition;
 import javafx.beans.property.ReadOnlyObjectWrapper;
@@ -19,12 +27,27 @@ import javafx.collections.FXCollections;
 import javafx.collections.transformation.FilteredList;
 import javafx.collections.transformation.SortedList;
 import javafx.geometry.Insets;
-import javafx.scene.control.*;
-import javafx.scene.layout.*;
+import javafx.scene.control.Button;
+import javafx.scene.control.ComboBox;
+import javafx.scene.control.Label;
+import javafx.scene.control.ProgressIndicator;
+import javafx.scene.control.ScrollPane;
+import javafx.scene.control.TableCell;
+import javafx.scene.control.TableColumn;
+import javafx.scene.control.TableView;
+import javafx.scene.control.TextField;
+import javafx.scene.control.TitledPane;
+import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
+import javafx.scene.layout.VBox;
 import javafx.util.Duration;
 
 /** Live browser using approved compact grids and inspectors. All acquisition is asynchronous. */
 public final class ResearchBrowser extends BorderPane implements AutoCloseable {
+    private final AsyncIconRequests iconRequests;
+    private final java.util.Set<Long> failedIcons = new java.util.HashSet<>();
     private final String area;
     private final ResearchDataSource source;
     private final Consumer<String> navigateTable;
@@ -40,11 +63,18 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
     private final Button next = new Button("Next page");
     private final Button previous = new Button("Previous page");
     private final Button media = new Button("Load media details");
+    private final Map<Integer, ComboBox<com.vibeminer.concepts.items.ItemGridPage.Choice>>
+            itemFilters = new LinkedHashMap<>();
+    private long totalMatches = -1;
+    private boolean updatingRows;
     private final Map<Integer, ComboBox<String>> filters = new LinkedHashMap<>();
     private final javafx.collections.ObservableList<Row> rows = FXCollections.observableArrayList();
     private final FilteredList<Row> filtered = new FilteredList<>(rows);
     private final List<String> history = new ArrayList<>();
     private final PauseTransition debounce = new PauseTransition(Duration.millis(300));
+    private final PauseTransition iconPulse = new PauseTransition(Duration.millis(16));
+    private final Map<Long, CompletableFuture<com.vibeminer.formats.images.BlpImageTypes.Result>>
+            iconWaiters = new LinkedHashMap<>();
     private Cancellation pageToken = new Cancellation(),
             detailToken = new Cancellation(),
             mediaToken = new Cancellation();
@@ -67,6 +97,8 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
     ResearchBrowser(String area, ResearchDataSource source, Consumer<String> navigateTable) {
         this.area = area;
         this.source = source;
+        iconRequests = new AsyncIconRequests(4, 256, source::icon);
+        iconPulse.setOnFinished(event -> loadVisibleIcons());
         this.navigateTable = navigateTable;
         getStyleClass().add("research-browser");
         grid.setId("research-results");
@@ -79,6 +111,7 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
         TableColumn<Row, Long> id = new TableColumn<>(headings.getFirst());
         id.setCellValueFactory(cell -> new ReadOnlyObjectWrapper<>(cell.getValue().id()));
         id.setPrefWidth(100);
+        id.setUserData(com.vibeminer.concepts.items.ItemGridQuery.Sort.ID);
         grid.getColumns().add(id);
         if (area.equals("Items")) {
             var icon = new TableColumn<Row, Row>("");
@@ -95,9 +128,17 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                                     setText(null);
                                     setGraphic(null);
                                     if (!empty && row != null) {
+                                        iconPulse.playFromStart();
                                         var image = icons.get(row.id());
-                                        if (image == null) setText("◇");
-                                        else {
+                                        if (image == null) {
+                                            if (failedIcons.contains(row.id())) setText("—");
+                                            else if (rowIconId(row) != null) {
+                                                var indicator = new ProgressIndicator(-1);
+                                                indicator.setPrefSize(16, 16);
+                                                indicator.setMaxSize(16, 16);
+                                                setGraphic(indicator);
+                                            } else setText("—");
+                                        } else {
                                             var view = new javafx.scene.image.ImageView(image);
                                             view.setFitWidth(28);
                                             view.setFitHeight(28);
@@ -114,6 +155,16 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
             column.setCellValueFactory(
                     cell -> new ReadOnlyStringWrapper(cell.getValue().cell(index)));
             column.setPrefWidth(i == 1 ? 260 : 105);
+            if (area.equals("Items"))
+                column.setUserData(
+                        switch (i) {
+                            case 1 -> com.vibeminer.concepts.items.ItemGridQuery.Sort.NAME;
+                            case 2 -> com.vibeminer.concepts.items.ItemGridQuery.Sort.CLASS;
+                            case 3 -> com.vibeminer.concepts.items.ItemGridQuery.Sort.SUBCLASS;
+                            case 4 -> com.vibeminer.concepts.items.ItemGridQuery.Sort.QUALITY;
+                            case 5 -> com.vibeminer.concepts.items.ItemGridQuery.Sort.SLOT;
+                            default -> com.vibeminer.concepts.items.ItemGridQuery.Sort.LEVEL;
+                        });
             if (area.equals("Files") && i == 3) column.setSortable(false);
             if (area.equals("Items") && i == 1)
                 column.setCellFactory(
@@ -137,12 +188,33 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                                 });
             grid.getColumns().add(column);
         }
-        var sorted = new SortedList<>(filtered);
-        sorted.comparatorProperty().bind(grid.comparatorProperty());
-        grid.setItems(sorted);
+        if (area.equals("Items")) {
+            grid.setItems(rows);
+            grid.setSortPolicy(
+                    view -> {
+                        if (updatingRows) return true;
+                        if (view.getSortOrder().size() > 1) {
+                            updatingRows = true;
+                            var last = view.getSortOrder().getLast();
+                            view.getSortOrder().setAll(List.of(last));
+                            updatingRows = false;
+                        }
+                        if (loaded) {
+                            history.clear();
+                            load(null);
+                        }
+                        return true;
+                    });
+        } else {
+            var sorted = new SortedList<>(filtered);
+            sorted.comparatorProperty().bind(grid.comparatorProperty());
+            grid.setItems(sorted);
+        }
         grid.setPlaceholder(
                 text(
-                        "No results on this page. Clear filters or continue to the next page.",
+                        area.equals("Items")
+                                ? "No items match these filters."
+                                : "No results on this page. Clear filters or continue to the next page.",
                         "muted"));
         grid.getSelectionModel()
                 .selectedItemProperty()
@@ -199,7 +271,18 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
         clear.setOnAction(
                 event -> {
                     filters.values().forEach(box -> box.setValue("All"));
+                    updatingRows = true;
+                    itemFilters
+                            .values()
+                            .forEach(
+                                    box ->
+                                            box.setValue(
+                                                    new com.vibeminer.concepts.items.ItemGridPage
+                                                            .Choice(null, "All")));
+                    updatingRows = false;
                     search.clear();
+                    history.clear();
+                    load(null);
                 });
         HBox title = new HBox(10, text(area, "h1"), spacer(), clear);
         title.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
@@ -224,8 +307,8 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
         }
         if (area.equals("Tables")) filter(toolbar, 2, "Readiness");
         if (area.equals("Items")) {
-            filter(toolbar, 2, "Class ID");
-            filter(toolbar, 3, "Subclass ID");
+            filter(toolbar, 2, "Class");
+            filter(toolbar, 3, "Subclass");
             filter(toolbar, 4, "Quality");
             filter(toolbar, 5, "Slot");
         }
@@ -238,7 +321,9 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
         status.setPadding(new Insets(0, 16, 10, 16));
         var scopeLabel =
                 text(
-                        "Search spans the catalog; dropdown filters and sorting apply to this page.",
+                        area.equals("Items")
+                                ? "Search, filters and sorting cover all prepared items; only this page is displayed."
+                                : "Search spans the catalog; dropdown filters and sorting apply to this page.",
                         "muted");
         scopeLabel.setPadding(new Insets(0, 16, 6, 16));
         VBox content = new VBox(heading, toolbar, scopeLabel, grid, paging, status);
@@ -257,10 +342,15 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
     }
 
     private void filter(HBox toolbar, int column, String name) {
+        if (area.equals("Items")) {
+            itemFilter(toolbar, column, name);
+            return;
+        }
         ComboBox<String> box = new ComboBox<>();
         box.getItems().add("All");
         box.setValue("All");
-        box.setAccessibleText(name + " · current page");
+        box.setAccessibleText(
+                name + (area.equals("Items") ? " · all prepared items" : " · current page"));
         box.setPrefWidth(area.equals("Items") ? 105 : 145);
         filters.put(column, box);
         box.setOnAction(
@@ -290,6 +380,98 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
         toolbar.getChildren().add(field);
     }
 
+    private void itemFilter(HBox toolbar, int column, String name) {
+        var box = new ComboBox<com.vibeminer.concepts.items.ItemGridPage.Choice>();
+        var all = new com.vibeminer.concepts.items.ItemGridPage.Choice(null, "All");
+        box.getItems().add(all);
+        box.setValue(all);
+        box.setPrefWidth(105);
+        box.setAccessibleText(name + " · complete item catalog");
+        itemFilters.put(column, box);
+        box.setOnAction(
+                event -> {
+                    if (updatingRows) return;
+                    if (column == 2) {
+                        updatingRows = true;
+                        var subclass = itemFilters.get(3);
+                        if (subclass != null) subclass.setValue(all);
+                        updatingRows = false;
+                    }
+                    history.clear();
+                    load(null);
+                });
+        toolbar.getChildren().add(new VBox(3, text(name, "eyebrow"), box));
+    }
+
+    private void updateItemOptions(com.vibeminer.concepts.items.ItemGridPage.Options options) {
+        if (options == null) return;
+        var lists =
+                Map.of(
+                        2,
+                        options.classes(),
+                        3,
+                        options.subclasses(),
+                        4,
+                        options.qualities(),
+                        5,
+                        options.slots());
+        updatingRows = true;
+        itemFilters.forEach(
+                (column, box) -> {
+                    var prior = box.getValue();
+                    box.getItems()
+                            .setAll(
+                                    new com.vibeminer.concepts.items.ItemGridPage.Choice(
+                                            null, "All"));
+                    box.getItems().addAll(lists.get(column));
+                    if (prior != null
+                            && prior.value() != null
+                            && box.getItems().stream()
+                                    .noneMatch(
+                                            choice ->
+                                                    java.util.Objects.equals(
+                                                            choice.value(), prior.value())))
+                        box.getItems().add(prior);
+                    box.setValue(
+                            prior == null
+                                    ? box.getItems().getFirst()
+                                    : box.getItems().stream()
+                                            .filter(
+                                                    choice ->
+                                                            java.util.Objects.equals(
+                                                                    choice.value(), prior.value()))
+                                            .findFirst()
+                                            .orElse(box.getItems().getFirst()));
+                });
+        updatingRows = false;
+    }
+
+    private String itemFilterValue(int column) {
+        var box = itemFilters.get(column);
+        return box == null || box.getValue() == null ? null : box.getValue().value();
+    }
+
+    private com.vibeminer.concepts.items.ItemGridQuery itemQuery(String cursor) {
+        var sort = com.vibeminer.concepts.items.ItemGridQuery.Sort.ID;
+        boolean descending = false;
+        if (!grid.getSortOrder().isEmpty()) {
+            var column = grid.getSortOrder().getFirst();
+            if (column.getUserData()
+                    instanceof com.vibeminer.concepts.items.ItemGridQuery.Sort value) sort = value;
+            descending = column.getSortType() == TableColumn.SortType.DESCENDING;
+        }
+        return new com.vibeminer.concepts.items.ItemGridQuery(
+                search.getText().strip(),
+                itemFilterValue(2),
+                itemFilterValue(3),
+                itemFilterValue(4),
+                itemFilterValue(5),
+                sort,
+                descending,
+                cursor == null ? 0 : Integer.parseInt(cursor),
+                100);
+    }
+
     private void applyFilters() {
         filtering = true;
         filtered.setPredicate(
@@ -308,11 +490,17 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
         hidden.setVisible(selected != null && !filtered.contains(selected));
         hidden.setManaged(hidden.isVisible());
         count.setText(
-                filtered.size()
-                        + " of "
-                        + rows.size()
-                        + " records on page"
-                        + (nextCursor == null ? " · end of results" : " · more available"));
+                area.equals("Items")
+                        ? rows.size()
+                                + " shown · "
+                                + (totalMatches < 0 ? rows.size() : totalMatches)
+                                + " matching items"
+                        : filtered.size()
+                                + " of "
+                                + rows.size()
+                                + " records on page"
+                                + (nextCursor == null ? " · end of results" : " · more available"));
+        iconPulse.playFromStart();
     }
 
     public void ensureLoaded() {
@@ -332,6 +520,7 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
         iconToken.cancel();
         cancelMedia();
         icons.clear();
+        iconRequests.clear();
         tableContent.getChildren().clear();
         tableContent.setManaged(false);
         tableContent.setVisible(false);
@@ -350,6 +539,7 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
     private void load(String cursor) {
         if (disposed) return;
         loaded = true;
+        failedIcons.clear();
         invalidated = false;
         currentCursor = cursor;
         pageToken.cancel();
@@ -360,50 +550,164 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
         activity.setVisible(true);
         activity.setManaged(true);
         status.setText("Loading prepared data…");
-        source.page(area, search.getText().strip(), cursor, pageToken)
-                .whenComplete(
-                        (page, error) ->
-                                javafx.application.Platform.runLater(
-                                        () -> {
-                                            if (disposed || request != pageGeneration) return;
-                                            activity.setVisible(false);
-                                            activity.setManaged(false);
-                                            if (error != null) {
-                                                status.setText("Unavailable: " + errorMessage(error));
-                                                filtering = true; rows.clear(); filtering = false;
-                                                grid.setPlaceholder(text("Unable to load " + area + "\n" + errorMessage(error), "muted"));
-                                                count.setText("Request failed");
-                                                return;
+        CompletableFuture<ResearchPresentation.Page> result;
+        try {
+            result =
+                    area.equals("Items")
+                            ? source.items(itemQuery(cursor), pageToken)
+                            : source.page(area, search.getText().strip(), cursor, pageToken);
+        } catch (RuntimeException invalid) {
+            activity.setVisible(false);
+            activity.setManaged(false);
+            status.setText("Query unavailable: " + errorMessage(invalid));
+            return;
+        }
+        result.whenComplete(
+                (page, error) ->
+                        javafx.application.Platform.runLater(
+                                () -> {
+                                    if (disposed || request != pageGeneration) return;
+                                    activity.setVisible(false);
+                                    activity.setManaged(false);
+                                    if (error != null) {
+                                        status.setText("Unavailable: " + errorMessage(error));
+                                        filtering = true;
+                                        rows.clear();
+                                        filtering = false;
+                                        grid.setPlaceholder(
+                                                text(
+                                                        "Unable to load "
+                                                                + area
+                                                                + "\n"
+                                                                + errorMessage(error),
+                                                        "muted"));
+                                        count.setText("Request failed");
+                                        return;
+                                    }
+                                    nextCursor = page.next();
+                                    filtering = true;
+                                    updatingRows = true;
+                                    rows.setAll(page.rows());
+                                    updatingRows = false;
+                                    totalMatches = page.total();
+                                    updateItemOptions(page.itemOptions());
+                                    filters.forEach(
+                                            (index, box) -> {
+                                                String value = box.getValue();
+                                                box.getItems().setAll("All");
+                                                rows.stream()
+                                                        .map(row -> row.cell(index))
+                                                        .distinct()
+                                                        .sorted()
+                                                        .forEach(box.getItems()::add);
+                                                box.setValue(
+                                                        box.getItems().contains(value)
+                                                                ? value
+                                                                : "All");
+                                            });
+                                    filtering = false;
+                                    status.setText(page.status());
+                                    grid.setPlaceholder(
+                                            text(
+                                                    page.rows().isEmpty()
+                                                            ? "No records returned\n"
+                                                                    + page.status()
+                                                            : "No matching records on this page. Clear filters to show them.",
+                                                    "muted"));
+                                    next.setDisable(nextCursor == null);
+                                    previous.setDisable(history.isEmpty());
+                                    applyFilters();
+                                    iconPulse.playFromStart();
+                                    if (selected == null && !filtered.isEmpty())
+                                        grid.getSelectionModel().selectFirst();
+                                    if (invalidated) ensureLoaded();
+                                }));
+    }
+
+    private static Long rowIconId(Row row) {
+        if (row.source() instanceof com.vibeminer.concepts.items.ItemGridRow item)
+            return item.iconFileDataId();
+        return row.source() instanceof ItemSummary item ? item.iconFileDataId() : null;
+    }
+
+    private void loadVisibleIcons() {
+        if (disposed || !area.equals("Items")) return;
+        grid.applyCss();
+        grid.layout();
+        var visible =
+                grid.lookupAll(".table-row-cell").stream()
+                        .filter(
+                                node ->
+                                        node.isVisible()
+                                                && node instanceof javafx.scene.control.TableRow<?>)
+                        .map(node -> ((javafx.scene.control.TableRow<?>) node).getItem())
+                        .filter(Row.class::isInstance)
+                        .map(Row.class::cast)
+                        .distinct()
+                        .toList();
+        var ids =
+                visible.stream()
+                        .map(ResearchBrowser::rowIconId)
+                        .filter(java.util.Objects::nonNull)
+                        .collect(java.util.stream.Collectors.toSet());
+        if (selected != null && rowIconId(selected) != null) ids.add(rowIconId(selected));
+        iconRequests.retain(ids);
+        long generation = pageGeneration;
+        for (var row : visible) {
+            if (rowIconId(row) == null
+                    || icons.containsKey(row.id())
+                    || failedIcons.contains(row.id())
+                    || iconWaiters.containsKey(row.id())) continue;
+            var future = iconRequests.request(rowIconId(row));
+            iconWaiters.put(row.id(), future);
+            future.whenComplete(
+                    (result, error) ->
+                            javafx.application.Platform.runLater(
+                                    () -> {
+                                        iconWaiters.remove(row.id(), future);
+                                        if (disposed || generation != pageGeneration) return;
+                                        Throwable cause = error;
+                                        while (cause
+                                                        instanceof
+                                                        java.util.concurrent.CompletionException
+                                                && cause.getCause() != null)
+                                            cause = cause.getCause();
+                                        if (cause
+                                                instanceof
+                                                java.util.concurrent.CancellationException) return;
+                                        if (error != null
+                                                || result == null
+                                                || result.image() == null
+                                                || result.state()
+                                                        != com.vibeminer.formats.images
+                                                                .BlpImageTypes.State.READY) {
+                                            failedIcons.add(row.id());
+                                            grid.refresh();
+                                            return;
+                                        }
+                                        var decoded = result.image();
+                                        var rgba = decoded.rgba();
+                                        var image =
+                                                new javafx.scene.image.WritableImage(
+                                                        decoded.width(), decoded.height());
+                                        for (int y = 0; y < decoded.height(); y++)
+                                            for (int x = 0; x < decoded.width(); x++) {
+                                                int i = y * decoded.rowStride() + x * 4;
+                                                image.getPixelWriter()
+                                                        .setArgb(
+                                                                x,
+                                                                y,
+                                                                (rgba[i + 3] & 255) << 24
+                                                                        | (rgba[i] & 255) << 16
+                                                                        | (rgba[i + 1] & 255) << 8
+                                                                        | (rgba[i + 2] & 255));
                                             }
-                                            nextCursor = page.next();
-                                            filtering = true;
-                                            rows.setAll(page.rows());
-                                            filters.forEach(
-                                                    (index, box) -> {
-                                                        String value = box.getValue();
-                                                        box.getItems().setAll("All");
-                                                        rows.stream()
-                                                                .map(row -> row.cell(index))
-                                                                .distinct()
-                                                                .sorted()
-                                                                .forEach(box.getItems()::add);
-                                                        box.setValue(
-                                                                box.getItems().contains(value)
-                                                                        ? value
-                                                                        : "All");
-                                                    });
-                                            filtering = false;
-                                            status.setText(page.status());
-                                            grid.setPlaceholder(text(page.rows().isEmpty()
-                                                    ? "No records returned\n" + page.status()
-                                                    : "No matching records on this page. Clear filters to show them.", "muted"));
-                                            next.setDisable(nextCursor == null);
-                                            previous.setDisable(history.isEmpty());
-                                            applyFilters();
-                                            if (selected == null && !filtered.isEmpty())
-                                                grid.getSelectionModel().selectFirst();
-                                            if (invalidated) ensureLoaded();
-                                        }));
+                                        if (icons.size() >= 100)
+                                            icons.remove(icons.keySet().iterator().next());
+                                        icons.put(row.id(), image);
+                                        grid.refresh();
+                                    }));
+        }
     }
 
     private void select(Row row) {
@@ -517,8 +821,14 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                     });
             inspector.getChildren().add(browse);
             tableContent.getChildren().clear();
+        } else if (value instanceof com.vibeminer.concepts.items.ItemInspection inspection) {
+            showItem(row, inspection.item(), inspection.attributes(), inspection.scope());
         } else if (value instanceof ItemResult item) {
-            showItem(row, item);
+            showItem(
+                    row,
+                    item,
+                    item.detail() == null ? null : item.detail().attributes(),
+                    "Direct base source values");
         } else if (value instanceof CreatureTypes.CreatureResult creature) {
             showCreature(row, creature);
         }
@@ -537,7 +847,8 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
         }
     }
 
-    private void showItem(Row row, ItemResult result) {
+    private void showItem(
+            Row row, ItemResult result, ItemAttributes resolvedAttributes, String scope) {
         var detail = result.detail();
         var tooltip = new VBox(7);
         tooltip.getStyleClass().add("wow-item-tooltip");
@@ -570,7 +881,8 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                 art.setVisible(true);
                 art.setManaged(true);
             } else
-                source.icon(detail.summary().iconFileDataId(), iconToken)
+                iconRequests
+                        .request(detail.summary().iconFileDataId())
                         .whenComplete(
                                 (image, error) ->
                                         javafx.application.Platform.runLater(
@@ -648,7 +960,7 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                                                     ? row.cell(3)
                                                     : safe(labels.subclass().text()))));
         }
-        var attributes = detail.attributes();
+        var attributes = resolvedAttributes == null ? detail.attributes() : resolvedAttributes;
         for (var line : attributes.attributes())
             tooltip.getChildren().add(text(line.text(), "wow-stat"));
         if (attributes.attributes().isEmpty())
@@ -656,16 +968,11 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                     .add(
                             text(
                                     attributes.state() == ItemAttributes.State.READY
-                                            ? "No nonzero direct base attributes"
+                                            ? "No nonzero base attributes"
                                             : "Attributes not resolved",
                                     "wow-line"));
         for (String issue : attributes.issues()) inspector.getChildren().add(text(issue, "muted"));
-        inspector
-                .getChildren()
-                .add(
-                        text(
-                                "Direct base values where present. Bonus lists, character context, enchantments and scaling are not applied.",
-                                "muted"));
+        inspector.getChildren().add(text(scope, "muted"));
         if (detail.facts() != null) {
             var factRows = new ArrayList<List<String>>();
             for (var fact : detail.facts().facts()) {
@@ -956,7 +1263,10 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
     @Override
     public void close() {
         disposed = true;
+        iconRequests.close();
         debounce.stop();
+        iconPulse.stop();
+        iconWaiters.clear();
         pageGeneration++;
         detailGeneration++;
         tableGeneration++;

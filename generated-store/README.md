@@ -126,3 +126,11 @@ Unlike SQLite, zstd does not need a separately installed system library. The
 module does not shade those binaries into its own JAR. Keep the dependency JAR
 and notices when distributing. BSD 2-Clause binding and BSD 3-Clause zstd notices
 are included under `src/main/resources/META-INF/` and in the built library JAR.
+
+
+`DerivedDatabase` provides an additive asynchronous SQLite actor for disposable
+query projections. Concept modules own their schemas and typed queries. It reuses
+the object-store native SQLite adapter without changing object-store or generated
+record schemas. Its bounded queue serializes work; scoped sessions cannot escape
+the actor, transactions roll back on failure, explicit cancellation interrupts
+native work, and close drains accepted requests before releasing the connection.

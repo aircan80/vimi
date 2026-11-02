@@ -70,17 +70,39 @@ record ItemLayout(
                 : new ItemName(ItemNameState.VALID, value);
     }
 
+    record SparseValue(ItemName name, List<ItemSourceValue> values) {
+        SparseValue {
+            values = List.copyOf(values);
+        }
+    }
+
+    SparseValue sparseValue(Db2Types.Row sparse) {
+        var values = new ArrayList<ItemSourceValue>();
+        var name = nameAndValues(sparse, RowOutcome.FOUND, values);
+        return new SparseValue(name, values);
+    }
+
     ItemSummary summary(Db2Types.Row item, Db2Types.Row sparse, RowOutcome outcome, String key) {
+        return projected(item, sparse == null ? null : sparseValue(sparse), outcome, key);
+    }
+
+    ItemSummary projected(Db2Types.Row item, SparseValue sparse, RowOutcome outcome, String key) {
         var values = new ArrayList<ItemSourceValue>();
         for (int i : itemFields) {
             values.add(new ItemSourceValue(ITEM, itemColumns.get(i).name(), i, integer(item, i)));
         }
-        ItemName n = nameAndValues(sparse, outcome, values);
+        ItemName name;
+        if (sparse == null) {
+            name = nameAndValues(null, outcome, values);
+        } else {
+            name = sparse.name();
+            values.addAll(sparse.values());
+        }
         return new ItemSummary(
                 item.id(),
                 item.isCopy(),
                 item.copySourceId(),
-                n,
+                name,
                 values,
                 icon < 0 ? null : iconOf(cell(item, icon)),
                 sparse == null && outcome == RowOutcome.PROTECTED ? key : null,

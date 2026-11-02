@@ -103,6 +103,13 @@ public final class ConceptQueries {
         return false;
     }
 
+    /** Stable literal-search key using the same simple Unicode case policy as contains. */
+    public static String searchKey(String value) {
+        var result = new StringBuilder();
+        value.codePoints().forEach(code -> result.appendCodePoint(upper(code)));
+        return result.toString();
+    }
+
     private static int upper(int code) {
         return code == 0x131 || code == 0x17f ? code : Character.toUpperCase(code);
     }

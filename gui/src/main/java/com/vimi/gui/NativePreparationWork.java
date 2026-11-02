@@ -38,6 +38,7 @@ import java.util.function.Consumer;
 
 /** One retained build/locale workspace; public data methods never acquire media. */
 public final class NativePreparationWork implements BuildPreparation.Work {
+    private final java.nio.file.Path indexDirectory;
     private final BuildInfo info;
     private final BuildTypes.BuildRef ref;
     private final String locale;
@@ -81,6 +82,20 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             GeneratedStore generated,
             CommunityFileNames community,
             ObjectSource localObjects) {
+        this(info, source, locale, builds, objects, generated, community, localObjects, null);
+    }
+
+    public NativePreparationWork(
+            BuildInfo info,
+            BuildInfo.RegionEvidence source,
+            String locale,
+            Builds builds,
+            ObjectSource objects,
+            GeneratedStore generated,
+            CommunityFileNames community,
+            ObjectSource localObjects,
+            java.nio.file.Path indexDirectory) {
+        this.indexDirectory = indexDirectory;
         this.info = info;
         this.ref =
                 new BuildTypes.BuildRef(
@@ -405,12 +420,45 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         try {
             token.check();
             var itemOpen =
-                    new ItemsService(staged.service(), files, images)
+                    new ItemsService(
+                                    staged.service(),
+                                    files,
+                                    images,
+                                    generated,
+                                    indexDirectory,
+                                    itemCatalogInputs())
                             .forBuild(ref, locale, token)
                             .join();
             nextItems = itemOpen.items();
             if (nextItems == null) issues.add("Items: " + itemOpen.code());
             else appendWarm(issues, nextItems.warmup(TableTypes.Priority.BACKGROUND, token).join());
+            if (nextItems != null && indexDirectory != null) {
+                var catalog =
+                        nextItems
+                                .grid(
+                                        new com.vibeminer.concepts.items.ItemGridQuery(
+                                                "",
+                                                null,
+                                                null,
+                                                null,
+                                                null,
+                                                com.vibeminer.concepts.items.ItemGridQuery.Sort.ID,
+                                                false,
+                                                0,
+                                                1),
+                                        TableTypes.Priority.BACKGROUND,
+                                        token)
+                                .join();
+                if (catalog.state() != com.vibeminer.concepts.items.ItemsPageState.OK)
+                    issues.add("Item catalog: " + catalog.message());
+                else {
+                    var attributeIssues =
+                            nextItems
+                                    .prepareAttributes(TableTypes.Priority.BACKGROUND, token)
+                                    .join();
+                    attributeIssues.forEach(issue -> issues.add("Item attributes: " + issue));
+                }
+            }
             token.check();
             var creatureOpen =
                     new CreaturesService(staged.service(), files, images)
@@ -558,6 +606,26 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                     workspace.creatures(),
                     workspace.effects(),
                     workspace.tables());
+    }
+
+    private String itemCatalogInputs() {
+        var available = keys.get();
+        var fingerprints =
+                available == null
+                        ? List.of()
+                        : available.names().stream()
+                                .map(name -> name + ":" + available.fingerprintOf(name))
+                                .toList();
+        return com.vibeminer.formats.internal.Json.sha256(
+                com.vibeminer.formats.internal.Json.bytes(
+                        List.of(
+                                "native-item-catalog-v1",
+                                BundledDefinitions.REVISION,
+                                BundledDefinitions.MANIFEST_SHA256,
+                                BundledDefinitions.SOURCES_SHA256,
+                                opened.metadata().rootContentKey().hex(),
+                                opened.metadata().encodingContentKey().hex(),
+                                fingerprints)));
     }
 
     private static void appendWarm(

@@ -31,16 +31,43 @@ public final class ItemsService implements Items {
     private final Files files;
     private final BlpImages images;
     private final ItemsOptions options;
+    private final com.vibeminer.generated.GeneratedStore generated;
+    private final String catalogInputs;
+    private final java.nio.file.Path indexDirectory;
 
     public ItemsService(Tables tables, Files files, BlpImages images) {
         this(tables, files, images, new ItemsOptions());
     }
 
     public ItemsService(Tables tables, Files files, BlpImages images, ItemsOptions options) {
+        this(tables, files, images, options, null, null, "");
+    }
+
+    public ItemsService(
+            Tables tables,
+            Files files,
+            BlpImages images,
+            com.vibeminer.generated.GeneratedStore generated,
+            java.nio.file.Path indexDirectory,
+            String catalogInputs) {
+        this(tables, files, images, new ItemsOptions(), generated, indexDirectory, catalogInputs);
+    }
+
+    private ItemsService(
+            Tables tables,
+            Files files,
+            BlpImages images,
+            ItemsOptions options,
+            com.vibeminer.generated.GeneratedStore generated,
+            java.nio.file.Path indexDirectory,
+            String catalogInputs) {
         this.tables = java.util.Objects.requireNonNull(tables);
         this.files = java.util.Objects.requireNonNull(files);
         this.images = java.util.Objects.requireNonNull(images);
         this.options = java.util.Objects.requireNonNull(options);
+        this.indexDirectory = indexDirectory;
+        this.generated = generated;
+        this.catalogInputs = java.util.Objects.requireNonNull(catalogInputs);
     }
 
     @Override
@@ -98,10 +125,16 @@ public final class ItemsService implements Items {
         private final TableTypes.Ref item = TableTypes.Ref.forName(ItemLayout.ITEM),
                 sparse = TableTypes.Ref.forName(ItemLayout.SPARSE);
         private final BuildTables tables;
+        private final ItemStatCalculator statCalculator;
         private final RelationIndexes relations;
+        private final Semaphore catalogGate = new Semaphore(1);
+        private volatile ItemGridStore index;
+        private ItemCatalog unavailableCatalog;
         private final Semaphore filesGate = new Semaphore(1);
         private BuildFiles buildFiles;
         private BuildModels models;
+        private final java.util.concurrent.ConcurrentMap<List<ItemSourceValue>, ItemClassLabels>
+                classificationCache = new java.util.concurrent.ConcurrentHashMap<>();
         private final Object gate = new Object();
         private boolean closed;
         private boolean disposing;
@@ -110,6 +143,7 @@ public final class ItemsService implements Items {
 
         Handle(BuildTables tables) {
             this.tables = tables;
+            statCalculator = new ItemStatCalculator(tables, files, generated, catalogInputs);
             relations = new RelationIndexes(tables, options.maxRelationIndexEntries());
         }
 
@@ -178,6 +212,8 @@ public final class ItemsService implements Items {
         }
 
         private void dispose() {
+            classificationCache.clear();
+
             Throwable failure = null;
             try {
                 if (buildFiles != null) {
@@ -185,6 +221,17 @@ public final class ItemsService implements Items {
                 }
             } catch (Throwable error) {
                 failure = error;
+            }
+            try {
+                if (index != null) {
+                    index.close();
+                }
+            } catch (Throwable error) {
+                if (failure == null) {
+                    failure = error;
+                } else {
+                    failure.addSuppressed(error);
+                }
             }
             try {
                 tables.closeAsync().join();
@@ -216,6 +263,276 @@ public final class ItemsService implements Items {
                 startDisposal();
             }
             return drained.copy();
+        }
+
+        @Override
+        public CompletableFuture<ItemGridPage> grid(
+                ItemGridQuery query, TableTypes.Priority priority, Cancellation token) {
+            java.util.Objects.requireNonNull(query);
+            return call(
+                    priority,
+                    token,
+                    () -> {
+                        boolean held = false;
+                        try {
+                            while (!(held =
+                                    catalogGate.tryAcquire(
+                                            20, java.util.concurrent.TimeUnit.MILLISECONDS))) {
+                                token.check();
+                            }
+                            token.check();
+                            if (index == null && unavailableCatalog == null) {
+                                if (indexDirectory == null) {
+                                    throw new IllegalStateException(
+                                            "Derived grid location is not configured");
+                                }
+                                var stamps = new ArrayList<Object>();
+                                stamps.add(ItemGridStore.FORMAT);
+                                stamps.add(catalogInputs);
+                                stamps.add(build().toString());
+                                stamps.add(locale());
+                                stamps.add(ItemClassifications.POLICY_REVISION);
+                                for (String name :
+                                        List.of(
+                                                "Item",
+                                                "ItemSparse",
+                                                "ItemClass",
+                                                "ItemSubClass")) {
+                                    var schema =
+                                            tables.schema(
+                                                            TableTypes.Ref.forName(name),
+                                                            priority,
+                                                            token)
+                                                    .join();
+                                    stamps.add(
+                                            java.util.Arrays.asList(
+                                                    schema.table().fileDataId(),
+                                                    schema.table().state().name(),
+                                                    schema.table().contentKey(),
+                                                    schema.table().counts(),
+                                                    schema.columns(),
+                                                    schema.schema()));
+                                }
+                                String identity =
+                                        com.vibeminer.formats.internal.Json.sha256(
+                                                com.vibeminer.formats.internal.Json.bytes(stamps));
+                                var opened = ItemGridStore.open(indexDirectory, identity, token);
+                                boolean keep = false;
+                                try {
+                                    if (!opened.ready()) {
+                                        var prepared = buildCatalog(identity, priority, token);
+                                        if (prepared.state() != ItemsPageState.OK) {
+                                            unavailableCatalog = prepared;
+                                        } else {
+                                            opened.populate(prepared, token);
+                                        }
+                                    }
+                                    if (opened.ready()) {
+                                        index = opened;
+                                        keep = true;
+                                    }
+                                } finally {
+                                    if (!keep) {
+                                        opened.close();
+                                    }
+                                }
+                            }
+                            if (unavailableCatalog != null) {
+                                return new ItemGridPage(
+                                        unavailableCatalog.state(),
+                                        List.of(),
+                                        0,
+                                        0,
+                                        ItemGridPage.Options.empty(),
+                                        unavailableCatalog.message());
+                            }
+                            return index.query(query, token);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new java.util.concurrent.CancellationException();
+                        } finally {
+                            if (held) {
+                                catalogGate.release();
+                            }
+                        }
+                    });
+        }
+
+        private ItemCatalog buildCatalog(
+                String identity, TableTypes.Priority priority, Cancellation token) {
+            var s = schemas(priority, token);
+            if (s.itemColumns() == null) {
+                return new ItemCatalog(
+                        ItemsPageState.ITEM_NOT_READABLE,
+                        List.of(),
+                        identity,
+                        "Item is " + s.item().state(),
+                        false);
+            }
+            try {
+                var layout = ItemLayout.resolve(s.itemColumns(), s.sparseColumns());
+                var sparseRows = new java.util.HashMap<Long, ItemLayout.SparseValue>();
+                if (s.sparseColumns() != null) {
+                    scanCatalogTable(
+                            sparse,
+                            priority,
+                            token,
+                            row -> {
+                                if (sparseRows.putIfAbsent(row.id(), layout.sparseValue(row))
+                                        != null) {
+                                    throw new ItemsSourceException(
+                                            ItemsSourceException.SOURCE_INVALID,
+                                            "Duplicate sparse ID");
+                                }
+                            });
+                }
+                var result = new ArrayList<ItemListLabels>();
+                scanCatalogTable(
+                        item,
+                        priority,
+                        token,
+                        row -> {
+                            var value = sparseRows.get(row.id());
+                            var outcome = TableTypes.RowOutcome.UNKNOWN;
+                            String protectedKey = null;
+                            if (value == null && s.sparseColumns() != null) {
+                                var found = tables.get(sparse, row.id(), priority, token).join();
+                                outcome = found.outcome();
+                                protectedKey = found.protectedKey();
+                                if (found.row() != null) {
+                                    value = layout.sparseValue(found.row().row());
+                                }
+                            }
+                            var summary =
+                                    layout.projected(
+                                            row,
+                                            value,
+                                            value == null ? outcome : TableTypes.RowOutcome.FOUND,
+                                            protectedKey);
+                            result.add(
+                                    new ItemListLabels(
+                                            summary, resolveLabels(summary, priority, token)));
+                        });
+                return new ItemCatalog(
+                        ItemsPageState.OK,
+                        result,
+                        identity,
+                        "All "
+                                + result.size()
+                                + " readable Item records · source "
+                                + s.item().state()
+                                + " / "
+                                + s.sparse().state(),
+                        false);
+            } catch (ItemsSourceException failure) {
+                return new ItemCatalog(
+                        pageState(failure.code()),
+                        List.of(),
+                        identity,
+                        failure.getMessage(),
+                        false);
+            }
+        }
+
+        private void scanCatalogTable(
+                TableTypes.Ref table,
+                TableTypes.Priority priority,
+                Cancellation token,
+                java.util.function.Consumer<Db2Types.Row> accept) {
+            long after = -1, count = 0;
+            String identity = null;
+            for (; ; ) {
+                token.check();
+                var page =
+                        tables.page(
+                                        new TableTypes.PageRequest(
+                                                table, after, 1000, List.of(), identity),
+                                        priority,
+                                        token)
+                                .join();
+                if (page.state() != TableTypes.PageState.OK) {
+                    throw new ItemsSourceException(
+                            ItemsSourceException.SOURCE_INVALID,
+                            "Catalog source changed or became unreadable: " + page.state());
+                }
+                for (var row : page.rows()) {
+                    if (++count > 2000000) {
+                        throw new ItemsSourceException(
+                                ItemsSourceException.SOURCE_INVALID,
+                                "Item catalog record bound exceeded");
+                    }
+                    accept.accept(row.row());
+                }
+                if (page.nextAfter() == null) {
+                    break;
+                }
+                after = page.nextAfter();
+                identity = page.identity();
+            }
+        }
+
+        @Override
+        public CompletableFuture<ItemClassLabels> classifications(
+                ItemSummary summary, TableTypes.Priority priority, Cancellation token) {
+            return call(priority, token, () -> resolveLabels(summary, priority, token));
+        }
+
+        private ItemClassLabels resolveLabels(
+                ItemSummary summary, TableTypes.Priority priority, Cancellation token) {
+            var key =
+                    summary.values().stream()
+                            .filter(
+                                    value ->
+                                            value.table().equals("Item")
+                                                    && (value.column().equals("ClassID")
+                                                            || value.column().equals("SubclassID")))
+                            .toList();
+            var cached = classificationCache.get(key);
+            if (cached != null) {
+                return cached;
+            }
+            var labels =
+                    ItemClassifications.resolve(
+                            tables, summary, options.maxLabelScanRows(), priority, token);
+            token.check();
+            if (classificationCache.size() < 4096) {
+                classificationCache.putIfAbsent(key, labels);
+            }
+            return labels;
+        }
+
+        @Override
+        public CompletableFuture<List<String>> prepareAttributes(
+                TableTypes.Priority priority, Cancellation token) {
+            return call(priority, token, () -> statCalculator.prepare(token));
+        }
+
+        @Override
+        public CompletableFuture<ItemInspection> inspect(
+                long id, TableTypes.Priority priority, Cancellation token) {
+            return getData(id, priority, token)
+                    .thenCompose(
+                            result ->
+                                    call(
+                                            priority,
+                                            token,
+                                            () -> {
+                                                var direct =
+                                                        result.detail() == null
+                                                                ? null
+                                                                : result.detail().attributes();
+                                                if (direct != null
+                                                        && direct.state()
+                                                                == ItemAttributes.State
+                                                                        .REQUIRES_CALCULATION) {
+                                                    statCalculator.prepare(token);
+                                                }
+                                                return new ItemInspection(
+                                                        result,
+                                                        statCalculator.calculate(
+                                                                result, priority, token),
+                                                        "Base source item level · no bonus lists, enchantments or player-level scaling");
+                                            }));
         }
 
         private record Schemas(
@@ -553,13 +870,7 @@ public final class ItemsService implements Items {
                                 media
                                         ? icon(summary.iconFileDataId(), token)
                                         : deferredIcon(summary.iconFileDataId());
-                        var labels =
-                                ItemClassifications.resolve(
-                                        tables,
-                                        summary,
-                                        options.maxLabelScanRows(),
-                                        priority,
-                                        token);
+                        var labels = resolveLabels(summary, priority, token);
                         var appearances =
                                 new ItemAppearanceReader(
                                                 tables, relations, options, priority, token)
