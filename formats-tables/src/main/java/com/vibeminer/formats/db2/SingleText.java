@@ -4,10 +4,10 @@ import java.math.BigDecimal;
 import java.util.Locale;
 
 /** .NET invariant Single R formatting: shortest digits, general-format exponent policy. */
-final class SingleText {
+public final class SingleText {
     private SingleText() {}
 
-    static String format(float value) {
+    public static String format(float value) {
         if (!Float.isFinite(value)) {
             throw Db2Input.fail("UNSUPPORTED", "Nonfinite float");
         }
