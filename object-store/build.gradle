@@ -66,6 +66,7 @@ dependencies {
     testImplementation platform('org.junit:junit-bom:5.13.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    integrationTestImplementation sourceSets.benchmark.output
     integrationTestImplementation testFixtures(project(':object-store'))
     crashTestImplementation testFixtures(project(':object-store'))
     interopTestImplementation testFixtures(project(':object-store'))
@@ -168,6 +169,52 @@ tasks.register('benchmark', JavaExec) {
     args providers.gradleProperty('benchmarkObjects').orElse('64').get(),
          providers.gradleProperty('benchmarkBytes').orElse('65536').get(),
          providers.gradleProperty('benchmarkMode').orElse('all').get()
+    def sqliteLibrary = providers.gradleProperty('sqliteLibrary')
+    if (sqliteLibrary.isPresent()) {
+        systemProperty 'vibeminer.sqlite.library', sqliteLibrary.get()
+    }
+}
+
+// Experimental backend stays out of production artifacts; requires an explicit disk directory.
+tasks.register('sqliteBlobBenchmark', JavaExec) {
+    description = 'Checks bounded-memory SQLite BLOB streaming up to 512 MiB (opt in).'
+    group = 'verification'
+    classpath = sourceSets.benchmark.runtimeClasspath
+    mainClass = 'com.vibeminer.store.SqliteBlobBenchmarks'
+    maxHeapSize = '128m'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args providers.gradleProperty('blobBenchmarkDirectory').orElse(
+        rootProject.layout.projectDirectory.dir('.local/storage-evaluation').asFile.absolutePath).get()
+    def sqliteLibrary = providers.gradleProperty('sqliteLibrary')
+    if (sqliteLibrary.isPresent()) {
+        systemProperty 'vibeminer.sqlite.library', sqliteLibrary.get()
+    }
+}
+
+tasks.register('storageComparison', JavaExec) {
+    description = 'Compares sequential verified small-object writes and warm reads (opt in).'
+    group = 'verification'
+    classpath = sourceSets.benchmark.runtimeClasspath
+    mainClass = 'com.vibeminer.store.StorageComparison'
+    maxHeapSize = '512m'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args providers.gradleProperty('blobBenchmarkDirectory').orElse(
+        rootProject.layout.projectDirectory.dir('.local/storage-evaluation').asFile.absolutePath).get()
+    def sqliteLibrary = providers.gradleProperty('sqliteLibrary')
+    if (sqliteLibrary.isPresent()) {
+        systemProperty 'vibeminer.sqlite.library', sqliteLibrary.get()
+    }
+}
+
+tasks.register('blobConcurrency', JavaExec) {
+    description = 'Measures foreground read/accounting latency during a 512 MiB BLOB write.'
+    group = 'verification'
+    classpath = sourceSets.benchmark.runtimeClasspath
+    mainClass = 'com.vibeminer.store.BlobConcurrency'
+    maxHeapSize = '128m'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args providers.gradleProperty('blobBenchmarkDirectory').orElse(
+        rootProject.layout.projectDirectory.dir('.local/storage-evaluation').asFile.absolutePath).get()
     def sqliteLibrary = providers.gradleProperty('sqliteLibrary')
     if (sqliteLibrary.isPresent()) {
         systemProperty 'vibeminer.sqlite.library', sqliteLibrary.get()

@@ -1,5 +1,19 @@
 # vimi development handoff
 
+## Active experiment — all-SQLite payloads (2026-11-02)
+
+The user selected all payloads in SQLite, including large objects; no hybrid tier.
+An isolated backend and streaming smoke harness now live in the object-store
+benchmark source set, with integration coverage. Production storage is unchanged.
+See [the experiment notes](docs/sqlite-blob-prototype.md) for commands, initial
+512 MiB/128 MiB-heap evidence and remaining validation gates. The payload table
+contains only `id` and `data`; metadata and build ownership are separate. No
+production migration or performance advantage has been established. Continue
+with large verified encoded streams, realistic batching, full-scale ownership
+queries and bounded committed staging before proposing replacement. Initial
+small-object verified pack comparisons, independent reader latency and process-kill
+recovery tests now pass; experiment notes record results and their limits. Do not use the live GUI's stores as test data.
+
 ## Latest status — 2026-11-02: Overview accounting (#63)
 
 This section supersedes historical status below. The implementation was developed on

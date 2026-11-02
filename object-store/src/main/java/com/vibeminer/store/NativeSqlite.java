@@ -103,6 +103,99 @@ final class NativeSqlite implements AutoCloseable {
             LINKER.downcallHandle(
                     LIB.find("sqlite3_progress_handler").orElseThrow(),
                     FunctionDescriptor.ofVoid(ADDRESS, JAVA_INT, ADDRESS, ADDRESS));
+    private static final MethodHandle BLOB_OPEN =
+            function(
+                    LIB,
+                    "sqlite3_blob_open",
+                    JAVA_INT,
+                    ADDRESS,
+                    ADDRESS,
+                    ADDRESS,
+                    ADDRESS,
+                    JAVA_LONG,
+                    JAVA_INT,
+                    ADDRESS);
+    private static final MethodHandle BLOB_READ =
+            function(LIB, "sqlite3_blob_read", JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT);
+    private static final MethodHandle BLOB_WRITE =
+            function(LIB, "sqlite3_blob_write", JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT);
+    private static final MethodHandle BLOB_CLOSE =
+            function(LIB, "sqlite3_blob_close", JAVA_INT, ADDRESS);
+
+    /** Transfers a fixed range using a bounded buffer; the connection remains thread confined. */
+    void transferBlob(
+            long row,
+            int offset,
+            int length,
+            java.io.InputStream input,
+            java.io.OutputStream output,
+            Cancellation token)
+            throws java.io.IOException {
+        if (offset < 0
+                || length < 0
+                || (long) offset + length > Integer.MAX_VALUE
+                || (input == null) == (output == null)) {
+            throw new IllegalArgumentException("Invalid BLOB transfer");
+        }
+        token.check();
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment pointer = arena.allocate(ADDRESS);
+            check(
+                    (int)
+                            call(
+                                    BLOB_OPEN,
+                                    db,
+                                    arena.allocateFrom("main"),
+                                    arena.allocateFrom("payloads"),
+                                    arena.allocateFrom("data"),
+                                    row,
+                                    input == null ? 0 : 1,
+                                    pointer));
+            MemorySegment blob = pointer.get(ADDRESS, 0);
+            Throwable failure = null;
+            try {
+                byte[] buffer = new byte[65536];
+                MemorySegment nativeBuffer = arena.allocate(buffer.length);
+                int done = 0;
+                while (done < length) {
+                    token.check();
+                    int count = Math.min(buffer.length, length - done);
+                    if (input != null) {
+                        int received = input.readNBytes(buffer, 0, count);
+                        if (received != count) {
+                            throw new java.io.EOFException("Incomplete BLOB input");
+                        }
+                        token.check();
+                        nativeBuffer
+                                .asSlice(0, count)
+                                .copyFrom(MemorySegment.ofArray(buffer).asSlice(0, count));
+                        check((int) call(BLOB_WRITE, blob, nativeBuffer, count, offset + done));
+                    } else {
+                        check((int) call(BLOB_READ, blob, nativeBuffer, count, offset + done));
+                        MemorySegment.ofArray(buffer)
+                                .asSlice(0, count)
+                                .copyFrom(nativeBuffer.asSlice(0, count));
+                        output.write(buffer, 0, count);
+                    }
+                    done += count;
+                }
+            } catch (java.io.IOException | RuntimeException | Error error) {
+                failure = error;
+                throw error;
+            } finally {
+                int result = (int) call(BLOB_CLOSE, blob);
+                if (result != 0) {
+                    Failure closeError = new Failure(result, message());
+                    if (failure != null) {
+                        failure.addSuppressed(closeError);
+                    } else {
+                        throw closeError;
+                    }
+                }
+            }
+        }
+    }
+
     private static final MethodHandle CANCELED = cancellationCallback();
 
     private static MethodHandle cancellationCallback() {
