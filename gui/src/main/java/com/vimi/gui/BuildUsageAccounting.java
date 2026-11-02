@@ -68,6 +68,18 @@ final class BuildUsageAccounting {
         this.community = community;
     }
 
+    /** Declare verified retained membership before its potentially slow EN inventory is indexed. */
+    void retain() {
+        accounting
+                .index
+                .retain(info.identity(), false, "encoding", Role.BLIZZARD_ENCODED)
+                .whenComplete(
+                        (ignored, error) -> {
+                            if (error == null) accounting.changed();
+                            else problem = "Retained build membership could not be updated";
+                        });
+    }
+
     void files(Build opened, PreparedFileCatalog.Catalog files) {
         this.opened = opened;
         this.files = files;

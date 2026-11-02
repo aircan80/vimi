@@ -148,6 +148,7 @@ public final class PreparationPipelineIntegrationTest {
                 var mediaRequests = new AtomicInteger();
                 var indexRequests = new AtomicInteger();
                 var jobPublished = new CompletableFuture<BuildPreparation.Job>();
+                boolean firstAccountingPass = round == 0;
                 ObjectSource guarded =
                         (ObjectSource)
                                 Proxy.newProxyInstance(
@@ -171,12 +172,28 @@ public final class PreparationPipelineIntegrationTest {
                                                     mediaRequests.incrementAndGet();
                                                     throw new AssertionError(
                                                             "Preparation/warmup must not acquire"
-                                                                + " media");
+                                                                    + " media");
                                                 }
                                                 if (request.key().type() == ObjectKey.ARCHIVE_INDEX
                                                         || request.key().type()
                                                                 == ObjectKey.FILE_INDEX) {
-                                                    indexRequests.incrementAndGet();
+                                                    int indexRequest =
+                                                            indexRequests.incrementAndGet();
+                                                    if (firstAccountingPass && indexRequest == 1) {
+                                                        require(
+                                                                accounting
+                                                                                .index
+                                                                                .figures(
+                                                                                        build
+                                                                                                .identity())
+                                                                                .join()
+                                                                                .incompleteBuilds()
+                                                                        == 1,
+                                                                "Verified retained membership must"
+                                                                        + " be visible before"
+                                                                        + " file-index acquisition"
+                                                                        + " completes");
+                                                    }
                                                     require(
                                                             jobPublished
                                                                     .join()
@@ -316,7 +333,7 @@ public final class PreparationPipelineIntegrationTest {
                     require(
                             result.files().files() == 2 && !result.files().presenceAssessed(),
                             "Persisted file baseline counts ROOT entries without a full presence"
-                                + " assessment");
+                                    + " assessment");
                     require(
                             result.tables().stream()
                                     .anyMatch(
@@ -329,7 +346,7 @@ public final class PreparationPipelineIntegrationTest {
                     require(
                             indexRequests.get() > 0 && mediaRequests.get() == 0,
                             "Full Files prerequisite indexes are acquired after metadata, media is"
-                                + " not");
+                                    + " not");
                     require(
                             restoring ? enumerations.get() == 0 : enumerations.get() > 0,
                             "Only the initial preparation enumerates file IDs");
@@ -384,7 +401,7 @@ public final class PreparationPipelineIntegrationTest {
             }
             System.out.println(
                     "PreparationPipelineIntegration: protected-table preparation and offline cached"
-                        + " reopen passed");
+                            + " reopen passed");
         } finally {
             try (var paths = Files.walk(directory)) {
                 for (var path : paths.sorted(java.util.Comparator.reverseOrder()).toList())

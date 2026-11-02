@@ -62,6 +62,8 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     @Override
     public void assessed(BuildPreparation.Ready ready) {
         if (history != null) history.record(info, ref, locale, ready);
+        if (ready == BuildPreparation.Ready.METADATA_READY && usageAccounting != null)
+            usageAccounting.retain();
         if (ready == BuildPreparation.Ready.TABLES_READY && usageAccounting != null)
             usageAccounting.workspace(published.tables(), published.items());
     }

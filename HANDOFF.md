@@ -2,8 +2,8 @@
 
 ## Latest status — 2026-11-02: Overview accounting (#63)
 
-This section supersedes historical status below. Implementation is on
-`feature/storage-accounting`; #63 records hosted CI and integration evidence.
+This section supersedes historical status below. The implementation was developed on
+`feature/storage-accounting`; #63 / PR #65 record hosted CI and integration evidence.
 
 - Added the separate JavaFX-free `accounting` library, `StorageAccounting` boundary
   and persistent SQLite `UsageIndex`. Canonical retained-build membership survives
