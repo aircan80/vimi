@@ -35,6 +35,10 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 sourceSets {
+    interopTest {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
     integrationTest {
         compileClasspath += sourceSets.main.output
         runtimeClasspath += sourceSets.main.output
@@ -42,6 +46,8 @@ sourceSets {
 }
 
 configurations {
+    interopTestImplementation.extendsFrom testImplementation
+    interopTestRuntimeOnly.extendsFrom testRuntimeOnly
     integrationTestImplementation.extendsFrom testImplementation
     integrationTestRuntimeOnly.extendsFrom testRuntimeOnly
 }
@@ -109,3 +115,26 @@ checkstyle {
     maxWarnings = 0
 }
 
+
+// Optional compatibility suite, requiring the pinned C# Files reference built in Release.
+def filesReferenceRoot = providers.gradleProperty('referenceRoot').orElse(rootProject.layout.projectDirectory.dir('../vibeminer').asFile.absolutePath)
+def filesDotnet = providers.gradleProperty('dotnet').orElse(rootProject.layout.projectDirectory.file('../vibeminer/.local/toolchains/dotnet/dotnet').asFile.absolutePath)
+def filesCsharp = layout.projectDirectory.dir('src/interopTest/csharp')
+tasks.register('buildCsharpInterop', Exec) {
+    workingDir rootProject.layout.projectDirectory
+    environment 'DOTNET_CLI_TELEMETRY_OPTOUT', '1'
+    commandLine filesDotnet.get(), 'build', filesCsharp.file('Interop.csproj').asFile.absolutePath,
+        '-p:RestoreLockedMode=true', '-p:NuGetAudit=false', '-p:ReferenceRoot=' + filesReferenceRoot.get(), '--nologo'
+}
+tasks.register('interopTest', Test) {
+    group = 'verification'
+    dependsOn tasks.named('buildCsharpInterop')
+    testClassesDirs = sourceSets.interopTest.output.classesDirs
+    classpath = sourceSets.interopTest.runtimeClasspath
+    systemProperty 'vimi.dotnet', filesDotnet.get()
+    systemProperty 'vimi.files.interop.harness', filesCsharp.file('bin/Debug/net10.0/VibeMiner.Files.Tests.dll').asFile.absolutePath
+    inputs.files(fileTree(filesCsharp) { include '*.cs', '*.csproj', 'packages.lock.json' })
+    inputs.file(file(filesReferenceRoot.get() + '/src/backend/VibeMiner.Files/bin/Release/net10.0/VibeMiner.Files.dll'))
+    inputs.files(fileTree(filesCsharp.dir('bin/Debug/net10.0')))
+    shouldRunAfter tasks.named('integrationTest')
+}
