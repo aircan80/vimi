@@ -3,8 +3,8 @@
 ## Latest status — 2026-11-01
 
 - Layers 1–6 are implemented in Java within the documented pinned C#
-  supported-format/resource bounds. Layer 6 integration is on
-  `parallel/game-concepts`, tracking issue #49; merge/check results follow below.
+  supported-format/resource bounds. Layer 6 PR #50 was fast-forward merged into
+  main at `c537beb` after all hosted checks passed; tracking issue #49 is complete.
 - Layer 6 comprises `concepts-core`, `concepts-items`, `concepts-creatures` and
   `concepts-effects`. All pinned Concepts production files are ported, with
   independent fakes/contracts and original C# golden regeneration. Verified
@@ -16,7 +16,8 @@
 - Full local build/check/assembly, storage crash recovery and ten C# compatibility
   suites pass: 1,112 cases, zero failures/errors/skips. Root CI includes all twelve
   modules; 18 Python CI helper tests pass. Standalone public consumer compilation
-  and runtime smoke pass with production JARs alone. Hosted checks are pending.
+  and runtime smoke pass with production JARs alone. Hosted unit/integration checks
+  passed on Linux, macOS and Windows; Linux crash and C# compatibility passed.
 - Native Windows machine certification, real-corpus throughput and release packaging
   remain deferred. Hosted Windows checks remain enabled. Java API/collection/page
   memory differences and resource budgets are documented per module.
@@ -743,5 +744,8 @@ keys and retain raw component sections. Creature model references expose typed
 lower-layer evidence. Effect layout-match warnings preserve definition provenance
 even when later rows cannot be read.
 
-Tracking issue: #49. Native Windows certification and real-data performance remain
+Integration: PR #50, fast-forward merge `c537beb`; tracking issue #49 complete.
+All push/PR aggregate checks were green before main advanced.
+
+Native Windows certification and real-data performance remain
 separate; layer 7 owns JavaFX composition, application settings/jobs and rendering.
