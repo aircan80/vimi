@@ -342,7 +342,21 @@ final class BlpImagesTest {
         var image = Blp2Decoder.decode(com.vibeminer.formats.AssetSource.bytes(source)).join();
         assertArrayEquals(expected, BlpImagePayload.write(image));
         assertArrayEquals(image.rgba(), BlpImagePayload.read(expected, 0, new Limits()).rgba());
-        assertEquals(identity, new BlpImages(new MemoryGeneratedStore()).identityText(CONTENT, 0));
+        assertEquals(
+                expectedIdentity(identity),
+                new BlpImages(new MemoryGeneratedStore()).identityText(CONTENT, 0));
+    }
+
+    @Test
+    void canonicalIdentityFixtureAcceptsWindowsTextCheckoutWithoutChangingIdentityBytes() {
+        String canonical = new BlpImages(new MemoryGeneratedStore()).identityText(CONTENT, 0);
+        String windowsFixture = canonical.replace("\n", "\r\n");
+        assertEquals(canonical, expectedIdentity(windowsFixture));
+        assertFalse(canonical.contains("\r"));
+    }
+
+    private static String expectedIdentity(String fixture) {
+        return fixture.replace("\r\n", "\n");
     }
 
     private static final class StoreView implements GeneratedStore {

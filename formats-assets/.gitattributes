@@ -1,0 +1,11 @@
+# Text fixtures describe canonical identities and JSON, regardless of checkout platform.
+src/test/resources/golden/*.txt text eol=lf
+src/test/resources/golden/*.json text eol=lf
+
+# Authored native-format and compressed transport fixtures must never undergo text conversion.
+src/test/resources/golden/*.m2 binary
+src/test/resources/golden/*.skin binary
+src/test/resources/golden/*.blp binary
+src/test/resources/golden/*.vmim binary
+src/test/resources/golden/*.vmg1 binary
+src/test/resources/golden/*.gz binary
