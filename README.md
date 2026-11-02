@@ -7,6 +7,11 @@ Mermaid diagram, including the independent Questie backend.
 Download, preparation and local query commands are documented in the
 [Questie backend guide](questie/README.md).
 
+The new [unified SQLite library services](docs/unified-storage-services.md) provide
+shared original/generated payload storage and canonical ownership accounting through
+component interfaces. They are available separately; the desktop application still
+uses its existing stores pending the [preserving rollout](docs/unified-storage-rollout.md).
+
 ## Setup
 
 Switching development machines? Follow the [macOS continuation guide](docs/continue-macos.md)

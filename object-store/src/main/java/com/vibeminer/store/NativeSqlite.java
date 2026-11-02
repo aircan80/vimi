@@ -131,6 +131,21 @@ final class NativeSqlite implements AutoCloseable {
             java.io.OutputStream output,
             Cancellation token)
             throws java.io.IOException {
+        transferBlob("payloads", row, offset, length, input, output, token);
+    }
+
+    void transferBlob(
+            String table,
+            long row,
+            int offset,
+            int length,
+            java.io.InputStream input,
+            java.io.OutputStream output,
+            Cancellation token)
+            throws java.io.IOException {
+        if (!table.equals("payloads") && !table.equals("storage_payloads")) {
+            throw new IllegalArgumentException("Unsupported payload table");
+        }
         if (offset < 0
                 || length < 0
                 || (long) offset + length > Integer.MAX_VALUE
@@ -146,7 +161,7 @@ final class NativeSqlite implements AutoCloseable {
                                     BLOB_OPEN,
                                     db,
                                     arena.allocateFrom("main"),
-                                    arena.allocateFrom("payloads"),
+                                    arena.allocateFrom(table),
                                     arena.allocateFrom("data"),
                                     row,
                                     input == null ? 0 : 1,

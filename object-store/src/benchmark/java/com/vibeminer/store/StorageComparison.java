@@ -15,6 +15,7 @@ public final class StorageComparison {
     private StorageComparison() {}
 
     public static void main(String[] arguments) throws Exception {
+        boolean production = arguments.length > 1 && arguments[1].equals("production");
         Path root = Path.of(arguments[0]);
         Files.createDirectories(root);
         Path directory = Files.createTempDirectory(root, "comparison-");
@@ -41,7 +42,40 @@ public final class StorageComparison {
                         long began = System.nanoTime();
                         long written;
                         long read;
-                        if (sqlite) {
+                        if (sqlite && production) {
+                            Path database = folder.resolve("library.sqlite");
+                            var store = SqliteObjectStore.open(database).join();
+                            try {
+                                for (var object : objects) {
+                                    if (store.put(List.of(object)).join().getFirst().outcome()
+                                            != StoreTypes.PutOutcome.STORED) {
+                                        throw new AssertionError("SQLite production write failed");
+                                    }
+                                }
+                                try (var checkpoint = new NativeSqlite(database, false)) {
+                                    if (((Number)
+                                                            checkpoint.query(
+                                                                            "PRAGMA"
+                                                                                    + " wal_checkpoint(TRUNCATE)")
+                                                                    .getFirst()[0])
+                                                    .intValue()
+                                            != 0) {
+                                        throw new AssertionError("SQLite checkpoint blocked");
+                                    }
+                                }
+                                written = System.nanoTime();
+                                for (var object : objects) {
+                                    if (!Arrays.equals(
+                                            object.data(),
+                                            store.read(object.key()).join().bytes())) {
+                                        throw new AssertionError("SQLite production read differs");
+                                    }
+                                }
+                                read = System.nanoTime();
+                            } finally {
+                                store.closeAsync().join();
+                            }
+                        } else if (sqlite) {
                             try (var store =
                                     new SqliteBlobPrototype(folder.resolve("catalog.sqlite"))) {
                                 for (var object : objects) {
@@ -92,7 +126,7 @@ public final class StorageComparison {
                         System.out.printf(
                                 Locale.ROOT,
                                 "%s,%d,%d,%d,%.3f,%.3f,%d%n",
-                                sqlite ? "sqlite" : "packs",
+                                sqlite ? (production ? "sqlite-production" : "sqlite") : "packs",
                                 round,
                                 objects.size(),
                                 size,

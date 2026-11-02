@@ -1,5 +1,48 @@
 # vimi development handoff
 
+## Active service buildout — unified SQLite storage (2026-11-02)
+
+The user approved a team production buildout and expects app/accounting performance
+to improve. The isolated prototype (#67) was fast-forwarded to main after hosted
+Linux/macOS/Windows checks passed. Service work is on `feature/unified-sqlite-storage`
+and tracked by #68; preserving application adoption is #69. The desktop still uses
+its existing stores. Do not interpret backend delivery as an activated migration.
+
+- New `SqliteObjectStore` implements ObjectReader/ObjectWriter/HistoryLog with a
+  versioned library database, shared original/generated identities, bounded queues,
+  resumable chunk staging, integrity proofs, safe shutdown and bounded garbage work.
+- `LibraryCatalog` owns canonical BUILD/GLOBAL intent, atomic paged inventories and
+  direct physical-presence joins. Tables use `storage_*` and `catalog_*` conventions;
+  payload rows have only ID/bytes. Original/derived is descriptive, not retention.
+- `SqliteGeneratedStore` borrows the shared backend and retains record-file encoding.
+  `LibraryImporter` copies selected keys without overwriting prior destination values
+  or deleting source payload/index bytes. Saved preparation receipts and selected
+  history records are covered; full owner/history discovery and activation are not
+  automatic. Existing source stores remain available.
+- User accepted naming conventions instead of SQLite namespaces. Domain components
+  own their query tables/APIs; the GUI does not receive arbitrary database access.
+  Current item/build query databases stay separate. Relational bytes are excluded
+  from the new object/build attribution figures.
+- Build-scale synthetic metadata: 2,209,282 refs/build, 90% overlap, 10% stored
+  presence. Latest accounting query is about 2.2 seconds; concurrent foreground
+  metadata operations remain milliseconds. This is a background refresh, not an
+  instantaneous UI result or payload throughput measurement. Actual production
+  payload comparisons remain mixed: SQLite is not universally faster than packs.
+- Preserve histories, preparation receipts and canonical retained owner intent before
+  switching application composition. Performance remains an adoption criterion;
+  don't silently change durability or claim end-to-end gains from prototype timings.
+- Final Linux affected checks pass: 500 tests across object-store, generated-store
+  and object-access, with one existing explicit-native-library probe skipped under
+  default discovery. Spotless and all applicable Checkstyle checks pass. Prototype
+  hosted CI was green on all three platforms; new service CI follows its branch.
+- Known performance tradeoff: actual warm 1 MiB SQLite payload writes were about
+  163 ms/32 objects versus 118-120 ms for packs; reads about 46 ms versus 34-37 ms.
+  Some smaller reads improve. Do not claim all-SQLite is an overall app speed win.
+  The unified catalog can also coexist with pack payloads if measurements favor it.
+- See [service APIs](docs/unified-storage-services.md), [rollout gates](docs/unified-storage-rollout.md)
+  and the opt-in `productionStorageComparison`/`libraryAccountingBenchmark` tasks.
+  Use synthetic isolated directories; never benchmark the live application store.
+
 ## Active experiment — all-SQLite payloads (2026-11-02)
 
 The user selected all payloads in SQLite, including large objects; no hybrid tier.

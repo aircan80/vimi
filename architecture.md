@@ -54,6 +54,23 @@ payload attribution, provider/global scope, coverage and whole-library file leng
 remain distinct. Accounting never gates readiness or authorizes deletion. See
 [accounting/README.md](accounting/README.md).
 
+## Unified library services
+
+The new SQLite backend and ownership catalog share one library database through
+separate components. `storage_*` tables belong to the object backend and `catalog_*`
+tables belong to ownership accounting. The generated-store facade borrows that
+same backend. These are naming conventions inside SQLite, not database schemas.
+See [the service guide](docs/unified-storage-services.md).
+
+Domain components retain their own query APIs and table ownership. The GUI calls
+item search/paging services rather than accessing SQLite directly. Existing item
+and build query projections remain separate until deliberately integrated. Their
+relational bytes are excluded from the new per-object build-size accounting.
+
+The desktop application still uses its existing stores while preservation and
+activation work proceeds; new services do not silently migrate or discard data.
+[The rollout plan](docs/unified-storage-rollout.md) records the remaining gates.
+
 ## Preparation and persistence
 
 Opening a build acquires metadata and opens Overview. Background preparation then

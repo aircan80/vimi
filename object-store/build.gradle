@@ -235,3 +235,35 @@ tasks.register('boundedStagingBenchmark', JavaExec) {
         systemProperty 'vibeminer.sqlite.library', sqliteLibrary.get()
     }
 }
+
+tasks.register('libraryAccountingBenchmark', JavaExec) {
+    description = 'Measures isolated build-scale ownership queries and foreground metadata latency.'
+    group = 'verification'
+    classpath = sourceSets.benchmark.runtimeClasspath
+    mainClass = 'com.vibeminer.store.LibraryAccountingBenchmarks'
+    maxHeapSize = '512m'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args providers.gradleProperty('blobBenchmarkDirectory').orElse(
+        rootProject.layout.projectDirectory.dir('.local/storage-evaluation').asFile.absolutePath).get(),
+         providers.gradleProperty('accountingBenchmarkObjects').orElse('2209282').get()
+    def sqliteLibrary = providers.gradleProperty('sqliteLibrary')
+    if (sqliteLibrary.isPresent()) {
+        systemProperty 'vibeminer.sqlite.library', sqliteLibrary.get()
+    }
+}
+
+tasks.register('productionStorageComparison', JavaExec) {
+    description = 'Compares the production SQLite and pack APIs with verified sequential objects.'
+    group = 'verification'
+    classpath = sourceSets.benchmark.runtimeClasspath
+    mainClass = 'com.vibeminer.store.StorageComparison'
+    maxHeapSize = '512m'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args providers.gradleProperty('blobBenchmarkDirectory').orElse(
+        rootProject.layout.projectDirectory.dir('.local/storage-evaluation').asFile.absolutePath).get(),
+         'production'
+    def sqliteLibrary = providers.gradleProperty('sqliteLibrary')
+    if (sqliteLibrary.isPresent()) {
+        systemProperty 'vibeminer.sqlite.library', sqliteLibrary.get()
+    }
+}

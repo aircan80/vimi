@@ -7,6 +7,7 @@ import com.vibeminer.store.MemoryStore;
 import com.vibeminer.store.ObjectKey;
 import com.vibeminer.store.ObjectStore;
 import com.vibeminer.store.ObjectWriter;
+import com.vibeminer.store.SqliteObjectStore;
 import com.vibeminer.store.StoreTypes;
 import java.nio.file.Path;
 import java.util.List;
@@ -24,8 +25,13 @@ public final class AccessScenario implements AutoCloseable {
     private final ObjectWriter writer;
     private final MemoryStore shared;
     private final ObjectStore disk;
+    private final SqliteObjectStore sqlite;
 
     private AccessScenario(boolean independent, Path folder) {
+        this(independent, folder, false);
+    }
+
+    private AccessScenario(boolean independent, Path folder, boolean useSqlite) {
         var adapters =
                 List.of(
                         ObservationAdapters.versions(network),
@@ -39,6 +45,7 @@ public final class AccessScenario implements AutoCloseable {
             writer = null;
             shared = null;
             disk = null;
+            sqlite = null;
         } else {
             fake = null;
             shared = new MemoryStore();
@@ -46,8 +53,15 @@ public final class AccessScenario implements AutoCloseable {
                 var store = new MemoryStore();
                 writer = store;
                 disk = null;
+                sqlite = null;
                 actual = new CachingObjectSource(store, store, store, shared, network, adapters);
+            } else if (useSqlite) {
+                disk = null;
+                sqlite = SqliteObjectStore.open(folder.resolve("library.sqlite")).join();
+                writer = sqlite;
+                actual = new CachingObjectSource(sqlite, sqlite, sqlite, shared, network, adapters);
             } else {
+                sqlite = null;
                 disk = ObjectStore.open(folder).join();
                 writer = disk;
                 actual = new CachingObjectSource(disk, disk, disk, shared, network, adapters);
@@ -67,6 +81,10 @@ public final class AccessScenario implements AutoCloseable {
 
     public static AccessScenario disk(Path folder) {
         return new AccessScenario(false, folder);
+    }
+
+    public static AccessScenario sqlite(Path folder) {
+        return new AccessScenario(false, folder, true);
     }
 
     public void local(ObjectKey key, byte[] bytes) {
@@ -127,6 +145,9 @@ public final class AccessScenario implements AutoCloseable {
         }
         if (disk != null) {
             disk.closeAsync().join();
+        }
+        if (sqlite != null) {
+            sqlite.closeAsync().join();
         }
     }
 }
