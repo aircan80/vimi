@@ -604,7 +604,7 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
   Next implementation scope is layers 4–7. Native Windows testing and platform/
   release issues remain deferred; large real-data performance is not certified.
 
-## Layer 4 Files integration (active PR)
+## Layer 4 Files integration (merged PR #46)
 
 - Parallel Files and names implementations integrated on integration/files.
   All Files APIs are implemented, with independent memory fake/shared contracts,
@@ -621,8 +621,8 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
 - Layer 5 is active in parallel/formats-tables and parallel/formats-assets; do not
   mark it complete yet. Tables review is correcting shared-generation cancellation
   ownership, .NET float text parity and malformed generated metadata repair.
-  Assets review is correcting a real Files stream monitor deadlock; all fixes need
-  regression evidence before merge. Root owns shared CI/Gradle integration.
+  Assets review corrected the Files stream monitor deadlock and zero-progress reads;
+  regression evidence is now included in the separate assets integration queue. Root owns shared CI/Gradle integration.
 - Hands-on Windows testing remains deferred; hosted checks retain all platforms.
 
 - Final Files review additionally corrected canonical-source history filtering,
@@ -631,3 +631,25 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
   tie cursor order, repeated malformed deltas and restart after multipart cancel
   (staged part reused, no premature history/index publication). All 79 Files cases
   pass locally including 4 C# exchange cases.
+
+## Layer 5 asset integration (active PR)
+
+- `formats-assets/` implementation is complete within its pinned C# supported profiles:
+  BLP2 decoding, Files adapters/generated caches, native M2/SKIN and dependencies,
+  static geometry/material/appearance proofs and exact source-bound VMG1 artifacts.
+- Integrated original asset commits 48e88b1, fa397cf, dd35c75 and 12d52ce, plus the
+  disk asset pipeline from 4233820. The Files stream adapter deadlock and zero-progress
+  loop have focused regressions. Independent review covered bindings/cache identities.
+- Root lifecycle/scripts and all existing CI suites include assets and retain reports.
+  The C# golden harness needs original Formats sources and the exact ModelFixtures.cs
+  and AppearanceModels.cs fixtures; it does not require a full Formats reference build.
+- Assets are queued separately from main so hosted CI overlaps final table regressions.
+  Files PR #46 merged fast-forward at 147b71b after hosted unit 41366394997,
+  integration 41366394998 and compatibility 41366395028 all passed. Keep issue #45 open: its table half remains active and is expected
+  to complete separately after shared-generation cancellation, float-text parity,
+  malformed metadata repair, fetch-budget and aggregate-evidence regressions pass.
+- Hands-on Windows certification remains deferred; hosted jobs retain all platforms.
+
+- Local asset integration validation passes root `check assemble`, the asset C# golden
+  regeneration suite and all 15 CI helper/gate tests. Assets contribute 80 unit,
+  one real disk pipeline and one C# golden case; all have zero failures/skips.

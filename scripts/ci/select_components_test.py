@@ -39,6 +39,10 @@ class SelectionTest(unittest.TestCase):
             "builds/build.gradle",
             "files/src/main/java/com/vibeminer/files/Files.java",
             "files/build.gradle",
+            "formats-assets/src/main/java/com/vibeminer/formats/AssetSource.java",
+            "formats-assets/src/testFixtures/java/com/vibeminer/formats/AssetFilesFixture.java",
+            "formats-assets/build.gradle",
+            "formats-assets/gradle.lockfile",
         ]:
             with self.subTest(path=path):
                 self.assertTrue(selection.select([path]))
@@ -155,6 +159,30 @@ class BroaderGateTest(unittest.TestCase):
                                 "CRASH_RESULT": crash, "INTEROP_RESULT": interop,
                             })
                             self.assertEqual(expected, result.returncode == 0)
+
+
+class AssetWorkflowWiringTest(unittest.TestCase):
+    def test_assets_run_in_each_selected_suite_and_retain_reports(self):
+        root = Path(__file__).resolve().parents[2]
+        for name, task, report in [
+            ("unit-tests.yml", ":formats-assets:test", "formats-assets/build/test-results/test/"),
+            ("integration-tests.yml", ":formats-assets:check", "formats-assets/build/test-results/"),
+            ("storage-compatibility.yml", ":formats-assets:interopTest", "formats-assets/build/test-results/interopTest/"),
+        ]:
+            text = (root / ".github/workflows" / name).read_text(encoding="utf-8")
+            with self.subTest(workflow=name):
+                self.assertIn(task, text)
+                self.assertIn(report, text)
+
+    def test_asset_reference_checkout_contains_original_sources_and_exact_fixtures(self):
+        root = Path(__file__).resolve().parents[2]
+        text = (root / ".github/workflows/storage-compatibility.yml").read_text(encoding="utf-8")
+        for path in [
+            "/src/backend/VibeMiner.Formats/",
+            "/tests/backend/VibeMiner.Formats.Testing/ModelFixtures.cs",
+            "/tests/backend/VibeMiner.Formats.Tests/Models/AppearanceModels.cs",
+        ]:
+            self.assertIn(path, text)
 
 
 if __name__ == "__main__":

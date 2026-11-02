@@ -124,6 +124,9 @@ jobs:
             /src/backend/VibeMiner.ObjectAccess/
             /src/backend/VibeMiner.Builds/
             /src/backend/VibeMiner.Files/
+            /src/backend/VibeMiner.Formats/
+            /tests/backend/VibeMiner.Formats.Testing/ModelFixtures.cs
+            /tests/backend/VibeMiner.Formats.Tests/Models/AppearanceModels.cs
             /Directory.Build.props
             /.editorconfig
             /global.json
@@ -164,7 +167,7 @@ jobs:
           SQLITE_LIBRARY: ${{ steps.sqlite.outputs.library }}
         run: |
           dotnet_executable="$(command -v dotnet)"
-          ./gradlew :object-store:interopTest :generated-store:interopTest :builds:interopTest :files:interopTest "-Pdotnet=$dotnet_executable" "-PsqliteLibrary=$SQLITE_LIBRARY" --no-daemon --console=plain
+          ./gradlew :object-store:interopTest :generated-store:interopTest :builds:interopTest :files:interopTest :formats-assets:interopTest "-Pdotnet=$dotnet_executable" "-PsqliteLibrary=$SQLITE_LIBRARY" --no-daemon --console=plain
       - name: Retain interoperability test reports
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -179,6 +182,8 @@ jobs:
             vimi/files/build/reports/tests/interopTest/
             vimi/builds/build/test-results/interopTest/TEST-*.xml
             vimi/files/build/test-results/interopTest/TEST-*.xml
+            vimi/formats-assets/build/reports/tests/interopTest/
+            vimi/formats-assets/build/test-results/interopTest/TEST-*.xml
           if-no-files-found: warn
           retention-days: 7
 

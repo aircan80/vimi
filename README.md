@@ -1,7 +1,7 @@
 # vimi
 
 Java desktop port of VibeMiner using its seven-layer architecture. The first
-components cover layer 1 primitives, layer 2 object access, layer 3 builds and layer 4 files.
+components cover layer 1 primitives, layer 2 object access, layer 3 builds, layer 4 files and layer 5 image/model formats.
 The JavaFX GUI belongs in layer 7 and is not implemented yet.
 
 ## Setup
@@ -198,6 +198,7 @@ Future components will declare project dependencies, for example
 `implementation project(':object-store')`; fakes and shared contracts can be
 consumed with `testImplementation testFixtures(project(':object-store'))`.
 
+- `formats-assets/`: layer 5 BLP images, native M2/SKIN models and VMG1 artifacts.
 - `files/`: layer 4 build/locale filesystem, decoding, Ensure and community names.
 - `builds/`: layer 3 discovery/catalog, metadata opening/resolution and download tracking.
 - `object-access/`: layer 2 local/shared/CDN coordination, observations and commit feeds.
@@ -321,7 +322,7 @@ visibility and repeated offline reopen/rebuild without network requests. The
 optional `:builds:interopTest` exchanges catalog caches with the pinned C# Builds
 reference; see the module README for its Release-build prerequisite.
 
-Layer 5 formats, layer 6 game concepts and the JavaFX application remain separate work. Native Windows machine certification stays deferred.
+Layer 5 table formats remain active work. Layer 6 game concepts and the JavaFX application follow. Native Windows machine certification stays deferred.
 
 ## Current limits
 
@@ -368,7 +369,7 @@ append, rebuild and compaction process-kill boundaries and deterministic I/O
 failures are tested. Real power-cut testing has not been performed. The generated-store wrapper and compressed record files are implemented in
 [`generated-store/`](generated-store/README.md). Layer 1 network primitives are
 implemented in [`network-clients/`](network-clients/README.md). Layers 2 and 3
-are implemented separately; layers 4–7 and application packaging remain future work.
+are implemented separately; Files and asset formats are implemented below. Table formats, layers 6–7 and application packaging remain active/future work.
 
 ## Files (layer 4)
 
@@ -387,3 +388,23 @@ index; see [names, staging and portable deltas](files/NAMES.md).
 The opt-in interop suite needs the pinned C# `VibeMiner.Files` project built in
 Release and the reference checkout as a sibling (or `-PreferenceRoot=/path/to/vibeminer`).
 It exchanges VMLD deltas and names record-file indexes in both directions.
+
+## Image and model formats (layer 5)
+
+[`formats-assets/`](formats-assets/README.md) provides bounded BLP2 RGBA decoding,
+Files-backed image inspection and shared/scoped generated caches, native M2/SKIN
+parsing, explicit dependency resolution, static geometry/material/appearance proofs,
+and source-bound VMG1 artifacts. See the [pinned source inventory](formats-assets/PARITY.md)
+for supported profiles and resource qualifications. Table formats are progressing
+independently and are not completed by this module.
+
+```sh
+./gradlew :formats-assets:check :formats-assets:assemble -PsqliteLibrary=/absolute/path/to/sqlite-library
+./gradlew :formats-assets:interopTest -PreferenceRoot=/path/to/vibeminer -Pdotnet=/absolute/path/to/dotnet
+```
+
+A disk pipeline validates real Files decoding, model/skin dependency resolution,
+generated image caching and offline reopen. The opt-in C# harness regenerates all
+checked-in asset goldens using original sources from the pinned reference, including
+its two model fixture sources; it does not build the full reference Formats project.
+Root lifecycle tasks and hosted unit/integration/compatibility checks include assets.
