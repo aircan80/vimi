@@ -51,7 +51,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -87,6 +86,8 @@ public final class ItemEffectsService implements ItemEffects {
                             }
                             BuildItemEffects handle = null;
                             try {
+                                Objects.requireNonNull(opened, "Tables open result");
+                                token.check();
                                 if (opened.state() != FilesOpenState.OPEN
                                         || opened.tables() == null) {
                                     if (opened.tables() != null) {
@@ -103,11 +104,6 @@ public final class ItemEffectsService implements ItemEffects {
                                                     opened.observedAt()));
                                     return;
                                 }
-                                if (token.isCanceled()) {
-                                    opened.tables().close();
-                                    result.completeExceptionally(new CancellationException());
-                                    return;
-                                }
                                 handle = new Handle(opened.tables(), options);
                                 if (!result.complete(
                                         new OpenResult(
@@ -121,10 +117,16 @@ public final class ItemEffectsService implements ItemEffects {
                                     handle.close();
                                 }
                             } catch (Throwable failure) {
-                                if (handle != null) {
-                                    handle.closeAsync();
-                                } else if (opened.tables() != null) {
-                                    opened.tables().closeAsync();
+                                try {
+                                    if (handle != null) {
+                                        handle.closeAsync();
+                                    } else if (opened != null && opened.tables() != null) {
+                                        opened.tables().closeAsync();
+                                    }
+                                } catch (Throwable cleanupFailure) {
+                                    if (cleanupFailure != failure) {
+                                        failure.addSuppressed(cleanupFailure);
+                                    }
                                 }
                                 result.completeExceptionally(failure);
                             }
@@ -190,7 +192,9 @@ public final class ItemEffectsService implements ItemEffects {
                             () -> {
                                 try {
                                     token.check();
-                                    return getCore(itemId, query, priority, token);
+                                    Page page = getCore(itemId, query, priority, token);
+                                    token.check();
+                                    return page;
                                 } finally {
                                     leave.run();
                                 }

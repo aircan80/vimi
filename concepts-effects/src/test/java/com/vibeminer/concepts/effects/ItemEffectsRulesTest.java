@@ -469,6 +469,70 @@ final class ItemEffectsRulesTest {
     }
 
     @Test
+    void nameLimitsCountUtf16UnitsAndNeverNormalizeOriginalText() {
+        String text = "😀".repeat(2048);
+        var ready =
+                page(new EffectsWorld()
+                                .with(
+                                        itemTable(List.of(item(1))),
+                                        bridgeTable(List.of(bridge(1, 0, 1))),
+                                        retailTable(List.of(effect(0, 0))),
+                                        nameTable(List.of(name(0, text)))))
+                        .entries()
+                        .getFirst()
+                        .name();
+        assertEquals(NameState.READY, ready.state());
+        assertEquals(text, ready.text());
+        var tooLarge =
+                page(new EffectsWorld()
+                                .with(
+                                        itemTable(List.of(item(1))),
+                                        bridgeTable(List.of(bridge(1, 0, 1))),
+                                        retailTable(List.of(effect(0, 0))),
+                                        nameTable(List.of(name(0, text + "x")))))
+                        .entries()
+                        .getFirst()
+                        .name();
+        assertEquals(NameState.TEXT_TOO_LARGE, tooLarge.state());
+        assertEquals(4097, tooLarge.textUnits());
+        assertNull(tooLarge.text());
+    }
+
+    @Test
+    void partialBridgeEmptyMatchesRetainScopeAndDoNotClaimFurtherSourcesWereRead() {
+        FakeTable bridge = bridgeTable(List.of());
+        var entry = bridge.entry();
+        bridge =
+                copy(
+                        bridge,
+                        new TableTypes.Entry(
+                                entry.fileDataId(),
+                                entry.name(),
+                                TableTypes.State.PARTIAL,
+                                true,
+                                entry.reason(),
+                                entry.counts(),
+                                entry.contentKey()),
+                        bridge.columns(),
+                        bridge.rows(),
+                        bridge.schema());
+        var p =
+                page(
+                        new EffectsWorld()
+                                .with(
+                                        itemTable(List.of(item(1))),
+                                        bridge,
+                                        retailTable(List.of(effect(0, 0))),
+                                        nameTable(List.of())));
+        assertEquals(PageState.OK, p.state());
+        assertEquals(0, p.matches());
+        assertTrue(p.entries().isEmpty());
+        assertEquals(TableTypes.State.PARTIAL, p.bridge().table().state());
+        assertEquals(SourceState.NOT_CHECKED, p.effect().state());
+        assertEquals(SourceState.NOT_CHECKED, p.name().state());
+    }
+
+    @Test
     void malformedEffectRowCorruptsEffectSourceButPreservesItsLayoutSelectionWarning() {
         var wrong = new Db2Types.Row(0, true, null, effect(0, 0).values(), null);
         var p =

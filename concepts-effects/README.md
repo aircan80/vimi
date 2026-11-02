@@ -12,4 +12,14 @@ Issue #94 is addressed by additive per-role `DefinitionProvenance`: exact `BUILD
 JAVA_HOME=/opt/homebrew/opt/openjdk@25/libexec/openjdk.jdk/Contents/Home GRADLE_USER_HOME=/private/tmp/vimi-gradle-home ./gradlew :concepts-effects:test :concepts-effects:check :concepts-effects:assemble
 ```
 
-This initial commit contains the complete service surface and profile/contract tests. Lifecycle adversarial tests, stale-source tests and independent C# golden validation are still being completed; no full-reference-parity claim is made by this incremental commit.
+Validation: 81 deterministic unit/contract cases and one optional C# regeneration case pass, with zero failures or skips. The contract runs against the independent layer 6 fake and the real service over independent layer 5 tables. Further tests cover canonical widths and raw evidence, actual pinned bundled schemas, partial/protected/empty scope, copies, Unicode UTF-16 text limits, exact cursors, stale identities/link choices, relation-budget refusal, bounded admission, late cancellation, reentrant close, canceled outward futures and late-open ownership.
+
+The C# harness runs the original Release `ItemEffectsService` and linked original `InMemoryTables.cs`, with the original bundled definitions. Six synthetic service scenarios establish the same link/effect/name facts and raw evidence; separate binding/cursor goldens are byte exact. It uses no fabricated production service or contract stubs. Build the reference Concepts Release project first, then run:
+
+```sh
+./gradlew :concepts-effects:interopTest -PreferenceRoot=/path/to/vibeminer -Pdotnet=/path/to/dotnet
+```
+
+The optional harness writes fresh outputs only under `build/`. Checked-in synthetic goldens contain no game content. Text fixtures are pinned to LF to keep Windows checkout conventions out of canonical cursor comparisons. The facts projection deliberately excludes Java's new definition provenance, which fills the C# backend gap and has dedicated Java tests.
+
+All four pinned ItemEffects source files are accounted for in [PARITY.md](PARITY.md). This establishes supported behavior against synthetic and original-code fixtures; it does not certify every live build or equal physical memory/throughput. Native Windows machine testing remains the repository's deferred platform task.

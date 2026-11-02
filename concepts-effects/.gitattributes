@@ -1,0 +1,2 @@
+src/test/resources/golden/*.json text eol=lf
+src/test/resources/golden/*.txt text eol=lf
