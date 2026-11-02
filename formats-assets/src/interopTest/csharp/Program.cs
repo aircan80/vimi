@@ -50,3 +50,16 @@ foreach(var (name, profile) in variants) {
  File.WriteAllBytes(Path.Combine(directory,"appearance-"+name+".skin"),sb);
  File.WriteAllText(Path.Combine(directory,"appearance-"+name+".json"),JsonSerializer.Serialize(new{facts.StaticWeights,Plan=plan}));
 }
+
+{
+ var bytes=new byte[168];"BLP2"u8.CopyTo(bytes);
+ void I(int at,int value)=>System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(at),value);
+ I(4,1);bytes[8]=3;bytes[9]=8;bytes[11]=1;I(12,2);I(16,2);I(20,148);I(24,164);I(84,16);I(88,4);
+ bytes[164]=1;bytes[165]=2;bytes[166]=3;bytes[167]=4;
+ var image=await VibeMiner.Formats.Images.Blp2Decoder.DecodeAsync(new MemoryStream(bytes));
+ File.WriteAllBytes(Path.Combine(directory,"source.blp"),bytes);
+ File.WriteAllBytes(Path.Combine(directory,"cache.vmim"),VibeMiner.Formats.Images.BlpImagePayload.Write(image));
+ var options=new VibeMiner.Formats.Images.Blp2Limits();
+ var limits=Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(options)));
+ File.WriteAllText(Path.Combine(directory,"image-identity.txt"),string.Join('\n',"vibeminer-generated-image v1",new string('1',32),VibeMiner.Formats.Images.Blp2Decoder.Revision,"mip=0","limits="+limits));
+}

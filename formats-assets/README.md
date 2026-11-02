@@ -1,23 +1,31 @@
 # Asset formats (layer 5)
 
-Original Java 25 readers ported against C# revision `4fd92d2a36add50c9b82e1c92bf72706e8d0df2b`. `images` contains bounded BLP2 RGBA8 decoding; `models` contains native M2/SKIN structures, geometry-only parsing, static geometry/material admission and explicit combiner selection. Source authentication and exact build/file association belong to the layer 4 caller.
+Java 25 image/model formats ported against C# revision `4fd92d2a36add50c9b82e1c92bf72706e8d0df2b`. `images` owns BLP2 decoding, file results and generated-image caching. `models` owns native M2/SKIN readers, static geometry, materials/appearance, file dependency inspection and VMG1 geometry derivatives. Authentication and exact build/file association remain with the caller and layer 4.
 
-`AssetSource` supplies caller-owned bounded random access from arrays, channels and the Files seam. Reads are at most 64 KiB. Parser futures run on virtual threads and never occupy a lower-layer admission worker while waiting for I/O. Cancellation is explicit and checked within decoding/record loops. Returned pixels and collections are immutable owned values; no source is closed by a pure parser.
+The module depends on public `files` and `generated-store` APIs. It does not invoke object-store or network implementations. `AssetSource` provides caller-owned random access from arrays, seekable channels and decoded file streams. Parser reads are at most 64 KiB and no full encoded source is copied by a parser. Pure parsers leave sources open; file adapters close streams they open. Pixel arrays and collections are immutable owned values. Model/SKIN and opacity-proof objects have internal constructors and preserve parsed object identity.
+
+Use the repository's pinned Java 25/Gradle toolchain:
 
 ```sh
 JAVA_HOME=/opt/homebrew/opt/openjdk@25/libexec/openjdk.jdk/Contents/Home GRADLE_USER_HOME=/private/tmp/vimi-gradle-home ./gradlew :formats-assets:test :formats-assets:check :formats-assets:assemble
 ```
 
-The synthetic model/SKIN golden files contain no game bytes. They were generated with the unmodified pinned C# parser and `ModelFixtures.cs`; exact output metadata is adjacent JSON. Reproduce the fixtures with the pinned .NET 10 SDK:
+There are 79 deterministic tests, including a shared consumer contract against the independent Files fake and the real `DecodedFileStream` over fake lower boundaries. The latter guards against holding a stream monitor while waiting for its worker. An adapter serializes seek/read transactions with its own private monitor; do not concurrently wrap one stream with separate adapters. Virtual parser/adapter operations have fail-fast admission at 1,024 active operations (`ASSET_FORMAT_LIMIT`); nested tasks never wait for admission permits. Cancellation is explicit and checked during reads, pixel/record loops and derivative work.
+
+BLP2 supports palette alpha depths 0/1/4/8, BC1/2/3 and BGRA8 with the reference's observed header profiles, integer interpolation and straight alpha. Compact tail levels are described and explicitly unsupported for decoding. Only the selected level is checked against geometry/range bounds and read; descriptor structure is checked globally. `BlpImages` supports header inspection, exact mip selection and largest-within selection. It reports protected header/palette/selected-level keys without zero-filling or stepping down to another level. Header-decided refusals precede protected payload reads.
+
+Generated images use the exact VMIM v1 payload and reference limits hash/identity text. Shared content entries are checked after stat, before opening the file; largest-within plans from the header first. Any encrypted chunk, decrypted or unknown, switches newly decoded output to build/encoding-key-status scope. Cache damage is deleted and rebuilt. Read failures propagate; a write failure still returns the decoded image with `STORE_FAILED`. There is no single flight, matching the reference.
+
+M2 admits unchunked 264 and chunked 272/274 only. SKIN preserves modern raw zero/`0xCDCDCDCD` maximum-bones values and the shader-selected empty coordinate lookup. Geometry-only reads validate declarations without reading/interpreting material records. UTF-8 names, exact dependency ordinals, empty collision boxes, finite geometry, two-level indices and section provenance are checked. `BuildModels` maps file states, holes and reader refusals distinctly and stats exact dependencies with at most eight concurrent reference stats per call. Legacy skins are never guessed by name; legacy type-0 texture names resolve only through Files path authority. Reference-stat failure does not erase a successfully parsed model; cancellation/disposal propagate.
+
+Appearance reads sequence residency and opacity keys in separate model/SKIN phases with shared 65,536-key/slice budgets. It preserves the reviewed one/two-stage shader mappings, counts omitted blended layers/effects and declines unknown rendering semantics. Static opaque material admission remains a separate, conservative policy.
+
+VMG1 binds exact original receipts and emits canonical header/positions/triangle-edge/directory bytes. Verification checks the descriptor, edge pattern, section provenance, tight bounds and full SHA-256; this grants no source authority. CPU work scopes cover finite work units and never cover source/sink I/O. Artifact bounds retain the reference's 2 MiB, 65,536-vertex, 131,070-index and 256-section ceilings. The 232-byte fixture and its binding/artifact hashes match the original C# writer exactly.
+
+Synthetic goldens contain no game bytes. The interop harness compiles the unmodified pinned pure C# parsers and authored fixtures, a type-only Files stub for the pure source check, and the unchanged VMIM helper class excerpt. An optional independent check regenerates all goldens under `build/` and compares them byte for byte:
 
 ```sh
-/path/to/dotnet run --project formats-assets/src/interopTest/csharp/AssetsInterop.csproj -p:ReferenceRoot=/path/to/vibeminer -- formats-assets/src/test/resources/golden
+./gradlew :formats-assets:interopTest -PreferenceRoot=/path/to/vibeminer -Pdotnet=/path/to/dotnet
 ```
 
-BLP2 supports palette alpha depths0/1/4/8, BC1/2/3 and BGRA8 with the exact observed C# profiles, integer interpolation and straight alpha. Compact tail levels are described and explicitly unsupported for decoding; no pixels are fabricated. Only the selected level is checked against geometric/range bounds and read; descriptor structure is checked globally.
-
-M2 admits unchunked264 and chunked272/274 only. SKIN preserves the raw modern zero/`0xCDCDCDCD` maximum-bones field; geometry-only reading validates declarations without reading/interpreting material records. Static opaque material and geometry-only policies are distinct. UTF-8 names, dependency ordinals, empty collision boxes, nonfinite values, all two-level indices and section provenance are checked.
-
-This is an incremental implementation commit. The Files adapters and image cache are in progress and are not claimed complete here. Java output budgets account for the reference logical payload; boxed collections have higher physical overhead than C# compact arrays, and no equal throughput or memory-footprint claim is made.
-
-Appearance reads sequence residency and opacity keys in separate model/SKIN phases with shared65,536-key/slice budgets. It preserves the reviewed one/two-stage shader mappings, counts omitted blended layers/effects, and explicitly declines unknown rendering semantics. VMG1 binds exact original receipts, emits canonical header/positions/triangle-edge/directory bytes, and validates the engine descriptor, edge pattern, section provenance, tight bounds and complete SHA-256. Work-budget scopes cover only finite CPU chunks; output/input I/O stays outside scopes. The232-byte VMG1 fixture and binding/artifact hashes match the unmodified C# writer exactly.
+This check passed alongside the 79 Java tests, with zero failures or skips. Java budgets account for the reference logical payload; boxed collections have higher physical overhead than C# compact arrays. These fixtures establish supported-format behavior and byte compatibility, without claiming equal throughput, physical memory footprint or coverage of every live game file. See [PARITY.md](PARITY.md) for the source inventory.

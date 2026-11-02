@@ -80,9 +80,21 @@ public final class M2Appearance {
             int blendedBatches,
             int envTransforms) {}
 
-    public record ModelFacts(Model model, List<Boolean> staticWeights) {
-        public ModelFacts {
-            staticWeights = List.copyOf(staticWeights);
+    public static final class ModelFacts {
+        private final Model model;
+        private final List<Boolean> staticWeights;
+
+        ModelFacts(Model model, List<Boolean> weights) {
+            this.model = model;
+            this.staticWeights = List.copyOf(weights);
+        }
+
+        public Model model() {
+            return model;
+        }
+
+        public List<Boolean> staticWeights() {
+            return staticWeights;
         }
     }
 

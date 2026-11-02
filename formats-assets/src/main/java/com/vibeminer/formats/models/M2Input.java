@@ -114,14 +114,32 @@ final class M2Input {
             long bytes,
             int header) {
         if (count > maximum) {
+            boolean skin = name.startsWith("SKIN ");
+            String raw = skin ? name.substring(5) : name;
+            StringBuilder words = new StringBuilder();
+            for (char c : raw.toCharArray()) {
+                if (Character.isUpperCase(c)) {
+                    words.append(' ').append(Character.toLowerCase(c));
+                } else {
+                    words.append(c);
+                }
+            }
+            String owner = skin ? "The SKIN file" : "The model";
+            String fact =
+                    stride == 1
+                            ? owner + "'s " + words + " is " + number(count) + " bytes"
+                            : owner
+                                    + " has "
+                                    + number(count)
+                                    + " "
+                                    + words
+                                    + (words.toString().endsWith("lookup") ? " entries" : "");
             throw error(
                     "LIMIT",
-                    "The "
-                            + name
-                            + " count "
-                            + String.format(java.util.Locale.ROOT, "%,d", count)
-                            + " exceeds geometry limit "
-                            + String.format(java.util.Locale.ROOT, "%,d", maximum)
+                    fact
+                            + "; geometry reads at most "
+                            + number(maximum)
+                            + (stride == 1 ? " bytes" : "")
                             + ".");
         }
         if (count != 0
@@ -133,6 +151,10 @@ final class M2Input {
                     "The " + name + " span lies outside its model section or overlaps its header.");
         }
         return new Span(name, origin + offset, (int) count, stride);
+    }
+
+    static String number(long n) {
+        return String.format(java.util.Locale.ROOT, "%,d", n);
     }
 
     void records(Span span, BiConsumer<byte[], Integer> consume) {

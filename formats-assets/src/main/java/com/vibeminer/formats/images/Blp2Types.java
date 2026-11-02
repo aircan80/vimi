@@ -52,6 +52,10 @@ public final class Blp2Types {
             mips = List.copyOf(mips);
         }
 
+        byte[] rgbaData() {
+            return rgba;
+        }
+
         @Override
         public byte[] rgba() {
             return rgba.clone();

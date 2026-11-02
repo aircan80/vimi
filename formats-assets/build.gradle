@@ -34,11 +34,24 @@ tasks.withType(JavaCompile).configureEach {
     options.compilerArgs += ['-Xlint:all', '-Werror']
 }
 
+sourceSets {
+    interopTest {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+}
+configurations {
+    interopTestImplementation.extendsFrom testImplementation
+    interopTestRuntimeOnly.extendsFrom testRuntimeOnly
+}
+
 dependencies {
-    api project(':object-access')
+    api project(':files')
     api project(':generated-store')
     testFixturesApi platform('org.junit:junit-bom:5.13.4')
     testFixturesApi 'org.junit.jupiter:junit-jupiter-api'
+    testImplementation testFixtures(project(':generated-store'))
+    testImplementation testFixtures(project(':files'))
     testImplementation platform('org.junit:junit-bom:5.13.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
@@ -79,3 +92,27 @@ checkstyle {
 }
 
 
+
+// Optional independent regeneration with original pinned C# pure parsers; never rewrites checked-in goldens.
+def referenceRoot = providers.gradleProperty('referenceRoot').orElse(rootProject.layout.projectDirectory.file('../vibeminer').asFile.absolutePath)
+def dotnetExecutable = providers.gradleProperty('dotnet').orElse(rootProject.layout.projectDirectory.file('../vibeminer/.local/toolchains/dotnet/dotnet').asFile.absolutePath)
+def csharpDirectory = layout.projectDirectory.dir('src/interopTest/csharp')
+def interopOutput = layout.buildDirectory.dir('interop-goldens')
+tasks.register('buildCsharpInterop', Exec) {
+    environment 'DOTNET_CLI_HOME', rootProject.layout.projectDirectory.dir('.local/dotnet').asFile.absolutePath
+    environment 'DOTNET_CLI_TELEMETRY_OPTOUT', '1'
+    commandLine dotnetExecutable.get(), 'run', '--project', csharpDirectory.file('AssetsInterop.csproj').asFile.absolutePath,
+        '-p:RestoreLockedMode=true', '-p:ReferenceRoot=' + referenceRoot.get(), '--', interopOutput.get().asFile.absolutePath
+}
+tasks.register('interopTest', Test) {
+    description = 'Regenerates asset goldens with original pinned C# sources and compares every fixture.'
+    group = 'verification'
+    dependsOn tasks.named('buildCsharpInterop')
+    testClassesDirs = sourceSets.interopTest.output.classesDirs
+    classpath = sourceSets.interopTest.runtimeClasspath
+    systemProperty 'vimi.assets.goldens', layout.projectDirectory.dir('src/test/resources/golden').asFile.absolutePath
+    systemProperty 'vimi.assets.interop', interopOutput.get().asFile.absolutePath
+    inputs.files(fileTree(csharpDirectory) { include '*.cs', '*.csproj', 'packages.lock.json' })
+    inputs.dir(interopOutput)
+    shouldRunAfter tasks.named('test')
+}

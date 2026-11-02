@@ -8,16 +8,39 @@ import java.util.function.Supplier;
 public final class AssetTasks {
     private AssetTasks() {}
 
+    static final int MAX_ACTIVE = 1024;
+    private static final java.util.concurrent.atomic.AtomicInteger ACTIVE =
+            new java.util.concurrent.atomic.AtomicInteger();
+
     public static <T> CompletableFuture<T> run(Supplier<T> action) {
+        java.util.Objects.requireNonNull(action);
+        if (ACTIVE.incrementAndGet() > MAX_ACTIVE) {
+            ACTIVE.decrementAndGet();
+            return CompletableFuture.failedFuture(new IllegalStateException("ASSET_FORMAT_LIMIT"));
+        }
         CompletableFuture<T> result = new CompletableFuture<>();
-        Thread.startVirtualThread(
-                () -> {
-                    try {
-                        result.complete(action.get());
-                    } catch (Throwable failure) {
-                        result.completeExceptionally(unwrap(failure));
-                    }
-                });
+        try {
+            Thread.startVirtualThread(
+                    () -> {
+                        T value = null;
+                        Throwable failure = null;
+                        try {
+                            value = action.get();
+                        } catch (Throwable error) {
+                            failure = unwrap(error);
+                        } finally {
+                            ACTIVE.decrementAndGet();
+                        }
+                        if (failure == null) {
+                            result.complete(value);
+                        } else {
+                            result.completeExceptionally(failure);
+                        }
+                    });
+        } catch (Throwable error) {
+            ACTIVE.decrementAndGet();
+            result.completeExceptionally(error);
+        }
         return result;
     }
 

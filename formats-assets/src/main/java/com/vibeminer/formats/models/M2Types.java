@@ -59,51 +59,205 @@ public final class M2Types {
 
     public record AnimationFile(int animationId, int variation, long fileDataId) {}
 
-    public record Model(
-            long version,
-            boolean isChunked,
-            long flags,
-            String name,
-            long sourceBytes,
-            long baseOffset,
-            long baseBytes,
-            long viewCount,
-            List<Vertex> vertices,
-            List<Texture> textures,
-            List<Material> materials,
-            List<Bone> bones,
-            List<Integer> textureCombos,
-            List<Integer> textureCoordinates,
-            List<Integer> textureWeights,
-            List<Integer> textureTransforms,
-            List<Integer> boneLookup,
-            List<Long> skinFileDataIds,
-            List<Long> lodSkinFileDataIds,
-            long skeletonFileDataId,
-            List<Long> boneFileDataIds,
-            List<AnimationFile> animationFiles,
-            List<ArrayDeclaration> declarations,
-            List<Chunk> chunks,
-            Bounds declaredBounds,
-            Bounds computedBounds,
-            long retainedBytes,
-            Limits limits) {
-        public Model {
-            vertices = List.copyOf(vertices);
-            textures = List.copyOf(textures);
-            materials = List.copyOf(materials);
-            bones = List.copyOf(bones);
-            textureCombos = List.copyOf(textureCombos);
-            textureCoordinates = List.copyOf(textureCoordinates);
-            textureWeights = List.copyOf(textureWeights);
-            textureTransforms = List.copyOf(textureTransforms);
-            boneLookup = List.copyOf(boneLookup);
-            skinFileDataIds = List.copyOf(skinFileDataIds);
-            lodSkinFileDataIds = List.copyOf(lodSkinFileDataIds);
-            boneFileDataIds = List.copyOf(boneFileDataIds);
-            animationFiles = List.copyOf(animationFiles);
-            declarations = List.copyOf(declarations);
-            chunks = List.copyOf(chunks);
+    public static final class Model {
+        private final long version;
+        private final boolean isChunked;
+        private final long flags;
+        private final String name;
+        private final long sourceBytes;
+        private final long baseOffset;
+        private final long baseBytes;
+        private final long viewCount;
+        private final List<Vertex> vertices;
+        private final List<Texture> textures;
+        private final List<Material> materials;
+        private final List<Bone> bones;
+        private final List<Integer> textureCombos;
+        private final List<Integer> textureCoordinates;
+        private final List<Integer> textureWeights;
+        private final List<Integer> textureTransforms;
+        private final List<Integer> boneLookup;
+        private final List<Long> skinFileDataIds;
+        private final List<Long> lodSkinFileDataIds;
+        private final long skeletonFileDataId;
+        private final List<Long> boneFileDataIds;
+        private final List<AnimationFile> animationFiles;
+        private final List<ArrayDeclaration> declarations;
+        private final List<Chunk> chunks;
+        private final Bounds declaredBounds;
+        private final Bounds computedBounds;
+        private final long retainedBytes;
+        private final Limits limits;
+
+        Model(
+                long version,
+                boolean isChunked,
+                long flags,
+                String name,
+                long sourceBytes,
+                long baseOffset,
+                long baseBytes,
+                long viewCount,
+                List<Vertex> vertices,
+                List<Texture> textures,
+                List<Material> materials,
+                List<Bone> bones,
+                List<Integer> textureCombos,
+                List<Integer> textureCoordinates,
+                List<Integer> textureWeights,
+                List<Integer> textureTransforms,
+                List<Integer> boneLookup,
+                List<Long> skinFileDataIds,
+                List<Long> lodSkinFileDataIds,
+                long skeletonFileDataId,
+                List<Long> boneFileDataIds,
+                List<AnimationFile> animationFiles,
+                List<ArrayDeclaration> declarations,
+                List<Chunk> chunks,
+                Bounds declaredBounds,
+                Bounds computedBounds,
+                long retainedBytes,
+                Limits limits) {
+            this.version = version;
+            this.isChunked = isChunked;
+            this.flags = flags;
+            this.name = name;
+            this.sourceBytes = sourceBytes;
+            this.baseOffset = baseOffset;
+            this.baseBytes = baseBytes;
+            this.viewCount = viewCount;
+            this.vertices = List.copyOf(vertices);
+            this.textures = List.copyOf(textures);
+            this.materials = List.copyOf(materials);
+            this.bones = List.copyOf(bones);
+            this.textureCombos = List.copyOf(textureCombos);
+            this.textureCoordinates = List.copyOf(textureCoordinates);
+            this.textureWeights = List.copyOf(textureWeights);
+            this.textureTransforms = List.copyOf(textureTransforms);
+            this.boneLookup = List.copyOf(boneLookup);
+            this.skinFileDataIds = List.copyOf(skinFileDataIds);
+            this.lodSkinFileDataIds = List.copyOf(lodSkinFileDataIds);
+            this.skeletonFileDataId = skeletonFileDataId;
+            this.boneFileDataIds = List.copyOf(boneFileDataIds);
+            this.animationFiles = List.copyOf(animationFiles);
+            this.declarations = List.copyOf(declarations);
+            this.chunks = List.copyOf(chunks);
+            this.declaredBounds = declaredBounds;
+            this.computedBounds = computedBounds;
+            this.retainedBytes = retainedBytes;
+            this.limits = limits;
+        }
+
+        public long version() {
+            return version;
+        }
+
+        public boolean isChunked() {
+            return isChunked;
+        }
+
+        public long flags() {
+            return flags;
+        }
+
+        public String name() {
+            return name;
+        }
+
+        public long sourceBytes() {
+            return sourceBytes;
+        }
+
+        public long baseOffset() {
+            return baseOffset;
+        }
+
+        public long baseBytes() {
+            return baseBytes;
+        }
+
+        public long viewCount() {
+            return viewCount;
+        }
+
+        public List<Vertex> vertices() {
+            return vertices;
+        }
+
+        public List<Texture> textures() {
+            return textures;
+        }
+
+        public List<Material> materials() {
+            return materials;
+        }
+
+        public List<Bone> bones() {
+            return bones;
+        }
+
+        public List<Integer> textureCombos() {
+            return textureCombos;
+        }
+
+        public List<Integer> textureCoordinates() {
+            return textureCoordinates;
+        }
+
+        public List<Integer> textureWeights() {
+            return textureWeights;
+        }
+
+        public List<Integer> textureTransforms() {
+            return textureTransforms;
+        }
+
+        public List<Integer> boneLookup() {
+            return boneLookup;
+        }
+
+        public List<Long> skinFileDataIds() {
+            return skinFileDataIds;
+        }
+
+        public List<Long> lodSkinFileDataIds() {
+            return lodSkinFileDataIds;
+        }
+
+        public long skeletonFileDataId() {
+            return skeletonFileDataId;
+        }
+
+        public List<Long> boneFileDataIds() {
+            return boneFileDataIds;
+        }
+
+        public List<AnimationFile> animationFiles() {
+            return animationFiles;
+        }
+
+        public List<ArrayDeclaration> declarations() {
+            return declarations;
+        }
+
+        public List<Chunk> chunks() {
+            return chunks;
+        }
+
+        public Bounds declaredBounds() {
+            return declaredBounds;
+        }
+
+        public Bounds computedBounds() {
+            return computedBounds;
+        }
+
+        public long retainedBytes() {
+            return retainedBytes;
+        }
+
+        public Limits limits() {
+            return limits;
         }
     }
 
@@ -146,25 +300,86 @@ public final class M2Types {
             int colorIndex,
             int weightIndex) {}
 
-    public record Skin(
-            Model model,
-            List<Integer> vertexLookup,
-            List<Integer> triangleLookup,
-            List<Long> boneProperties,
-            List<Section> sections,
-            List<Batch> batches,
-            List<ShadowBatch> shadowBatches,
-            long maximumBones,
-            long sourceBytes,
-            long retainedBytes,
-            Limits limits) {
-        public Skin {
-            vertexLookup = List.copyOf(vertexLookup);
-            triangleLookup = List.copyOf(triangleLookup);
-            boneProperties = List.copyOf(boneProperties);
-            sections = List.copyOf(sections);
-            batches = List.copyOf(batches);
-            shadowBatches = List.copyOf(shadowBatches);
+    public static final class Skin {
+        private final Model model;
+        private final List<Integer> vertexLookup;
+        private final List<Integer> triangleLookup;
+        private final List<Long> boneProperties;
+        private final List<Section> sections;
+        private final List<Batch> batches;
+        private final List<ShadowBatch> shadowBatches;
+        private final long maximumBones;
+        private final long sourceBytes;
+        private final long retainedBytes;
+        private final Limits limits;
+
+        Skin(
+                Model model,
+                List<Integer> vertexLookup,
+                List<Integer> triangleLookup,
+                List<Long> boneProperties,
+                List<Section> sections,
+                List<Batch> batches,
+                List<ShadowBatch> shadowBatches,
+                long maximumBones,
+                long sourceBytes,
+                long retainedBytes,
+                Limits limits) {
+            this.model = model;
+            this.vertexLookup = List.copyOf(vertexLookup);
+            this.triangleLookup = List.copyOf(triangleLookup);
+            this.boneProperties = List.copyOf(boneProperties);
+            this.sections = List.copyOf(sections);
+            this.batches = List.copyOf(batches);
+            this.shadowBatches = List.copyOf(shadowBatches);
+            this.maximumBones = maximumBones;
+            this.sourceBytes = sourceBytes;
+            this.retainedBytes = retainedBytes;
+            this.limits = limits;
+        }
+
+        public Model model() {
+            return model;
+        }
+
+        public List<Integer> vertexLookup() {
+            return vertexLookup;
+        }
+
+        public List<Integer> triangleLookup() {
+            return triangleLookup;
+        }
+
+        public List<Long> boneProperties() {
+            return boneProperties;
+        }
+
+        public List<Section> sections() {
+            return sections;
+        }
+
+        public List<Batch> batches() {
+            return batches;
+        }
+
+        public List<ShadowBatch> shadowBatches() {
+            return shadowBatches;
+        }
+
+        public long maximumBones() {
+            return maximumBones;
+        }
+
+        public long sourceBytes() {
+            return sourceBytes;
+        }
+
+        public long retainedBytes() {
+            return retainedBytes;
+        }
+
+        public Limits limits() {
+            return limits;
         }
     }
 
@@ -176,27 +391,96 @@ public final class M2Types {
         NOT_EVALUATED
     }
 
-    public record GeometrySkin(
-            Model model,
-            List<Integer> vertexLookup,
-            List<Integer> triangleLookup,
-            List<Long> boneProperties,
-            List<Section> sections,
-            long maximumBones,
-            long sourceBytes,
-            int headerBytes,
-            ArrayDeclaration batchDeclaration,
-            ArrayDeclaration shadowBatchDeclaration,
-            long retainedBytes,
-            Limits limits) {
-        public static final String INTERPRETATION_POLICY = "skin-unfiltered-source-geometry-v1";
+    public static final class GeometrySkin {
+        private final Model model;
+        private final List<Integer> vertexLookup;
+        private final List<Integer> triangleLookup;
+        private final List<Long> boneProperties;
+        private final List<Section> sections;
+        private final long maximumBones;
+        private final long sourceBytes;
+        private final int headerBytes;
+        private final ArrayDeclaration batchDeclaration;
+        private final ArrayDeclaration shadowBatchDeclaration;
+        private final long retainedBytes;
+        private final Limits limits;
 
-        public GeometrySkin {
-            vertexLookup = List.copyOf(vertexLookup);
-            triangleLookup = List.copyOf(triangleLookup);
-            boneProperties = List.copyOf(boneProperties);
-            sections = List.copyOf(sections);
+        GeometrySkin(
+                Model model,
+                List<Integer> vertexLookup,
+                List<Integer> triangleLookup,
+                List<Long> boneProperties,
+                List<Section> sections,
+                long maximumBones,
+                long sourceBytes,
+                int headerBytes,
+                ArrayDeclaration batchDeclaration,
+                ArrayDeclaration shadowBatchDeclaration,
+                long retainedBytes,
+                Limits limits) {
+            this.model = model;
+            this.vertexLookup = List.copyOf(vertexLookup);
+            this.triangleLookup = List.copyOf(triangleLookup);
+            this.boneProperties = List.copyOf(boneProperties);
+            this.sections = List.copyOf(sections);
+            this.maximumBones = maximumBones;
+            this.sourceBytes = sourceBytes;
+            this.headerBytes = headerBytes;
+            this.batchDeclaration = batchDeclaration;
+            this.shadowBatchDeclaration = shadowBatchDeclaration;
+            this.retainedBytes = retainedBytes;
+            this.limits = limits;
         }
+
+        public Model model() {
+            return model;
+        }
+
+        public List<Integer> vertexLookup() {
+            return vertexLookup;
+        }
+
+        public List<Integer> triangleLookup() {
+            return triangleLookup;
+        }
+
+        public List<Long> boneProperties() {
+            return boneProperties;
+        }
+
+        public List<Section> sections() {
+            return sections;
+        }
+
+        public long maximumBones() {
+            return maximumBones;
+        }
+
+        public long sourceBytes() {
+            return sourceBytes;
+        }
+
+        public int headerBytes() {
+            return headerBytes;
+        }
+
+        public ArrayDeclaration batchDeclaration() {
+            return batchDeclaration;
+        }
+
+        public ArrayDeclaration shadowBatchDeclaration() {
+            return shadowBatchDeclaration;
+        }
+
+        public long retainedBytes() {
+            return retainedBytes;
+        }
+
+        public Limits limits() {
+            return limits;
+        }
+
+        public static final String INTERPRETATION_POLICY = "skin-unfiltered-source-geometry-v1";
 
         public GeometryScope scope() {
             return GeometryScope.UNFILTERED_DECLARED_SECTIONS;

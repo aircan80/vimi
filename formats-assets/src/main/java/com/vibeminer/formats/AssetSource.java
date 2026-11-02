@@ -12,6 +12,8 @@ import java.util.concurrent.CompletableFuture;
  * bytes.
  */
 public interface AssetSource {
+    int MAX_READ_BYTES = 65536;
+
     long length();
 
     CompletableFuture<byte[]> readAt(long offset, int count, Cancellation cancellation);
@@ -30,7 +32,10 @@ public interface AssetSource {
             public CompletableFuture<byte[]> readAt(long offset, int count, Cancellation token) {
                 try {
                     token.check();
-                    if (offset < 0 || count < 0 || offset > owned.length - count) {
+                    if (offset < 0
+                            || count < 0
+                            || count > MAX_READ_BYTES
+                            || offset > owned.length - count) {
                         throw new IllegalArgumentException("Range outside source");
                     }
                     return CompletableFuture.completedFuture(
@@ -56,7 +61,10 @@ public interface AssetSource {
             public CompletableFuture<byte[]> readAt(long offset, int count, Cancellation token) {
                 try {
                     token.check();
-                    if (offset < 0 || count < 0 || offset > length - count) {
+                    if (offset < 0
+                            || count < 0
+                            || count > MAX_READ_BYTES
+                            || offset > length - count) {
                         throw new IllegalArgumentException("Range outside source");
                     }
                     byte[] bytes = new byte[count];

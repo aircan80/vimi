@@ -105,7 +105,8 @@ public final class M2ModelReader {
                     "UNSUPPORTED",
                     "M2 version "
                             + version
-                            + " is outside admitted profiles (unchunked 264, chunked 272 and 274).");
+                            + (chunked ? " in a chunked MD21" : " in an unchunked MD20")
+                            + " model is outside the admitted profiles (unchunked 264, chunked 272 and 274).");
         }
         long flags = u32(core, 16);
         int headerBytes = (flags & 8) != 0 ? 312 : 304;
@@ -153,7 +154,22 @@ public final class M2ModelReader {
             1, 4, 64, 2, 88, 2, 48, 40, 16, 20, 60, 2, 4, 2, 2, 2, 2, 2, 2, 12, 12, 40, 2, 0, 0, 0,
             2, 0, 0
         };
+        long viewCount = u32(core, 68);
+        Bounds declaredBounds = null;
         for (int i = 0; i < names.length; i++) {
+            if (i == 7 && viewCount > limits.maxSkinProfiles()) {
+                throw error(
+                        "LIMIT",
+                        "The model has "
+                                + M2Input.number(viewCount)
+                                + " SKIN profiles; geometry reads at most "
+                                + M2Input.number(limits.maxSkinProfiles())
+                                + ".");
+            }
+            if (i == 18) {
+                declaredBounds = bounds(core, 160, false);
+                bounds(core, 188, u32(core, 216) == 0 && u32(core, 224) == 0);
+            }
             int maximum =
                     switch (names[i]) {
                         case "name" -> limits.maxNameBytes();
@@ -179,12 +195,6 @@ public final class M2ModelReader {
             declarations.add(new ArrayDeclaration(names[i], count, offset, strides[i]));
             budget.add(1, 128);
         }
-        long viewCount = u32(core, 68);
-        if (viewCount > limits.maxSkinProfiles()) {
-            throw error("LIMIT", "Model SKIN profile count exceeds policy.");
-        }
-        Bounds declaredBounds = bounds(core, 160, false);
-        bounds(core, 188, u32(core, 216) == 0 && u32(core, 224) == 0);
         if (headerBytes == 312) {
             byte[] combiner = input.at(origin + 304, 8);
             long count = u32(combiner), offset = u32(combiner, 4);
@@ -303,7 +313,11 @@ public final class M2ModelReader {
         List<Integer> combos = words("textureCombos", input, spans, budget),
                 coordWords = words("textureCoordinates", input, spans, budget);
         budget.add(coordWords.size(), 2);
-        List<Integer> coordinates = coordWords.stream().map(v -> (int) (short) (int) v).toList();
+        List<Integer> coordinates = new ArrayList<>(coordWords.size());
+        for (int word : coordWords) {
+            token.check();
+            coordinates.add((int) (short) word);
+        }
         List<Integer> weights = words("weightLookup", input, spans, budget),
                 transforms = words("transformLookup", input, spans, budget),
                 boneLookup = words("boneLookup", input, spans, budget);
