@@ -35,12 +35,19 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 sourceSets {
+    integrationTest {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+        resources.srcDir 'src/test/resources'
+    }
     interopTest {
         compileClasspath += sourceSets.main.output
         runtimeClasspath += sourceSets.main.output
     }
 }
 configurations {
+    integrationTestImplementation.extendsFrom testImplementation
+    integrationTestRuntimeOnly.extendsFrom testRuntimeOnly
     interopTestImplementation.extendsFrom testImplementation
     interopTestRuntimeOnly.extendsFrom testRuntimeOnly
 }
@@ -116,3 +123,12 @@ tasks.register('interopTest', Test) {
     inputs.dir(interopOutput)
     shouldRunAfter tasks.named('test')
 }
+
+tasks.register('integrationTest', Test) {
+    description = 'Runs disk-backed asset pipeline checks.'
+    group = 'verification'
+    testClassesDirs = sourceSets.integrationTest.output.classesDirs
+    classpath = sourceSets.integrationTest.runtimeClasspath
+    shouldRunAfter tasks.named('test')
+}
+tasks.named('check') { dependsOn tasks.named('integrationTest') }
