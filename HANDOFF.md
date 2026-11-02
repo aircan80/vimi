@@ -22,7 +22,8 @@
   remain deferred. Hosted Windows checks remain enabled. Java API/collection/page
   memory differences and resource budgets are documented per module.
 - Layer 7 integration is proceeding one screen at a time, starting with Builds.
-  `gui/design` commit `7b30528` was imported on `integration/gui-builds`; the original
+  `gui/design` commit `7b30528` was imported via PR #51, fast-forward merged at
+  `f486158` after green hosted checks; the original
   worktree remains untouched. Builds now connects offline catalog listing, explicit
   refresh and provenance inspection; real opening and all later screens remain
   pending. `--mock` preserves the approved full design preview. Catalog startup and
@@ -32,7 +33,11 @@
   Full root check/assemble and GUI installDist pass, along with the prototype
   harness, 10 adapter contracts, native persisted-history/reopen checks and 18 CI
   helper tests. A live refresh returned 42 rows with no reported issues.
-  Hosted checks/merge for the Builds integration are pending.
+  Hosted unit/integration checks passed on Linux, macOS and Windows; Linux crash
+  recovery and C# interoperability passed. Real opening/preparation is next.
+- Separate Settings mockups may continue in the GUI design worktree, isolated in
+  Settings files/scoped styling with a separate handoff; avoid Builds/shared
+  service/navigation edits there during integration.
 - Native app launch succeeded on macOS, retaining the known unnamed-module JavaFX
   warning. Interactive screenshot QA was unavailable because the Java process was
   not exposed by the computer-use app inventory; broader GUI platform/accessibility
