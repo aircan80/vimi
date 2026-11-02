@@ -10,11 +10,13 @@
   independent fakes/contracts and original C# golden regeneration. Verified
   additions complete armor material provenance, creature dependency visibility
   and read coalescing, effect definition-match provenance, relation schema retries
-  and accepted-operation cancellation/draining. Unknown rendering/default choices
+  and accepted-operation cancellation/draining. Item close stays asynchronous even
+  while lower resources drain. Unknown rendering/default choices
   remain explicit rather than inferred.
-- Full local build/check/assembly and ten C# compatibility suites pass. Root CI
-  includes all twelve modules; 18 Python CI helper tests pass. A final creature
-  lifecycle follow-up and standalone public consumer compilation are being checked.
+- Full local build/check/assembly, storage crash recovery and ten C# compatibility
+  suites pass: 1,112 cases, zero failures/errors/skips. Root CI includes all twelve
+  modules; 18 Python CI helper tests pass. Standalone public consumer compilation
+  and runtime smoke pass with production JARs alone. Hosted checks are pending.
 - Native Windows machine certification, real-corpus throughput and release packaging
   remain deferred. Hosted Windows checks remain enabled. Java API/collection/page
   memory differences and resource budgets are documented per module.
