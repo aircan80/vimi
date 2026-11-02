@@ -8,4 +8,18 @@ public interface BuildService {
     CompletableFuture<List<BuildInfo>> listBuilds();
 
     CompletableFuture<BuildInfo> openBuild(BuildInfo build);
+
+    default CompletableFuture<List<BuildInfo>> refreshBuilds() {
+        return listBuilds();
+    }
+
+    default boolean mockMode() { return true; }
+
+    default List<String> problems() { return List.of(); }
+
+    default String status() { return "Mock snapshot · No network requests"; }
+
+    default CompletableFuture<Void> closeAsync() {
+        return CompletableFuture.completedFuture(null);
+    }
 }

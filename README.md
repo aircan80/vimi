@@ -457,3 +457,19 @@ evidence; the future application supplies JavaFX controls and rendering.
 The opt-in compatibility checks regenerate synthetic goldens from the pinned
 original C# sources. See each module README for reference build prerequisites,
 admission and relation budgets, supported profiles and remaining application work.
+
+
+## JavaFX application: Builds screen
+
+[`gui/`](gui/README.md) is layer 7. Its first connected screen lists saved build
+history, refreshes published metadata explicitly and displays regional provenance.
+Build opening and later screens remain pending. Run the approved fixture-based
+design with `--args='--mock'`.
+
+```sh
+./gradlew :gui:check :gui:installDist
+./gradlew :gui:run -PsqliteLibrary=/absolute/path/to/sqlite-library
+```
+
+Default startup is offline. Refresh persists observations in the application data
+directory, documented in the GUI README; it does not download game content.

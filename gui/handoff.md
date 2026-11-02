@@ -1,5 +1,17 @@
 # GUI design and integration handoff
 
+## Builds integration update
+
+The prototype has been imported onto the current backend and included as root
+`:gui`. Default mode now connects only the Builds catalog/refresh/inspector to
+layers 1–3. Opening and later screens remain deferred; `--mock` preserves the
+approved full design preview. Use root `:gui:check`, `:gui:run` and
+`:gui:installDist`; the standalone settings file was removed. Read GUI README
+for data paths, native SQLite options and current validation. The original design
+worktree/branch remains untouched. Earlier sections describe the original mock
+handoff and are retained as design history.
+
+
 ## Branch and scope
 
 This prototype was developed in `/Users/aircan/Development/vimi-gui` on

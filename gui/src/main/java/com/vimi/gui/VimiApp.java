@@ -28,7 +28,13 @@ import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 
 public final class VimiApp extends Application {
-    private final BuildService service = new MockBuildService();
+    private BuildService service;
+    private java.util.concurrent.CompletableFuture<? extends BuildService> startup;
+    private boolean closing;
+    private boolean loading;
+    private long catalogGeneration;
+    private final Button issuesButton = new Button("Refresh issues");
+    private final Button refreshButton = new Button("↻  Refresh builds");
     private final BorderPane root = new BorderPane();
     private final javafx.scene.layout.StackPane surface = new javafx.scene.layout.StackPane(root);
     private final MockPreparationService preparations = new MockPreparationService(true);
@@ -87,14 +93,17 @@ public final class VimiApp extends Application {
         product.setValue("All products");
         product.setAccessibleText("Product filter");
         product.setOnAction(e -> filter());
-        scope.getItems().addAll("All builds", "Prepared", "Current", "Saved", "Community");
+        scope.getItems().addAll("All builds", "Current", "Saved");
+        if (getParameters().getRaw().contains("--mock")) {
+            scope.getItems().addAll("Prepared", "Community");
+        }
         scope.setValue("All builds");
         scope.setAccessibleText("Build status filter");
         scope.setOnAction(e -> filter());
         column("Product", b -> b.edition() + " · " + b.product(), 225);
         column("Version", BuildInfo::version, 170);
         column("Build source", b -> b.source().label(), 110);
-        column("Downloaded", b -> effectiveBuild(b).downloaded(), 110);
+        column("Downloaded", b -> mockMode() ? effectiveBuild(b).downloaded() : "Not measured", 110);
         column("Preparation", this::preparationSummary, 230);
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
         table.setPlaceholder(new Label("No matching builds. Adjust or clear the filters."));
@@ -105,7 +114,22 @@ public final class VimiApp extends Application {
             }
         });
         status.getStyleClass().add("status");
-        root.setBottom(status);
+        issuesButton.setVisible(false);
+        issuesButton.setManaged(false);
+        issuesButton.setOnAction(event -> {
+            var dialog = new javafx.scene.control.Alert(javafx.scene.control.Alert.AlertType.WARNING);
+            dialog.initOwner(root.getScene().getWindow());
+            dialog.setTitle("Build catalog issues");
+            dialog.setHeaderText("Some build observations could not be refreshed or read");
+            var details = new javafx.scene.control.TextArea(String.join("\n\n", service.problems()));
+            details.setEditable(false);
+            details.setWrapText(true);
+            details.setPrefSize(650, 350);
+            dialog.getDialogPane().setContent(details);
+            dialog.show();
+        });
+        var statusBar = new HBox(12, status, spacer(), issuesButton);
+        root.setBottom(statusBar);
         Scene scene = new Scene(surface, 1320, 850);
         scene.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, event -> {
             if (preparationPopup == null) {
@@ -123,13 +147,32 @@ public final class VimiApp extends Application {
             }
         });
         scene.getStylesheets().add(getClass().getResource("/vimi.css").toExternalForm());
-        stage.setTitle("VibeMiner · GUI prototype");
+        stage.setTitle(getParameters().getRaw().contains("--mock") ? "VibeMiner · Design preview" : "VibeMiner · Builds");
         stage.getIcons().add(brandImage());
         stage.setMinWidth(1000);
         stage.setMinHeight(680);
         stage.setScene(scene);
+        refreshButton.setOnAction(event -> loadBuilds(true));
+        refreshButton.setDisable(true);
+        stage.setOnCloseRequest(event -> {
+            event.consume();
+            shutdown();
+        });
         showBuilds();
-        refresh();
+        status.setText("Opening local build history…");
+        startup = getParameters().getRaw().contains("--mock")
+                ? java.util.concurrent.CompletableFuture.completedFuture(new MockBuildService())
+                : BuildApplication.open();
+        startup.whenComplete((result, error) -> Platform.runLater(() -> {
+            if (closing) { return; }
+            if (error != null) {
+                status.setText("Could not open build history: " + problem(error));
+                table.setPlaceholder(new Label("Build history could not be opened. Close and reopen after checking the data directory."));
+                return;
+            }
+            service = result;
+            loadBuilds(false);
+        }));
         stage.show();
     }
 
@@ -140,21 +183,51 @@ public final class VimiApp extends Application {
         table.getColumns().add(column);
     }
 
-    private void refresh() {
-        service.listBuilds().whenComplete((result, error) -> Platform.runLater(() -> {
+    private boolean mockMode() {
+        return service != null ? service.mockMode() : getParameters().getRaw().contains("--mock");
+    }
+
+    private static String problem(Throwable error) {
+        while (error instanceof java.util.concurrent.CompletionException && error.getCause() != null) {
+            error = error.getCause();
+        }
+        return error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+    }
+
+    private void loadBuilds(boolean refreshSources) {
+        if (service == null || loading || closing) { return; }
+        loading = true;
+        refreshButton.setDisable(true);
+        long generation = ++catalogGeneration;
+        status.setText(refreshSources ? "Checking published builds… Saved history stays available." : "Reading saved build history…");
+        table.setPlaceholder(new Label("Loading build history…"));
+        var request = refreshSources ? service.refreshBuilds() : service.listBuilds();
+        request.whenComplete((result, error) -> Platform.runLater(() -> {
+            if (closing || generation != catalogGeneration) { return; }
+            loading = false;
+            refreshButton.setDisable(false);
             if (error != null) {
-                status.setText("Could not load mock builds. Refresh builds to retry.");
+                status.setText("Could not load builds: " + problem(error) + ". Refresh builds to retry.");
+                issuesButton.setVisible(!service.problems().isEmpty());
+                issuesButton.setManaged(!service.problems().isEmpty());
+                table.setPlaceholder(new Label("Build history is unavailable. Refresh builds to retry."));
                 return;
             }
-            builds = result;
-            if (product.getItems().size() == 1) {
-                builds.stream().map(BuildInfo::product).distinct().forEach(product.getItems()::add);
-            }
-            if (selected == null && !builds.isEmpty()) {
-                selected = builds.getFirst();
-            }
+            String selectedIdentity = selected == null ? null : selected.identity();
+            builds = List.copyOf(result);
+            selected = builds.stream().filter(build -> build.identity().equals(selectedIdentity)).findFirst()
+                    .orElse(builds.isEmpty() ? null : builds.getFirst());
+            String priorProduct = product.getValue();
+            product.getItems().setAll("All products");
+            builds.stream().map(BuildInfo::product).distinct().sorted().forEach(product.getItems()::add);
+            product.setValue(product.getItems().contains(priorProduct) ? priorProduct : "All products");
             filter();
-            status.setText("Mock snapshot · " + builds.size() + " builds · No network requests");
+            status.setText(service.status() + " · " + builds.size() + " builds");
+            issuesButton.setVisible(!service.problems().isEmpty());
+            issuesButton.setManaged(!service.problems().isEmpty());
+            table.setPlaceholder(new Label(builds.isEmpty()
+                    ? "No saved builds yet. Refresh builds to check published versions."
+                    : "No matching builds. Adjust or clear the filters."));
         }));
     }
 
@@ -162,7 +235,7 @@ public final class VimiApp extends Application {
         String query = search.getText().strip().toLowerCase(Locale.ROOT);
         List<BuildInfo> visible = builds.stream()
                 .filter(b -> (b.version() + " " + b.product() + " " + b.edition()).toLowerCase(Locale.ROOT).contains(query))
-                .filter(b -> product.getValue().equals("All products") || product.getValue().equals(b.product()))
+                .filter(b -> "All products".equals(product.getValue()) || java.util.Objects.equals(product.getValue(), b.product()))
                 .filter(b -> !scope.getValue().equals("Prepared") || effectiveBuild(b).prepared())
                 .filter(b -> !scope.getValue().equals("Current") || b.current())
                 .filter(b -> !scope.getValue().equals("Saved") || b.source() == BuildInfo.BuildSource.SAVED)
@@ -176,9 +249,9 @@ public final class VimiApp extends Application {
 
     private void showBuilds() {
         navigationGeneration++;
-        status.setText("Mock snapshot · " + builds.size() + " builds · No network requests");
+        status.setText(service == null ? "Opening local build history…" : service.status() + " · " + builds.size() + " builds");
         root.setTop(header(null, null));
-        Button refresh = button("↻  Refresh builds", this::refresh);
+        Button refresh = refreshButton;
         refresh.setAccessibleText("Refresh builds");
         refresh.getStyleClass().add("refresh-button");
         HBox titleRow = new HBox(12, label("Builds", "nav"), spacer(), refresh);
@@ -218,8 +291,27 @@ public final class VimiApp extends Application {
         }
         inspector.getChildren().addAll(notice(b.source().label(), b.source().description()),
                 label("IDENTITY", "eyebrow"), fact("Product", b.product()), fact("Build config", b.config()),
-                label("OBSERVATION", "eyebrow"), fact("Advertised regions", b.regions().isEmpty() ? "Never observed by VibeMiner" : b.regions()),
-                fact("Downloaded", effectiveBuild(b).downloaded()));
+                label("OBSERVATION", "eyebrow"), fact(mockMode() ? "Advertised regions" : "Observed regions", b.regions().isEmpty() ? "Never observed by VibeMiner" : b.regions()),
+                fact("Downloaded", mockMode() ? effectiveBuild(b).downloaded() : "Not measured"));
+        if (!mockMode()) {
+            inspector.getChildren().addAll(
+                    fact("Catalog identity", b.identity()),
+                    fact("First observed", b.firstSeen() == null ? "Unknown" : b.firstSeen().toString()),
+                    fact("Last observed", b.lastSeen() == null ? "Unknown" : b.lastSeen().toString()));
+            inspector.getChildren().add(label("REGIONAL OBSERVATIONS", "eyebrow"));
+            for (var observation : b.observations()) {
+                inspector.getChildren().add(notice(observation.region().toUpperCase(Locale.ROOT)
+                        + (observation.current() ? " · Current" : " · Saved"),
+                        "CDN config: " + observation.cdnConfig() + "\nLast observed: " + observation.lastSeen()));
+            }
+            Button open = new Button("Open build");
+            open.getStyleClass().addAll("primary", "open-build");
+            open.setMaxWidth(Double.MAX_VALUE);
+            open.setDisable(true);
+            inspector.getChildren().addAll(open,
+                    label("Build opening and Overview will be connected next. Download coverage has not been measured.", "muted"));
+            return;
+        }
         selectedPreparation = label(preparationSummary(b), "value");
         inspector.getChildren().add(new VBox(5, label("Preparation", "muted"), selectedPreparation));
         boolean community = b.source() == BuildInfo.BuildSource.COMMUNITY;
@@ -252,6 +344,20 @@ public final class VimiApp extends Application {
     @Override
     public void stop() {
         preparations.close();
+        if (service != null) { service.closeAsync(); }
+    }
+
+    private void shutdown() {
+        if (closing) { return; }
+        closing = true;
+        catalogGeneration++;
+        preparations.close();
+        root.setDisable(true);
+        status.setText("Closing build history…");
+        var cleanup = startup == null ? java.util.concurrent.CompletableFuture.<Void>completedFuture(null)
+                : startup.handle((ready, error) -> ready)
+                        .thenCompose(ready -> ready == null ? java.util.concurrent.CompletableFuture.completedFuture(null) : ready.closeAsync());
+        cleanup.whenComplete((unused, error) -> Platform.runLater(Platform::exit));
     }
 
     private BuildInfo effectiveBuild(BuildInfo build) {
@@ -259,6 +365,7 @@ public final class VimiApp extends Application {
     }
 
     private String preparationSummary(BuildInfo build) {
+        if (!mockMode()) { return "Not assessed"; }
         var job = preparations.latest(build);
         return job == null ? (build.prepared() ? "Prepared" : "Not prepared") : job.summary();
     }

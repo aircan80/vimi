@@ -1,36 +1,51 @@
-# Vimi JavaFX prototype
+# Vimi JavaFX application
 
-Layer 7 design prototype: **Builds → preparation → Overview / Files / Tables / Items / Creatures**.
-Integration notes and architecture: [handoff.md](handoff.md).
-All rows, sizes and statuses are authored examples. No backend modules, services,
-network clients or stores are referenced. Refresh reloads the same fixtures;
-Download all only changes a session-local selection and never starts work.
+The first connected screen is **Builds**: offline history listing, explicit published
+version refresh, product/status/search filters, selection and regional provenance.
+Build opening and the remaining screens are not connected yet. Open build is
+disabled in real mode; download coverage and preparation are explicitly unmeasured.
+
+The original approved design remains available with `--mock`, including preparation,
+Overview, Files, Tables, Items and Creatures. Mock mode uses authored fixtures and
+performs no backend I/O. See [handoff.md](handoff.md) for the design decisions.
 
 ## Build and run
 
-Requires a full **JDK 25** and internet access on the first build to resolve
-Gradle 9.1.0 and pinned JavaFX 25.0.1 artifacts from Maven Central.
-From the repository root (use `gradlew.bat` on Windows):
+Requires a full JDK 25 and the native SQLite setup documented in the root README.
+JavaFX 25.0.1 and backend dependencies are pinned/locked. From the repository root:
 
 ```sh
-./gradlew -p gui check installDist
-./gradlew -p gui run
+./gradlew :gui:check :gui:installDist
+./gradlew :gui:run
+# Design preview; no local store or network requests:
+./gradlew :gui:run --args='--mock'
+# Optional local paths on Apple Silicon:
+./gradlew :gui:run -PsqliteLibrary=/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib -PdataDirectory=/absolute/path/to/vimi-data
 ```
 
-On this Mac, select JDK 25 explicitly if the default Java is newer:
+Use `gradlew.bat` on Windows. The GUI is now a root subproject; JavaFX remains
+confined to layer 7. The prior `gui/settings.gradle` has been removed.
+`installDist` produces `gui/build/install/vimi-gui-prototype/`; its launcher uses
+the native artifacts for the build machine's OS/architecture. For a direct launcher
+use `JAVA_OPTS` to supply `-Dvibeminer.sqlite.library=/path/to/library` and
+`-Dvimi.dataDirectory=/path/to/data` when needed.
 
-```sh
-export JAVA_HOME=/opt/homebrew/opt/openjdk@25/libexec/openjdk.jdk/Contents/Home
-```
+Default data lives under `~/Library/Application Support/vimi` on macOS,
+`%LOCALAPPDATA%/vimi` on Windows and `$XDG_DATA_HOME/vimi` (or
+`~/.local/share/vimi`) on Linux. It contains `objects/` and the disposable
+`catalog.sqlite` projection. No existing C# data is imported automatically.
+Startup reads saved history without network requests; **Refresh builds** observes
+published metadata and persists it through the existing backend. This does not
+download game content, establish content availability or measure retention.
+Refresh issues remain inspectable without discarding readable history.
 
-`installDist` produces `gui/build/install/vimi-gui-prototype/`, including a
-launcher under `bin/`. The distribution is specific to the build machine's OS
-and architecture. JavaFX native artifacts resolve for macOS/Linux x64 or ARM64,
-and Windows x64. Native Windows ARM64 packaging is not covered.
+Application startup, refresh and resource closure run off the JavaFX thread;
+refreshes coalesce and shutdown cancels/drains work before exiting. The check task
+runs the original fixture harness and deterministic backend adapter checks. Native
+Windows/Linux GUI execution, responsive/accessibility certification and native
+release packaging remain separate work.
 
-The standalone `gui/settings.gradle` keeps this build separate from the root
-project. No root build configuration or dependency lockfiles are changed.
-Use `GRADLE_USER_HOME=/tmp/vimi-gui-gradle` if a writable local cache is needed.
+The interactions below describe **design preview** mode.
 
 ## Interaction review
 

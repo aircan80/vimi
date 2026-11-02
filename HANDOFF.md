@@ -21,9 +21,20 @@
 - Native Windows machine certification, real-corpus throughput and release packaging
   remain deferred. Hosted Windows checks remain enabled. Java API/collection/page
   memory differences and resource budgets are documented per module.
-- Next implementation scope is layer 7 application wiring and GUI integration.
-  The independent mock JavaFX design session is in
-  /Users/aircan/Development/vimi-gui on gui/design; do not modify its work.
+- Layer 7 integration is proceeding one screen at a time, starting with Builds.
+  `gui/design` commit `7b30528` was imported on `integration/gui-builds`; the original
+  worktree remains untouched. Builds now connects offline catalog listing, explicit
+  refresh and provenance inspection; real opening and all later screens remain
+  pending. `--mock` preserves the approved full design preview.
+- GUI is a root subproject with locked JavaFX dependencies confined to layer 7.
+  Full root check/assemble and GUI installDist pass, along with the prototype
+  harness, 10 adapter contracts, native persisted-history/reopen checks and 18 CI
+  helper tests. A live refresh returned 42 rows with no reported issues.
+  Hosted checks/merge for the Builds integration are pending.
+- Native app launch succeeded on macOS, retaining the known unnamed-module JavaFX
+  warning. Interactive screenshot QA was unavailable because the Java process was
+  not exposed by the computer-use app inventory; broader GUI platform/accessibility
+  qualification remains pending.
 - The preexisting untracked root md file remains untouched. Earlier sections below
   record historical milestones; use this section and the final integration notes
   for current state.

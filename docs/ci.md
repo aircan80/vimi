@@ -1,6 +1,6 @@
 # Continuous integration
 
-The `Unit tests` workflow runs `:object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test :formats-tables:test :concepts-core:test :concepts-items:test :concepts-creatures:test :concepts-effects:test` on GitHub-hosted
+The `Unit tests` workflow runs `:object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test :formats-tables:test :concepts-core:test :concepts-items:test :concepts-creatures:test :concepts-effects:test :gui:prototypeTest :gui:backendTest` on GitHub-hosted
 `ubuntu-24.04`, `windows-2025` and `macos-15` runners. Each job installs a full
 Temurin Java 25 JDK matching the runner architecture. The fast tasks need neither
 native SQLite nor .NET nor the original C# checkout. Generated record tests use
@@ -11,7 +11,7 @@ enabled; formatting and native integration are separate checks.
 Run the same task locally with:
 
 ```sh
-./gradlew :object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test :formats-tables:test :concepts-core:test :concepts-items:test :concepts-creatures:test :concepts-effects:test --no-daemon --console=plain
+./gradlew :object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test :formats-tables:test :concepts-core:test :concepts-items:test :concepts-creatures:test :concepts-effects:test :gui:prototypeTest :gui:backendTest --no-daemon --console=plain
 ```
 
 Use `gradlew.bat` in a Windows terminal. Hosted jobs use the checked-in Unix
@@ -35,7 +35,7 @@ python3 -m unittest discover -s scripts/ci -p '*_test.py'
 The validation group contains `object-store`, its consumer `generated-store`,
 and the independent `network-clients` component, plus layer 2 `object-access` and
 its layer 3 consumer `builds`, layer 4 `files`, and layer 5 `formats-assets`/`formats-tables`, and layer 6 `concepts-core`, `concepts-items`, `concepts-creatures` and `concepts-effects`. The historical `object_store` selector output conservatively
-selects all twelve components. Any code, public-interface, test, fixture,
+selects all thirteen components. Any code, public-interface, test, fixture,
 Gradle, dependency, wrapper, configuration, workflow or unknown-path change selects
 all components on all three platforms. Markdown/reStructuredText, root license
 notices and documentation images skip them; executable/build/workflow directories
@@ -50,7 +50,7 @@ the selector before making selection narrower. Public-interface and shared-fixtu
 changes must select affected consumers too; shared build/wrapper/workflow changes
 must continue to select all components. The generated-store consumes object-store; object-access consumes object-store
 and network-clients; builds consumes object-access; files consumes builds, object-access and generated-store;
-formats-assets consumes Files and generated-store; formats-tables consumes Files and generated-store; concepts-core consumes formats-tables; items and creatures consume concepts-core and formats-assets; effects consumes concepts-core. Changes to any component currently run all twelve.
+formats-assets consumes Files and generated-store; formats-tables consumes Files and generated-store; concepts-core consumes formats-tables; items and creatures consume concepts-core and formats-assets; effects consumes concepts-core. Changes to any component currently run all thirteen.
 
 Each platform retains JUnit XML and HTML test reports for seven days, including
 failing test reports. Open the run's artifacts named `unit-reports-Linux`,
@@ -79,7 +79,7 @@ move to the appropriate machine.
 
 The independent `Integration tests` workflow uses the same conservative component
 selection and an always-running `Integration tests` aggregate check. Its platform
-jobs run `:object-store:integrationTest :generated-store:check :network-clients:check :object-access:check :builds:check :files:check :formats-assets:check :formats-tables:check :concepts-core:check :concepts-items:check :concepts-creatures:check :concepts-effects:check` separately from the
+jobs run `:object-store:integrationTest :generated-store:check :network-clients:check :object-access:check :builds:check :files:check :formats-assets:check :formats-tables:check :concepts-core:check :concepts-items:check :concepts-creatures:check :concepts-effects:check :gui:check :gui:installDist` separately from the
 fast unit workflow and
 retain independent `integration-reports-*` XML/HTML artifacts for seven days.
 Every disk test uses temporary synthetic stores.
@@ -241,7 +241,7 @@ includes Formats and the pinned embedded WoWDBDefs resources.
 
 ## Layer 6 concept coverage
 
-All four concept modules participate in the twelve-module unit and quality groups.
+All four concept modules participate in the thirteen-module unit and quality groups.
 Core exercises bounded shared relation indexes, cancellation/retry, stale sources,
 Unicode literal matching and exact query cursor framing. Items covers left joins,
 facts/classification labels, bounded appearance/default selection, verified armor
@@ -263,3 +263,7 @@ and the workflow explicitly builds the pinned Concepts Release assembly before
 Gradle starts the harnesses. All fixtures are authored/synthetic, with no live
 service or game-data requests. Hands-on Windows validation remains deferred;
 hosted Linux, Windows and macOS unit/integration jobs continue.
+
+The layer 7 GUI also runs its headless fixture/adapter checks in the unit group.
+Integration checks build its platform-specific application distribution without
+launching JavaFX windows. JavaFX dependencies remain isolated in `gui/`.

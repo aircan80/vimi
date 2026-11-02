@@ -2,7 +2,11 @@ plugins {
     id 'application'
 }
 
+group = 'com.vibeminer'
+version = '0.1.0-SNAPSHOT'
 repositories { mavenCentral() }
+dependencyLocking { lockAllConfigurations() }
+java { toolchain { languageVersion = JavaLanguageVersion.of(25) } }
 
 def platform = System.getProperty('os.name').toLowerCase().contains('mac') ? 'mac' :
         (System.getProperty('os.name').toLowerCase().contains('win') ? 'win' : 'linux')
@@ -10,6 +14,7 @@ def arch = System.getProperty('os.arch')
 def classifier = platform + (arch in ['aarch64', 'arm64'] ? '-aarch64' : '')
 
 dependencies {
+    implementation project(':builds')
     ['base', 'graphics', 'controls'].each {
         implementation "org.openjfx:javafx-${it}:25.0.1:${classifier}"
     }
@@ -17,10 +22,12 @@ dependencies {
 
 application {
     mainClass = 'com.vimi.gui.Launcher'
+    applicationName = 'vimi-gui-prototype'
     applicationDefaultJvmArgs = ['--enable-native-access=ALL-UNNAMED']
 }
 
 tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
     options.release = 25
     options.compilerArgs += ['-Xlint:all', '-Werror']
 }
@@ -36,3 +43,29 @@ check.dependsOn prototypeTest
 tasks.named('test') {
     enabled = false
 }
+
+// Native calls belong to backend adapters; the design preview performs no native I/O.
+tasks.withType(JavaExec).configureEach {
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    def sqliteLibrary = providers.gradleProperty('sqliteLibrary')
+    if (sqliteLibrary.isPresent()) {
+        systemProperty 'vibeminer.sqlite.library', sqliteLibrary.get()
+    }
+    def dataDirectory = providers.gradleProperty('dataDirectory')
+    if (dataDirectory.isPresent()) {
+        systemProperty 'vimi.dataDirectory', dataDirectory.get()
+    }
+}
+tasks.register('backendTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.BackendBuildServiceTest'
+}
+check.dependsOn backendTest
+
+tasks.register('integrationTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.BuildApplicationIntegrationTest'
+}
+check.dependsOn integrationTest
