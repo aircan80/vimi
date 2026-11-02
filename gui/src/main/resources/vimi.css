@@ -127,3 +127,7 @@
 .wow-item-tooltip .wow-flavor { -fx-text-fill: #ffd100; -fx-font-size: 13px; -fx-font-style: italic; }
 
 .catalog-activity { -fx-progress-color: #137b70; }
+
+/* Align browser actions with the controls beneath the filter labels. */
+.toolbar.research-toolbar { -fx-alignment: bottom-left; }
+.research-toolbar .button, .research-toolbar .combo-box, .research-toolbar .text-field { -fx-min-height: 28; }

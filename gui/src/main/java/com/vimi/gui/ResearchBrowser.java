@@ -299,7 +299,7 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
         VBox heading = new VBox(6, title, text(scope, "muted"));
         heading.setPadding(new Insets(18, 16, 8, 16));
         HBox toolbar = new HBox(8, search, refresh);
-        toolbar.getStyleClass().add("toolbar");
+        toolbar.getStyleClass().addAll("toolbar", "research-toolbar");
         HBox.setHgrow(search, Priority.ALWAYS);
         if (area.equals("Files")) {
             filter(toolbar, 2, "Type");
@@ -416,34 +416,46 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                         5,
                         options.slots());
         updatingRows = true;
-        itemFilters.forEach(
-                (column, box) -> {
-                    var prior = box.getValue();
-                    box.getItems()
-                            .setAll(
-                                    new com.vibeminer.concepts.items.ItemGridPage.Choice(
-                                            null, "All"));
-                    box.getItems().addAll(lists.get(column));
-                    if (prior != null
-                            && prior.value() != null
-                            && box.getItems().stream()
-                                    .noneMatch(
-                                            choice ->
-                                                    java.util.Objects.equals(
-                                                            choice.value(), prior.value())))
-                        box.getItems().add(prior);
-                    box.setValue(
-                            prior == null
-                                    ? box.getItems().getFirst()
-                                    : box.getItems().stream()
-                                            .filter(
-                                                    choice ->
-                                                            java.util.Objects.equals(
-                                                                    choice.value(), prior.value()))
-                                            .findFirst()
-                                            .orElse(box.getItems().getFirst()));
-                });
-        updatingRows = false;
+        try {
+            itemFilters.forEach(
+                    (column, box) -> {
+                        var prior = box.getValue();
+                        var choices =
+                                new ArrayList<com.vibeminer.concepts.items.ItemGridPage.Choice>();
+                        choices.add(
+                                new com.vibeminer.concepts.items.ItemGridPage.Choice(null, "All"));
+                        choices.addAll(lists.get(column));
+                        if (prior != null
+                                && prior.value() != null
+                                && choices.stream()
+                                        .noneMatch(
+                                                choice ->
+                                                        java.util.Objects.equals(
+                                                                choice.value(), prior.value()))) {
+                            choices.add(prior);
+                        }
+                        int selectedIndex = 0;
+                        if (prior != null) {
+                            for (int i = 0; i < choices.size(); i++) {
+                                if (java.util.Objects.equals(
+                                        choices.get(i).value(), prior.value())) {
+                                    selectedIndex = i;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!box.getItems().equals(choices)) {
+                            // Replacing choices while retaining an equal value can leave the
+                            // selected index at -1 and the ComboBox button cell blank.
+                            box.getSelectionModel().clearSelection();
+                            box.setValue(null);
+                            box.getItems().setAll(choices);
+                        }
+                        box.getSelectionModel().select(selectedIndex);
+                    });
+        } finally {
+            updatingRows = false;
+        }
     }
 
     private String itemFilterValue(int column) {

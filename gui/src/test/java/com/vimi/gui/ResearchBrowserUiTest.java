@@ -183,7 +183,11 @@ public final class ResearchBrowserUiTest {
                                             page.status(),
                                             1200,
                                             new com.vibeminer.concepts.items.ItemGridPage.Options(
-                                                    List.of(choice),
+                                                    List.of(
+                                                            choice,
+                                                            new com.vibeminer.concepts.items
+                                                                    .ItemGridPage.Choice(
+                                                                    "12", "Quest")),
                                                     List.of(sub),
                                                     List.of(),
                                                     List.of())));
@@ -328,6 +332,57 @@ public final class ResearchBrowserUiTest {
         table.getSortOrder().add(column);
     }
 
+    private static javafx.scene.control.ComboBox<?> itemFilter(
+            ResearchBrowser browser, String name) {
+        return browser.lookupAll(".combo-box").stream()
+                .filter(
+                        node ->
+                                node instanceof javafx.scene.control.ComboBox<?> combo
+                                        && combo.getAccessibleText().startsWith(name + " ·"))
+                .map(node -> (javafx.scene.control.ComboBox<?>) node)
+                .findFirst()
+                .orElseThrow();
+    }
+
+    private static void assertFilterText(ResearchBrowser browser, String name, String expected) {
+        browser.applyCss();
+        browser.layout();
+        var box = itemFilter(browser, name);
+        var shown =
+                box.lookupAll(".list-cell").stream()
+                        .filter(
+                                node ->
+                                        node instanceof javafx.scene.control.ListCell<?> cell
+                                                && expected.equals(cell.getText()))
+                        .findFirst();
+        if (shown.isEmpty())
+            throw new AssertionError(
+                    "Selected "
+                            + name
+                            + " label disappeared: expected "
+                            + expected
+                            + ", value="
+                            + box.getValue()
+                            + ", selected index="
+                            + box.getSelectionModel().getSelectedIndex());
+    }
+
+    private static void assertToolbarAlignment(ResearchBrowser browser) {
+        browser.applyCss();
+        browser.layout();
+        var search = browser.lookup("#research-search");
+        var reference = search.localToScene(search.getBoundsInLocal());
+        var controls = new java.util.ArrayList<javafx.scene.Node>(browser.lookupAll(".combo-box"));
+        controls.add(button(browser, "Refresh"));
+        for (var control : controls) {
+            var bounds = control.localToScene(control.getBoundsInLocal());
+            if (Math.abs(bounds.getMinY() - reference.getMinY()) > 1
+                    || Math.abs(bounds.getMaxY() - reference.getMaxY()) > 1)
+                throw new AssertionError(
+                        "Browser controls are not aligned: " + reference + " vs " + bounds);
+        }
+    }
+
     private static Button button(ResearchBrowser browser, String text) {
         return browser.lookupAll(".button").stream()
                 .filter(node -> node instanceof Button b && b.getText().equals(text))
@@ -369,6 +424,7 @@ public final class ResearchBrowserUiTest {
                             view.ensureLoaded();
                         });
                 flush();
+                fx(() -> assertToolbarAlignment(browser.get()));
                 if (area.equals("Items")) {
                     if (!fixture.iconsStarted.await(5, TimeUnit.SECONDS))
                         throw new AssertionError("Unselected row did not request its icon");
@@ -468,6 +524,15 @@ public final class ResearchBrowserUiTest {
                     flush();
                     if (!"4".equals(fixture.latestQuery.get().itemClass()))
                         throw new AssertionError("Class filter did not reach layer query");
+                    fx(() -> assertFilterText(browser.get(), "Class", "Rüstung"));
+                    fx(() -> itemFilter(browser.get(), "Class").getSelectionModel().select(2));
+                    flush();
+                    if (!"12".equals(fixture.latestQuery.get().itemClass()))
+                        throw new AssertionError("Quest filter did not reach layer query");
+                    fx(() -> assertFilterText(browser.get(), "Class", "Quest"));
+                    fx(() -> button(browser.get(), "Refresh").fire());
+                    flush();
+                    fx(() -> assertFilterText(browser.get(), "Class", "Quest"));
                     fx(
                             () -> {
                                 var table = grid(browser.get());
