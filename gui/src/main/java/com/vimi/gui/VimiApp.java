@@ -35,6 +35,7 @@ public final class VimiApp extends Application {
     private BuildInfo realOpeningBuild;
     private String realOpeningRegion;
     private boolean realOpeningActive;
+    private boolean realOpeningStopping;
     private javafx.scene.control.Dialog<Void> realOpeningDialog;
     private final Button openingActivity = new Button();
     private final Map<String, com.vibeminer.builds.BuildTypes.BuildOpenResult> realOpened = new java.util.LinkedHashMap<>();
@@ -415,6 +416,7 @@ public final class VimiApp extends Application {
         realOpeningBuild = build;
         realOpeningRegion = region.region();
         realOpeningActive = true;
+        realOpeningStopping = false;
         openingProblems.remove(build.identity());
         realOpened.remove(build.identity());
         openingActivity.setText("Opening " + build.version() + "… View");
@@ -462,16 +464,19 @@ public final class VimiApp extends Application {
         dialog.setHeaderText(realOpeningBuild.version() + " · " + realOpeningRegion.toUpperCase(Locale.ROOT));
         var spinner = new javafx.scene.control.ProgressIndicator(-1);
         spinner.setPrefSize(28, 28);
-        var message = label("Reading and verifying build metadata…", "value");
+        var message = label(realOpeningStopping ? "Stopping…" : "Reading and verifying build metadata…", "value");
         dialog.getDialogPane().setContent(new VBox(12, spinner, message,
                 label("Hide keeps this operation running. Progress is indeterminate.", "muted")));
         var hide = new javafx.scene.control.ButtonType("Hide", javafx.scene.control.ButtonBar.ButtonData.CANCEL_CLOSE);
         var cancel = new javafx.scene.control.ButtonType("Cancel opening", javafx.scene.control.ButtonBar.ButtonData.LEFT);
         dialog.getDialogPane().getButtonTypes().addAll(hide, cancel);
         var cancelButton = (Button) dialog.getDialogPane().lookupButton(cancel);
+        cancelButton.setDisable(realOpeningStopping);
         cancelButton.addEventFilter(javafx.event.ActionEvent.ACTION, event -> {
             event.consume();
+            realOpeningStopping = true;
             cancelButton.setDisable(true);
+            openingActivity.setText("Stopping: " + realOpeningBuild.version());
             message.setText("Stopping…");
             service.opening().cancel();
         });
