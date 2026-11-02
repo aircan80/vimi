@@ -23,7 +23,7 @@ final class Importer {
     private final Cancellation token;
     private final Consumer<Progress> progress;
     private final Map<EntityKind, List<Object>> ids = new EnumMap<>(EntityKind.class);
-    final List<String> locales = new ArrayList<>();
+    final List<String> locales = new ArrayList<>(List.of("enUS"));
     final List<String> diagnostics = new ArrayList<>();
     long entityCount;
 
@@ -116,7 +116,7 @@ final class Importer {
                 "Static corrected baked base only; runtime character/season corrections and consumer policies are unevaluated. No drop rates or original per-field correction authorship are inferred.");
         diagnostics.add(
                 "Source package retained separately; nested CBOR integer map keys use decimal string keys in JSON.");
-        if (locales.isEmpty()) {
+        if (locales.size() == 1) {
             diagnostics.add("No generated base translations; locale reads fall back to English.");
         }
         for (var entry : archive.metadata.entrySet()) {

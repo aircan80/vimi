@@ -42,6 +42,7 @@ class QuestiePersistenceTest {
             var version = repository.prepare(source, p -> {}, Cancellation.NONE).join();
             id = version.id();
             assertEquals(5, version.entityCount());
+            assertTrue(version.locales().containsAll(List.of("enUS", "deDE")));
             try (var handle = repository.open(id, Cancellation.NONE).join()) {
                 var item =
                         handle.lookup(EntityKind.ITEM, 117, "deDE", Cancellation.NONE)
@@ -116,7 +117,11 @@ class QuestiePersistenceTest {
         }
         Files.delete(source.archive()); // Queries require only the completed private projection.
         try (var reopened = new QuestieDataRepository(directory.resolve("derived"))) {
-            assertEquals(2, reopened.listVersions(Cancellation.NONE).join().size());
+            var retained = reopened.listVersions(Cancellation.NONE).join();
+            assertEquals(2, retained.size());
+            assertTrue(
+                    retained.stream()
+                            .allMatch(v -> v.locales().containsAll(List.of("enUS", "deDE"))));
             try (var handle = reopened.open(id, Cancellation.NONE).join()) {
                 assertEquals(
                         "Meat",

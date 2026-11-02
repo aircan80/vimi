@@ -24,7 +24,12 @@ public final class QuestieDataTypes {
             List<String> locales,
             List<String> diagnostics) {
         public PreparedVersion {
-            locales = List.copyOf(locales);
+            // English is the baked base, available even when generated translations are absent.
+            // Normalize metadata retained by earlier preparers which listed translations only.
+            var availableLocales = new java.util.LinkedHashSet<String>();
+            availableLocales.add("enUS");
+            availableLocales.addAll(locales);
+            locales = List.copyOf(availableLocales);
             diagnostics = List.copyOf(diagnostics);
         }
     }
