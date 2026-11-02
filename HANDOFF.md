@@ -10,7 +10,11 @@ See [the experiment notes](docs/sqlite-blob-prototype.md) for commands, initial
 contains only `id` and `data`; metadata and build ownership are separate. No
 production migration or performance advantage has been established. Continue
 with large verified encoded streams, realistic batching, full-scale ownership
-queries and bounded committed staging before proposing replacement. Initial
+queries before proposing replacement. Bounded 1 MiB committed staging now supports
+resume, typed verification and publication without a full-file copy; failure,
+SQLITE_FULL and process-kill tests cover progress/publication boundaries. Verified
+145/512 MiB smoke runs pass with a 128 MiB heap and a foreground write between each
+chunk. This is still an isolated prototype, not production adoption. Initial
 small-object verified pack comparisons, independent reader latency and process-kill
 recovery tests now pass; experiment notes record results and their limits. Do not use the live GUI's stores as test data.
 

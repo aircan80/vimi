@@ -220,3 +220,18 @@ tasks.register('blobConcurrency', JavaExec) {
         systemProperty 'vibeminer.sqlite.library', sqliteLibrary.get()
     }
 }
+
+tasks.register('boundedStagingBenchmark', JavaExec) {
+    description = 'Checks verified 145/512 MiB staged objects and interleaved foreground writes.'
+    group = 'verification'
+    classpath = sourceSets.benchmark.runtimeClasspath
+    mainClass = 'com.vibeminer.store.BoundedStagingBenchmarks'
+    maxHeapSize = '128m'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args providers.gradleProperty('blobBenchmarkDirectory').orElse(
+        rootProject.layout.projectDirectory.dir('.local/storage-evaluation').asFile.absolutePath).get()
+    def sqliteLibrary = providers.gradleProperty('sqliteLibrary')
+    if (sqliteLibrary.isPresent()) {
+        systemProperty 'vibeminer.sqlite.library', sqliteLibrary.get()
+    }
+}

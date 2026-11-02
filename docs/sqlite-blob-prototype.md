@@ -11,7 +11,7 @@ payload and its row ID. `objects` holds the key, published payload reference, by
 length, SHA-256/block CRC metadata and descriptive original/derived classification. `build_objects` supplies
 many-to-many build ownership. A classification does not determine retention.
 
-An explicit write transaction allocates `zeroblob(length)`, fills it through the
+The original monolithic comparison path allocates `zeroblob(length)`, fills it through the
 incremental BLOB API, inserts metadata and ownership, and commits. Failure or
 cancellation rolls back the payload and references together. Existing keys can
 acquire another owner without duplicating bytes; conflicting metadata is rejected.
@@ -22,20 +22,21 @@ WAL and `synchronous=FULL` are explicit. Comparing NORMAL BLOB commits with fsyn
 pack payloads would not provide equivalent power-loss durability. The smoke timer
 includes a completed TRUNCATE checkpoint after each write.
 
-The prototype currently expects already available local input. Holding the writer
-through a CDN transfer is prohibited. An eventual acquisition implementation needs
-bounded committed staging/resume and short publication transactions. This initial
-single-thread-owned backend does not yet implement that scheduling.
+Both write paths expect already available local input. Holding the writer through
+a CDN transfer is prohibited. The bounded staging API described below commits one
+fixed chunk per call so the caller can schedule another write or acquire more input
+between calls. There is no general scheduler or network integration in this prototype.
 
 ## Commands
 
 Use a full Java 25 JDK and the repository's normal native SQLite configuration:
 
 ```sh
-./gradlew :object-store:integrationTest --tests '*SqliteBlobPrototypeTest'
+./gradlew :object-store:integrationTest --tests '*SqliteBlobPrototypeTest' --tests '*BoundedBlobStagingTest' --tests '*StagingProcessRecoveryTest'
 ./gradlew :object-store:sqliteBlobBenchmark
 ./gradlew :object-store:storageComparison
 ./gradlew :object-store:blobConcurrency
+./gradlew :object-store:boundedStagingBenchmark
 ```
 
 The benchmark defaults to the ignored `.local/storage-evaluation` directory. Set
@@ -116,19 +117,85 @@ Child-process tests forcibly terminate writers after a first unpublished chunk
 and after a completed commit. Reopening verifies ownership/payload presence and
 `PRAGMA integrity_check`: uncommitted data disappears and committed data survives.
 These test process termination, not power failure. Other catalog writes still wait
-behind a large write transaction; bounded committed staging remains necessary
-before production adoption, even though independent readers are responsive.
+behind a large write transaction on this original monolithic path. The bounded
+staging path below avoids that long transaction.
+
+## Bounded staging implementation
+
+The staging candidate uses fixed **1 MiB chunks**, with a smaller final chunk.
+`begin` reserves only metadata: no full-file `zeroblob` allocation. Each `append`
+allocates and fills one payload row and advances committed progress in the same
+FULL-durability transaction. Input must be acquired before calling `append`, so
+network waits hold no SQLite transaction. Offset checks prevent stale concurrent
+appenders from overwriting a committed chunk. Resume returns the same stage ID
+and its committed offset after reopening. There are at most 16 incomplete stages
+and 2 GiB of total reserved declared lengths, including stages awaiting cleanup.
+This bounds storage admitted by incomplete operations; it is not a total library
+quota or a hard wall-clock guarantee for any disk operation.
+
+The payload table still contains only IDs and bytes. Additional metadata tables:
+
+- `chunk_sets`: identity of a chunk collection.
+- `payload_chunks`: collection, byte offset, payload row and chunk length.
+- `staging`: pending object key, length, classification, committed progress and
+  cleanup state. Incomplete stages are excluded from objects and build totals.
+
+Published `objects` references either one direct payload or a chunk collection.
+Large objects remain chunked after publication. Thus publication never copies all
+bytes into a second large BLOB, and no external files or storage tier are added.
+Reads resolve ranges across chunks transparently. An incremental payload handle
+never stays open across chunk commits or metadata mutations.
+
+Publication streams committed chunks to verify SHA-256 and produce block CRCs
+without a writer transaction. Typed publication also runs the existing CDN
+verification, including encoded BLTE/EKey validation. A final small transaction
+rechecks complete staging state, inserts object metadata/ownership and removes
+the staging marker. Cancellation or an invalid identity leaves the stage resumable
+and invisible. Explicit abandonment marks it for cleanup, then deletes at most one
+chunk per transaction. Interrupted cleanup can be retried; it cannot delete an
+already published object. Closing a store preserves incomplete stages.
+
+Tests cover interleaved writes, stale offsets, restart/resume, cross-chunk ranges,
+identity/corruption refusal, cancellation during chunk/publication/cleanup, bounded
+admission, and SQLITE_FULL injected via a page-count limit. The latter checks SQLite
+failure handling, not an actual full filesystem. Child-process termination during
+a second chunk retains the first committed chunk; termination after publication
+preserves readable data. A verification hook executes foreground writes during
+verification and checks publication does not insert or update payload bytes.
+
+Linux smoke benchmark, 128 MiB Java heap, synthetic valid unframed BLTE streams,
+FULL chunk commits, SHA/CRC and CDN identity verification, checkpoint, and SHA-256
+readback. A foreground write from another connection follows every chunk. These
+are single-run feasibility measurements, not a statistically controlled comparison:
+
+| Payload | Ingest + verification + checkpoint | Max chunk commit | Max interleaved foreground write | Verification + publication | Read + SHA |
+|---|---:|---:|---:|---:|---:|
+| 145 MiB | 3736.387 ms | 61.318 ms | 18.776 ms | 1126.945 ms | 129.382 ms |
+| 512 MiB | 3573.856 ms | 25.311 ms | 3.837 ms | 1181.360 ms | 299.072 ms |
+
+The verification/publication column includes the entire read-only verification
+pass, not just the final write transaction. Input generation and foreground writes
+are included in ingest time; initial MD5/SHA preparation for the known fixture key
+is outside it. Sizes execute in order in one JVM; warmup/cache effects explain why
+these numbers must not be extrapolated. Interleaved writes demonstrate release of
+the writer between calls, not fairness under multiple competing bulk producers.
+There were only 47 declared encoded objects above 16 MiB in the sampled inventory;
+production routing/threshold decisions remain separate from this experiment.
+
+This is an experimental schema with no migration from earlier disposable prototype
+databases. Production data is never opened by these tasks.
 
 ## Remaining evaluation gates
 
 - Extend the verified comparison to large encoded streams, realistic distributions,
   production batching and independent JVM repetitions. The verified whole-object
-  path exists, but the raw large-stream smoke path still lacks CDN verification.
+  and staged large-stream paths exist. Monolithic raw streaming smoke inputs remain
+  unchecked; a direct staged-versus-pack large-object comparison is still needed.
 - Full-inventory accounting latency, long reader snapshot/WAL retention, concurrent
   metadata writers and bounded writer occupancy measurements.
-- Disk-full handling, deletion/reuse and space peaks including WAL. Process-kill
-  tests do not establish physical power-loss behavior.
+- Actual filesystem exhaustion, published-object deletion/reuse and space peaks
+  including WAL. Process-kill tests do not establish physical power-loss behavior.
 - Canonical ownership import at real inventory scale, global/library ownership,
-  bounded acquisition queues, resumable staging and eventual deletion rules.
+  bounded acquisition queues, network/resume integration and eventual deletion rules.
 - Mac/Windows native checks and explicit compatibility/migration decision before
   changing any production format. No existing C# compatibility promise is waived.

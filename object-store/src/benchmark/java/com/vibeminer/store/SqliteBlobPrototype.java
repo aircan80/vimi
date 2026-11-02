@@ -8,7 +8,7 @@ import java.util.List;
 
 /** Experimental all-SQLite catalog. Excluded from production artifacts. Single owning thread. */
 final class SqliteBlobPrototype implements AutoCloseable {
-    private final NativeSqlite database;
+    final NativeSqlite database;
 
     SqliteBlobPrototype(Path path) {
         this(path, false);
@@ -24,10 +24,11 @@ final class SqliteBlobPrototype implements AutoCloseable {
         database.exec("PRAGMA foreign_keys=ON");
         database.exec(
                 "CREATE TABLE IF NOT EXISTS payloads(id INTEGER PRIMARY KEY, data BLOB NOT NULL)");
+        BoundedBlobStaging.initialize(database);
         database.exec(
-                "CREATE TABLE IF NOT EXISTS objects(k TEXT PRIMARY KEY, payload INTEGER NOT NULL"
+                "CREATE TABLE IF NOT EXISTS objects(k TEXT PRIMARY KEY, payload INTEGER"
                         + " UNIQUE REFERENCES payloads(id), length INTEGER NOT NULL CHECK(length>=0),"
-                        + " derived INTEGER NOT NULL CHECK(derived IN (0,1)), sha BLOB, crc BLOB)");
+                        + " derived INTEGER NOT NULL CHECK(derived IN (0,1)), sha BLOB, crc BLOB, chunks TEXT REFERENCES chunk_sets(id), CHECK((payload IS NULL)!=(chunks IS NULL)))");
         database.exec(
                 "CREATE TABLE IF NOT EXISTS build_objects(build TEXT NOT NULL, k TEXT NOT NULL"
                         + " REFERENCES objects(k), PRIMARY KEY(build,k)) WITHOUT ROWID");
@@ -131,7 +132,7 @@ final class SqliteBlobPrototype implements AutoCloseable {
                 database.transferBlob(row, 0, length, input, null, token);
                 token.check();
                 database.exec(
-                        "INSERT INTO objects VALUES(?,?,?,?,?,?)",
+                        "INSERT INTO objects(k,payload,length,derived,sha,crc) VALUES(?,?,?,?,?,?)",
                         key,
                         row,
                         length,
@@ -162,7 +163,7 @@ final class SqliteBlobPrototype implements AutoCloseable {
         database.exec("BEGIN");
         try {
             List<Object[]> rows =
-                    database.query("SELECT payload,length FROM objects WHERE k=?", key);
+                    database.query("SELECT payload,length,chunks FROM objects WHERE k=?", key);
             if (rows.isEmpty()) {
                 return false;
             }
@@ -172,8 +173,12 @@ final class SqliteBlobPrototype implements AutoCloseable {
                     || (long) offset + length > ((Number) row[1]).longValue()) {
                 throw new IllegalArgumentException("Range outside object");
             }
-            database.transferBlob(
-                    ((Number) row[0]).longValue(), offset, length, null, output, token);
+            if (row[2] == null) {
+                database.transferBlob(
+                        ((Number) row[0]).longValue(), offset, length, null, output, token);
+            } else {
+                BoundedBlobStaging.read(database, (String) row[2], offset, length, output, token);
+            }
             return true;
         } finally {
             database.exec("ROLLBACK");
