@@ -77,12 +77,13 @@ class PreparedTablesCacheTest {
         var cache = new PreparedTablesCache(store);
         var checks = new AtomicInteger();
         cache.save("build-locale-definitions-keys-v1", result(), Cancellation.NONE).join();
+        var updates = new java.util.ArrayList<TableTypes.PreloadProgress>();
         var restored =
                 new PreparedTablesCache(store)
                         .restore(
                                 "build-locale-definitions-keys-v1",
                                 local(READABLE, checks),
-                                null,
+                                updates::add,
                                 Cancellation.NONE)
                         .join();
         assertNotNull(restored);
@@ -90,6 +91,13 @@ class PreparedTablesCacheTest {
         assertEquals(1, checks.get());
         assertEquals("TABLES_RESTORED", restored.code());
         assertEquals(2, restored.progress().tablesTotal());
+        assertEquals(TableTypes.PreloadStage.RESTORING, restored.progress().stage());
+        assertEquals(0, updates.getFirst().tablesDone());
+        assertEquals(2, updates.getLast().tablesDone());
+        assertEquals(
+                true,
+                updates.stream()
+                        .allMatch(update -> update.stage() == TableTypes.PreloadStage.RESTORING));
         assertNull(
                 cache.restore(
                                 "changed-definitions-or-keys",

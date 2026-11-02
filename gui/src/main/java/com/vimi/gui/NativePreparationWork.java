@@ -38,6 +38,18 @@ import java.util.function.Consumer;
 
 /** One retained build/locale workspace; public data methods never acquire media. */
 public final class NativePreparationWork implements BuildPreparation.Work {
+    private PreparationHistory history;
+
+    NativePreparationWork withHistory(PreparationHistory value) {
+        history = value;
+        return this;
+    }
+
+    @Override
+    public void assessed(BuildPreparation.Ready ready) {
+        if (history != null) history.record(info, ref, locale, ready);
+    }
+
     private final java.nio.file.Path indexDirectory;
     private final BuildInfo info;
     private final BuildTypes.BuildRef ref;
@@ -340,6 +352,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     @Override
     public TableTypes.PreloadResult tables(
             Consumer<TableTypes.PreloadProgress> progress, Cancellation token) {
+        long started = System.nanoTime();
         abortPending();
         TableTypes.PreloadResult prepared = null;
         var cache = new com.vibeminer.formats.tables.PreparedTablesCache(generated);
@@ -349,8 +362,13 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                 prepared = cache.restore(identity, local, progress, token).join();
             }
         }
+        boolean restored = prepared != null;
         tablePassAttempted = true;
         if (prepared == null) {
+            System.getLogger(NativePreparationWork.class.getName())
+                    .log(
+                            System.Logger.Level.INFO,
+                            "Prepared table inventory unavailable or stale; assessing known tables");
             try (var preparing = openTables(tablesService(token, true), token)) {
                 prepared = preparing.prepareKnown(progress, token).join();
             }
@@ -360,6 +378,13 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         }
         token.check();
         if (prepared.outcome() != TableTypes.PreloadOutcome.COMPLETED) return prepared;
+        System.getLogger(NativePreparationWork.class.getName())
+                .log(
+                        System.Logger.Level.INFO,
+                        "Tables {0}: {1} known table outcomes in {2} ms",
+                        restored ? "restored from local cache" : "prepared",
+                        prepared.tables().size(),
+                        (System.nanoTime() - started) / 1_000_000);
         var localService = tablesService(token, false);
         var next = openTables(localService, token);
         boolean staged = false;

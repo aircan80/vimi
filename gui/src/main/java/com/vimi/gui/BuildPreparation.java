@@ -91,6 +91,9 @@ public final class BuildPreparation {
 
         default void enrichNames(Cancellation token) {}
 
+        /** Historical UI receipt only; invoked on the pipeline worker, never grants readiness. */
+        default void assessed(Ready ready) {}
+
         /**
          * Atomic, nonblocking publication only: no I/O/callbacks and no throwing after publication.
          */
@@ -363,15 +366,20 @@ public final class BuildPreparation {
             tableStage = value.stage().ordinal();
             progress(
                     Phase.TABLES,
-                    value.stage() == TableTypes.PreloadStage.PREPARING
+                    value.stage() == TableTypes.PreloadStage.RESTORING
                             ? new Counter(
                                     value.tablesDone(),
                                     (long) value.tablesTotal(),
-                                    "tables processed")
-                            : new Counter(
-                                    value.filesDone(),
-                                    value.filesTotal(),
-                                    "table files downloaded"));
+                                    "cached tables verified")
+                            : value.stage() == TableTypes.PreloadStage.PREPARING
+                                    ? new Counter(
+                                            value.tablesDone(),
+                                            (long) value.tablesTotal(),
+                                            "tables processed")
+                                    : new Counter(
+                                            value.filesDone(),
+                                            value.filesTotal(),
+                                            "table files downloaded"));
         }
 
         private void startNames(Work work) {
@@ -448,6 +456,7 @@ public final class BuildPreparation {
                         files,
                         current.tables(),
                         current.issues());
+                work.assessed(Ready.METADATA_READY);
                 publishMetadata(null);
                 token.check();
                 if (files == null)
@@ -462,6 +471,7 @@ public final class BuildPreparation {
                         files,
                         current.tables(),
                         current.issues());
+                work.assessed(Ready.FILES_READY);
                 var issues = new ArrayList<>(work.keys(token));
                 token.check();
                 startNames(work);
@@ -501,6 +511,7 @@ public final class BuildPreparation {
                                     issues,
                                     null);
                 }
+                work.assessed(Ready.TABLES_READY);
                 try {
                     work.retireCommitted();
                 } catch (Throwable retirement) {

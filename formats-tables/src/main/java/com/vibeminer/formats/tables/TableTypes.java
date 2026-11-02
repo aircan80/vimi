@@ -227,6 +227,7 @@ public final class TableTypes {
 
     public enum PreloadStage {
         OPENING,
+        RESTORING,
         DOWNLOADING,
         PREPARING
     }

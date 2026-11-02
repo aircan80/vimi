@@ -296,3 +296,15 @@ crosses the GUI boundary. Item details/attributes are requested independently wh
 focused. Visible row icons load asynchronously without requiring focus. Class and
 subclass use labels from the selected build locale. Other browser grids retain
 their existing page-scoped dropdown/sort behavior for now.
+
+The Builds list persists the last assessed milestone and locale in a bounded
+application-history record in generated storage. These are historical assessments,
+not live workspace readiness; a new workspace still verifies local artifacts.
+History starts with assessments made by this version. An unassessed cache is shown
+as such, rather than implying the build was never opened. Cached table verification
+has a distinct restoration phase/counter; logs distinguish restored inventories
+from fresh preparation and include elapsed times.
+
+`./gradlew :gui:preparationHistoryTest` verifies history across reload, build/locale
+isolation and restoration presentation. The native pipeline integration also
+checks the historical assessment survives reopening the generated store.

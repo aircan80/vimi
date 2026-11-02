@@ -91,7 +91,9 @@ public record OverviewPresentation(
                 snapshot.activity() == BuildPreparation.Activity.STOPPING
                         ? "Stopping…"
                         : snapshot.busy()
-                                ? phase(snapshot.phase())
+                                ? PreparationStatus.restoringTables(snapshot)
+                                        ? "Restoring cached tables"
+                                        : phase(snapshot.phase())
                                 : snapshot.activity() == BuildPreparation.Activity.FAILED
                                         ? "Preparation stopped · failed"
                                         : snapshot.activity() == BuildPreparation.Activity.CANCELED

@@ -272,3 +272,5 @@ Preparation additionally runs a native authored end-to-end pipeline in
 `:gui:preparationIntegrationTest` via `:gui:check`. It verifies metadata publication
 before index acquisition, payload-free Files, protected-table accounting, retained
 lookups and offline reopen without community/network dependencies.
+
+GUI history coverage includes `:gui:preparationHistoryTest` in hosted unit checks.

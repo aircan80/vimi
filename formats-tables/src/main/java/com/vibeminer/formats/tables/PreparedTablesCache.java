@@ -76,6 +76,9 @@ public final class PreparedTablesCache {
                         int total =
                                 (int) entries.stream().filter(PreparedTablesCache::present).count();
                         int done = 0;
+                        if (progress != null) {
+                            progress.accept(report(0, total, 0));
+                        }
                         var verified = new ArrayList<TableTypes.Entry>();
                         for (var entry : entries) {
                             token.check();
@@ -166,7 +169,7 @@ public final class PreparedTablesCache {
 
     private static TableTypes.PreloadProgress report(int done, int total, int failed) {
         return new TableTypes.PreloadProgress(
-                TableTypes.PreloadStage.PREPARING, 0, 0, 0, 0, 0, 0, done, total, failed);
+                TableTypes.PreloadStage.RESTORING, 0, 0, 0, 0, 0, 0, done, total, failed);
     }
 
     private static Map<String, Object> encode(TableTypes.Entry entry) {

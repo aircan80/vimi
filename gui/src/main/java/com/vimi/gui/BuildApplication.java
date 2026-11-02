@@ -100,6 +100,8 @@ public final class BuildApplication {
                                                     directory.resolve("generated"))
                                             .join();
                             var ownedGenerated = generated;
+                            var preparationHistory = new PreparationHistory(generated);
+                            preparationHistory.load();
                             var workspaceOpener = opener;
                             var workspaceSource = source;
                             var workspaceLocalSource = localSource;
@@ -115,17 +117,18 @@ public final class BuildApplication {
                                     new BuildPreparation(
                                             (build, region, locale) ->
                                                     new NativePreparationWork(
-                                                            build,
-                                                            region,
-                                                            locale,
-                                                            workspaceOpener,
-                                                            workspaceSource,
-                                                            ownedGenerated,
-                                                            community,
-                                                            workspaceLocalSource,
-                                                            directory
-                                                                    .resolve("derived")
-                                                                    .resolve("grids")));
+                                                                    build,
+                                                                    region,
+                                                                    locale,
+                                                                    workspaceOpener,
+                                                                    workspaceSource,
+                                                                    ownedGenerated,
+                                                                    community,
+                                                                    workspaceLocalSource,
+                                                                    directory
+                                                                            .resolve("derived")
+                                                                            .resolve("grids"))
+                                                            .withHistory(preparationHistory));
                             var ownedPreparation = preparation;
                             var ownedOpener = opener;
                             var ownedOpening = opening;
@@ -159,7 +162,8 @@ public final class BuildApplication {
                                                                             ownedObjects
                                                                                     ::closeAsync)))
                                             .withOpening(opening)
-                                            .withPreparation(preparation);
+                                            .withPreparation(preparation)
+                                            .withHistory(preparationHistory);
                             if (!result.complete(service)) service.closeAsync().join();
                         } catch (Throwable failure) {
                             try {

@@ -273,18 +273,26 @@ public final class PreparationPipelineIntegrationTest {
                                     online,
                                     generated,
                                     token -> CompletableFuture.completedFuture(false));
+                    var history = new PreparationHistory(generated);
+                    history.load();
+                    if (restoring)
+                        require(
+                                history.summary(build) != null
+                                        && history.summary(build).contains("Tables ready"),
+                                "Previous preparation assessment must survive store reopen");
                     engine =
                             new BuildPreparation(
                                     (info, region, locale) ->
                                             new NativePreparationWork(
-                                                    info,
-                                                    region,
-                                                    locale,
-                                                    observedBuilds,
-                                                    guarded,
-                                                    generated,
-                                                    community,
-                                                    local));
+                                                            info,
+                                                            region,
+                                                            locale,
+                                                            observedBuilds,
+                                                            guarded,
+                                                            generated,
+                                                            community,
+                                                            local)
+                                                    .withHistory(history));
                     var job = engine.start(build, sourceEvidence, "enUS");
                     jobPublished.complete(job);
                     job.metadataReady().get(20, TimeUnit.SECONDS);
@@ -311,6 +319,10 @@ public final class PreparationPipelineIntegrationTest {
                     require(
                             restoring ? enumerations.get() == 0 : enumerations.get() > 0,
                             "Only the initial preparation enumerates file IDs");
+                    require(
+                            history.summary(build) != null
+                                    && history.summary(build).contains("Tables ready"),
+                            "Completed preparation must record its historical assessment");
                     var work = (NativePreparationWork) job.work();
                     require(
                             work.filesHandle() != null

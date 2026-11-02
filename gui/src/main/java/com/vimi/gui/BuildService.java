@@ -13,6 +13,8 @@ public interface BuildService {
         return listBuilds();
     }
 
+    default String historicalPreparation(BuildInfo build) { return null; }
+
     default BuildPreparation preparation() { return null; }
 
     default BuildOpening opening() { return null; }

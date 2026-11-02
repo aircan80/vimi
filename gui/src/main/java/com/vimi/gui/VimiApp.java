@@ -698,11 +698,18 @@ public final class VimiApp extends Application {
         if (!mockMode() && service != null && service.preparation() != null) {
             var jobs = service.preparation().jobs();
             return jobs.stream().filter(job -> job.build().identity().equals(build.identity())).reduce((before,after) -> after)
-                    .map(job -> PreparationPane.describe(job.snapshot()) + " · " + job.locale()).orElseGet(() -> closedPreparations.getOrDefault(build.identity(), "Not opened · cache not assessed"));
+                    .map(job -> PreparationPane.describe(job.snapshot()) + " · " + job.locale()).orElseGet(() -> priorPreparationSummary(build));
         }
         if (!mockMode()) { return realOpeningActive && realOpeningBuild.identity().equals(build.identity()) ? "Opening…" : realOpened.containsKey(build.identity()) ? "Opened" : "Not opened"; }
         var job = preparations.latest(build);
         return job == null ? (build.prepared() ? "Prepared" : "Not prepared") : job.summary();
+    }
+
+    private String priorPreparationSummary(BuildInfo build) {
+        String closed = closedPreparations.get(build.identity());
+        if (closed != null) return closed;
+        String historical = service.historicalPreparation(build);
+        return historical == null ? "Cache not assessed" : historical;
     }
 
     private void updatePreparationControls() {

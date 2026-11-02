@@ -17,7 +17,10 @@ public final class PreparationStatus {
                                 case METADATA -> "Preparing metadata…";
                                 case FILES -> "Preparing files…";
                                 case KEYS -> "Loading build keys…";
-                                case TABLES -> "Preparing tables…";
+                                case TABLES ->
+                                        restoringTables(snapshot)
+                                                ? "Restoring cached tables…"
+                                                : "Preparing tables…";
                                 case LOOKUPS -> "Preparing lookups…";
                                 case IDLE -> "Working…";
                             };
@@ -25,6 +28,11 @@ public final class PreparationStatus {
         if (snapshot.busy() && snapshot.total() != null)
             activity += " " + snapshot.done() + "/" + snapshot.total() + " " + snapshot.unit();
         return ready + " · " + activity;
+    }
+
+    static boolean restoringTables(BuildPreparation.Snapshot snapshot) {
+        return snapshot.phase() == BuildPreparation.Phase.TABLES
+                && "cached tables verified".equals(snapshot.unit());
     }
 
     public static String readiness(BuildPreparation.Ready ready) {

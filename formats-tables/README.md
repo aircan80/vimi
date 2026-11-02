@@ -150,3 +150,7 @@ cannot overwrite a completed inventory. Explicit enrichment may replace it.
 The small inventory pointer is replaceable derived data over immutable decoded
 row graphs. A crash/store failure during pointer replacement yields a cache miss;
 it cannot publish a false ready state or remove the underlying table rows.
+
+Prepared inventory checks emit `PreloadStage.RESTORING`, separately from downloading
+and preparing. Restoration still validates readable local table artifacts and can
+fall back to ordinary preparation if an input is missing, changed or corrupt.
