@@ -1,6 +1,6 @@
 # Continuous integration
 
-The `Unit tests` workflow runs `:object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test :formats-tables:test` on GitHub-hosted
+The `Unit tests` workflow runs `:object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test :formats-tables:test :concepts-core:test :concepts-items:test :concepts-creatures:test :concepts-effects:test` on GitHub-hosted
 `ubuntu-24.04`, `windows-2025` and `macos-15` runners. Each job installs a full
 Temurin Java 25 JDK matching the runner architecture. The fast tasks need neither
 native SQLite nor .NET nor the original C# checkout. Generated record tests use
@@ -11,7 +11,7 @@ enabled; formatting and native integration are separate checks.
 Run the same task locally with:
 
 ```sh
-./gradlew :object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test :formats-tables:test --no-daemon --console=plain
+./gradlew :object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test :formats-tables:test :concepts-core:test :concepts-items:test :concepts-creatures:test :concepts-effects:test --no-daemon --console=plain
 ```
 
 Use `gradlew.bat` in a Windows terminal. Hosted jobs use the checked-in Unix
@@ -34,8 +34,8 @@ python3 -m unittest discover -s scripts/ci -p '*_test.py'
 
 The validation group contains `object-store`, its consumer `generated-store`,
 and the independent `network-clients` component, plus layer 2 `object-access` and
-its layer 3 consumer `builds`, layer 4 `files`, and layer 5 `formats-assets`/`formats-tables`. The historical `object_store` selector output conservatively
-selects all eight components. Any code, public-interface, test, fixture,
+its layer 3 consumer `builds`, layer 4 `files`, and layer 5 `formats-assets`/`formats-tables`, and layer 6 `concepts-core`, `concepts-items`, `concepts-creatures` and `concepts-effects`. The historical `object_store` selector output conservatively
+selects all twelve components. Any code, public-interface, test, fixture,
 Gradle, dependency, wrapper, configuration, workflow or unknown-path change selects
 all components on all three platforms. Markdown/reStructuredText, root license
 notices and documentation images skip them; executable/build/workflow directories
@@ -50,7 +50,7 @@ the selector before making selection narrower. Public-interface and shared-fixtu
 changes must select affected consumers too; shared build/wrapper/workflow changes
 must continue to select all components. The generated-store consumes object-store; object-access consumes object-store
 and network-clients; builds consumes object-access; files consumes builds, object-access and generated-store;
-formats-assets consumes Files and generated-store; changes to any component currently run all seven.
+formats-assets consumes Files and generated-store; formats-tables consumes Files and generated-store; concepts-core consumes formats-tables; items and creatures consume concepts-core and formats-assets; effects consumes concepts-core. Changes to any component currently run all twelve.
 
 Each platform retains JUnit XML and HTML test reports for seven days, including
 failing test reports. Open the run's artifacts named `unit-reports-Linux`,
@@ -79,7 +79,7 @@ move to the appropriate machine.
 
 The independent `Integration tests` workflow uses the same conservative component
 selection and an always-running `Integration tests` aggregate check. Its platform
-jobs run `:object-store:integrationTest :generated-store:check :network-clients:check :object-access:check :builds:check :files:check :formats-assets:check :formats-tables:check` separately from the
+jobs run `:object-store:integrationTest :generated-store:check :network-clients:check :object-access:check :builds:check :files:check :formats-assets:check :formats-tables:check :concepts-core:check :concepts-items:check :concepts-creatures:check :concepts-effects:check` separately from the
 fast unit workflow and
 retain independent `integration-reports-*` XML/HTML artifacts for seven days.
 Every disk test uses temporary synthetic stores.
@@ -117,12 +117,12 @@ dispatch and a Monday 05:00 UTC schedule force both suites. Scheduled/manual eve
 become available after the workflow reaches the default branch.
 
 The interoperation job checks out public `aircan80/vibeminer` at commit
-`4fd92d2a36add50c9b82e1c92bf72706e8d0df2b`, sparse to the Objects, Generated, Cdn, ObjectAccess, Builds, Files and Formats source trees plus the exact ModelFixtures.cs and AppearanceModels.cs fixture files,
+`4fd92d2a36add50c9b82e1c92bf72706e8d0df2b`, sparse to the Objects, Generated, Cdn, ObjectAccess, Builds, Files, Formats and Concepts source trees plus the exact ModelFixtures.cs, InMemoryTables.cs and AppearanceModels.cs fixture files,
 root build properties, editor settings and `global.json`. It installs the specified
-.NET SDK 10.0.402 and builds `VibeMiner.Generated` and `VibeMiner.Formats`,
+.NET SDK 10.0.402 and builds `VibeMiner.Generated`, `VibeMiner.Formats` and `VibeMiner.Concepts`,
 including their Objects/Builds/ObjectAccess/Cdn dependencies, in Release with locked NuGet restore. Java and reference checkouts occupy sibling `vimi/` and `vibeminer/`
 directories, as required by the existing reference harness. The Java invocation is
-`:object-store:interopTest :generated-store:interopTest :builds:interopTest :files:interopTest :formats-assets:interopTest :formats-tables:interopTest` with the absolute `dotnet` executable resolved from
+`:object-store:interopTest :generated-store:interopTest :builds:interopTest :files:interopTest :formats-assets:interopTest :formats-tables:interopTest :concepts-core:interopTest :concepts-items:interopTest :concepts-creatures:interopTest :concepts-effects:interopTest` with the absolute `dotnet` executable resolved from
 `command -v dotnet`, plus an explicit SQLite library path. The harness expects an
 absolute executable path; a bare `-Pdotnet=dotnet` is not sufficient.
 Missing reference source, SDK, dependencies or assembly fails rather than skipping.
@@ -227,9 +227,8 @@ regeneration case to the existing gates. The disk case follows real Files into B
 and model/SKIN parsing, generated image persistence and offline reopen. The Linux
 compatibility job compiles selected original pure asset sources with two exact pinned
 reference fixture files, then compares regenerated BLP/model/appearance/VMG1 bytes
-and identities. The reference Formats project itself is not built. All reports join
-the existing seven-day unit, integration and interop artifacts. Tables remains a
-separate active layer 5 component; it is not included in this branch's completion claim.
+and identities. The reference Formats and Concepts projects are built for the table/concept assembly harnesses. All reports join
+the existing seven-day unit, integration and interop artifacts.
 
 ## Table format coverage
 
@@ -239,3 +238,28 @@ bootstrap, preload and lifecycle. The disk pipeline proves generated rows reopen
 without their encoded DB2 source. Linux compatibility compares C# row/identity
 goldens and exchanges generated table caches in both directions; its sparse reference
 includes Formats and the pinned embedded WoWDBDefs resources.
+
+## Layer 6 concept coverage
+
+All four concept modules participate in the twelve-module unit and quality groups.
+Core exercises bounded shared relation indexes, cancellation/retry, stale sources,
+Unicode literal matching and exact query cursor framing. Items covers left joins,
+facts/classification labels, bounded appearance/default selection, verified armor
+material joins, model/icon provenance and accepted-operation cleanup. Creatures
+covers its sixteen-field profile, display/model chains, actual model/SKIN/BLP
+appearance paths, typed dependency visibility and resource lifetime. Effects covers
+reviewed Retail/Classic links, physical numeric evidence, names and partial/protected
+provenance. Core and Items also supply disk integration checks through real lower
+stores; Creatures and Effects run their deterministic service and lifecycle suites
+with quality checks in the integration group.
+
+The Linux compatibility group now runs ten opt-in module suites: the previous six
+plus all four concepts. Core and Items compile unchanged selected original C#
+query/fact sources with type-only seams; Creatures uses the original Concepts
+project, and Effects uses its Release assemblies plus the exact original
+InMemoryTables fixture. Reports are retained alongside all existing suites. The
+sparse reference checkout includes those sources and the full Concepts project,
+and the workflow explicitly builds the pinned Concepts Release assembly before
+Gradle starts the harnesses. All fixtures are authored/synthetic, with no live
+service or game-data requests. Hands-on Windows validation remains deferred;
+hosted Linux, Windows and macOS unit/integration jobs continue.

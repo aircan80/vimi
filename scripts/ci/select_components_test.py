@@ -45,6 +45,23 @@ class SelectionTest(unittest.TestCase):
             "formats-assets/src/testFixtures/java/com/vibeminer/formats/AssetFilesFixture.java",
             "formats-assets/build.gradle",
             "formats-assets/gradle.lockfile",
+            "concepts-core/src/main/java/Boundary.java",
+            "concepts-core/src/testFixtures/java/MemoryBoundary.java",
+            "concepts-core/build.gradle",
+            "concepts-core/gradle.lockfile",
+            "concepts-items/src/main/java/Boundary.java",
+            "concepts-items/src/testFixtures/java/MemoryBoundary.java",
+            "concepts-items/build.gradle",
+            "concepts-items/gradle.lockfile",
+            "concepts-creatures/src/main/java/Boundary.java",
+            "concepts-creatures/src/testFixtures/java/MemoryBoundary.java",
+            "concepts-creatures/build.gradle",
+            "concepts-creatures/gradle.lockfile",
+            "concepts-effects/src/main/java/Boundary.java",
+            "concepts-effects/src/testFixtures/java/MemoryBoundary.java",
+            "concepts-effects/build.gradle",
+            "concepts-effects/gradle.lockfile",
+
         ]:
             with self.subTest(path=path):
                 self.assertTrue(selection.select([path]))
@@ -185,6 +202,45 @@ class AssetWorkflowWiringTest(unittest.TestCase):
             "/tests/backend/VibeMiner.Formats.Tests/Models/AppearanceModels.cs",
         ]:
             self.assertIn(path, text)
+
+
+class ConceptWorkflowWiringTest(unittest.TestCase):
+    MODULES = ("concepts-core", "concepts-items", "concepts-creatures", "concepts-effects")
+
+    def test_concepts_run_and_retain_reports_in_every_selected_suite(self):
+        root = Path(__file__).resolve().parents[2]
+        for workflow, task, report in [
+            ("unit-tests.yml", "test", "test-results/test/"),
+            ("integration-tests.yml", "check", "test-results/"),
+            ("storage-compatibility.yml", "interopTest", "test-results/interopTest/"),
+        ]:
+            text = (root / ".github/workflows" / workflow).read_text(encoding="utf-8")
+            for module in self.MODULES:
+                with self.subTest(workflow=workflow, module=module):
+                    self.assertIn(f":{module}:{task}", text)
+                    self.assertIn(f"{module}/build/{report}", text)
+                    self.assertIn(f"{module}/build/reports/", text)
+
+    def test_root_lifecycle_and_helper_scripts_include_all_concepts(self):
+        root = Path(__file__).resolve().parents[2]
+        settings = (root / "settings.gradle").read_text(encoding="utf-8")
+        lifecycle = (root / "build.gradle").read_text(encoding="utf-8")
+        checks = (root / "scripts/check.sh").read_text(encoding="utf-8")
+        interop = (root / "scripts/interop.sh").read_text(encoding="utf-8")
+        for module in self.MODULES:
+            with self.subTest(module=module):
+                self.assertIn(f"include '{module}'", settings)
+                self.assertIn(f"':{module}:check'", lifecycle)
+                self.assertIn(f"':{module}:assemble'", lifecycle)
+                self.assertIn(f":{module}:test", checks)
+                self.assertIn(f":{module}:interopTest", interop)
+
+    def test_concept_reference_sources_and_release_assembly_are_available(self):
+        root = Path(__file__).resolve().parents[2]
+        text = (root / ".github/workflows/storage-compatibility.yml").read_text(encoding="utf-8")
+        self.assertIn("/src/backend/VibeMiner.Concepts/", text)
+        self.assertIn("/tests/backend/VibeMiner.Formats.Testing/InMemoryTables.cs", text)
+        self.assertIn("dotnet build ../vibeminer/src/backend/VibeMiner.Concepts/VibeMiner.Concepts.csproj --configuration Release", text)
 
 
 if __name__ == "__main__":
