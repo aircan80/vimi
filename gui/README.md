@@ -193,3 +193,7 @@ the catalog usable and permit explicit retry. Hiding the popup prevents automati
 navigation on completion; its activity button returns to the result. Closing the
 application cancels/drains opening before releasing stores and network resources.
 `openingTest` exercises deterministic provider/cancellation/lifecycle contracts.
+
+While opening is hidden, a persistent animated activity indicator and elapsed
+time remain beside its View action. Elapsed time is not a percentage or ETA;
+the backend opener reports only terminal results.

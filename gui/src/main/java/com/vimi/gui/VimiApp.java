@@ -36,6 +36,11 @@ public final class VimiApp extends Application {
     private String realOpeningRegion;
     private boolean realOpeningActive;
     private boolean realOpeningStopping;
+    private long realOpeningStartedNanos;
+    private Label openingElapsedLabel;
+    private final javafx.scene.control.ProgressIndicator openingSpinner = new javafx.scene.control.ProgressIndicator(-1);
+    private final javafx.animation.Timeline openingClock = new javafx.animation.Timeline(
+            new javafx.animation.KeyFrame(javafx.util.Duration.seconds(1), event -> updateOpeningActivity()));
     private javafx.scene.control.Dialog<Void> realOpeningDialog;
     private final Button openingActivity = new Button();
     private final Map<String, com.vibeminer.builds.BuildTypes.BuildOpenResult> realOpened = new java.util.LinkedHashMap<>();
@@ -137,6 +142,13 @@ public final class VimiApp extends Application {
             dialog.getDialogPane().setContent(details);
             dialog.show();
         });
+        openingSpinner.setMinSize(18, 18);
+        openingSpinner.setPrefSize(18, 18);
+        openingSpinner.setMaxSize(18, 18);
+        openingSpinner.setVisible(false);
+        openingSpinner.setManaged(false);
+        openingSpinner.setAccessibleText("Build opening is active");
+        openingClock.setCycleCount(javafx.animation.Animation.INDEFINITE);
         openingActivity.setVisible(false);
         openingActivity.setManaged(false);
         openingActivity.setOnAction(event -> {
@@ -150,7 +162,7 @@ public final class VimiApp extends Application {
                 }
             }
         });
-        var statusBar = new HBox(12, status, spacer(), openingActivity, issuesButton);
+        var statusBar = new HBox(12, status, spacer(), openingSpinner, openingActivity, issuesButton);
         root.setBottom(statusBar);
         Scene scene = new Scene(surface, 1320, 850);
         scene.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, event -> {
@@ -419,7 +431,11 @@ public final class VimiApp extends Application {
         realOpeningStopping = false;
         openingProblems.remove(build.identity());
         realOpened.remove(build.identity());
-        openingActivity.setText("Opening " + build.version() + "… View");
+        realOpeningStartedNanos = System.nanoTime();
+        openingSpinner.setVisible(true);
+        openingSpinner.setManaged(true);
+        openingClock.playFromStart();
+        updateOpeningActivity();
         openingActivity.setVisible(true);
         openingActivity.setManaged(true);
         inspect();
@@ -427,6 +443,9 @@ public final class VimiApp extends Application {
         service.opening().open(build, region).whenComplete((result, error) -> Platform.runLater(() -> {
             if (closing) return;
             realOpeningActive = false;
+            openingClock.stop();
+            openingSpinner.setVisible(false);
+            openingSpinner.setManaged(false);
             boolean attached = realOpeningDialog != null && realOpeningDialog.isShowing();
             if (realOpeningDialog != null) realOpeningDialog.close();
             realOpeningDialog = null;
@@ -454,6 +473,16 @@ public final class VimiApp extends Application {
         }));
     }
 
+    private void updateOpeningActivity() {
+        if (!realOpeningActive || realOpeningBuild == null) return;
+        long seconds = java.util.concurrent.TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - realOpeningStartedNanos);
+        String elapsed = (seconds / 60) + "m " + (seconds % 60) + "s";
+        openingActivity.setText((realOpeningStopping ? "Stopping: " : "Opening: ")
+                + realOpeningBuild.version() + " · " + elapsed + " · View");
+        if (openingElapsedLabel != null) openingElapsedLabel.setText("Elapsed " + elapsed
+                + " · The metadata loader does not report work-unit progress.");
+    }
+
     private void showRealOpening() {
         if (!realOpeningActive) return;
         if (realOpeningDialog != null && realOpeningDialog.isShowing()) return;
@@ -465,7 +494,9 @@ public final class VimiApp extends Application {
         var spinner = new javafx.scene.control.ProgressIndicator(-1);
         spinner.setPrefSize(28, 28);
         var message = label(realOpeningStopping ? "Stopping…" : "Reading and verifying build metadata…", "value");
-        dialog.getDialogPane().setContent(new VBox(12, spinner, message,
+        openingElapsedLabel = label("", "muted");
+        updateOpeningActivity();
+        dialog.getDialogPane().setContent(new VBox(12, spinner, message, openingElapsedLabel,
                 label("Hide keeps this operation running. Progress is indeterminate.", "muted")));
         var hide = new javafx.scene.control.ButtonType("Hide", javafx.scene.control.ButtonBar.ButtonData.CANCEL_CLOSE);
         var cancel = new javafx.scene.control.ButtonType("Cancel opening", javafx.scene.control.ButtonBar.ButtonData.LEFT);
@@ -476,7 +507,7 @@ public final class VimiApp extends Application {
             event.consume();
             realOpeningStopping = true;
             cancelButton.setDisable(true);
-            openingActivity.setText("Stopping: " + realOpeningBuild.version());
+            updateOpeningActivity();
             message.setText("Stopping…");
             service.opening().cancel();
         });
@@ -500,6 +531,7 @@ public final class VimiApp extends Application {
 
     @Override
     public void stop() {
+        openingClock.stop();
         preparations.close();
         if (service != null) { service.closeAsync(); }
     }
@@ -507,6 +539,7 @@ public final class VimiApp extends Application {
     private void shutdown() {
         if (closing) { return; }
         closing = true;
+        openingClock.stop();
         catalogGeneration++;
         preparations.close();
         root.setDisable(true);
