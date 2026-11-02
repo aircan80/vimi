@@ -391,6 +391,21 @@ public final class MemoryCreatures implements Creatures {
         }
 
         @Override
+        public CompletableFuture<CreatureResult> getData(
+                long id, TableTypes.Priority priority, Cancellation token) {
+            // Seeded fake details are already in memory; this never touches asset services.
+            return get(id, priority, token);
+        }
+
+        @Override
+        public CompletableFuture<com.vibeminer.concepts.core.ConceptWarmup.Result> warmup(
+                TableTypes.Priority priority, Cancellation token) {
+            enter("warmup", priority, token);
+            return CompletableFuture.completedFuture(
+                    new com.vibeminer.concepts.core.ConceptWarmup.Result(List.of()));
+        }
+
+        @Override
         public synchronized CompletableFuture<CreatureResult> get(
                 long id, TableTypes.Priority priority, Cancellation token) {
             if (id < 0 || id > 0xffffffffL) {

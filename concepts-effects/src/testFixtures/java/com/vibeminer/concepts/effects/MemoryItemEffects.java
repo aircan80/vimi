@@ -161,6 +161,19 @@ public final class MemoryItemEffects implements ItemEffects {
             return CompletableFuture.completedFuture(null);
         }
 
+        @Override
+        public CompletableFuture<com.vibeminer.concepts.core.ConceptWarmup.Result> warmup(
+                TableTypes.Priority priority, Cancellation token) {
+            if (closed) {
+                throw new IllegalStateException("Item effects handle closed");
+            }
+            Objects.requireNonNull(priority);
+            token.check();
+            count("warmup");
+            return CompletableFuture.completedFuture(
+                    new com.vibeminer.concepts.core.ConceptWarmup.Result(List.of()));
+        }
+
         public CompletableFuture<Page> get(
                 long id, Query query, TableTypes.Priority priority, Cancellation token) {
             count("get");
