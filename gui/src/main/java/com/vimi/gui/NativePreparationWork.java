@@ -135,6 +135,17 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         return fileHandle;
     }
 
+    /** Selected-item media request; never used by preparation or data-only reads. */
+    public CompletableFuture<com.vibeminer.formats.images.BlpImageTypes.Result> icon(
+            long fileDataId, Cancellation token) {
+        return new BlpImages(generated)
+                .decodeLargestWithin(
+                        filesHandle(),
+                        com.vibeminer.files.FileTypes.FileRef.id(fileDataId),
+                        64,
+                        token);
+    }
+
     public BuildTables tablesHandle() {
         return published.tables();
     }

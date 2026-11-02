@@ -124,3 +124,18 @@ tasks.register('overviewPresentationTest', JavaExec) {
     mainClass = 'com.vimi.gui.OverviewPresentationTest'
 }
 check.dependsOn overviewPresentationTest
+
+tasks.register('researchBrowserDataTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.ResearchBrowserDataTest'
+}
+check.dependsOn researchBrowserDataTest
+
+// Requires a graphical environment; run explicitly for UI behavior and authored screenshots.
+tasks.register('researchBrowserUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.ResearchBrowserUiTest'
+    systemProperty 'vimi.uiReviewDirectory', layout.buildDirectory.dir('ui-review').get().asFile.absolutePath
+}

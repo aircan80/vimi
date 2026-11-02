@@ -22,6 +22,26 @@ The original mock experience remains under `--mock`. Original design worktree an
 Settings mockups are independent; do not overwrite their work. Earlier sections below
 are historical mock design decisions, not current backend integration status.
 
+## Live research screens
+
+Files, Tables, Items and Creatures now use the approved compact grid/inspector
+style instead of the temporary list/text dump. `ResearchBrowser` owns controls,
+selection, cancellation and independent media panels. `ResearchSource` adapts
+native handles; `ResearchPresentation` formats scoped facts without gameplay logic.
+The original mock screens remain unchanged. Search is asynchronous across the
+catalog; dropdown filters/sorting explicitly apply to the current page. File scans
+are bounded to 2,000 assessed records per request and can return an empty page with
+continuation. Source-table navigation opens a real known-table search. Readable
+tables have schema-named 100-row pages with generation identities.
+
+Items uses a real-data tooltip, quality colors, independent selected-icon decoding
+and a 100-entry icon cache. Layer 6 `ItemAttributes` projects direct base amounts
+and carries provenance. Retail allocation/scaling calculations remain a separate
+backend task; see `docs/item-attributes.md`. GUI does not compute attributes.
+Files displays decoded metadata size because the current listing API does not
+expose encoded sizes/all locale variants. 3D model rendering and Settings handoff
+remain separate. UI review fixtures/screenshots must not be described as live data.
+
 ## Branch and scope
 
 This prototype was developed in `/Users/aircan/Development/vimi-gui` on

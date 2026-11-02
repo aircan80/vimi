@@ -2,6 +2,13 @@
 
 ## Latest status — 2026-11-01
 
+- Live research UI replaces temporary list/text inspectors with compact Files,
+  Tables, Items and Creatures grids, real-data inspectors, table-record paging,
+  source navigation and asynchronous selected item icons. Filters are explicitly
+  page-scoped; file substring scans are bounded with continuation. Direct base
+  attributes are projected in Layer 6. Retail allocations/scaling are not yet
+  calculated; docs/item-attributes.md records that backend follow-up. Settings
+  work remains independent/uncommitted in the other worktree.
 - Overview restoration PR #54 was fast-forward merged at `e3f0e11` after all
   hosted checks passed, including Windows integration. Overview now uses the approved metric/explorer/retention layout with real
   readiness, progress and gate bindings. Unknown build byte size and build-local

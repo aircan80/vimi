@@ -12,10 +12,31 @@ three preparation milestones:
    missing or unsupported data does not masquerade as readable data.
 
 Files becomes usable at its milestone. Tables, Items and Creatures share one initial
-gate until the first table pass finishes. The approved Overview card/grid/storage layout now uses live preparation facts;
-unknown byte/name measurements remain explicit. Their real data browsers provide paged
-inspection; media inspection is explicitly on demand. These real browsers are a
-functional integration path, not the polished mock tooltip/3D rendering system.
+gate until the first table pass finishes. Overview and all four research areas now
+use the approved light/teal grid-and-inspector design with live data. Files has
+28px rows; Items has 36px quality-colored rows and a WoW-style tooltip. Tables
+supports schema-named, cursor-paged record grids. Creatures exposes classification,
+display/model references and source-table navigation.
+
+Search runs against the catalog asynchronously. File substring searches scan up
+to 2,000 records per request; an empty window can still offer Next page. Dropdown
+filters and sorting apply to the current result page, explicitly labeled. Class
+selection narrows the current page's subclass filter. Selection outside the current
+page remains in the inspector with a notice; an enrichment revision invalidates
+old details. Late replies cannot replace a newer search or mutate a closed view.
+
+Item attribute semantics live in Layer 6, not GUI controls. Direct flat base stats
+produce lines such as +20 Stamina with source provenance. Allocation-based Retail
+stats remain unresolved pending the build-specific calculator described in
+[Item attributes](../docs/item-attributes.md). Direct values do not include scaling,
+bonus lists, enchantments or a player context. Selected item icons decode through
+the image/file layers asynchronously; media failure does not replace local data.
+Icon memory is bounded to 100 entries per browser. Model/appearance metadata can
+be loaded independently; 3D rendering remains future work.
+
+Files shows the selected locale/variant's decoded size and local presence. The
+file-list contract does not expose encoded download size or every locale variant;
+the real screen does not reuse the mock's illustrative encoded/variant values.
 
 Community names/type hints enrich independently after Files/key bootstrap and never
 block table readiness. Readiness and activity are separate: phases have measured
@@ -235,3 +256,15 @@ Preparation UI captures below use authored fixtures, not live build measurements
 ![Metadata ready while Files prepares](../docs/images/preparation-metadata.png)
 
 ![Files ready, names enriching and Tables processing](../docs/images/preparation-tables.png)
+
+## Live browser UI verification
+
+`./gradlew :gui:researchBrowserDataTest` runs deterministic metadata-only search,
+paging, cursor-close and cancellation checks without JavaFX startup. It is included
+in `check` and hosted unit checks. Item attribute semantics have module JUnit tests.
+
+`./gradlew :gui:researchBrowserUiTest` requires a graphical environment and is run
+explicitly. It renders authored Files/Tables/Items/Creatures fixtures to
+`gui/build/ui-review/`, checks the layer-projected tooltip and row navigation, and
+verifies stale/closed request retirement. It is not part of headless hosted checks.
+Committed screenshots in `docs/images/research-*.png` show fixtures, not live data.
