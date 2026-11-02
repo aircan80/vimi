@@ -1,5 +1,26 @@
 # vimi development handoff
 
+## Latest status — 2026-11-01
+
+- Layers 1–5 are implemented in Java and merged into main, within the documented
+  pinned C# supported-format/resource bounds. Latest reviewed code: de5af49.
+- Parallel work completed: Files PR #46 (147b71b), asset formats PR #47 (3e501fb),
+  table formats PR #48 (de5af49), all fast-forward merges after green hosted checks.
+  Issues #44 and #45 are closed.
+- Full local validation: 933 cases across eight modules, zero failures/errors/skips,
+  plus 15 CI helper checks, formatting, Checkstyle, assembly and standalone public
+  consumer compilation. Hosted unit/integration checks passed Linux/macOS/Windows;
+  Linux crash and C# compatibility checks passed.
+- Native Windows machine certification, real-corpus throughput and release packaging
+  remain deferred. Java API/collection/page memory differences and the names-index
+  retention qualification are documented per module.
+- Next unimplemented backend scope is layer 6 game concepts; layer 7 application
+  wiring remains separate. The user has an independent mock JavaFX design session
+  in /Users/aircan/Development/vimi-gui on gui/design; do not modify its work.
+- The preexisting untracked root md file remains untouched. Earlier sections below
+  record historical milestones; use this section and the final integration notes
+  for current state.
+
 ## Agreed direction
 
 - Continue approved roadmap work and merge it autonomously after relevant checks
@@ -16,7 +37,7 @@
 - Preserve separate interfaces at every layer boundary, with in-memory fakes and shared contract tests.
 - Store I/O must be asynchronous and bounded so the GUI never blocks. Use `CompletableFuture` results, bounded worker executors, explicit cancellation, and JavaFX-thread dispatch only in the future GUI layer.
 
-## Active task
+## Original storage task (completed)
 
 Port the layer 1 object/data store from `../vibeminer/src/backend/VibeMiner.Objects`.
 It must remain disk-compatible with the C# implementation. The authoritative specification is
@@ -25,7 +46,7 @@ Scope includes packs, the SQLite index, per-key verification, reads/ranges, puts
 history, staging, recovery, verification, scan/rebuild, compaction, and read-only access.
 The higher-level generated-record store and network clients are separate work.
 
-## Current progress
+## Original baseline progress (historical)
 
 - A functioning initial Java layer 1 store now compiles and passes Linux tests.
 - Role interfaces isolate readers, writers, history, staging, verification and maintenance.
@@ -660,7 +681,7 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
   Gzip wrappers compare their verified decompressed original payload, and VMG1/VMIM
   retain byte-exact checks. Local full assets checks/interop pass after regressions.
 
-## Layer 5 tables final integration (active PR)
+## Layer 5 tables final integration (merged PR #48)
 
 - Files PR #46 merged fast-forward at 147b71b; assets PR #47 merged at 3e501fb
   after corrected hosted unit 41367153727, integration 41367153827 and compatibility
@@ -681,7 +702,15 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
   and still verifies identical generated identity/schema/rows/copies. Standalone javac
   public Files/Formats consumer compiles against only the eight project JARs. All
   formatting, Checkstyle, compiler warnings-as-errors and 15 CI helper checks pass.
-- Tables are awaiting hosted validation and automatic ff-only integration. Issue #45
-  closes only after that merge. Native Windows certification, real-corpus performance
+- Tables PR #48 merged fast-forward at de5af49 after all hosted checks passed;
+  issue #45 is closed. Native Windows certification, real-corpus performance
   and release packaging remain deferred. Layers 6–7 are future implementation scope.
   The separate gui/design worktree is the user's independent mock GUI session.
+
+## Final hosted table evidence
+
+- PR #48 unit: https://github.com/aircan80/vimi/actions/runs/41368067575
+- PR #48 integration: https://github.com/aircan80/vimi/actions/runs/41368067540
+- PR #48 compatibility: https://github.com/aircan80/vimi/actions/runs/41368067508
+- Corresponding push runs also pass. All three parallel component PRs are merged;
+  no Files/Formats integration work remains. Reference C# checkout is unchanged.
