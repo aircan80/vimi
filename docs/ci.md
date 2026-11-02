@@ -1,6 +1,6 @@
 # Continuous integration
 
-The `Unit tests` workflow runs `:object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test :formats-tables:test :concepts-core:test :concepts-items:test :concepts-creatures:test :concepts-effects:test :gui:prototypeTest :gui:backendTest :gui:openingTest` on GitHub-hosted
+The `Unit tests` workflow runs `:object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test :formats-tables:test :concepts-core:test :concepts-items:test :concepts-creatures:test :concepts-effects:test :gui:prototypeTest :gui:backendTest :gui:openingTest :gui:preparationTest :gui:localMetadataTest :gui:preparationStatusTest :gui:nativeWorkspaceTest` on GitHub-hosted
 `ubuntu-24.04`, `windows-2025` and `macos-15` runners. Each job installs a full
 Temurin Java 25 JDK matching the runner architecture. The fast tasks need neither
 native SQLite nor .NET nor the original C# checkout. Generated record tests use
@@ -11,7 +11,7 @@ enabled; formatting and native integration are separate checks.
 Run the same task locally with:
 
 ```sh
-./gradlew :object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test :formats-tables:test :concepts-core:test :concepts-items:test :concepts-creatures:test :concepts-effects:test :gui:prototypeTest :gui:backendTest :gui:openingTest --no-daemon --console=plain
+./gradlew :object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test :formats-tables:test :concepts-core:test :concepts-items:test :concepts-creatures:test :concepts-effects:test :gui:prototypeTest :gui:backendTest :gui:openingTest :gui:preparationTest :gui:localMetadataTest :gui:preparationStatusTest :gui:nativeWorkspaceTest --no-daemon --console=plain
 ```
 
 Use `gradlew.bat` in a Windows terminal. Hosted jobs use the checked-in Unix
@@ -267,3 +267,8 @@ hosted Linux, Windows and macOS unit/integration jobs continue.
 The layer 7 GUI also runs its headless fixture/adapter checks in the unit group.
 Integration checks build its platform-specific application distribution without
 launching JavaFX windows. JavaFX dependencies remain isolated in `gui/`.
+
+Preparation additionally runs a native authored end-to-end pipeline in
+`:gui:preparationIntegrationTest` via `:gui:check`. It verifies metadata publication
+before index acquisition, payload-free Files, protected-table accounting, retained
+lookups and offline reopen without community/network dependencies.

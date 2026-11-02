@@ -1,0 +1,556 @@
+package com.vimi.gui;
+
+import com.vibeminer.access.Cancellation;
+import com.vibeminer.access.ObjectSource;
+import com.vibeminer.builds.BuildTypes;
+import com.vibeminer.builds.Builds;
+import com.vibeminer.concepts.creatures.BuildCreatures;
+import com.vibeminer.concepts.creatures.CreaturesService;
+import com.vibeminer.concepts.effects.BuildItemEffects;
+import com.vibeminer.concepts.effects.ItemEffectsService;
+import com.vibeminer.concepts.items.BuildItems;
+import com.vibeminer.concepts.items.ItemsService;
+import com.vibeminer.files.BuildFiles;
+import com.vibeminer.files.FileSystem;
+import com.vibeminer.files.FileSystemOptions;
+import com.vibeminer.files.FileTypes;
+import com.vibeminer.files.names.CommunityFileNames;
+import com.vibeminer.files.names.FileNames;
+import com.vibeminer.files.names.LoadedNames;
+import com.vibeminer.files.names.NamesTypes;
+import com.vibeminer.formats.definitions.BundledDefinitions;
+import com.vibeminer.formats.definitions.TableDefinitions;
+import com.vibeminer.formats.generated.GeneratedTables;
+import com.vibeminer.formats.generated.TactKeyStatus;
+import com.vibeminer.formats.images.BlpImages;
+import com.vibeminer.formats.tables.BuildTables;
+import com.vibeminer.formats.tables.BuildTactKeys;
+import com.vibeminer.formats.tables.TableTypes;
+import com.vibeminer.formats.tables.TablesOptions;
+import com.vibeminer.formats.tables.TablesService;
+import com.vibeminer.generated.GeneratedStore;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+
+/** One retained build/locale workspace; public data methods never acquire media. */
+public final class NativePreparationWork implements BuildPreparation.Work {
+    private final BuildInfo info;
+    private final BuildTypes.BuildRef ref;
+    private final String locale;
+    private final Builds builds;
+    private final ObjectSource objects;
+    private final ObjectSource localObjects;
+    private final FileNames names;
+    private final GeneratedStore generated;
+    private final CommunityFileNames community;
+    private final FileSystem files;
+    private final AtomicReference<BuildTactKeys.KeySet> keys = new AtomicReference<>();
+    private final AtomicBoolean namesEnabled = new AtomicBoolean();
+    private final AtomicBoolean closed = new AtomicBoolean();
+    private com.vibeminer.builds.Build opened;
+    private volatile BuildFiles fileHandle;
+    private final Object handlesGate = new Object();
+
+    private record Workspace(
+            BuildTables tables,
+            TablesService service,
+            BuildItems items,
+            BuildCreatures creatures,
+            BuildItemEffects effects,
+            long revision) {}
+
+    private volatile Workspace published = new Workspace(null, null, null, null, null, 0);
+    private Workspace pending;
+    private boolean pendingWarmed;
+    private final List<Workspace> retired = new ArrayList<>();
+    private final List<CompletableFuture<Void>> retirementJobs = new ArrayList<>();
+    private final java.util.Set<Workspace> retiring =
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+
+    public NativePreparationWork(
+            BuildInfo info,
+            BuildInfo.RegionEvidence source,
+            String locale,
+            Builds builds,
+            ObjectSource objects,
+            GeneratedStore generated,
+            CommunityFileNames community,
+            ObjectSource localObjects) {
+        this.info = info;
+        this.ref =
+                new BuildTypes.BuildRef(
+                        info.product(), info.config(), source.cdnConfig(), source.region());
+        this.localObjects = java.util.Objects.requireNonNull(localObjects);
+        if (objects == localObjects)
+            throw new IllegalArgumentException("Prepared tables require an isolated local source");
+        this.locale = locale;
+        this.builds = builds;
+        this.objects = objects;
+        this.generated = generated;
+        this.community = community;
+        names =
+                new FileNames() {
+                    public CompletableFuture<NamesTypes.FileNamesStatus> status(
+                            Cancellation token) {
+                        return namesEnabled.get()
+                                ? community.status(token)
+                                : FileNames.OFF.status(token);
+                    }
+
+                    public CompletableFuture<NamesTypes.FileNamesStatus> update(
+                            boolean force, Cancellation token) {
+                        return namesEnabled.get()
+                                ? community.update(force, token)
+                                : FileNames.OFF.update(force, token);
+                    }
+
+                    public CompletableFuture<LoadedNames> current(Cancellation token) {
+                        return namesEnabled.get()
+                                ? community.current(token)
+                                : FileNames.OFF.current(token);
+                    }
+                };
+        var defaults = FileSystemOptions.defaults();
+        files =
+                new FileSystem(
+                        builds,
+                        objects,
+                        new FileSystemOptions(
+                                defaults.presenceBatch(),
+                                defaults.progressInterval(),
+                                defaults.clock(),
+                                defaults.maxReadBytes(),
+                                name -> {
+                                    var available = keys.get();
+                                    return available == null ? null : available.find(name);
+                                },
+                                names));
+    }
+
+    public BuildFiles filesHandle() {
+        return fileHandle;
+    }
+
+    public BuildTables tablesHandle() {
+        return published.tables();
+    }
+
+    public BuildItems itemsHandle() {
+        return published.items();
+    }
+
+    public BuildCreatures creaturesHandle() {
+        return published.creatures();
+    }
+
+    public BuildItemEffects effectsHandle() {
+        return published.effects();
+    }
+
+    public String locale() {
+        return locale;
+    }
+
+    public long revision() {
+        return published.revision();
+    }
+
+    @Override
+    public BuildTypes.BuildMetadata metadata(Cancellation token) {
+        var result = builds.metadata(ref, token).join();
+        if (result.state() != BuildTypes.BuildOpenState.OPEN || result.metadata() == null)
+            throw new IllegalStateException(
+                    "Metadata " + result.state() + ": " + result.code() + " " + result.message());
+        if (!result.metadata().locales().contains(locale))
+            throw new IllegalStateException("Locale is not in this build: " + locale);
+        return result.metadata();
+    }
+
+    @Override
+    public BuildPreparation.FilesSummary files(
+            Consumer<BuildPreparation.Counter> progress, Cancellation token) {
+        var result = builds.open(ref, token).join();
+        if (result.state() != BuildTypes.BuildOpenState.OPEN || result.opened() == null)
+            throw new IllegalStateException(
+                    "Files " + result.state() + ": " + result.code() + " " + result.message());
+        opened = result.opened();
+        long total = 0;
+        for (long ignored : opened.fileDataIds(locale)) {
+            token.check();
+            total++;
+        }
+        progress.accept(new BuildPreparation.Counter(0, total, "files"));
+        if (fileHandle == null) {
+            var filesOpen = files.forBuild(ref, locale, token).join();
+            if (filesOpen.state() != FileTypes.FilesOpenState.OPEN || filesOpen.files() == null)
+                throw new IllegalStateException(
+                        "File catalog " + filesOpen.state() + ": " + filesOpen.message());
+            fileHandle = filesOpen.files();
+        }
+        long count = 0, stored = 0, unknown = 0;
+        try (var cursor = fileHandle.listMetadata(FileTypes.FileFilter.ALL, token)) {
+            for (; ; ) {
+                var page = cursor.next(1000, token).join();
+                if (page.isEmpty()) break;
+                for (var file : page) {
+                    count++;
+                    if (file.storage() == FileTypes.FileStorage.STORED) stored++;
+                    if (file.size() == null) unknown++;
+                }
+                progress.accept(
+                        new BuildPreparation.Counter(count, Math.max(total, count), "files"));
+            }
+        }
+        return new BuildPreparation.FilesSummary(count, stored, unknown);
+    }
+
+    private TablesService tablesService(Cancellation token, boolean onlinePreparation) {
+        var definitions = new TableDefinitions(BundledDefinitions.open(token).join(), null, null);
+        var available = keys.get();
+        var status = available == null ? TactKeyStatus.NONE : available.status();
+        var defaults =
+                new TablesOptions(
+                        (build, cancellation) -> {
+                            cancellation.check();
+                            return CompletableFuture.completedFuture(info.version());
+                        });
+        var options =
+                new TablesOptions(
+                                defaults.buildVersion(),
+                                defaults.limits(),
+                                build -> status,
+                                defaults.scheduler(),
+                                defaults.maxScanRows(),
+                                defaults.maxReferenceSources(),
+                                defaults.maxReferenceScanRows())
+                        .withLocalDefinitionsOnly();
+        // Keep decoder keys and generated-table fingerprints from the same immutable snapshot.
+        var fileDefaults = FileSystemOptions.defaults();
+        var retained =
+                java.util.Objects.requireNonNull(opened, "Files must be prepared before tables");
+        Builds pinnedBuilds =
+                (requested, cancellation) -> {
+                    cancellation.check();
+                    if (!ref.equals(requested))
+                        return CompletableFuture.failedFuture(
+                                new IllegalArgumentException("Different build context"));
+                    return CompletableFuture.completedFuture(
+                            new BuildTypes.BuildOpenResult(
+                                    ref,
+                                    BuildTypes.BuildOpenState.OPEN,
+                                    retained,
+                                    null,
+                                    null,
+                                    null,
+                                    null));
+                };
+        ObjectSource tableObjects =
+                onlinePreparation ? objects : new LocalMetadataSource(localObjects);
+        var pinnedFiles =
+                new FileSystem(
+                        pinnedBuilds,
+                        tableObjects,
+                        new FileSystemOptions(
+                                fileDefaults.presenceBatch(),
+                                fileDefaults.progressInterval(),
+                                fileDefaults.clock(),
+                                fileDefaults.maxReadBytes(),
+                                name -> available == null ? null : available.find(name),
+                                names));
+        return new TablesService(pinnedFiles, definitions, new GeneratedTables(generated), options);
+    }
+
+    private BuildTables openTables(TablesService service, Cancellation token) {
+        var open = service.forBuild(ref, locale, token).join();
+        if (open.state() != FileTypes.FilesOpenState.OPEN || open.tables() == null)
+            throw new IllegalStateException(
+                    "Table context " + open.state() + ": " + open.message());
+        return open.tables();
+    }
+
+    @Override
+    public List<String> keys(Cancellation token) {
+        var issues = new ArrayList<String>();
+        try (var bootstrap = openTables(tablesService(token, true), token)) {
+            var found = BuildTactKeys.load(bootstrap, TableTypes.Priority.BACKGROUND, token).join();
+            if (found.keyTable().outcome() == BuildTactKeys.Outcome.READ
+                    && found.lookupTable().outcome() == BuildTactKeys.Outcome.READ) {
+                token.check();
+                keys.set(found);
+            }
+            if (found.keyTable().outcome() != BuildTactKeys.Outcome.READ)
+                issues.add("TactKey: " + found.keyTable().outcome());
+            if (found.lookupTable().outcome() != BuildTactKeys.Outcome.READ)
+                issues.add("TactKeyLookup: " + found.lookupTable().outcome());
+        }
+        return List.copyOf(issues);
+    }
+
+    @Override
+    public TableTypes.PreloadResult tables(
+            Consumer<TableTypes.PreloadProgress> progress, Cancellation token) {
+        abortPending();
+        TableTypes.PreloadResult prepared;
+        try (var preparing = openTables(tablesService(token, true), token)) {
+            prepared = preparing.prepareKnown(progress, token).join();
+        }
+        token.check();
+        if (prepared.outcome() != TableTypes.PreloadOutcome.COMPLETED) return prepared;
+        var localService = tablesService(token, false);
+        var next = openTables(localService, token);
+        boolean staged = false;
+        try {
+            synchronized (handlesGate) {
+                token.check();
+                if (closed.get()) throw new java.util.concurrent.CancellationException();
+                pending = new Workspace(next, localService, null, null, null, 0);
+                pendingWarmed = false;
+                staged = true;
+            }
+            return prepared;
+        } finally {
+            if (!staged) next.close();
+        }
+    }
+
+    @Override
+    public List<String> warm(Cancellation token) {
+        final Workspace staged;
+        synchronized (handlesGate) {
+            staged = pending;
+        }
+        if (staged == null || staged.service() == null)
+            throw new IllegalStateException("Table context is not staged");
+        var issues = new ArrayList<String>();
+        var images = new BlpImages(generated);
+        BuildItems nextItems = null;
+        BuildCreatures nextCreatures = null;
+        BuildItemEffects nextEffects = null;
+        boolean ownedByPending = false;
+        try {
+            token.check();
+            var itemOpen =
+                    new ItemsService(staged.service(), files, images)
+                            .forBuild(ref, locale, token)
+                            .join();
+            nextItems = itemOpen.items();
+            if (nextItems == null) issues.add("Items: " + itemOpen.code());
+            else appendWarm(issues, nextItems.warmup(TableTypes.Priority.BACKGROUND, token).join());
+            token.check();
+            var creatureOpen =
+                    new CreaturesService(staged.service(), files, images)
+                            .forBuild(ref, locale, token)
+                            .join();
+            nextCreatures = creatureOpen.creatures();
+            if (nextCreatures == null) issues.add("Creatures: " + creatureOpen.code());
+            else
+                appendWarm(
+                        issues, nextCreatures.warmup(TableTypes.Priority.BACKGROUND, token).join());
+            token.check();
+            var effectOpen =
+                    new ItemEffectsService(staged.service()).forBuild(ref, locale, token).join();
+            nextEffects = effectOpen.effects();
+            if (nextEffects == null) issues.add("Effects: " + effectOpen.code());
+            else
+                appendWarm(
+                        issues, nextEffects.warmup(TableTypes.Priority.BACKGROUND, token).join());
+            synchronized (handlesGate) {
+                token.check();
+                if (closed.get() || pending != staged)
+                    throw new java.util.concurrent.CancellationException();
+                pending =
+                        new Workspace(
+                                staged.tables(),
+                                staged.service(),
+                                nextItems,
+                                nextCreatures,
+                                nextEffects,
+                                0);
+                pendingWarmed = true;
+                ownedByPending = true;
+            }
+            return List.copyOf(issues);
+        } catch (Throwable failure) {
+            if (!ownedByPending) {
+                var loose = new Workspace(null, null, nextItems, nextCreatures, nextEffects, 0);
+                try {
+                    closeWorkspace(loose);
+                } catch (Throwable cleanupFailure) {
+                    synchronized (handlesGate) {
+                        retired.add(loose);
+                    }
+                    failure.addSuppressed(cleanupFailure);
+                }
+            }
+            try {
+                abortPending();
+            } catch (Throwable cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
+            throw failure;
+        }
+    }
+
+    /** Called under the preparation job's commit lock: no I/O, callbacks or thread startup. */
+    @Override
+    public void commit(Cancellation token) {
+        synchronized (handlesGate) {
+            token.check();
+            if (closed.get()) throw new java.util.concurrent.CancellationException();
+            if (pending == null || !pendingWarmed)
+                throw new IllegalStateException("Lookups are not staged");
+            var next =
+                    new Workspace(
+                            pending.tables(),
+                            pending.service(),
+                            pending.items(),
+                            pending.creatures(),
+                            pending.effects(),
+                            published.revision() + 1);
+            if (published.tables() != null) retired.add(published);
+            published = next;
+            pending = null;
+            pendingWarmed = false;
+        }
+    }
+
+    @Override
+    public void abortPending() {
+        Workspace abandoned;
+        synchronized (handlesGate) {
+            abandoned = pending;
+            pending = null;
+            pendingWarmed = false;
+        }
+        try {
+            closeWorkspace(abandoned);
+        } catch (Throwable failure) {
+            synchronized (handlesGate) {
+                if (abandoned != null) retired.add(abandoned);
+            }
+            throw failure;
+        }
+    }
+
+    /** Retire old accepted reads off the commit lock. Failure keeps ownership until final close. */
+    @Override
+    public void retireCommitted() {
+        final List<Workspace> batch;
+        final CompletableFuture<Void> done;
+        synchronized (handlesGate) {
+            if (retired.isEmpty() || closed.get()) return;
+            batch = retired.stream().filter(workspace -> !retiring.contains(workspace)).toList();
+            if (batch.isEmpty()) return;
+            retiring.addAll(batch);
+            done = new CompletableFuture<>();
+            retirementJobs.add(done);
+        }
+        try {
+            Thread.startVirtualThread(
+                    () -> {
+                        Throwable failure = null;
+                        for (var workspace : batch) {
+                            try {
+                                closeWorkspace(workspace);
+                                synchronized (handlesGate) {
+                                    retired.removeIf(value -> value == workspace);
+                                }
+                            } catch (Throwable error) {
+                                if (failure == null) failure = error;
+                                else failure.addSuppressed(error);
+                            }
+                        }
+                        // Failed workspaces remain in retired and are retried by final close.
+                        synchronized (handlesGate) {
+                            retiring.removeAll(batch);
+                            retirementJobs.remove(done);
+                        }
+                        done.complete(null);
+                    });
+        } catch (Throwable startFailure) {
+            synchronized (handlesGate) {
+                retiring.removeAll(batch);
+                retirementJobs.remove(done);
+            }
+            done.complete(null);
+        }
+    }
+
+    private static void closeWorkspace(Workspace workspace) {
+        if (workspace != null)
+            closeResources(
+                    workspace.items(),
+                    workspace.creatures(),
+                    workspace.effects(),
+                    workspace.tables());
+    }
+
+    private static void appendWarm(
+            List<String> issues, com.vibeminer.concepts.core.ConceptWarmup.Result result) {
+        for (var entry : result.entries())
+            if (!entry.ready())
+                issues.add(entry.table() + ": " + entry.code() + " " + entry.message());
+    }
+
+    private static void closeResources(AutoCloseable... resources) {
+        Throwable first = null;
+        for (var resource : resources) {
+            if (resource == null) continue;
+            try {
+                resource.close();
+            } catch (Throwable failure) {
+                if (first == null) first = failure;
+                else first.addSuppressed(failure);
+            }
+        }
+        if (first != null) throw new java.util.concurrent.CompletionException(first);
+    }
+
+    @Override
+    public void enrichNames(Cancellation token) {
+        var status = community.update(false, token).join();
+        token.check();
+        if (status.state() == NamesTypes.FileNamesState.READY) namesEnabled.set(true);
+        if (status.state() == NamesTypes.FileNamesState.FAILED)
+            throw new IllegalStateException(status.code() + " " + status.message());
+    }
+
+    @Override
+    public void close() {
+        final List<CompletableFuture<Void>> waiting;
+        synchronized (handlesGate) {
+            if (!closed.compareAndSet(false, true)) return;
+            waiting = List.copyOf(retirementJobs);
+        }
+        CompletableFuture.allOf(waiting.toArray(CompletableFuture[]::new)).join();
+        final List<Workspace> owned = new ArrayList<>();
+        synchronized (handlesGate) {
+            if (pending != null) owned.add(pending);
+            owned.add(published);
+            owned.addAll(retired);
+            pending = null;
+            published = new Workspace(null, null, null, null, null, published.revision());
+            retired.clear();
+            retirementJobs.clear();
+        }
+        Throwable failure = null;
+        for (var workspace : owned)
+            try {
+                closeWorkspace(workspace);
+            } catch (Throwable error) {
+                if (failure == null) failure = error;
+                else failure.addSuppressed(error);
+            }
+        try {
+            closeResources(fileHandle);
+        } catch (Throwable error) {
+            if (failure == null) failure = error;
+            else failure.addSuppressed(error);
+        }
+        if (failure != null) throw new java.util.concurrent.CompletionException(failure);
+    }
+}

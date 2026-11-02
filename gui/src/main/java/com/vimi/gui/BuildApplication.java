@@ -48,9 +48,12 @@ public final class BuildApplication {
                 ObjectStore objects = null;
                 NetworkClients network = null;
                 CachingObjectSource source = null;
+                CachingObjectSource localSource = null;
                 Catalog catalog = null;
                 BuildOpener opener = null;
                 BuildOpening opening = null;
+                BuildPreparation preparation = null;
+                com.vibeminer.generated.DiskGeneratedStore generated = null;
                 BackendBuildService service = null;
                 try {
                     token.check();
@@ -58,11 +61,22 @@ public final class BuildApplication {
                     token.check();
                     network = new NetworkClients();
                     source = new CachingObjectSource(objects,objects,objects,null,network,
-                            List.of(ObservationAdapters.versions(network)));
+                            List.of(ObservationAdapters.versions(network), ObservationAdapters.listfile(network), ObservationAdapters.definitions(network)));
+                    localSource = CachingObjectSource.localOnly(objects,objects);
                     catalog = Catalog.open(source,directory.resolve("catalog.sqlite"),new Catalog.Options(),token).join();
                     token.check();
                     opener = new BuildOpener(source);
                     opening = new BuildOpening(opener);
+                    generated = com.vibeminer.generated.DiskGeneratedStore.open(directory.resolve("generated")).join();
+                    var ownedGenerated = generated;
+                    var workspaceOpener = opener;
+                    var workspaceSource = source;
+                    var workspaceLocalSource = localSource;
+                    var community = new com.vibeminer.files.names.CommunityFileNames(source,generated,
+                            cancellation -> { cancellation.check(); return CompletableFuture.completedFuture(true); });
+                    preparation = new BuildPreparation((build,region,locale) ->
+                            new NativePreparationWork(build,region,locale,workspaceOpener,workspaceSource,ownedGenerated,community,workspaceLocalSource));
+                    var ownedPreparation = preparation;
                     var ownedOpener = opener;
                     var ownedOpening = opening;
                     var ownedObjects = objects;
@@ -71,20 +85,23 @@ public final class BuildApplication {
                     var ownedCatalog = catalog;
                     service = new BackendBuildService(catalog,
                             cancellation -> discoverProducts(ownedSource,cancellation),
-                            () -> closeAll(List.of(ownedOpening::closeAsync,ownedOpener::closeAsync,
-                                    ownedCatalog::closeAsync,ownedSource::closeAsync,
-                                    ownedNetwork::closeAsync,ownedObjects::closeAsync))).withOpening(opening);
+                            () -> closeAll(List.of(ownedPreparation::closeAsync,ownedOpening::closeAsync,ownedOpener::closeAsync,
+                                    ownedCatalog::closeAsync,ownedSource::closeAsync,workspaceLocalSource::closeAsync,
+                                    ownedNetwork::closeAsync,ownedGenerated::closeAsync,ownedObjects::closeAsync))).withOpening(opening).withPreparation(preparation);
                     if (!result.complete(service)) service.closeAsync().join();
                 } catch (Throwable failure) {
                     try {
                         if (service != null) service.closeAsync().join();
                         else {
                             List<Supplier<CompletableFuture<Void>>> close = new ArrayList<>();
+                            if (preparation != null) close.add(preparation::closeAsync);
                             if (opening != null) close.add(opening::closeAsync);
                             if (opener != null) close.add(opener::closeAsync);
                             if (catalog != null) close.add(catalog::closeAsync);
                             if (source != null) close.add(source::closeAsync);
+                            if (localSource != null) close.add(localSource::closeAsync);
                             if (network != null) close.add(network::closeAsync);
+                            if (generated != null) close.add(generated::closeAsync);
                             if (objects != null) close.add(objects::closeAsync);
                             closeAll(close).join();
                         }

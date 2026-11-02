@@ -15,6 +15,12 @@ def classifier = platform + (arch in ['aarch64', 'arm64'] ? '-aarch64' : '')
 
 dependencies {
     implementation project(':builds')
+    implementation project(':formats-tables')
+    implementation project(':concepts-items')
+    implementation project(':concepts-creatures')
+    implementation project(':concepts-effects')
+    testImplementation testFixtures(project(':builds'))
+    testImplementation testFixtures(project(':files'))
     ['base', 'graphics', 'controls'].each {
         implementation "org.openjfx:javafx-${it}:25.0.1:${classifier}"
     }
@@ -76,3 +82,38 @@ tasks.register('openingTest', JavaExec) {
     mainClass = 'com.vimi.gui.BuildOpeningTest'
 }
 check.dependsOn openingTest
+
+tasks.register('preparationTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.BuildPreparationTest'
+}
+check.dependsOn preparationTest
+
+tasks.register('localMetadataTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.LocalMetadataSourceTest'
+}
+check.dependsOn localMetadataTest
+
+tasks.register('preparationIntegrationTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.PreparationPipelineIntegrationTest'
+}
+check.dependsOn preparationIntegrationTest
+
+tasks.register('preparationStatusTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.PreparationStatusTest'
+}
+check.dependsOn preparationStatusTest
+
+tasks.register('nativeWorkspaceTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.NativeWorkspaceCommitTest'
+}
+check.dependsOn nativeWorkspaceTest

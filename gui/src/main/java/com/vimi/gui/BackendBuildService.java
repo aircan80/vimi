@@ -18,6 +18,9 @@ import java.util.function.Supplier;
 public final class BackendBuildService implements BuildService {
     private final BuildCatalog catalog;
     private BuildOpening opening;
+    private BuildPreparation preparation;
+    public BackendBuildService withPreparation(BuildPreparation value) { preparation = value; return this; }
+    @Override public BuildPreparation preparation() { return preparation; }
     public BackendBuildService withOpening(BuildOpening value) { opening = value; return this; }
     @Override public BuildOpening opening() { return opening; }
     private final Function<Cancellation, CompletableFuture<List<String>>> discovered;

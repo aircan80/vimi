@@ -1,12 +1,27 @@
 # Vimi JavaFX application
 
-The first connected screen is **Builds**: offline history listing, explicit published
-version refresh, product/status/search filters, selection and regional provenance.
-Real opening uses the selected regional CDN configuration and the backend build
-opener. Its popup offers Hide (continue in background) and Cancel opening. No
-percentage is invented. Successful opens show authenticated metadata; later
-Overview measurements and research screens remain unconnected. Download coverage
-remains explicitly unmeasured.
+Default mode uses real build data. Opening a selected build/region/locale now follows
+three preparation milestones:
+
+1. **Metadata ready:** authenticated configurations, ENCODING and ROOT publish
+   Overview before archive indexes finish.
+2. **Files ready:** resolution indexes and locale-scoped FileDataIDs, available sizes
+   and local presence are assessed without reading file payloads or requiring names.
+3. **Tables ready:** key-table bootstrap, known-table processing and no-media lookup
+   warmup complete. Every known table has an explicit outcome; protected, partial,
+   missing or unsupported data does not masquerade as readable data.
+
+Files becomes usable at its milestone. Tables, Items and Creatures share one initial
+gate until the first table pass finishes. Their real data browsers provide paged
+inspection; media inspection is explicitly on demand. These real browsers are a
+functional integration path, not the polished mock tooltip/3D rendering system.
+
+Community names/type hints enrich independently after Files/key bootstrap and never
+block table readiness. Readiness and activity are separate: phases have measured
+file/table counters when known, otherwise indeterminate activity. Menu indicators,
+Overview and the persistent View entry remain informative when the popup is hidden.
+Later enrichment retains the previous complete table/concept workspace until the
+replacement commits atomically. Failed/canceled passes preserve that snapshot.
 
 The original approved design remains available with `--mock`, including preparation,
 Overview, Files, Tables, Items and Creatures. Mock mode uses authored fixtures and
@@ -35,7 +50,7 @@ use `JAVA_OPTS` to supply `-Dvibeminer.sqlite.library=/path/to/library` and
 
 Default data lives under `~/Library/Application Support/vimi` on macOS,
 `%LOCALAPPDATA%/vimi` on Windows and `$XDG_DATA_HOME/vimi` (or
-`~/.local/share/vimi`) on Linux. It contains `objects/` and the disposable
+`~/.local/share/vimi`) on Linux. It contains `objects/`, a separate `generated/` derived store and the disposable
 `catalog.sqlite` projection. No existing C# data is imported automatically.
 Startup reads saved history without network requests; **Refresh builds** observes
 published metadata and persists it through the existing backend. This does not
@@ -181,19 +196,41 @@ Eight unmodified Blizzard sample icon JPEGs are bundled for offline display;
 provenance is in `src/main/resources/items/README.md`. No runtime icon downloads,
 game-byte decoding, external APIs or backend connections are introduced.
 
-## Real opening
+## Preparation and enrichment behavior
 
-The source selector defaults to US when observed, preferring current US evidence.
-If US is absent, it uses another observed region rather than inventing a route.
+The source selector defaults to an observed US entry, preferring current US evidence.
+Locale is selected separately (default enUS); unsupported build/locale choices are
+reported explicitly. Hide continues the complete pipeline without surprise navigation.
+Cancel preparation stops current work, retaining its last completed milestone.
 
-Opening may fetch and persist authenticated configurations, encoding, ROOT and
-indexes; it is not a Download all operation. One opening is admitted at a time.
-Cancellation retains the admission slot until lower work retires; failures leave
-the catalog usable and permit explicit retry. Hiding the popup prevents automatic
-navigation on completion; its activity button returns to the result. Closing the
-application cancels/drains opening before releasing stores and network resources.
-`openingTest` exercises deterministic provider/cancellation/lifecycle contracts.
+**Retry / enrich** starts a new generation using valid local data. Reopening the app
+restores metadata/index state from stored inputs and rechecks generated artifacts;
+it does not trust a persisted boolean or require CDN reads when local inputs suffice.
+The current configured table catalog/definitions are the pinned bundled WoWDBDefs
+snapshot. Community names refresh through the existing cache/update policy; keys
+come from that build's readable Tact tables. Additional community key/catalog
+providers remain future adapters, not an implemented remote update service.
 
-While opening is hidden, a persistent animated activity indicator and elapsed
-time remain beside its View action. Elapsed time is not a percentage or ETA;
-the backend opener reports only terminal results.
+The preparation table ledger covers known nonzero FileDataIDs and excludes unknown
+tables from scope. Absent build/locale tables are recorded separately. Readable
+generated rows persist locally; prepared table queries use an isolated local-only
+source with pinned build/key/definition context. Missing local artifacts produce
+explicit unavailable/repair results instead of silently downloading in a detail view.
+Media operations keep the online Files path.
+
+Up to four build/locale contexts are retained; one initial preparation/enrichment
+pipeline runs at a time. Previously prepared contexts remain browsable. Close build
+releases its context asynchronously; app shutdown cancels and drains all contexts
+and optional enrichment before closing storage.
+
+Headless checks include lifecycle/generation/publication contracts, the readiness
+activity matrix and isolated local-only reads. Native authored-fixture checks verify
+early metadata before indexes, protected table outcomes, zero media acquisition or
+header inspection, atomic retained workspaces and offline reopen. Broader interactive
+UI/platform/accessibility and native release packaging qualification remain separate.
+
+Preparation UI captures below use authored fixtures, not live build measurements:
+
+![Metadata ready while Files prepares](../docs/images/preparation-metadata.png)
+
+![Files ready, names enriching and Tables processing](../docs/images/preparation-tables.png)

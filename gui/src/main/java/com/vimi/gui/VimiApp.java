@@ -31,6 +31,11 @@ public final class VimiApp extends Application {
     private BuildService service;
     private java.util.concurrent.CompletableFuture<? extends BuildService> startup;
     private boolean closing;
+    private BuildPreparation.Job preparationFocus;
+    private PreparationPane preparationPane;
+    private final Map<String,String> preparationLocales = new HashMap<>();
+    private final javafx.animation.Timeline preparationClock = new javafx.animation.Timeline(
+            new javafx.animation.KeyFrame(javafx.util.Duration.millis(250),event -> updatePreparationActivity()));
     private boolean loading;
     private BuildInfo realOpeningBuild;
     private String realOpeningRegion;
@@ -149,9 +154,17 @@ public final class VimiApp extends Application {
         openingSpinner.setManaged(false);
         openingSpinner.setAccessibleText("Build opening is active");
         openingClock.setCycleCount(javafx.animation.Animation.INDEFINITE);
+        openingActivity.setMinWidth(0);
+        openingActivity.setMaxWidth(650);
+        openingActivity.setTextOverrun(javafx.scene.control.OverrunStyle.ELLIPSIS);
         openingActivity.setVisible(false);
         openingActivity.setManaged(false);
         openingActivity.setOnAction(event -> {
+            if (service != null && service.preparation() != null && preparationFocus != null) {
+                if (preparationFocus.snapshot().ready() != BuildPreparation.Ready.NOT_PREPARED) showPreparedWorkspace(preparationFocus);
+                else showPreparationOpening(preparationFocus);
+                return;
+            }
             if (realOpeningActive) showRealOpening();
             else if (realOpeningBuild != null) {
                 var ready = realOpened.get(realOpeningBuild.identity());
@@ -212,6 +225,8 @@ public final class VimiApp extends Application {
                 return;
             }
             service = result;
+            preparationClock.setCycleCount(javafx.animation.Animation.INDEFINITE);
+            preparationClock.play();
             loadBuilds(false);
         }));
         stage.show();
@@ -299,6 +314,7 @@ public final class VimiApp extends Application {
     }
 
     private void showBuilds() {
+        if (preparationPane != null) { preparationPane.close(); preparationPane = null; }
         navigationGeneration++;
         status.setText(service == null ? "Opening local build history…" : service.status() + " · " + builds.size() + " builds");
         root.setTop(header(null, null));
@@ -372,6 +388,11 @@ public final class VimiApp extends Application {
             regions.setAccessibleText("Build source region");
             regions.setMinWidth(0);
             regions.setMaxWidth(Double.MAX_VALUE);
+            var locale = new ComboBox<String>();
+            com.vibeminer.formats.definitions.WowLocale.ALL.forEach(value -> locale.getItems().add(value.code()));
+            locale.setValue(preparationLocales.getOrDefault(b.identity(),"enUS"));
+            locale.setAccessibleText("Build locale");
+            locale.valueProperty().addListener((observable,before,after) -> preparationLocales.put(b.identity(),after));
             Button open = new Button(realOpened.containsKey(b.identity()) ? "View opened build" : "Open build");
             open.getStyleClass().addAll("primary", "open-build");
             open.setMaxWidth(Double.MAX_VALUE);
@@ -379,18 +400,28 @@ public final class VimiApp extends Application {
             Runnable updateOpenLabel = () -> {
                 var ready = realOpened.get(b.identity());
                 var choice = regions.getValue();
+                if (service.preparation() != null && choice != null) {
+                    var job = service.preparation().find(b,choice,locale.getValue());
+                    open.setText(job != null && job.snapshot().ready() != BuildPreparation.Ready.NOT_PREPARED ? "View build" : "Open build");
+                    return;
+                }
                 open.setText(ready != null && choice != null && ready.build().region().equals(choice.region())
                         && ready.build().cdnConfig().equals(choice.cdnConfig()) ? "View opened build" : "Open build");
             };
             regions.valueProperty().addListener((observable, before, after) -> updateOpenLabel.run());
+            locale.valueProperty().addListener((observable,before,after) -> updateOpenLabel.run());
             updateOpenLabel.run();
             open.setOnAction(event -> {
+                if (service.preparation() != null) {
+                    startPreparation(b,regions.getValue(),locale.getValue());
+                    return;
+                }
                 var ready = realOpened.get(b.identity());
                 if (ready != null && ready.build().region().equals(regions.getValue().region()) && ready.build().cdnConfig().equals(regions.getValue().cdnConfig())) showOpenedBuild(b, ready);
                 else startRealOpening(b, regions.getValue());
             });
-            inspector.getChildren().addAll(label("SOURCE REGION", "eyebrow"), regions, open,
-                    label("Opening reads authenticated configurations, encoding, ROOT and indexes. Download coverage is not measured by this operation.", "muted"));
+            inspector.getChildren().addAll(label("SOURCE REGION", "eyebrow"), regions, label("LOCALE", "eyebrow"), locale, open,
+                    label("Overview opens after metadata. Files and known table data prepare in the background; community names and media do not block readiness.", "muted"));
             if (openingProblems.containsKey(b.identity())) inspector.getChildren().add(notice("Opening problem", openingProblems.get(b.identity())));
             return;
         }
@@ -421,6 +452,96 @@ public final class VimiApp extends Application {
         inspector.getChildren().addAll(label("DOWNLOAD SOURCE · MOCK", "eyebrow"), region, open, previewOpening, preparationBusy,
                 label(community ? "Opening requires verified build metadata and a source route. Community history alone does not provide these." : "First opens simulate metadata preparation. No content is fetched or stored.", "muted"));
         updatePreparationControls();
+    }
+
+    private void startPreparation(BuildInfo build, BuildInfo.RegionEvidence source, String locale) {
+        try {
+            var existing = service.preparation().find(build,source,locale);
+            if (existing != null && existing.snapshot().ready() != BuildPreparation.Ready.NOT_PREPARED) {
+                preparationFocus = existing; showPreparedWorkspace(existing); return;
+            }
+            var job = service.preparation().start(build,source,locale);
+            preparationFocus = job;
+            showPreparationOpening(job);
+        } catch (RuntimeException error) { status.setText(problem(error)); }
+    }
+
+    private void showPreparationOpening(BuildPreparation.Job job) {
+        if (job.snapshot().ready() != BuildPreparation.Ready.NOT_PREPARED) { showPreparedWorkspace(job); return; }
+        if (!job.snapshot().busy()) {
+            status.setText("Metadata unavailable: " + job.snapshot().problem()); return;
+        }
+        if (realOpeningDialog != null && realOpeningDialog.isShowing()) return;
+        var dialog = new javafx.scene.control.Dialog<Void>();
+        realOpeningDialog = dialog;
+        dialog.initOwner(root.getScene().getWindow());
+        dialog.setTitle("Preparing build metadata");
+        dialog.setHeaderText(job.build().version() + " · " + job.source().region().toUpperCase(Locale.ROOT) + " · " + job.locale());
+        var spinner = new javafx.scene.control.ProgressIndicator(-1); spinner.setPrefSize(28,28);
+        dialog.getDialogPane().setContent(new VBox(12,spinner,label("Verifying configurations, ENCODING and ROOT…", "value"),
+                label("Files and Tables continue in the background after metadata is ready. Hide keeps work running.", "muted")));
+        var hide = new javafx.scene.control.ButtonType("Hide",javafx.scene.control.ButtonBar.ButtonData.CANCEL_CLOSE);
+        var cancel = new javafx.scene.control.ButtonType("Cancel preparation",javafx.scene.control.ButtonBar.ButtonData.LEFT);
+        dialog.getDialogPane().getButtonTypes().addAll(hide,cancel);
+        var cancelButton = (Button)dialog.getDialogPane().lookupButton(cancel);
+        cancelButton.addEventFilter(javafx.event.ActionEvent.ACTION,event -> {
+            event.consume(); cancelButton.setDisable(true); job.cancel(); dialog.setHeaderText("Stopping…");
+        });
+        long navigation = navigationGeneration;
+        job.metadataReady().whenComplete((value,error) -> Platform.runLater(() -> {
+            if (closing) return;
+            boolean attached = realOpeningDialog == dialog && dialog.isShowing();
+            dialog.close(); if (realOpeningDialog == dialog) realOpeningDialog = null;
+            if (error != null) {
+                status.setText("Metadata unavailable: " + job.snapshot().problem());
+                openingProblems.put(job.build().identity(),job.snapshot().problem());
+                service.preparation().release(job).whenComplete((unused,releaseError) -> Platform.runLater(() -> {
+                    if (preparationFocus == job) preparationFocus = null;
+                }));
+                inspect();
+            } else if (attached && navigation == navigationGeneration) showPreparedWorkspace(job);
+        }));
+        dialog.show(); updatePreparationActivity();
+    }
+
+    private void showPreparedWorkspace(BuildPreparation.Job job) {
+        if (closing) return;
+        navigationGeneration++;
+        if (preparationPane != null) preparationPane.close();
+        preparationPane = new PreparationPane(job,this::showBuilds,() -> {
+            var pane = preparationPane;
+            if (pane != null) pane.close();
+            root.setDisable(true);
+            service.preparation().release(job).whenComplete((value,error) -> Platform.runLater(() -> {
+                if (closing) return;
+                root.setDisable(false); preparationPane = null;
+                if (preparationFocus == job) preparationFocus = null;
+                showBuilds();
+                if (error != null) status.setText("Close failed: " + problem(error));
+            }));
+        },() -> {
+            try {
+                var enriched = service.preparation().enrich(job.build(),job.source(),job.locale());
+                preparationFocus = enriched; showPreparedWorkspace(enriched);
+            } catch (RuntimeException error) { status.setText(problem(error)); }
+        });
+        root.setTop(header(null,null)); root.setCenter(preparationPane);
+        status.setText("Prepared data is scoped to this build and locale. Unknown and protected data remain explicit.");
+    }
+
+    private void updatePreparationActivity() {
+        if (closing || service == null || service.preparation() == null) return;
+        var jobs = service.preparation().jobs();
+        var focus = jobs.stream().filter(job -> job.snapshot().busy()).findFirst()
+                .orElseGet(() -> jobs.stream().filter(BuildPreparation.Job::enrichingNames).findFirst().orElse(jobs.contains(preparationFocus) ? preparationFocus : jobs.isEmpty() ? null : jobs.getLast()));
+        preparationFocus = focus;
+        boolean visible = focus != null;
+        openingActivity.setVisible(visible); openingActivity.setManaged(visible);
+        boolean busy = visible && (focus.snapshot().busy() || focus.enrichingNames());
+        openingSpinner.setVisible(busy); openingSpinner.setManaged(busy);
+        if (visible) openingActivity.setText(focus.build().version() + " · " + PreparationPane.describe(focus.snapshot())
+                + (focus.enrichingNames() ? " · Enriching names" : "")
+                + (busy ? " · " + (focus.elapsedSeconds()/60) + "m " + (focus.elapsedSeconds()%60) + "s" : "") + " · View");
     }
 
     private void startRealOpening(BuildInfo build, BuildInfo.RegionEvidence region) {
@@ -531,6 +652,8 @@ public final class VimiApp extends Application {
 
     @Override
     public void stop() {
+        preparationClock.stop();
+        if (preparationPane != null) preparationPane.close();
         openingClock.stop();
         preparations.close();
         if (service != null) { service.closeAsync(); }
@@ -539,6 +662,8 @@ public final class VimiApp extends Application {
     private void shutdown() {
         if (closing) { return; }
         closing = true;
+        preparationClock.stop();
+        if (preparationPane != null) preparationPane.close();
         openingClock.stop();
         catalogGeneration++;
         preparations.close();
@@ -556,6 +681,11 @@ public final class VimiApp extends Application {
     }
 
     private String preparationSummary(BuildInfo build) {
+        if (!mockMode() && service != null && service.preparation() != null) {
+            var jobs = service.preparation().jobs();
+            return jobs.stream().filter(job -> job.build().identity().equals(build.identity())).reduce((before,after) -> after)
+                    .map(job -> PreparationPane.describe(job.snapshot())).orElse("Not prepared");
+        }
         if (!mockMode()) { return realOpeningActive && realOpeningBuild.identity().equals(build.identity()) ? "Opening…" : realOpened.containsKey(build.identity()) ? "Opened" : "Not opened"; }
         var job = preparations.latest(build);
         return job == null ? (build.prepared() ? "Prepared" : "Not prepared") : job.summary();

@@ -13,6 +13,8 @@ public interface BuildService {
         return listBuilds();
     }
 
+    default BuildPreparation preparation() { return null; }
+
     default BuildOpening opening() { return null; }
 
     default boolean mockMode() { return true; }

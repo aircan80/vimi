@@ -2,49 +2,41 @@
 
 ## Latest status — 2026-11-01
 
-- Layers 1–6 are implemented in Java within the documented pinned C#
-  supported-format/resource bounds. Layer 6 PR #50 was fast-forward merged into
-  main at `c537beb` after all hosted checks passed; tracking issue #49 is complete.
-- Layer 6 comprises `concepts-core`, `concepts-items`, `concepts-creatures` and
-  `concepts-effects`. All pinned Concepts production files are ported, with
-  independent fakes/contracts and original C# golden regeneration. Verified
-  additions complete armor material provenance, creature dependency visibility
-  and read coalescing, effect definition-match provenance, relation schema retries
-  and accepted-operation cancellation/draining. Item close stays asynchronous even
-  while lower resources drain. Unknown rendering/default choices
-  remain explicit rather than inferred.
-- Full local build/check/assembly, storage crash recovery and ten C# compatibility
-  suites pass: 1,112 cases, zero failures/errors/skips. Root CI includes all twelve
-  modules; 18 Python CI helper tests pass. Standalone public consumer compilation
-  and runtime smoke pass with production JARs alone. Hosted unit/integration checks
-  passed on Linux, macOS and Windows; Linux crash and C# compatibility passed.
-- Native Windows machine certification, real-corpus throughput and release packaging
-  remain deferred. Hosted Windows checks remain enabled. Java API/collection/page
-  memory differences and resource budgets are documented per module.
-- Layer 7 integration is proceeding one screen at a time, starting with Builds.
-  `gui/design` commit `7b30528` was imported via PR #51, fast-forward merged at
-  `f486158` after green hosted checks; the original
-  worktree remains untouched. Builds now connects offline catalog listing, explicit
-  refresh and provenance inspection. Real opening is merged via PR #52 at
-  `2e6f3e2`; later Overview/research screens remain pending. `--mock` preserves the approved full design preview. Catalog startup and
-  refresh show an indeterminate activity indicator and busy button label; lower
-  layers were not modified to add progress.
-- GUI is a root subproject with locked JavaFX dependencies confined to layer 7.
-  Full root check/assemble and GUI installDist pass, along with the prototype
-  harness, 10 adapter contracts, native persisted-history/reopen checks and 18 CI
-  helper tests. A live refresh returned 42 rows with no reported issues.
-  Hosted unit/integration checks passed on Linux, macOS and Windows; Linux crash
-  recovery and C# interoperability passed. Real opening is connected; measured progress and real Overview preparation remain next.
-- Separate Settings mockups may continue in the GUI design worktree, isolated in
-  Settings files/scoped styling with a separate handoff; avoid Builds/shared
-  service/navigation edits there during integration.
-- Native app launch succeeded on macOS, retaining the known unnamed-module JavaFX
-  warning. Interactive screenshot QA was unavailable because the Java process was
-  not exposed by the computer-use app inventory; broader GUI platform/accessibility
-  qualification remains pending.
-- The preexisting untracked root md file remains untouched. Earlier sections below
-  record historical milestones; use this section and the final integration notes
-  for current state.
+- Layers 1–6 remain implemented within documented supported-format bounds. Layer 7
+  preparation integration is on `integration/preparation`; hosted validation/merge
+  is pending. Current main before this integration is `9b87915`.
+- Agreed pipeline: Metadata (configs/ENCODING/ROOT) publishes real Overview early;
+  Files prepares indexes and ID/locale/size/local-presence facts without payload or
+  type inspection; key bootstrap then known table processing/lookups runs in the
+  background. Community names/types enrich independently and never gate readiness.
+- Readiness is Not prepared / Metadata ready / Files ready / Tables ready, separate
+  from activity. Tables ready means every known addressable table has an outcome,
+  accepting missing/protected/partial/unsupported data explicitly. Unknown tables
+  outside the configured catalog are outside scope. Tables/Items/Creatures share
+  one initial gate. Media is always on demand.
+- Later enrichment preserves the previous published table/concept workspace until
+  atomic replacement. Reopen restores/verifies local inputs/generated artifacts;
+  it does not trust a permanent prepared flag. Current providers are bundled pinned
+  definitions/catalog, build Tact keys and optional community names. New community
+  key/catalog sources remain future adapters, not a newly implemented fetch service.
+- Preparation uses a payload-free Files listing, complete known-table ledger,
+  isolated local-only table reads, retained no-media lookup warmups and data-only
+  Item/Creature APIs. Real paged Files/Tables/Items/Creatures browsers are connected
+  as a functional inspection path; polished tooltips/model rendering remain GUI work.
+- Full root check/assemble/installDist and ten C# compatibility suites pass locally.
+  New checks cover metadata-before-indexes, metadata-only Files, generation/cancel/
+  enrichment commit, prepared reads not joining CDN flights, readiness/activity
+  gates, protected tables, no media access and native offline reopen. Authored
+  JavaFX scenes were rendered and inspected; screenshots are in docs/images.
+- Up to four build/locale contexts are retained, with one preparation pipeline at a
+  time. Names may continue independently. Close build releases its context; app
+  close cancels/drains all jobs and retired resources. Phase progress is measured
+  where totals exist and indeterminate otherwise; no invented overall percentage.
+- Native hands-on Windows certification, real-corpus throughput and packaging remain
+  deferred. The independent Settings design session in vimi-gui/gui/design is not
+  modified. The preexisting untracked root md remains untouched.
+- Earlier sections below are historical; current agreed behavior supersedes older
+  strict all-readable Tables gating and names-as-Files-prerequisite proposals.
 
 ## Agreed direction
 

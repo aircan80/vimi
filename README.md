@@ -463,7 +463,7 @@ admission and relation budgets, supported profiles and remaining application wor
 
 [`gui/`](gui/README.md) is layer 7. Its first connected screen lists saved build
 history, refreshes published metadata explicitly and displays regional provenance.
-Real build opening shows verified metadata with hide/cancel handling; later screens remain pending. Run the approved fixture-based
+Real opening publishes Overview after metadata, then prepares Files and known Tables in the background. Tables, Items and Creatures share an initial readiness gate and use local prepared data; media is on demand. Run the approved fixture-based
 design with `--args='--mock'`.
 
 ```sh
