@@ -438,6 +438,7 @@ public final class BuildPreparationTest {
         require(
                 await(retry.completion()).ready() == BuildPreparation.Ready.TABLES_READY,
                 "Name failure cannot fail initial preparation");
+        waitFor(work.namesEntered);
         await(engine.closeAsync());
         require(
                 retry.namesProblem() != null && retry.namesProblem().contains("Names failed"),

@@ -179,6 +179,11 @@ public final class NativeWorkspaceCommitTest {
         var ref =
                 new com.vibeminer.builds.BuildTypes.BuildRef(
                         info.product(), info.config(), evidence.cdnConfig(), evidence.region());
+        var key = com.vibeminer.network.CdnKey.parse("c".repeat(32));
+        var metadata =
+                new com.vibeminer.builds.BuildTypes.BuildMetadata(
+                        "fixture", key, key, key, 0, 1, java.util.List.of("enUS"));
+        var enumerations = new AtomicInteger();
         var build =
                 (com.vibeminer.builds.Build)
                         Proxy.newProxyInstance(
@@ -187,10 +192,32 @@ public final class NativeWorkspaceCommitTest {
                                 (proxy, method, args) ->
                                         switch (method.getName()) {
                                             case "build" -> ref;
-                                            case "fileDataIds" -> java.util.List.of(1L);
+                                            case "metadata" -> metadata;
+                                            case "fileDataIds" -> {
+                                                enumerations.incrementAndGet();
+                                                yield java.util.List.of(1L);
+                                            }
+                                            case "resolve" ->
+                                                    new com.vibeminer.builds.BuildTypes
+                                                            .FileResolution(
+                                                            com.vibeminer.builds.BuildTypes
+                                                                    .FileResolutionState.FOUND,
+                                                            1L,
+                                                            java.util.List.of(
+                                                                    new com.vibeminer.builds
+                                                                            .BuildTypes.FileVariant(
+                                                                            com.vibeminer.files
+                                                                                    .FileLocales
+                                                                                    .bitOf("enUS"),
+                                                                            0,
+                                                                            key,
+                                                                            128L,
+                                                                            key,
+                                                                            64L,
+                                                                            null)));
                                             default ->
                                                     throw new AssertionError(
-                                                            "Metadata preparation cannot resolve/read payloads: "
+                                                            "Catalog preparation touched payload/CDN path: "
                                                                     + method);
                                         });
         Builds loader =
@@ -204,47 +231,19 @@ public final class NativeWorkspaceCommitTest {
                                         null,
                                         null,
                                         null));
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
         var work =
                 new NativePreparationWork(
-                        info, evidence, "enUS", loader, online, null, null, local);
-        var pages = new AtomicInteger();
-        var cursor =
-                new com.vibeminer.files.AsyncCursor<com.vibeminer.files.FileTypes.BuildFile>() {
-                    public CompletableFuture<
-                                    java.util.List<com.vibeminer.files.FileTypes.BuildFile>>
-                            next(int limit, Cancellation token) {
-                        return CompletableFuture.completedFuture(
-                                pages.getAndIncrement() == 0
-                                        ? java.util.List.of(
-                                                new com.vibeminer.files.FileTypes.BuildFile(
-                                                        1,
-                                                        "cached-model.m2",
-                                                        com.vibeminer.files.FileTypes.FilePathSource
-                                                                .LISTFILE,
-                                                        128L,
-                                                        "c".repeat(32),
-                                                        com.vibeminer.files.FileTypes.FileFormat
-                                                                .UNKNOWN,
-                                                        com.vibeminer.files.FileTypes
-                                                                .FileFormatSource.NONE,
-                                                        com.vibeminer.files.FileTypes.FileStorage
-                                                                .STORED,
-                                                        false))
-                                        : java.util.List.of());
-                    }
-
-                    public void close() {}
-                };
+                        info, evidence, "enUS", loader, online, generated, null, local);
         var files =
                 (com.vibeminer.files.BuildFiles)
                         Proxy.newProxyInstance(
                                 com.vibeminer.files.BuildFiles.class.getClassLoader(),
                                 new Class<?>[] {com.vibeminer.files.BuildFiles.class},
                                 (proxy, method, args) -> {
-                                    if (method.getName().equals("listMetadata")) return cursor;
                                     if (method.getName().equals("close")) return null;
                                     throw new AssertionError(
-                                            "Files preparation touched media/content path: "
+                                            "Baseline must not read/list payloads, names or presence: "
                                                     + method);
                                 });
         set(work, "fileHandle", files);
@@ -253,6 +252,12 @@ public final class NativeWorkspaceCommitTest {
             require(
                     summary.files() == 1,
                     "Metadata-only Files summary must include the cached media entry");
+            int scans = enumerations.get();
+            var restored = work.files(counter -> {}, Cancellation.NONE);
+            require(
+                    restored.files() == 1 && !restored.presenceAssessed(),
+                    "Restore immutable facts without inventing current presence");
+            require(enumerations.get() == scans, "Reopen must skip the file enumeration");
         } finally {
             work.close();
         }

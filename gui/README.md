@@ -270,3 +270,22 @@ verifies stale/closed request retirement. It is not part of headless hosted chec
 Committed screenshots in `docs/images/research-*.png` show fixtures, not live data.
 
 Items and Creatures use 100-row browser pages; both Java concept services accept up to 500. Query factories are checked against the service validators so a limit mismatch cannot silently empty the grid. Request failures and empty availability states appear inside the grid, as well as in the footer.
+
+## Durable reopen
+
+Prepared immutable file records now live in the generated RecordFile store, keyed
+by exact build/configuration/ROOT/ENCODING/locale and format version. A compatible
+reopen validates the saved graph and restores counters without walking every
+FileDataID or checking all local objects. Names/types stay independent. Presence
+is checked when browsing; the Overview never restores an old stored count as current.
+Initial catalog creation also avoids a full presence/name pass.
+
+Decoded tables already persisted. The completed known-table outcome ledger now
+persists too, keyed by source, pinned definitions/catalog, decoder policy, locale
+and key fingerprints. Readable graphs are checked locally before reuse; missing,
+corrupt or incompatible artifacts fall back to preparation. Explicit enrichment
+reassesses the table ledger. Key bootstrap and in-memory concept handles still
+initialize on reopen; this is not a permanent ready flag.
+
+Native integration checks reopen both stores and forbid repeated full file-ID
+enumeration. Phase timing logs separate resolution-index opening and catalog work.

@@ -66,6 +66,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     private volatile Workspace published = new Workspace(null, null, null, null, null, 0);
     private Workspace pending;
     private boolean pendingWarmed;
+    private boolean tablePassAttempted;
     private final List<Workspace> retired = new ArrayList<>();
     private final List<CompletableFuture<Void>> retirementJobs = new ArrayList<>();
     private final java.util.Set<Workspace> retiring =
@@ -184,17 +185,14 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     @Override
     public BuildPreparation.FilesSummary files(
             Consumer<BuildPreparation.Counter> progress, Cancellation token) {
+        long started = System.nanoTime();
+        progress.accept(new BuildPreparation.Counter(0, null, "Opening file resolution indexes"));
         var result = builds.open(ref, token).join();
+        long indexesReady = System.nanoTime();
         if (result.state() != BuildTypes.BuildOpenState.OPEN || result.opened() == null)
             throw new IllegalStateException(
                     "Files " + result.state() + ": " + result.code() + " " + result.message());
         opened = result.opened();
-        long total = 0;
-        for (long ignored : opened.fileDataIds(locale)) {
-            token.check();
-            total++;
-        }
-        progress.accept(new BuildPreparation.Counter(0, total, "files"));
         if (fileHandle == null) {
             var filesOpen = files.forBuild(ref, locale, token).join();
             if (filesOpen.state() != FileTypes.FilesOpenState.OPEN || filesOpen.files() == null)
@@ -202,21 +200,44 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                         "File catalog " + filesOpen.state() + ": " + filesOpen.message());
             fileHandle = filesOpen.files();
         }
-        long count = 0, stored = 0, unknown = 0;
-        try (var cursor = fileHandle.listMetadata(FileTypes.FileFilter.ALL, token)) {
-            for (; ; ) {
-                var page = cursor.next(1000, token).join();
-                if (page.isEmpty()) break;
-                for (var file : page) {
-                    count++;
-                    if (file.storage() == FileTypes.FileStorage.STORED) stored++;
-                    if (file.size() == null) unknown++;
-                }
-                progress.accept(
-                        new BuildPreparation.Counter(count, Math.max(total, count), "files"));
+        var cache = new com.vibeminer.files.PreparedFileCatalog(generated);
+        var identity =
+                new com.vibeminer.files.PreparedFileCatalog.Identity(
+                        ref, locale, opened.metadata());
+        progress.accept(new BuildPreparation.Counter(0, null, "Restoring local file catalog"));
+        var catalog = cache.restore(identity, token).join();
+        if (catalog == null) {
+            long total = 0;
+            for (long ignored : opened.fileDataIds(locale)) {
+                token.check();
+                total++;
             }
+            progress.accept(new BuildPreparation.Counter(0, total, "files"));
+            catalog =
+                    cache.prepare(
+                                    opened,
+                                    identity,
+                                    total,
+                                    (done, count) ->
+                                            progress.accept(
+                                                    new BuildPreparation.Counter(
+                                                            done, count, "files")),
+                                    token)
+                            .join();
+        } else {
+            progress.accept(
+                    new BuildPreparation.Counter(catalog.files(), catalog.files(), "cached files"));
         }
-        return new BuildPreparation.FilesSummary(count, stored, unknown);
+        token.check();
+        System.getLogger(NativePreparationWork.class.getName())
+                .log(
+                        System.Logger.Level.INFO,
+                        "Files {0}: {1} records; resolution indexes {2} ms; catalog {3} ms",
+                        catalog.restored() ? "restored" : "prepared",
+                        catalog.files(),
+                        (indexesReady - started) / 1_000_000,
+                        (System.nanoTime() - indexesReady) / 1_000_000);
+        return new BuildPreparation.FilesSummary(catalog.files(), 0, catalog.unknownSize(), false);
     }
 
     private TablesService tablesService(Cancellation token, boolean onlinePreparation) {
@@ -305,9 +326,22 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     public TableTypes.PreloadResult tables(
             Consumer<TableTypes.PreloadProgress> progress, Cancellation token) {
         abortPending();
-        TableTypes.PreloadResult prepared;
-        try (var preparing = openTables(tablesService(token, true), token)) {
-            prepared = preparing.prepareKnown(progress, token).join();
+        TableTypes.PreloadResult prepared = null;
+        var cache = new com.vibeminer.formats.tables.PreparedTablesCache(generated);
+        String identity = tableCacheIdentity();
+        if (!tablePassAttempted) {
+            try (var local = openTables(tablesService(token, false), token)) {
+                prepared = cache.restore(identity, local, progress, token).join();
+            }
+        }
+        tablePassAttempted = true;
+        if (prepared == null) {
+            try (var preparing = openTables(tablesService(token, true), token)) {
+                prepared = preparing.prepareKnown(progress, token).join();
+            }
+            if (prepared.outcome() == TableTypes.PreloadOutcome.COMPLETED) {
+                cache.save(identity, prepared, token).join();
+            }
         }
         token.check();
         if (prepared.outcome() != TableTypes.PreloadOutcome.COMPLETED) return prepared;
@@ -326,6 +360,32 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         } finally {
             if (!staged) next.close();
         }
+    }
+
+    private String tableCacheIdentity() {
+        var available = keys.get();
+        String keyFingerprint =
+                available == null
+                        ? "none"
+                        : available.names().stream()
+                                .map(name -> name + ":" + available.fingerprintOf(name))
+                                .collect(java.util.stream.Collectors.joining(","));
+        return String.join(
+                "\n",
+                "native-table-policy-v1",
+                ref.product(),
+                ref.buildConfig(),
+                ref.cdnConfig(),
+                ref.region(),
+                locale,
+                info.version(),
+                opened.metadata().rootContentKey().hex(),
+                opened.metadata().encodingContentKey().hex(),
+                BundledDefinitions.REVISION,
+                BundledDefinitions.MANIFEST_SHA256,
+                BundledDefinitions.SOURCES_SHA256,
+                new com.vibeminer.formats.db2.Db2Types.Limits().toString(),
+                keyFingerprint);
     }
 
     @Override

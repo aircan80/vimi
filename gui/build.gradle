@@ -21,6 +21,7 @@ dependencies {
     implementation project(':concepts-effects')
     testImplementation testFixtures(project(':builds'))
     testImplementation testFixtures(project(':files'))
+    testImplementation testFixtures(project(':generated-store'))
     ['base', 'graphics', 'controls'].each {
         implementation "org.openjfx:javafx-${it}:25.0.1:${classifier}"
     }

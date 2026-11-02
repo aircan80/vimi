@@ -188,6 +188,74 @@ public final class PreparationPipelineIntegrationTest {
                                             }
                                         });
                 var opener = new BuildOpener(guarded);
+                boolean restoring = round == 1;
+                var enumerations = new AtomicInteger();
+                var observedBuilds =
+                        new com.vibeminer.builds.Builds() {
+                            public CompletableFuture<
+                                            com.vibeminer.builds.BuildTypes.MetadataOpenResult>
+                                    metadata(
+                                            com.vibeminer.builds.BuildTypes.BuildRef ref,
+                                            com.vibeminer.access.Cancellation token) {
+                                return opener.metadata(ref, token);
+                            }
+
+                            public CompletableFuture<
+                                            com.vibeminer.builds.BuildTypes.BuildOpenResult>
+                                    open(
+                                            com.vibeminer.builds.BuildTypes.BuildRef ref,
+                                            com.vibeminer.access.Cancellation token) {
+                                return opener.open(ref, token)
+                                        .thenApply(
+                                                result -> {
+                                                    if (result.opened() == null) return result;
+                                                    var wrapped =
+                                                            (com.vibeminer.builds.Build)
+                                                                    Proxy.newProxyInstance(
+                                                                            com.vibeminer.builds
+                                                                                    .Build.class
+                                                                                    .getClassLoader(),
+                                                                            new Class<?>[] {
+                                                                                com.vibeminer.builds
+                                                                                        .Build.class
+                                                                            },
+                                                                            (proxy,
+                                                                                    method,
+                                                                                    args) -> {
+                                                                                if (method.getName()
+                                                                                        .equals(
+                                                                                                "fileDataIds")) {
+                                                                                    enumerations
+                                                                                            .incrementAndGet();
+                                                                                    require(
+                                                                                            !restoring,
+                                                                                            "Cached reopen must not enumerate the full file catalog");
+                                                                                }
+                                                                                try {
+                                                                                    return method
+                                                                                            .invoke(
+                                                                                                    result
+                                                                                                            .opened(),
+                                                                                                    args);
+                                                                                } catch (
+                                                                                        InvocationTargetException
+                                                                                                failure) {
+                                                                                    throw failure
+                                                                                            .getCause();
+                                                                                }
+                                                                            });
+                                                    return new com.vibeminer.builds.BuildTypes
+                                                            .BuildOpenResult(
+                                                            result.build(),
+                                                            result.state(),
+                                                            wrapped,
+                                                            result.part(),
+                                                            result.code(),
+                                                            result.message(),
+                                                            result.observedAt());
+                                                });
+                            }
+                        };
                 BuildPreparation engine = null;
                 try {
                     if (round == 0)
@@ -209,8 +277,14 @@ public final class PreparationPipelineIntegrationTest {
                             new BuildPreparation(
                                     (info, region, locale) ->
                                             new NativePreparationWork(
-                                                    info, region, locale, opener, guarded,
-                                                    generated, community, local));
+                                                    info,
+                                                    region,
+                                                    locale,
+                                                    observedBuilds,
+                                                    guarded,
+                                                    generated,
+                                                    community,
+                                                    local));
                     var job = engine.start(build, sourceEvidence, "enUS");
                     jobPublished.complete(job);
                     job.metadataReady().get(20, TimeUnit.SECONDS);
@@ -220,8 +294,8 @@ public final class PreparationPipelineIntegrationTest {
                                     && result.activity() == BuildPreparation.Activity.IDLE,
                             "Production pipeline must reach Tables-ready: " + result.problem());
                     require(
-                            result.files().files() == 2 && result.files().stored() == 2,
-                            "Real Files counts both locally stored ROOT entries without inspecting cached media");
+                            result.files().files() == 2 && !result.files().presenceAssessed(),
+                            "Persisted file baseline counts ROOT entries without a full presence assessment");
                     require(
                             result.tables().stream()
                                     .anyMatch(
@@ -234,6 +308,9 @@ public final class PreparationPipelineIntegrationTest {
                     require(
                             indexRequests.get() > 0 && mediaRequests.get() == 0,
                             "Full Files prerequisite indexes are acquired after metadata, media is not");
+                    require(
+                            restoring ? enumerations.get() == 0 : enumerations.get() > 0,
+                            "Only the initial preparation enumerates file IDs");
                     var work = (NativePreparationWork) job.work();
                     require(
                             work.filesHandle() != null
