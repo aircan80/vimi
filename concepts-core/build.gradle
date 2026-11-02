@@ -35,9 +35,19 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 sourceSets {
+    interopTest {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+        resources.srcDir 'src/test/resources'
+    }
     integrationTest { compileClasspath += sourceSets.main.output; runtimeClasspath += sourceSets.main.output }
 }
-configurations { integrationTestImplementation.extendsFrom testImplementation; integrationTestRuntimeOnly.extendsFrom testRuntimeOnly }
+configurations {
+    interopTestImplementation.extendsFrom testImplementation
+    interopTestRuntimeOnly.extendsFrom testRuntimeOnly
+    integrationTestImplementation.extendsFrom testImplementation
+    integrationTestRuntimeOnly.extendsFrom testRuntimeOnly
+}
 dependencies {
     api project(':formats-tables')
     testImplementation testFixtures(project(':formats-tables'))
@@ -84,3 +94,24 @@ checkstyle {
 
 tasks.register('integrationTest', Test) { group='verification'; testClassesDirs=sourceSets.integrationTest.output.classesDirs; classpath=sourceSets.integrationTest.runtimeClasspath; shouldRunAfter tasks.named('test') }
 tasks.named('check') {dependsOn tasks.named('integrationTest')}
+
+def referenceRoot = providers.gradleProperty('referenceRoot').orElse(rootProject.layout.projectDirectory.dir('../vibeminer').asFile.absolutePath)
+def dotnetExecutable = providers.gradleProperty('dotnet').orElse(rootProject.layout.projectDirectory.file('../vibeminer/.local/toolchains/dotnet/dotnet').asFile.absolutePath)
+def csharpDirectory = layout.projectDirectory.dir('src/interopTest/csharp')
+def goldenOutput = layout.buildDirectory.file('interop/queries.json')
+tasks.register('buildCsharpInterop', Exec) {
+    workingDir rootProject.layout.projectDirectory
+    environment 'DOTNET_CLI_TELEMETRY_OPTOUT', '1'
+    commandLine dotnetExecutable.get(), 'run', '--project', csharpDirectory.file('Interop.csproj').asFile.absolutePath,
+        '-p:RestoreLockedMode=true', '-p:ReferenceRoot=' + referenceRoot.get(), '--', goldenOutput.get().asFile.absolutePath
+}
+tasks.register('interopTest', Test) {
+    group = 'verification'
+    dependsOn tasks.named('buildCsharpInterop')
+    testClassesDirs = sourceSets.interopTest.output.classesDirs
+    classpath = sourceSets.interopTest.runtimeClasspath
+    systemProperty 'vimi.concepts.queries.golden', goldenOutput.get().asFile.absolutePath
+    inputs.files(fileTree(csharpDirectory) { include '*.cs', '*.csproj', 'packages.lock.json' })
+    inputs.file(goldenOutput)
+    shouldRunAfter tasks.named('test')
+}

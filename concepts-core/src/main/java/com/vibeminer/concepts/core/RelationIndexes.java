@@ -456,18 +456,11 @@ public final class RelationIndexes {
 
     @SuppressWarnings("try")
     private static <T> T await(CompletableFuture<T> future, Cancellation token) {
-        CompletableFuture<T> view = new CompletableFuture<>();
+        CompletableFuture<Void> canceled = new CompletableFuture<>();
         try (var registration =
-                token.onCancel(() -> view.completeExceptionally(new CancellationException()))) {
-            future.whenComplete(
-                    (value, error) -> {
-                        if (error == null) {
-                            view.complete(value);
-                        } else {
-                            view.completeExceptionally(unwrap(error));
-                        }
-                    });
-            return view.join();
+                token.onCancel(() -> canceled.completeExceptionally(new CancellationException()))) {
+            CompletableFuture.anyOf(future, canceled).join();
+            return future.join();
         } catch (CompletionException e) {
             throw propagate(unwrap(e));
         }
