@@ -12,6 +12,11 @@ public record ItemDetail(
         ItemClassLabels labels,
         List<ItemIconSourced> icons,
         ItemAppearanceSet appearances) {
+    /** Display-ready direct base attributes; never interprets allocation inputs as flat values. */
+    public ItemAttributes attributes() {
+        return ItemAttributes.from(facts);
+    }
+
     public ItemDetail {
         icons = List.copyOf(icons);
     }
