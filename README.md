@@ -1,7 +1,7 @@
 # vimi
 
 Java desktop port of VibeMiner using its seven-layer architecture. The first
-components cover layer 1 primitives, layer 2 object access, layer 3 builds, layer 4 files and layer 5 image/model formats.
+components cover layer 1 primitives, layer 2 object access, layer 3 builds, layer 4 files and layer 5 table/image/model formats.
 The JavaFX GUI belongs in layer 7 and is not implemented yet.
 
 ## Setup
@@ -198,6 +198,7 @@ Future components will declare project dependencies, for example
 `implementation project(':object-store')`; fakes and shared contracts can be
 consumed with `testImplementation testFixtures(project(':object-store'))`.
 
+- `formats-tables/`: layer 5 DB2/definitions, generated tables, query/relations and preload.
 - `formats-assets/`: layer 5 BLP images, native M2/SKIN models and VMG1 artifacts.
 - `files/`: layer 4 build/locale filesystem, decoding, Ensure and community names.
 - `builds/`: layer 3 discovery/catalog, metadata opening/resolution and download tracking.
@@ -395,16 +396,34 @@ It exchanges VMLD deltas and names record-file indexes in both directions.
 Files-backed image inspection and shared/scoped generated caches, native M2/SKIN
 parsing, explicit dependency resolution, static geometry/material/appearance proofs,
 and source-bound VMG1 artifacts. See the [pinned source inventory](formats-assets/PARITY.md)
-for supported profiles and resource qualifications. Table formats are progressing
-independently and are not completed by this module.
+for supported profiles and resource qualifications. Table formats live in their
+separate `formats-tables/` module.
 
 ```sh
 ./gradlew :formats-assets:check :formats-assets:assemble -PsqliteLibrary=/absolute/path/to/sqlite-library
 ./gradlew :formats-assets:interopTest -PreferenceRoot=/path/to/vibeminer -Pdotnet=/absolute/path/to/dotnet
 ```
 
-A disk pipeline validates real Files decoding, model/skin dependency resolution,
-generated image caching and offline reopen. The opt-in C# harness regenerates all
+A disk pipeline validates real Files image decoding, generated caching and offline
+reopen. Shared real/fake Files contracts also cover model/skin dependency resolution. The opt-in C# harness regenerates all
 checked-in asset goldens using original sources from the pinned reference, including
 its two model fixture sources; it does not build the full reference Formats project.
 Root lifecycle tasks and hosted unit/integration/compatibility checks include assets.
+
+## Table formats (layer 5)
+
+[`formats-tables/`](formats-tables/README.md) provides the pinned WDC3/4/5 DB2 reader,
+DBD/schema selection, bundled and optional fetched definitions, durable generated
+tables, direct/query/filter/reference operations, TACT-key bootstrap and preload jobs.
+Inputs come through Files; fetched definitions come through layer 2 observations.
+
+```sh
+./gradlew :formats-tables:check :formats-tables:assemble -PsqliteLibrary=/absolute/path/to/sqlite-library
+./gradlew :formats-tables:interopTest -Pdotnet=/absolute/path/to/dotnet -PsqliteLibrary=/absolute/path/to/sqlite-library
+```
+
+C# exchange needs the pinned reference Formats project built in Release. The native
+pipeline reopens stores, removes the encoded DB2 source, and verifies that schema,
+rows, copies and identity still come from the durable generated table. Unsupported
+formats remain explicit, matching the reference. Layers 6–7 remain implementation
+work; hands-on Windows certification and large real-data throughput remain deferred.

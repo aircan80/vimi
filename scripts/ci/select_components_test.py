@@ -39,6 +39,8 @@ class SelectionTest(unittest.TestCase):
             "builds/build.gradle",
             "files/src/main/java/com/vibeminer/files/Files.java",
             "files/build.gradle",
+            "formats-tables/src/main/java/Table.java",
+            "formats-tables/build.gradle",
             "formats-assets/src/main/java/com/vibeminer/formats/AssetSource.java",
             "formats-assets/src/testFixtures/java/com/vibeminer/formats/AssetFilesFixture.java",
             "formats-assets/build.gradle",

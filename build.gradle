@@ -4,8 +4,8 @@ plugins {
 
 // Root lifecycle tasks intentionally aggregate only the components that exist.
 tasks.named('check') {
-    dependsOn ':object-store:check', ':generated-store:check', ':network-clients:check', ':object-access:check', ':builds:check', ':files:check', ':formats-assets:check'
+    dependsOn ':object-store:check', ':generated-store:check', ':network-clients:check', ':object-access:check', ':builds:check', ':files:check', ':formats-assets:check', ':formats-tables:check'
 }
 tasks.named('assemble') {
-    dependsOn ':object-store:assemble', ':generated-store:assemble', ':network-clients:assemble', ':object-access:assemble', ':builds:assemble', ':files:assemble', ':formats-assets:assemble'
+    dependsOn ':object-store:assemble', ':generated-store:assemble', ':network-clients:assemble', ':object-access:assemble', ':builds:assemble', ':files:assemble', ':formats-assets:assemble', ':formats-tables:assemble'
 }

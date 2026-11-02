@@ -1,6 +1,6 @@
 # Continuous integration
 
-The `Unit tests` workflow runs `:object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test` on GitHub-hosted
+The `Unit tests` workflow runs `:object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test :formats-tables:test` on GitHub-hosted
 `ubuntu-24.04`, `windows-2025` and `macos-15` runners. Each job installs a full
 Temurin Java 25 JDK matching the runner architecture. The fast tasks need neither
 native SQLite nor .NET nor the original C# checkout. Generated record tests use
@@ -11,7 +11,7 @@ enabled; formatting and native integration are separate checks.
 Run the same task locally with:
 
 ```sh
-./gradlew :object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test --no-daemon --console=plain
+./gradlew :object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test :formats-tables:test --no-daemon --console=plain
 ```
 
 Use `gradlew.bat` in a Windows terminal. Hosted jobs use the checked-in Unix
@@ -34,8 +34,8 @@ python3 -m unittest discover -s scripts/ci -p '*_test.py'
 
 The validation group contains `object-store`, its consumer `generated-store`,
 and the independent `network-clients` component, plus layer 2 `object-access` and
-its layer 3 consumer `builds`, layer 4 `files`, and layer 5 `formats-assets`. The historical `object_store` selector output conservatively
-selects all seven components. Any code, public-interface, test, fixture,
+its layer 3 consumer `builds`, layer 4 `files`, and layer 5 `formats-assets`/`formats-tables`. The historical `object_store` selector output conservatively
+selects all eight components. Any code, public-interface, test, fixture,
 Gradle, dependency, wrapper, configuration, workflow or unknown-path change selects
 all components on all three platforms. Markdown/reStructuredText, root license
 notices and documentation images skip them; executable/build/workflow directories
@@ -79,7 +79,7 @@ move to the appropriate machine.
 
 The independent `Integration tests` workflow uses the same conservative component
 selection and an always-running `Integration tests` aggregate check. Its platform
-jobs run `:object-store:integrationTest :generated-store:check :network-clients:check :object-access:check :builds:check :files:check :formats-assets:check` separately from the
+jobs run `:object-store:integrationTest :generated-store:check :network-clients:check :object-access:check :builds:check :files:check :formats-assets:check :formats-tables:check` separately from the
 fast unit workflow and
 retain independent `integration-reports-*` XML/HTML artifacts for seven days.
 Every disk test uses temporary synthetic stores.
@@ -119,10 +119,10 @@ become available after the workflow reaches the default branch.
 The interoperation job checks out public `aircan80/vibeminer` at commit
 `4fd92d2a36add50c9b82e1c92bf72706e8d0df2b`, sparse to the Objects, Generated, Cdn, ObjectAccess, Builds, Files and Formats source trees plus the exact ModelFixtures.cs and AppearanceModels.cs fixture files,
 root build properties, editor settings and `global.json`. It installs the specified
-.NET SDK 10.0.402 and builds `VibeMiner.Generated` and `VibeMiner.Files`,
+.NET SDK 10.0.402 and builds `VibeMiner.Generated` and `VibeMiner.Formats`,
 including their Objects/Builds/ObjectAccess/Cdn dependencies, in Release with locked NuGet restore. Java and reference checkouts occupy sibling `vimi/` and `vibeminer/`
 directories, as required by the existing reference harness. The Java invocation is
-`:object-store:interopTest :generated-store:interopTest :builds:interopTest :files:interopTest :formats-assets:interopTest` with the absolute `dotnet` executable resolved from
+`:object-store:interopTest :generated-store:interopTest :builds:interopTest :files:interopTest :formats-assets:interopTest :formats-tables:interopTest` with the absolute `dotnet` executable resolved from
 `command -v dotnet`, plus an explicit SQLite library path. The harness expects an
 absolute executable path; a bare `-Pdotnet=dotnet` is not sufficient.
 Missing reference source, SDK, dependencies or assembly fails rather than skipping.
@@ -230,3 +230,12 @@ reference fixture files, then compares regenerated BLP/model/appearance/VMG1 byt
 and identities. The reference Formats project itself is not built. All reports join
 the existing seven-day unit, integration and interop artifacts. Tables remains a
 separate active layer 5 component; it is not included in this branch's completion claim.
+
+## Table format coverage
+
+Table checks cover DB2 layouts/values, strict definitions and selection, generated
+rows/metadata/identities, real/fake table contracts, queries and references, TACT
+bootstrap, preload and lifecycle. The disk pipeline proves generated rows reopen
+without their encoded DB2 source. Linux compatibility compares C# row/identity
+goldens and exchanges generated table caches in both directions; its sparse reference
+includes Formats and the pinned embedded WoWDBDefs resources.
