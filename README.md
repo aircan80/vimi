@@ -1,8 +1,9 @@
 # vimi
 
-Java desktop port of VibeMiner using its seven-layer architecture. The first
-components cover layer 1 primitives, layer 2 object access, layer 3 builds, layer 4 files and layer 5 table/image/model formats.
-The JavaFX GUI belongs in layer 7 and is not implemented yet.
+Java desktop port of VibeMiner using its seven-layer architecture, with a JavaFX
+interface for build discovery, preparation and research. See the
+[architecture overview](architecture.md) for a high-level component table and
+Mermaid diagram, including the independent Questie backend being integrated.
 
 ## Setup
 
