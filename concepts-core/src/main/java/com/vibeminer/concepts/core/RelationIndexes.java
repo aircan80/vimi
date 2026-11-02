@@ -141,6 +141,44 @@ public final class RelationIndexes {
         return async(() -> lookupCore(new Key(table, column), key, maxRows, priority, token, skip));
     }
 
+    /** Builds a reverse index without selecting a fake lookup key or fetching any assets. */
+    public CompletableFuture<Lookup> prepare(
+            String table, String column, TableTypes.Priority priority, Cancellation token) {
+        if (table == null || table.isBlank() || column == null || column.isBlank()) {
+            throw new IllegalArgumentException("Invalid relation");
+        }
+        Objects.requireNonNull(priority);
+        Objects.requireNonNull(token);
+        return async(
+                () -> {
+                    token.check();
+                    Key key = new Key(table, column);
+                    for (int attempt = 0; attempt < 2; attempt++) {
+                        Index index = index(key, priority, token);
+                        token.check();
+                        if (index.state != State.OK) {
+                            return result(index, List.of(), index.entries);
+                        }
+                        var page = page(table, -1, 1, index.identity, priority, token);
+                        if (page.state() == TableTypes.PageState.NOT_READABLE) {
+                            return notReadable(page.table());
+                        }
+                        if (page.state() == TableTypes.PageState.OK) {
+                            return result(index, List.of(), index.entries);
+                        }
+                        drop(key, index);
+                    }
+                    return new Lookup(
+                            State.STALE,
+                            List.of(),
+                            0,
+                            null,
+                            null,
+                            "Relation source changed twice",
+                            null);
+                });
+    }
+
     private Lookup lookupCore(
             Key key,
             long value,

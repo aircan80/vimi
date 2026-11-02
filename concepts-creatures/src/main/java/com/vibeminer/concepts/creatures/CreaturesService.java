@@ -394,6 +394,17 @@ public final class CreaturesService implements Creatures {
         @Override
         public CompletableFuture<CreatureResult> get(
                 long id, Priority priority, Cancellation token) {
+            return detail(id, priority, token, true);
+        }
+
+        @Override
+        public CompletableFuture<CreatureResult> getData(
+                long id, Priority priority, Cancellation token) {
+            return detail(id, priority, token, false);
+        }
+
+        private CompletableFuture<CreatureResult> detail(
+                long id, Priority priority, Cancellation token, boolean media) {
             if (id < 0 || id > 0xffffffffL) {
                 throw new IllegalArgumentException("Creature ID is uint32");
             }
@@ -460,7 +471,7 @@ public final class CreaturesService implements Creatures {
                         Call call = new Call(priority, token);
                         List<CreatureDisplayChain> displays = new ArrayList<>();
                         for (var slot : summary.slots()) {
-                            displays.add(chain(call, slot));
+                            displays.add(chain(call, slot, media));
                         }
                         return new CreatureResult(
                                 CreatureResultState.FOUND,
@@ -474,6 +485,43 @@ public final class CreaturesService implements Creatures {
                                 null,
                                 null,
                                 null);
+                    });
+        }
+
+        @Override
+        public CompletableFuture<com.vibeminer.concepts.core.ConceptWarmup.Result> warmup(
+                Priority priority, Cancellation token) {
+            return run(
+                    priority,
+                    token,
+                    () -> {
+                        var schema =
+                                tables.schema(
+                                                TableTypes.Ref.forName(CreatureLayout.TABLE),
+                                                priority,
+                                                token)
+                                        .join();
+                        boolean ready = schema.table().state() == TableTypes.State.READY;
+                        String code = ready ? null : "CREATURE_TABLE_NOT_READABLE";
+                        if (ready) {
+                            try {
+                                CreatureLayout.resolve(
+                                        schema.columns() == null ? List.of() : schema.columns(),
+                                        schema.schema());
+                            } catch (CreatureLayout.Failure failure) {
+                                ready = false;
+                                code = failure.code;
+                            }
+                        }
+                        return new com.vibeminer.concepts.core.ConceptWarmup.Result(
+                                List.of(
+                                        new com.vibeminer.concepts.core.ConceptWarmup.Entry(
+                                                CreatureLayout.TABLE,
+                                                null,
+                                                ready,
+                                                code,
+                                                null,
+                                                schema.table().contentKey())));
                     });
         }
 
@@ -539,7 +587,7 @@ public final class CreaturesService implements Creatures {
                     });
         }
 
-        private CreatureDisplayChain chain(Call call, CreatureDisplaySlot slot) {
+        private CreatureDisplayChain chain(Call call, CreatureDisplaySlot slot, boolean media) {
             Chain b = new Chain(slot);
             if (slot.state() == CreatureSlotState.NO_DECLARED_DISPLAY) {
                 return b.result(CreatureDisplayChainState.NO_DECLARED_DISPLAY);
@@ -631,7 +679,9 @@ public final class CreaturesService implements Creatures {
             if (file == 0) {
                 return b.result(CreatureDisplayChainState.NO_DECLARED_MODEL_FILE);
             }
-            b.model = model(call, file, b.textures);
+            if (media) {
+                b.model = model(call, file, b.textures);
+            }
             return b.result(CreatureDisplayChainState.METADATA_RESOLVED);
         }
 

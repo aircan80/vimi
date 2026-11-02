@@ -172,6 +172,49 @@ public final class ItemEffectsService implements ItemEffects {
             if (itemId < 0 || itemId > 0xffffffffL) {
                 throw new IllegalArgumentException("uint32 item ID required");
             }
+            return call(priority, token, () -> getCore(itemId, query, priority, token));
+        }
+
+        @Override
+        public CompletableFuture<com.vibeminer.concepts.core.ConceptWarmup.Result> warmup(
+                TableTypes.Priority priority, Cancellation token) {
+            return call(
+                    priority,
+                    token,
+                    () -> {
+                        var effect = tables.schema(EFFECT, priority, token).join();
+                        var bridgeSchema = tables.schema(BRIDGE, priority, token).join();
+                        Link link = choose(effect.schema(), bridgeSchema.schema());
+                        if (link == Link.PARENT_ITEM_ID) {
+                            bridgeSchema = effect;
+                        }
+                        Profile profile = bridge(link);
+                        Source source = evaluate(Role.BRIDGE, profile, bridgeSchema);
+                        if (source.state() != SourceState.READY) {
+                            return new com.vibeminer.concepts.core.ConceptWarmup.Result(
+                                    List.of(
+                                            new com.vibeminer.concepts.core.ConceptWarmup.Entry(
+                                                    profile.table(),
+                                                    parentColumnName(link),
+                                                    false,
+                                                    source.state().name(),
+                                                    "Effect bridge profile not ready",
+                                                    null)));
+                        }
+                        String column = parentColumnName(link);
+                        var warmed =
+                                relations.prepare(profile.table(), column, priority, token).join();
+                        return new com.vibeminer.concepts.core.ConceptWarmup.Result(
+                                List.of(
+                                        com.vibeminer.concepts.core.ConceptWarmup.relation(
+                                                profile.table(), column, warmed)));
+                    });
+        }
+
+        private <T> CompletableFuture<T> call(
+                TableTypes.Priority priority,
+                Cancellation token,
+                java.util.function.Supplier<T> action) {
             Objects.requireNonNull(priority);
             Objects.requireNonNull(token);
             synchronized (gate) {
@@ -192,7 +235,7 @@ public final class ItemEffectsService implements ItemEffects {
                             () -> {
                                 try {
                                     token.check();
-                                    Page page = getCore(itemId, query, priority, token);
+                                    T page = action.get();
                                     token.check();
                                     return page;
                                 } finally {

@@ -17,6 +17,12 @@ public interface BuildItemEffects extends AutoCloseable {
     CompletableFuture<EffectsTypes.Page> get(
             long itemId, EffectsTypes.Query query, Priority priority, Cancellation cancellation);
 
+    default CompletableFuture<com.vibeminer.concepts.core.ConceptWarmup.Result> warmup(
+            Priority priority, Cancellation token) {
+        return CompletableFuture.failedFuture(
+                new UnsupportedOperationException("Warmup not supported"));
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override

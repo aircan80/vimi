@@ -487,6 +487,17 @@ public final class ItemsService implements Items {
         @Override
         public CompletableFuture<ItemResult> get(
                 long id, TableTypes.Priority priority, Cancellation token) {
+            return detail(id, priority, token, true);
+        }
+
+        @Override
+        public CompletableFuture<ItemResult> getData(
+                long id, TableTypes.Priority priority, Cancellation token) {
+            return detail(id, priority, token, false);
+        }
+
+        private CompletableFuture<ItemResult> detail(
+                long id, TableTypes.Priority priority, Cancellation token, boolean media) {
             if (id < 0 || id > 0xffffffffL) {
                 throw new IllegalArgumentException("Unsigned32 item id required");
             }
@@ -538,7 +549,10 @@ public final class ItemsService implements Items {
                                     error.code(),
                                     error.getMessage());
                         }
-                        var icon = icon(summary.iconFileDataId(), token);
+                        var icon =
+                                media
+                                        ? icon(summary.iconFileDataId(), token)
+                                        : deferredIcon(summary.iconFileDataId());
                         var labels =
                                 ItemClassifications.resolve(
                                         tables,
@@ -558,7 +572,9 @@ public final class ItemsService implements Items {
                                         appearances.defaultIndex(),
                                         appearances.matches(),
                                         appearances.table(),
-                                        models(appearances, token),
+                                        media
+                                                ? models(appearances, token)
+                                                : deferredModels(appearances),
                                         appearances.code(),
                                         appearances.message());
                         var icons = new ArrayList<ItemIconSourced>();
@@ -573,7 +589,13 @@ public final class ItemsService implements Items {
                                                 ItemAppearanceReader.APPEARANCE,
                                                 ItemAppearanceReader.ICON_COLUMN,
                                                 appearance.id(),
-                                                icon(appearance.defaultIconFileDataId(), token)));
+                                                (media
+                                                        ? icon(
+                                                                appearance.defaultIconFileDataId(),
+                                                                token)
+                                                        : deferredIcon(
+                                                                appearance
+                                                                        .defaultIconFileDataId()))));
                             }
                         }
                         return result(
@@ -591,6 +613,83 @@ public final class ItemsService implements Items {
                                 null,
                                 null,
                                 null);
+                    });
+        }
+
+        private ItemIcon deferredIcon(Long id) {
+            return new ItemIcon(
+                    id == null
+                            ? ItemIconState.FIELD_UNAVAILABLE
+                            : id == 0 ? ItemIconState.NO_ICON : ItemIconState.NOT_REQUESTED,
+                    id,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    List.of(),
+                    null,
+                    null,
+                    null,
+                    null);
+        }
+
+        private ItemModelRefs deferredModels(ItemAppearanceSet set) {
+            var ids = new java.util.LinkedHashSet<Long>();
+            for (var row : set.rows()) {
+                if (row.appearance().display() != null) {
+                    for (var slot : row.appearance().display().slots()) {
+                        for (var file : slot.model().files()) {
+                            ids.add(file.fileDataId());
+                        }
+                    }
+                }
+            }
+            return new ItemModelRefs(
+                    ItemModelsState.COMPLETE,
+                    ids.stream()
+                            .map(
+                                    id ->
+                                            new ItemModelRef(
+                                                    id,
+                                                    ItemModelRefState.NOT_READ,
+                                                    null,
+                                                    null,
+                                                    0,
+                                                    null,
+                                                    null,
+                                                    null,
+                                                    null))
+                            .toList(),
+                    null,
+                    null);
+        }
+
+        @Override
+        public CompletableFuture<com.vibeminer.concepts.core.ConceptWarmup.Result> warmup(
+                TableTypes.Priority priority, Cancellation token) {
+            return call(
+                    priority,
+                    token,
+                    () -> {
+                        var entries =
+                                new ArrayList<com.vibeminer.concepts.core.ConceptWarmup.Entry>();
+                        for (var recipe :
+                                List.of(
+                                        new String[] {"ItemModifiedAppearance", "ItemID"},
+                                        new String[] {
+                                            "ItemDisplayInfoMaterialRes", "ItemDisplayInfoID"
+                                        },
+                                        new String[] {"ModelFileData", "ModelResourcesID"},
+                                        new String[] {"TextureFileData", "MaterialResourcesID"})) {
+                            token.check();
+                            var result =
+                                    relations.prepare(recipe[0], recipe[1], priority, token).join();
+                            entries.add(
+                                    com.vibeminer.concepts.core.ConceptWarmup.relation(
+                                            recipe[0], recipe[1], result));
+                        }
+                        return new com.vibeminer.concepts.core.ConceptWarmup.Result(entries);
                     });
         }
 

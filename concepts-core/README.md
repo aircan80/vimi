@@ -30,3 +30,11 @@ Original C# query/cursor code regenerates checked-in synthetic goldens.
 Native Windows machine certification and large live-data performance remain
 separate. Pair budgets count logical entries; Java array growth and DTO collection
 allocation add physical overhead, so this is not an equal-heap-size claim.
+
+## Preparation and on-demand media
+
+Concept handles expose `warmup(priority, token)` with immutable per-lookup results.
+Preparation builds only reviewed, bounded table indexes and reports unsupported,
+partial or resource-limited inputs explicitly. Retain the same warmed handles in
+the application context; closing and reopening them discards in-memory indexes.
+Warmup performs no icon/model/texture I/O and does not claim universal table readiness.

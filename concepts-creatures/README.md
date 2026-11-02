@@ -37,3 +37,17 @@ To independently regenerate and compare creature goldens with the pinned referen
 ```
 
 The harness uses a friend assembly named `VibeMiner.Concepts.Tests` and a project reference to the original `VibeMiner.Concepts.csproj`. It needs the reference backend sources and locked restore packages, plus the Java repository's existing authored asset fixtures. It never rewrites checked-in goldens. No test uses live network I/O or game credentials.
+
+## Preparation and on-demand media
+
+Concept handles expose `warmup(priority, token)` with immutable per-lookup results.
+Preparation builds only reviewed, bounded table indexes and reports unsupported,
+partial or resource-limited inputs explicitly. Retain the same warmed handles in
+the application context; closing and reopening them discards in-memory indexes.
+Warmup performs no icon/model/texture I/O and does not claim universal table readiness.
+
+`getData(id, priority, token)` returns table facts and declared media identities
+without opening asset files. Existing `get` preserves full-detail compatibility
+and can be requested separately for asynchronous media enrichment. Item icons
+use NOT_REQUESTED and models NOT_READ; creature model IDs remain in display chains
+with no inspected model payload. Local queries still execute asynchronously.

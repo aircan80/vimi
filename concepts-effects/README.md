@@ -23,3 +23,11 @@ The C# harness runs the original Release `ItemEffectsService` and linked origina
 The optional harness writes fresh outputs only under `build/`. Checked-in synthetic goldens contain no game content. Text fixtures are pinned to LF to keep Windows checkout conventions out of canonical cursor comparisons. The facts projection deliberately excludes Java's new definition provenance, which fills the C# backend gap and has dedicated Java tests.
 
 All four pinned ItemEffects source files are accounted for in [PARITY.md](PARITY.md). This establishes supported behavior against synthetic and original-code fixtures; it does not certify every live build or equal physical memory/throughput. Native Windows machine testing remains the repository's deferred platform task.
+
+## Preparation and on-demand media
+
+Concept handles expose `warmup(priority, token)` with immutable per-lookup results.
+Preparation builds only reviewed, bounded table indexes and reports unsupported,
+partial or resource-limited inputs explicitly. Retain the same warmed handles in
+the application context; closing and reopening them discards in-memory indexes.
+Warmup performs no icon/model/texture I/O and does not claim universal table readiness.

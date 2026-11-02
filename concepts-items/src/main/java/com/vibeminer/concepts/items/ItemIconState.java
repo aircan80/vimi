@@ -1,6 +1,7 @@
 package com.vibeminer.concepts.items;
 
 public enum ItemIconState {
+    NOT_REQUESTED,
     FIELD_UNAVAILABLE,
     NO_ICON,
     FILES_NOT_OPEN,
