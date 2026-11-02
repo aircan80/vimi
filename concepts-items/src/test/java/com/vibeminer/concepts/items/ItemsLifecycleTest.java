@@ -269,4 +269,102 @@ final class ItemsLifecycleTest {
         }
         assertEquals(1, closes.get());
     }
+
+    @Test
+    void terminalLowerResultCannotPublishAfterExplicitCancellation() {
+        var token = new Cancellation();
+        var lower = data().forBuild(ItemsWorld.BUILD, "enUS", Cancellation.NONE).join().tables();
+        var wrapped =
+                (BuildTables)
+                        Proxy.newProxyInstance(
+                                BuildTables.class.getClassLoader(),
+                                new Class<?>[] {BuildTables.class},
+                                (proxy, method, args) -> {
+                                    Object result = invoke(lower, method, args);
+                                    if (method.getName().equals("get")) {
+                                        token.cancel();
+                                    }
+                                    return result;
+                                });
+        Tables tables =
+                (b, l, c) ->
+                        CompletableFuture.completedFuture(
+                                new TableTypes.OpenResult(
+                                        b,
+                                        l,
+                                        FileTypes.FilesOpenState.OPEN,
+                                        wrapped,
+                                        null,
+                                        null,
+                                        null));
+        try (var handle =
+                new ItemsService(
+                                tables,
+                                new MemoryFiles(),
+                                new BlpImages(new MemoryGeneratedStore()))
+                        .forBuild(ItemsWorld.BUILD, "enUS", Cancellation.NONE)
+                        .join()
+                        .items()) {
+            var failure =
+                    assertThrows(
+                            java.util.concurrent.CompletionException.class,
+                            () -> handle.get(123, ItemsWorld.PRIORITY, token).join());
+            assertTrue(failure.getCause() instanceof CancellationException);
+        }
+    }
+
+    @Test
+    void immediateObserverCancellationCannotSkipAcceptedWorkRetirement() {
+        for (int i = 0; i < 100; i++) {
+            var handle =
+                    new ItemsService(
+                                    data(),
+                                    new MemoryFiles(),
+                                    new BlpImages(new MemoryGeneratedStore()))
+                            .forBuild(ItemsWorld.BUILD, "enUS", Cancellation.NONE)
+                            .join()
+                            .items();
+            handle.get(123, ItemsWorld.PRIORITY, Cancellation.NONE).cancel(false);
+            handle.closeAsync().orTimeout(5, TimeUnit.SECONDS).join();
+        }
+    }
+
+    @Test
+    void boundedAdmissionHasNoWaitingQueueAndReleasesAfterObserverCancellation() throws Exception {
+        var lower = data().forBuild(ItemsWorld.BUILD, "enUS", Cancellation.NONE).join().tables();
+        var entered = new CountDownLatch(1);
+        var release = new CompletableFuture<Void>();
+        var wrapped = tracked(lower, new CountDownLatch(1), entered, release);
+        Tables tables =
+                (b, l, c) ->
+                        CompletableFuture.completedFuture(
+                                new TableTypes.OpenResult(
+                                        b,
+                                        l,
+                                        FileTypes.FilesOpenState.OPEN,
+                                        wrapped,
+                                        null,
+                                        null,
+                                        null));
+        var handle =
+                new ItemsService(
+                                tables,
+                                new MemoryFiles(),
+                                new BlpImages(new MemoryGeneratedStore()),
+                                new ItemsOptions(20000, 200000, 4000000, 16, 32, 8, 1))
+                        .forBuild(ItemsWorld.BUILD, "enUS", Cancellation.NONE)
+                        .join()
+                        .items();
+        var first = handle.get(123, ItemsWorld.PRIORITY, Cancellation.NONE);
+        assertTrue(entered.await(5, TimeUnit.SECONDS));
+        var rejected = handle.get(123, ItemsWorld.PRIORITY, Cancellation.NONE);
+        assertTrue(rejected.isDone());
+        var error = assertThrows(java.util.concurrent.CompletionException.class, rejected::join);
+        assertEquals("ITEMS_OPERATION_LIMIT", error.getCause().getMessage());
+        first.cancel(false);
+        var closing = handle.closeAsync();
+        assertFalse(closing.isDone());
+        release.complete(null);
+        closing.join();
+    }
 }

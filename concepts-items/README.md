@@ -26,7 +26,7 @@ Appearance provenance follows ItemModifiedAppearance -> ItemAppearance -> ItemDi
 
 Icon inspection reads BLP headers/mip availability through Files and preserves file state, content key and protected-hole keys. Detail also inspects the distinct model references in source order, up to the explicit model cap. Further models are `NOT_READ`; metadata references do not fetch skins or textures or evaluate geometry/materials. Item effects are a separate concept service.
 
-`ItemsOptions` defaults bound list scans to 20,000 rows, label scans to 200,000, relation index entries to 4,000,000, appearances to 16, resource files to 32 and model reads to 8. Fact projection refuses more than 16 cells per fact. Every limit is explicit; facts are never silently truncated.
+`ItemsOptions` defaults bound list scans to 20,000 rows, label scans to 200,000, relation index entries to 4,000,000, appearances to 16, resource files to 32 and model reads to 8. Fact projection refuses more than 16 cells per fact. Each handle also admits at most 64 concurrent list/detail operations by default (`maxConcurrentOperations`); excess calls fail immediately with `ITEMS_OPERATION_LIMIT`, with no waiting queue. Every limit is explicit; facts are never silently truncated.
 
 ## Validation
 

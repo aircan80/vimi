@@ -131,17 +131,29 @@ public final class ItemsService implements Items {
                     throw new IllegalStateException("Items handle closed");
                 }
                 token.check();
+                if (active >= options.maxConcurrentOperations()) {
+                    return CompletableFuture.failedFuture(
+                            new IllegalStateException("ITEMS_OPERATION_LIMIT"));
+                }
                 active++;
             }
-            return CompletableFuture.supplyAsync(
-                    () -> {
-                        try {
-                            return action.get();
-                        } finally {
-                            finish();
-                        }
-                    },
-                    command -> Thread.ofVirtual().start(command));
+            try {
+                return CompletableFuture.supplyAsync(
+                                () -> {
+                                    try {
+                                        T result = action.get();
+                                        token.check();
+                                        return result;
+                                    } finally {
+                                        finish();
+                                    }
+                                },
+                                command -> Thread.ofVirtual().start(command))
+                        .copy();
+            } catch (Throwable failure) {
+                finish();
+                throw failure;
+            }
         }
 
         private void finish() {

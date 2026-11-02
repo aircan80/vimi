@@ -7,9 +7,27 @@ public record ItemsOptions(
         int maxRelationIndexEntries,
         int maxAppearanceRows,
         int maxResourceFiles,
-        int maxModels) {
+        int maxModels,
+        int maxConcurrentOperations) {
     public ItemsOptions() {
-        this(20000, 200000, 4000000, 16, 32, 8);
+        this(20000, 200000, 4000000, 16, 32, 8, 64);
+    }
+
+    public ItemsOptions(
+            int maxScanRows,
+            int maxLabelScanRows,
+            int maxRelationIndexEntries,
+            int maxAppearanceRows,
+            int maxResourceFiles,
+            int maxModels) {
+        this(
+                maxScanRows,
+                maxLabelScanRows,
+                maxRelationIndexEntries,
+                maxAppearanceRows,
+                maxResourceFiles,
+                maxModels,
+                64);
     }
 
     public ItemsOptions {
@@ -18,7 +36,8 @@ public record ItemsOptions(
                 || maxRelationIndexEntries < 1
                 || maxAppearanceRows < 1
                 || maxResourceFiles < 1
-                || maxModels < 1) {
+                || maxModels < 1
+                || maxConcurrentOperations < 1) {
             throw new IllegalArgumentException("Positive item bounds required");
         }
     }
