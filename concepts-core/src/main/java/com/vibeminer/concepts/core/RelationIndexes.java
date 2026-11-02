@@ -272,39 +272,40 @@ public final class RelationIndexes {
 
     private Index build(Key key, Pending pending, Cancellation token) {
         builds.incrementAndGet();
-        token.check();
-        TableTypes.SchemaResult schema =
-                tables.schema(TableTypes.Ref.forName(key.table), pending.priority, token).join();
-        token.check();
-        if (!TableQueries.isReadable(schema.table().state())) {
-            return new Index(State.NOT_READABLE, schema.table(), null, null, 0, null, null);
-        }
-        List<Db2Types.Column> columns = schema.columns() == null ? List.of() : schema.columns();
-        int at = -1;
-        for (int i = 0; i < columns.size(); i++) {
-            Db2Types.Column c = columns.get(i);
-            if (!c.name().equals(key.column)
-                    || !c.kind().equals("integer")
-                    || c.interpretation() != null) {
-                continue;
-            }
-            if (at >= 0) {
-                at = -1;
-                break;
-            }
-            at = i;
-        }
-        if (at < 0) {
-            return new Index(
-                    State.UNSUPPORTED,
-                    schema.table(),
-                    null,
-                    null,
-                    0,
-                    COLUMN_CODE,
-                    "Relation needs one plain integer column");
-        }
         for (int attempt = 0; attempt < 2; attempt++) {
+            token.check();
+            TableTypes.SchemaResult schema =
+                    tables.schema(TableTypes.Ref.forName(key.table), pending.priority, token)
+                            .join();
+            token.check();
+            if (!TableQueries.isReadable(schema.table().state())) {
+                return new Index(State.NOT_READABLE, schema.table(), null, null, 0, null, null);
+            }
+            List<Db2Types.Column> columns = schema.columns() == null ? List.of() : schema.columns();
+            int at = -1;
+            for (int i = 0; i < columns.size(); i++) {
+                Db2Types.Column c = columns.get(i);
+                if (!c.name().equals(key.column)
+                        || !c.kind().equals("integer")
+                        || c.interpretation() != null) {
+                    continue;
+                }
+                if (at >= 0) {
+                    at = -1;
+                    break;
+                }
+                at = i;
+            }
+            if (at < 0) {
+                return new Index(
+                        State.UNSUPPORTED,
+                        schema.table(),
+                        null,
+                        null,
+                        0,
+                        COLUMN_CODE,
+                        "Relation needs one plain integer column");
+            }
             Pairs pairs = new Pairs();
             int reserved = 0;
             boolean kept = false;
@@ -321,6 +322,13 @@ public final class RelationIndexes {
                         return new Index(State.NOT_READABLE, entry, null, null, 0, null, null);
                     }
                     if (page.state() != TableTypes.PageState.OK) {
+                        stale = true;
+                        break;
+                    }
+                    if (identity == null
+                            && (!Objects.equals(schema.table().contentKey(), entry.contentKey())
+                                    || !Objects.equals(
+                                            layoutOf(schema.table()), layoutOf(entry)))) {
                         stale = true;
                         break;
                     }
@@ -387,6 +395,10 @@ public final class RelationIndexes {
             }
         }
         throw new AssertionError();
+    }
+
+    private static String layoutOf(TableTypes.Entry table) {
+        return table.counts() == null ? null : table.counts().layoutHash();
     }
 
     private static Long keyOf(Db2Types.Row row, int at) {
