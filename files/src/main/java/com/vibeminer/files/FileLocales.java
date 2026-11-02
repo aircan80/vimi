@@ -14,11 +14,11 @@ public final class FileLocales {
     private FileLocales() {}
 
     public static boolean isKnown(String locale) {
-        return NAMES.contains(locale);
+        return locale != null && NAMES.contains(locale);
     }
 
     public static long bitOf(String locale) {
-        int index = NAMES.indexOf(locale);
+        int index = locale == null ? -1 : NAMES.indexOf(locale);
         if (index < 0) {
             throw new IllegalArgumentException("Unknown locale");
         }

@@ -194,7 +194,7 @@ public final class FileTypes {
         public static final FileFilter ALL = new FileFilter(0, 0xffffffffL, null, null, null, null);
 
         public FileFilter {
-            if (fromId < 0 || toId > 0xffffffffL) {
+            if (fromId < 0 || fromId > 0xffffffffL || toId < 0 || toId > 0xffffffffL) {
                 throw new IllegalArgumentException("Invalid id range");
             }
             formats = formats == null ? null : Set.copyOf(formats);

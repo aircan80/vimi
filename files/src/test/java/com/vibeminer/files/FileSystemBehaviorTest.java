@@ -291,6 +291,14 @@ final class FileSystemBehaviorTest {
 
     @Test
     void localeValidationAndMissingLocaleAreSeparate() {
+        assertEquals(false, FileLocales.isKnown(null));
+        assertThrows(IllegalArgumentException.class, () -> FileLocales.bitOf(null));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new FileFilter(0, -1, null, null, null, null));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new FileFilter(0x100000000L, 0xffffffffL, null, null, null, null));
         var s = new FilesScenario(false).add(1, null, new byte[] {1}, true, List.of());
         assertThrows(
                 IllegalArgumentException.class,
