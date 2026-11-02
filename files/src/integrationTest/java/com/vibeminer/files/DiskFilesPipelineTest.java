@@ -158,4 +158,271 @@ final class DiskFilesPipelineTest {
             }
         }
     }
+
+    @Test
+    void historyRejectsNoncanonicalReleaseAndPartUrls() throws Exception {
+        byte[] csv = "1;A.blp\n".getBytes(StandardCharsets.UTF_8);
+        String sha = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(csv));
+        byte[] release =
+                ("{\"tag_name\":\"v1\",\"published_at\":\"2026-10-31T00:00:00Z\",\"assets\":[{\"name\":\""
+                                + SourceUrls.ASSET_NAME
+                                + "\",\"size\":"
+                                + csv.length
+                                + ",\"digest\":\"sha256:"
+                                + sha
+                                + "\",\"browser_download_url\":\""
+                                + SourceUrls.asset("v1")
+                                + "\"}]}")
+                        .getBytes(StandardCharsets.UTF_8);
+        ObjectStore objects = ObjectStore.open(temporary.resolve("observations")).join();
+        DiskGeneratedStore generated = DiskGeneratedStore.open(temporary.resolve("index")).join();
+        CachingObjectSource access = CachingObjectSource.localOnly(objects, objects);
+        try {
+            objects.appendHistory(
+                            new History.Observation(
+                                    6,
+                                    "wowlistfile",
+                                    "latest",
+                                    Instant.EPOCH,
+                                    "https://example.invalid/release",
+                                    release),
+                            com.vibeminer.store.Cancellation.NONE)
+                    .join();
+            objects.appendHistory(
+                            new History.Observation(
+                                    7,
+                                    "v1",
+                                    "p0",
+                                    Instant.EPOCH,
+                                    "https://example.invalid/asset",
+                                    csv),
+                            com.vibeminer.store.Cancellation.NONE)
+                    .join();
+            assertEquals(
+                    FileNamesState.NOT_READY,
+                    new CommunityFileNames(
+                                    access, generated, c -> CompletableFuture.completedFuture(true))
+                            .status(Cancellation.NONE)
+                            .join()
+                            .state());
+            objects.appendHistory(
+                            new History.Observation(
+                                    6,
+                                    "wowlistfile",
+                                    "latest",
+                                    Instant.EPOCH.plusSeconds(1),
+                                    SourceUrls.LATEST_RELEASE.toString(),
+                                    release),
+                            com.vibeminer.store.Cancellation.NONE)
+                    .join();
+            assertEquals(
+                    FileNamesState.NOT_READY,
+                    new CommunityFileNames(
+                                    access, generated, c -> CompletableFuture.completedFuture(true))
+                            .status(Cancellation.NONE)
+                            .join()
+                            .state());
+            // Equal times use history record order, not append order. Choose an earlier bad row.
+            History.Observation goodPart =
+                    new History.Observation(
+                            7,
+                            "v1",
+                            "p0",
+                            Instant.EPOCH.plusSeconds(1),
+                            SourceUrls.asset("v1").toString(),
+                            csv);
+            ObjectKey goodRecord = History.objects(goodPart).get(1).key();
+            byte[] earlierBad = null;
+            for (int i = 0; i < 1000; i++) {
+                byte[] candidate = ("bad" + i).getBytes(StandardCharsets.UTF_8);
+                History.Observation badPart =
+                        new History.Observation(
+                                7,
+                                "v1",
+                                "p0",
+                                Instant.EPOCH.plusSeconds(1),
+                                SourceUrls.asset("v1").toString(),
+                                candidate);
+                if (History.objects(badPart).get(1).key().compareTo(goodRecord) < 0) {
+                    earlierBad = candidate;
+                    break;
+                }
+            }
+            org.junit.jupiter.api.Assertions.assertNotNull(earlierBad);
+            objects.appendHistory(
+                            new History.Observation(
+                                    7,
+                                    "v1",
+                                    "p0",
+                                    Instant.EPOCH.plusSeconds(1),
+                                    SourceUrls.asset("v1").toString(),
+                                    earlierBad),
+                            com.vibeminer.store.Cancellation.NONE)
+                    .join();
+            objects.appendHistory(
+                            new History.Observation(
+                                    7,
+                                    "v1",
+                                    "p0",
+                                    Instant.EPOCH.plusSeconds(1),
+                                    SourceUrls.asset("v1").toString(),
+                                    csv),
+                            com.vibeminer.store.Cancellation.NONE)
+                    .join();
+            CommunityFileNames names =
+                    new CommunityFileNames(
+                            access, generated, c -> CompletableFuture.completedFuture(true));
+            assertEquals(FileNamesState.READY, names.status(Cancellation.NONE).join().state());
+            assertEquals(
+                    "A.blp",
+                    names.current(Cancellation.NONE).join().nameOf(1, Cancellation.NONE).join());
+        } finally {
+            access.closeAsync().join();
+            generated.closeAsync().join();
+            objects.closeAsync().join();
+        }
+    }
+
+    @Test
+    void repeatedMalformedDeltaDocumentsDoNotHideOlderValidCopy() throws Exception {
+        byte[] base = "1;A.blp\n".getBytes(StandardCharsets.UTF_8),
+                target = "1;B.blp\n2;C.m2\n".getBytes(StandardCharsets.UTF_8);
+        String baseSha =
+                HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(base));
+        String targetSha =
+                HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(target));
+        byte[] delta =
+                com.vibeminer.files.names.ListfileDelta.encode(
+                        new java.io.ByteArrayInputStream(base),
+                        new java.io.ByteArrayInputStream(target),
+                        baseSha,
+                        targetSha,
+                        target.length,
+                        1 << 20,
+                        Cancellation.NONE);
+        ObjectStore objects = ObjectStore.open(temporary.resolve("delta-objects")).join();
+        DiskGeneratedStore generated =
+                DiskGeneratedStore.open(temporary.resolve("delta-index")).join();
+        CachingObjectSource access = CachingObjectSource.localOnly(objects, objects);
+        try {
+            for (String tag : List.of("v1", "v2")) {
+                String sha = tag.equals("v1") ? baseSha : targetSha;
+                int size = tag.equals("v1") ? base.length : target.length;
+                byte[] release =
+                        ("{\"tag_name\":\""
+                                        + tag
+                                        + "\",\"published_at\":\"2026-10-31T00:00:00Z\",\"assets\":[{\"name\":\""
+                                        + SourceUrls.ASSET_NAME
+                                        + "\",\"size\":"
+                                        + size
+                                        + ",\"digest\":\"sha256:"
+                                        + sha
+                                        + "\",\"browser_download_url\":\""
+                                        + SourceUrls.asset(tag)
+                                        + "\"}]}")
+                                .getBytes(StandardCharsets.UTF_8);
+                objects.appendHistory(
+                                new History.Observation(
+                                        6,
+                                        "wowlistfile",
+                                        "latest",
+                                        Instant.EPOCH.plusSeconds(tag.equals("v1") ? 0 : 1),
+                                        SourceUrls.LATEST_RELEASE.toString(),
+                                        release),
+                                com.vibeminer.store.Cancellation.NONE)
+                        .join();
+            }
+            objects.appendHistory(
+                            new History.Observation(
+                                    7,
+                                    "v1",
+                                    "p0",
+                                    Instant.EPOCH,
+                                    SourceUrls.asset("v1").toString(),
+                                    base),
+                            com.vibeminer.store.Cancellation.NONE)
+                    .join();
+            objects.appendHistory(
+                            new History.Observation(
+                                    8,
+                                    "v2",
+                                    "delta",
+                                    Instant.EPOCH.plusSeconds(1),
+                                    "https://example.invalid/delta",
+                                    delta),
+                            com.vibeminer.store.Cancellation.NONE)
+                    .join();
+            assertEquals(
+                    "v1",
+                    new CommunityFileNames(
+                                    access, generated, c -> CompletableFuture.completedFuture(true))
+                            .status(Cancellation.NONE)
+                            .join()
+                            .tag());
+            objects.appendHistory(
+                            new History.Observation(
+                                    8,
+                                    "v2",
+                                    "delta",
+                                    Instant.EPOCH.plusSeconds(1),
+                                    SourceUrls.asset("v2").toString(),
+                                    delta),
+                            com.vibeminer.store.Cancellation.NONE)
+                    .join();
+            // More than eight distinct candidates at equal time: C# keeps earlier cursor rows.
+            ObjectKey validRecord =
+                    History.objects(
+                                    new History.Observation(
+                                            8,
+                                            "v2",
+                                            "delta",
+                                            Instant.EPOCH.plusSeconds(1),
+                                            SourceUrls.asset("v2").toString(),
+                                            delta))
+                            .get(1)
+                            .key();
+            int inserted = 0;
+            for (int i = 0; inserted < 9 && i < 1000; i++) {
+                History.Observation malformed =
+                        new History.Observation(
+                                8,
+                                "v2",
+                                "delta",
+                                Instant.EPOCH.plusSeconds(1),
+                                SourceUrls.asset("v2").toString(),
+                                ("invalid" + i).getBytes(StandardCharsets.UTF_8));
+                if (History.objects(malformed).get(1).key().compareTo(validRecord) > 0) {
+                    objects.appendHistory(malformed, com.vibeminer.store.Cancellation.NONE).join();
+                    inserted++;
+                }
+            }
+            assertEquals(9, inserted);
+            for (int n = 0; n < 12; n++) {
+                objects.appendHistory(
+                                new History.Observation(
+                                        8,
+                                        "v2",
+                                        "delta",
+                                        Instant.EPOCH.plusSeconds(n + 2),
+                                        SourceUrls.asset("v2").toString(),
+                                        new byte[] {1}),
+                                com.vibeminer.store.Cancellation.NONE)
+                        .join();
+            }
+            CommunityFileNames names =
+                    new CommunityFileNames(
+                            access, generated, c -> CompletableFuture.completedFuture(true));
+            assertEquals("v2", names.status(Cancellation.NONE).join().tag());
+            assertEquals(
+                    "B.blp",
+                    names.current(Cancellation.NONE).join().nameOf(1, Cancellation.NONE).join());
+            assertEquals(
+                    "C.m2",
+                    names.current(Cancellation.NONE).join().nameOf(2, Cancellation.NONE).join());
+        } finally {
+            access.closeAsync().join();
+            generated.closeAsync().join();
+            objects.closeAsync().join();
+        }
+    }
 }

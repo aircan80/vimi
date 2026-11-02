@@ -613,7 +613,7 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
   VMLD delta chains, resumable staging and offline reconstruction. Healthy obsolete
   generated indexes are retained conservatively until reachability collection; see
   files/NAMES.md for this qualification and admission/resource bounds.
-- Local root check/assemble passes. New Files evidence: 71 unit + 1 disk pipeline
+- Local root check/assemble passes. New Files evidence: 72 unit + 3 disk pipeline/recovery
   + 4 bidirectional C# exchange cases, no skips/failures. The pipeline reopens real
   object/generated stores and reconstructs names after deleting the index.
 - Review fixed Ensure cancellation after a result-valued lower-layer response and
@@ -624,3 +624,10 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
   Assets review is correcting a real Files stream monitor deadlock; all fixes need
   regression evidence before merge. Root owns shared CI/Gradle integration.
 - Hands-on Windows testing remains deferred; hosted checks retain all platforms.
+
+- Final Files review additionally corrected canonical-source history filtering,
+  equal-timestamp part selection, duplicate release/delta document handling and
+  bounded per-part/per-document retention. Regressions cover noncanonical URLs,
+  tie cursor order, repeated malformed deltas and restart after multipart cancel
+  (staged part reused, no premature history/index publication). All 79 Files cases
+  pass locally including 4 C# exchange cases.

@@ -16,6 +16,7 @@ import com.vibeminer.generated.GeneratedTypes;
 import com.vibeminer.generated.GeneratedTypes.ReadState;
 import com.vibeminer.network.SourceUrls;
 import com.vibeminer.store.History;
+import com.vibeminer.store.ObjectKey;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -34,6 +35,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -334,7 +336,11 @@ public final class CommunityFileNames implements FileNames {
 
     private List<ListfileRelease> releases(List<History.Entry> entries, Cancellation c) {
         List<ListfileRelease> found = new ArrayList<>();
+        Set<ObjectKey> documents = new HashSet<>();
         for (History.Entry entry : entries) {
+            if (!documents.add(entry.document())) {
+                continue;
+            }
             byte[] bytes = held(entry, c);
             if (bytes != null) {
                 try {
@@ -350,6 +356,8 @@ public final class CommunityFileNames implements FileNames {
     private List<History.Entry> history(
             String product, String region, ObservationKind kind, Cancellation c) {
         ArrayDeque<History.Entry> entries = new ArrayDeque<>();
+        Map<String, History.Entry> latestParts = new LinkedHashMap<>();
+        Map<ObjectKey, History.Entry> latestDeltas = new LinkedHashMap<>();
         History.Entry after = null;
         for (int page = 0; page < 1000; page++) {
             c.check();
@@ -362,21 +370,69 @@ public final class CommunityFileNames implements FileNames {
             for (History.Entry e : batch) {
                 if (e.kind() == kind.historyKind()
                         && Objects.equals(e.product(), product)
-                        && (region == null || Objects.equals(region, e.region()))) {
-                    entries.addLast(e);
-                    if (entries.size() > 4096) {
-                        entries.removeFirst();
+                        && (region == null || Objects.equals(region, e.region()))
+                        && canonicalHistoryUrl(e, kind)) {
+                    if (kind == ObservationKind.LISTFILE_PART) {
+                        if (ObservationRequest.partIndex(e.region()) != null) {
+                            History.Entry kept = latestParts.get(e.region());
+                            if (kept == null || !e.observedAt().isBefore(kept.observedAt())) {
+                                latestParts.remove(e.region());
+                                latestParts.put(e.region(), e);
+                            }
+                        }
+                    } else if (kind == ObservationKind.LISTFILE_DELTA) {
+                        History.Entry kept = latestDeltas.get(e.document());
+                        if (kept == null || e.observedAt().isAfter(kept.observedAt())) {
+                            latestDeltas.remove(e.document());
+                            latestDeltas.put(e.document(), e);
+                            if (latestDeltas.size() > 8) {
+                                History.Entry oldest = null;
+                                for (History.Entry candidate : latestDeltas.values()) {
+                                    // DeltaTo uses a stable descending time sort: earlier cursor
+                                    // row wins ties.
+                                    if (oldest == null
+                                            || !candidate
+                                                    .observedAt()
+                                                    .isAfter(oldest.observedAt())) {
+                                        oldest = candidate;
+                                    }
+                                }
+                                latestDeltas.remove(Objects.requireNonNull(oldest).document());
+                            }
+                        }
+                    } else {
+                        entries.addLast(e);
+                        if (entries.size() > 4096) {
+                            entries.removeFirst();
+                        }
                     }
                 }
             }
             if (batch.size() < 1000) {
-                ArrayList<History.Entry> result = new ArrayList<>(entries);
+                ArrayList<History.Entry> result =
+                        new ArrayList<>(
+                                kind == ObservationKind.LISTFILE_PART
+                                        ? latestParts.values()
+                                        : kind == ObservationKind.LISTFILE_DELTA
+                                                ? latestDeltas.values()
+                                                : entries);
+                if (kind != ObservationKind.LISTFILE_DELTA) {
+                    Collections.reverse(result); // Later part/release cursor row wins ties.
+                }
                 result.sort(Comparator.comparing(History.Entry::observedAt).reversed());
                 return result;
             }
             after = batch.getLast();
         }
         throw fail("LISTFILE_FETCH_FAILED", "History walk exceeds bound", null);
+    }
+
+    private static boolean canonicalHistoryUrl(History.Entry entry, ObservationKind kind) {
+        if (kind == ObservationKind.LISTFILE_RELEASE) {
+            return SourceUrls.LATEST_RELEASE.toString().equals(entry.url());
+        }
+        return ObservationRequest.validTag(entry.product())
+                && SourceUrls.asset(entry.product()).toString().equals(entry.url());
     }
 
     private byte[] held(History.Entry entry, Cancellation c) {
@@ -455,8 +511,11 @@ public final class CommunityFileNames implements FileNames {
             if (!h.targetSha256().equals(release.sha256()) || h.targetSize() != release.size()) {
                 continue;
             }
+            Set<String> baseTags = new HashSet<>();
             for (ListfileRelease base : releases) {
-                if (!base.tag().equals(release.tag()) && base.sha256().equals(h.baseSha256())) {
+                if (!base.tag().equals(release.tag())
+                        && base.sha256().equals(h.baseSha256())
+                        && baseTags.add(base.tag())) {
                     Stored before = resolve(base, releases, depth + 1, budget, c);
                     if (before != null) {
                         List<byte[]> deltas = new ArrayList<>(before.deltas);
