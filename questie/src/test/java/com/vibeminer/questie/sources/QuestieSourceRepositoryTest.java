@@ -485,6 +485,19 @@ final class QuestieSourceRepositoryTest {
         }
     }
 
+    @Test
+    void closeIsIdempotentRejectsNewWorkAndReleasesOwnedDirectory() throws Exception {
+        var repo = open();
+        repo.refresh(Cancellation.NONE).join();
+        repo.closeAsync().get(2, java.util.concurrent.TimeUnit.SECONDS);
+        repo.closeAsync().get(2, java.util.concurrent.TimeUnit.SECONDS);
+        assertThrows(CompletionException.class, () -> repo.refresh(Cancellation.NONE).join());
+        assertThrows(CompletionException.class, () -> repo.snapshots(Cancellation.NONE).join());
+        try (var reopened = open()) {
+            assertEquals("v1", reopened.releases(Cancellation.NONE).join().getFirst().tag());
+        }
+    }
+
     private static long childCount(Path path) {
         try (var children = Files.list(path)) {
             return children.count();

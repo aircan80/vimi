@@ -1002,18 +1002,35 @@ public final class QuestieSourceRepository implements AutoCloseable {
         var result = closing;
         Thread.startVirtualThread(
                 () -> {
-                    try {
-                        while (!worker.awaitTermination(1, TimeUnit.SECONDS)) {
-                            /* Drain accepted work. */
+                    Throwable failure = null;
+                    boolean interrupted = false;
+                    while (!worker.isTerminated()) {
+                        try {
+                            worker.awaitTermination(1, TimeUnit.SECONDS);
+                        } catch (InterruptedException interruption) {
+                            // Resource ownership outlives outward interruption; finish draining.
+                            interrupted = true;
                         }
-                        if (lock != null) {
-                            lock.release();
+                    }
+                    for (AutoCloseable resource : new AutoCloseable[] {http, lock, lockChannel}) {
+                        if (resource != null) {
+                            try {
+                                resource.close();
+                            } catch (Throwable cleanupFailure) {
+                                if (failure == null) {
+                                    failure = cleanupFailure;
+                                } else {
+                                    failure.addSuppressed(cleanupFailure);
+                                }
+                            }
                         }
-                        if (lockChannel != null) {
-                            lockChannel.close();
-                        }
+                    }
+                    if (interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                    if (failure == null) {
                         result.complete(null);
-                    } catch (Throwable failure) {
+                    } else {
                         result.completeExceptionally(failure);
                     }
                 });
