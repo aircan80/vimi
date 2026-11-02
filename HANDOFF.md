@@ -838,3 +838,25 @@ certified WoW Forever 1.60.1.70707 final-tooltip parity; see docs/item-attribute
 Source facts/C# compatibility remain unchanged. Checks, real SQLite grid/reopen
 integration, authored JavaFX UI review and items/tables/generated C# interop passed.
 Native hands-on Windows certification/packaging remain deferred.
+
+
+## Independent Questie backend (2026-11-02)
+
+Added `:questie` without changing existing build/file/format/game-concept services.
+It checks official QuestieDB releases, preserves immutable per-flavor original
+packages plus raw metadata/notices, and prepares separate versioned SQLite data.
+The public `QuestieRepository` facade and CLI support offline local version
+listings, entity lookup, paged search, lightweight typed item sources and recorded
+field comparison. No Questie GUI wiring or build-opening dependency is added.
+
+Preparation is Java-only and represents static corrected baked data; runtime
+character/season corrections remain unevaluated. Unknown references remain explicit.
+Source integrity, cancellation/deadlines, drain/close, retained versions, locale
+fallback and schema validation have deterministic/native coverage. Hosted CI includes
+the new module. Root `check assemble` passed locally with the native SQLite override.
+
+Live opt-in smoke downloaded official Forever v1.0.9 and v1.0.10 into a temporary
+library, retained both, prepared 46,957 entities each, verified English plus nine
+translations and independently decoded source counts. Rechecking/resyncing latest
+reused original and prepared data without download/reimport. No upstream archive
+is checked into Git. See questie/README.md and questie/UPSTREAM.md.

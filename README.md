@@ -3,7 +3,9 @@
 Java desktop port of VibeMiner using its seven-layer architecture, with a JavaFX
 interface for build discovery, preparation and research. See the
 [architecture overview](architecture.md) for a high-level component table and
-Mermaid diagram, including the independent Questie backend being integrated.
+Mermaid diagram, including the independent Questie backend.
+Download, preparation and local query commands are documented in the
+[Questie backend guide](questie/README.md).
 
 ## Setup
 

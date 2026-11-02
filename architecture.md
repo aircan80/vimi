@@ -19,7 +19,7 @@ flowchart TB
         L7 -->|"Catalog and opening"| L3
     end
 
-    subgraph Questie["Independent Questie backend · being integrated"]
+    subgraph Questie["Independent Questie backend"]
         Q["Questie application service<br/>Versions · preparation · local queries · comparisons"]
         Fetch["Official release discovery and downloads"]
         Raw[("Original versioned archives<br/>Manifests · hashes · notices")]
