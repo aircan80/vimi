@@ -289,3 +289,8 @@ For integration:
    branch deliberately contains no root build/CI/lockfile changes.
 
 Closing a live build retains its last assessed milestone/locale in the current app session, shown as Closed. After app restart, unassessed cache is not labeled unprepared. Cached artifacts still require verification on reopen.
+
+Durable preparation caches now restore immutable file facts and completed table
+outcomes. Files does not perform a full mutable presence/name scan on initial
+catalog creation or reopen. Presence is shown as unassessed globally and checked
+per browser page. See README Durable reopen; no old status is trusted permanently.

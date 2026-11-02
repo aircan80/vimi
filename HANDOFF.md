@@ -2,6 +2,19 @@
 
 ## Latest status — 2026-11-01
 
+- Durable preparation cache: Layer 4 PreparedFileCatalog persists locale-scoped
+  immutable file records in generated RecordFile storage. Restore validates its
+  build/ROOT/ENCODING/locale/version identity and stored segments without file
+  enumeration, name lookups or a full presence scan. Presence is live per visible
+  page and is not restored as current. Layer 5 PreparedTablesCache persists the
+  completed known-table ledger and verifies readable local graphs before reuse.
+  Identity includes definitions/catalog/policy and key fingerprints; explicit
+  enrichment still reassesses tables. Native cold-store reopen regression forbids
+  the full fileDataIds enumeration on round two.
+- Synthetic native-disk benchmark, 1,200,000 records: initial catalog+close 13.794s,
+  store reopen 0.005s, catalog restore/integrity validation 0.040s; zero repeat
+  enumerations/resolutions. This excludes real build parsing and table/concept
+  handle initialization and is not a certified live-build timing.
 - Research query fix: Items/Creatures now accept up to 500 rows in Java and
   the browser requests 100. Both validators are exercised by GUI query tests.
   Previously a 100-row UI request exceeded the inherited 50-row service limit;

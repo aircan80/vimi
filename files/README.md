@@ -102,3 +102,26 @@ may provide an extension-only format hint. Without a name, format is `UNKNOWN`, 
 content read cached a detected format. Format filters apply to these metadata-only hints. Existing
 `list` retains its content-aware behavior. Providers that have not implemented metadata-only listing
 explicitly throw `UnsupportedOperationException`; the default never falls back to sniffing content.
+
+## Prepared immutable file catalog
+
+`PreparedFileCatalog` stores selected-locale IDs, decoded/encoded lengths and keys,
+locale flags and content flags in generated RecordFile segments. Source identity
+includes product/configurations, ROOT/ENCODING, region/locale and format revision.
+It uses the authenticated Build resolver, without payload, name or presence I/O.
+The final manifest is published only after segments are durable. Cancelled passes
+never publish a completed manifest. A compatible restore validates segment integrity
+without resolving/enumerating files. Damage or identity changes cause a cache miss.
+Names, inferred types and local presence remain independently changing facts.
+
+Explicit synthetic disk measurement (not part of normal checks):
+
+```sh
+./gradlew :files:preparedCatalogBenchmark -PcatalogBenchmarkRecords=1200000 -PsqliteLibrary=/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib
+```
+
+Local Apple Silicon/JDK25 measurement: 1,200,000 synthetic records took 13.794s for
+initial catalog+store close, 0.005s for store reopen, and 0.040s for restore with
+integrity validation. Repeat enumerations and resolutions were both zero. OS file
+cache was warm; this excludes real ROOT/index parsing, CDN and table/concept work.
+It is algorithmic evidence, not a certified live-build performance claim.

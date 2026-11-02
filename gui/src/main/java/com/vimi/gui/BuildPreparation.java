@@ -39,7 +39,12 @@ public final class BuildPreparation {
         FAILED
     }
 
-    public record FilesSummary(long files, long stored, long unknownSize) {}
+    public record FilesSummary(
+            long files, long stored, long unknownSize, boolean presenceAssessed) {
+        public FilesSummary(long files, long stored, long unknownSize) {
+            this(files, stored, unknownSize, true);
+        }
+    }
 
     public record Counter(long done, Long total, String unit) {
         public Counter {

@@ -53,7 +53,9 @@ public record OverviewPresentation(
                         : new Metric(
                                 count(fileSummary.files()),
                                 "Distinct FileDataIDs · Selected variants stored at last file assessment: "
-                                        + count(fileSummary.stored()));
+                                        + (fileSummary.presenceAssessed()
+                                                ? count(fileSummary.stored())
+                                                : "Not assessed; checked while browsing"));
         long present = snapshot.tables().stream().filter(OverviewPresentation::present).count();
         long readable = snapshot.tables().stream().filter(OverviewPresentation::readable).count();
         long partial =
@@ -116,6 +118,11 @@ public record OverviewPresentation(
                                     : Math.min(1, (double) snapshot.done() / snapshot.total());
             } else if (snapshot.done() > 0)
                 counter = count(snapshot.done()) + " " + snapshot.unit();
+            else
+                counter =
+                        snapshot.unit() != null && snapshot.unit().contains(" ")
+                                ? snapshot.unit()
+                                : "";
         } else if (namesRunning) counter = "Filename coverage is not measured";
         var issues = new ArrayList<>(snapshot.issues());
         if (snapshot.problem() != null) issues.add(snapshot.problem());

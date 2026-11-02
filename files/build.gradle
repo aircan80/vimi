@@ -138,3 +138,17 @@ tasks.register('interopTest', Test) {
     inputs.files(fileTree(filesCsharp.dir('bin/Debug/net10.0')))
     shouldRunAfter tasks.named('integrationTest')
 }
+
+// Explicit local measurement, not a unit/CI test or a live CDN benchmark.
+tasks.register('preparedCatalogBenchmark', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.files.PreparedCatalogBenchmark'
+    args providers.gradleProperty('catalogBenchmarkRecords').orElse('1200000').get()
+    maxHeapSize = '1g'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    def library = providers.gradleProperty('sqliteLibrary')
+    if (library.isPresent()) {
+        systemProperty 'vibeminer.sqlite.library', library.get()
+    }
+}

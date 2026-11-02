@@ -136,3 +136,17 @@ context; later enrichment creates a replacement generation/handle. Generated
 table identities already include definition/source and relevant key fingerprints.
 Catalog entries without a known nonzero FileDataID are not addressable by this
 API and cannot be claimed as downloaded.
+
+## Completed inventory persistence
+
+`PreparedTablesCache` saves the full completed known-table ledger, retaining
+protected/partial/absent outcomes and reasons. Its caller supplies the stable
+build/locale, catalog/definition, reader policy and key-fingerprint identity.
+Restore uses a **local-only** table handle to validate readable generated graphs;
+incompatible/missing artifacts produce a cache miss. It never calls prepareKnown,
+ensure or online acquisition during restore. Failed/canceled/unchecked passes
+cannot overwrite a completed inventory. Explicit enrichment may replace it.
+
+The small inventory pointer is replaceable derived data over immutable decoded
+row graphs. A crash/store failure during pointer replacement yields a cache miss;
+it cannot publish a false ready state or remove the underlying table rows.
