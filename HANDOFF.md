@@ -25,8 +25,8 @@
   `gui/design` commit `7b30528` was imported via PR #51, fast-forward merged at
   `f486158` after green hosted checks; the original
   worktree remains untouched. Builds now connects offline catalog listing, explicit
-  refresh and provenance inspection; real opening and all later screens remain
-  pending. `--mock` preserves the approved full design preview. Catalog startup and
+  refresh and provenance inspection. Real opening is merged via PR #52 at
+  `2e6f3e2`; later Overview/research screens remain pending. `--mock` preserves the approved full design preview. Catalog startup and
   refresh show an indeterminate activity indicator and busy button label; lower
   layers were not modified to add progress.
 - GUI is a root subproject with locked JavaFX dependencies confined to layer 7.
@@ -34,7 +34,7 @@
   harness, 10 adapter contracts, native persisted-history/reopen checks and 18 CI
   helper tests. A live refresh returned 42 rows with no reported issues.
   Hosted unit/integration checks passed on Linux, macOS and Windows; Linux crash
-  recovery and C# interoperability passed. Real opening/preparation is next.
+  recovery and C# interoperability passed. Real opening is connected; measured progress and real Overview preparation remain next.
 - Separate Settings mockups may continue in the GUI design worktree, isolated in
   Settings files/scoped styling with a separate handoff; avoid Builds/shared
   service/navigation edits there during integration.
@@ -770,11 +770,20 @@ separate; layer 7 owns JavaFX composition, application settings/jobs and renderi
 
 ## Real build opening integration
 
-Work on `integration/gui-opening` connects Open build to the existing BuildOpener
+PR #52 fast-forward merged `2e6f3e2` after all hosted checks passed. This connects Open build to the existing BuildOpener
 through app-owned BuildOpening. Exact regional CDN evidence is selected explicitly.
 The indeterminate popup offers Hide/Cancel; hidden completion never forces
 navigation. Success displays real authenticated metadata, not mock Overview data.
 Application shutdown drains/cancels the operation before closing its dependencies.
 No lower-layer progress API is added. Full root check/assemble and GUI installDist
 pass; 8 opening contracts, 10 catalog adapter contracts, prototype checks and native
-composition/reopen checks pass. Hosted integration is pending.
+composition/reopen checks pass. Hosted Linux/macOS/Windows checks and Linux
+crash/C# compatibility pass. US is preferred when observed; hidden activity
+retains a spinner, elapsed time, View and cancellation state.
+
+Read-only progress review recommends shared-flight phase snapshots with optional
+measured counters (configs/index counts first, parser pages/chunks later), bounded
+latest-only delivery and no arbitrary overall percentage. Layer 2 batch progress
+exists but is object-completion-only; live byte telemetry would require further
+L1/L2 work and retry/shared-transfer accounting. No progress API changes have been
+implemented. Initial Overview readiness is separate from full ROOT/index opening.
