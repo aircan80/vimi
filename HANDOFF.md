@@ -632,7 +632,7 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
   (staged part reused, no premature history/index publication). All 79 Files cases
   pass locally including 4 C# exchange cases.
 
-## Layer 5 asset integration (active PR)
+## Layer 5 asset integration (merged PR #47)
 
 - `formats-assets/` implementation is complete within its pinned C# supported profiles:
   BLP2 decoding, Files adapters/generated caches, native M2/SKIN and dependencies,
@@ -659,3 +659,29 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
   are pinned LF; expected text is normalized, while production identities remain LF.
   Gzip wrappers compare their verified decompressed original payload, and VMG1/VMIM
   retain byte-exact checks. Local full assets checks/interop pass after regressions.
+
+## Layer 5 tables final integration (active PR)
+
+- Files PR #46 merged fast-forward at 147b71b; assets PR #47 merged at 3e501fb
+  after corrected hosted unit 41367153727, integration 41367153827 and compatibility
+  41367153790 all passed. Assets add 81 unit + 1 native pipeline + 2 interop cases.
+- Tables own commits 52b9664/cabb846 integrated without duplicated Files dependencies.
+  All pinned table component families are present: WDC3/4/5 readers, DBD/schema,
+  bundled/fetched definitions, generated rows/identities, queries/relationships,
+  TACT bootstrap, bounded background generation/protected-ID caches and preload jobs,
+  with independent fixtures/shared contracts. See formats-tables/README.md.
+- Review regressions cover shared-builder cancellation ownership, .NET float text
+  (2,048 C# goldens), malformed/null generated metadata repair, handle fetch budgets,
+  aggregate raw evidence, callback/provider cleanup and immutable job completion views.
+- Full root check/assemble, crash and ALL interop suites pass on macOS ARM64:
+  933 cases total, no failures/errors/skips. Module counts: object-store366,
+  generated51, network94, access91, builds107, files79, assets84, tables61.
+  Tables contribute 57 unit + 1 real native pipeline + 3 C# exchange/golden cases.
+- The table pipeline deletes the encoded DB2 after reopening object/generated stores
+  and still verifies identical generated identity/schema/rows/copies. Standalone javac
+  public Files/Formats consumer compiles against only the eight project JARs. All
+  formatting, Checkstyle, compiler warnings-as-errors and 15 CI helper checks pass.
+- Tables are awaiting hosted validation and automatic ff-only integration. Issue #45
+  closes only after that merge. Native Windows certification, real-corpus performance
+  and release packaging remain deferred. Layers 6–7 are future implementation scope.
+  The separate gui/design worktree is the user's independent mock GUI session.
