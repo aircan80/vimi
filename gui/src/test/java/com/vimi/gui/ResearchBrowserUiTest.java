@@ -393,7 +393,11 @@ public final class ResearchBrowserUiTest {
 
     public static void main(String[] args) throws Exception {
         var start = new CompletableFuture<Void>();
-        Platform.startup(() -> start.complete(null));
+        Platform.startup(
+                () -> {
+                    Platform.setImplicitExit(false);
+                    start.complete(null);
+                });
         start.get(15, TimeUnit.SECONDS);
         try {
             Path output = Path.of(System.getProperty("vimi.uiReviewDirectory", "build/ui-review"));
@@ -560,12 +564,111 @@ public final class ResearchBrowserUiTest {
                 }
                 fx(() -> browser.get().close());
             }
+            dropdownContrast();
             staleReplies();
             System.out.println(
                     "Passed rendered Files/Tables/Items/Creatures, attribute tooltip, table row navigation and stale/closed request retirement");
         } finally {
             Platform.exit();
         }
+    }
+
+    private static void dropdownContrast() throws Exception {
+        var stage = new AtomicReference<javafx.stage.Stage>();
+        var browser = new AtomicReference<ResearchBrowser>();
+        fx(
+                () -> {
+                    var view = new ResearchBrowser("Items", new Fixture(), name -> {});
+                    browser.set(view);
+                    var window = new javafx.stage.Stage();
+                    stage.set(window);
+                    window.setX(-10000);
+                    window.setY(-10000);
+                    var scene = new Scene(view, 1320, 850);
+                    scene.getStylesheets()
+                            .add(ResearchBrowser.class.getResource("/vimi.css").toExternalForm());
+                    window.setScene(scene);
+                    window.show();
+                    view.ensureLoaded();
+                });
+        flush();
+        try {
+            fx(() -> itemFilter(browser.get(), "Class").show());
+            flush();
+            fx(
+                    () -> {
+                        var popup =
+                                javafx.stage.Window.getWindows().stream()
+                                        .filter(
+                                                window ->
+                                                        window instanceof javafx.stage.PopupWindow
+                                                                && window.isShowing())
+                                        .findFirst()
+                                        .orElseThrow();
+                        var root = popup.getScene().getRoot();
+                        root.applyCss();
+                        root.layout();
+                        var hovered =
+                                root.lookupAll(".list-cell").stream()
+                                        .filter(
+                                                node ->
+                                                        node
+                                                                        instanceof
+                                                                        javafx.scene.control
+                                                                                                .ListCell<
+                                                                                        ?>
+                                                                                cell
+                                                                && "Quest".equals(cell.getText()))
+                                        .map(node -> (javafx.scene.control.ListCell<?>) node)
+                                        .findFirst()
+                                        .orElseThrow();
+                        hovered.pseudoClassStateChanged(
+                                javafx.css.PseudoClass.getPseudoClass("hover"), true);
+                        root.applyCss();
+                        assertCellColors(hovered, "#243e3c", "#dceee6");
+                        var selected =
+                                root.lookupAll(".list-cell").stream()
+                                        .filter(
+                                                node ->
+                                                        node
+                                                                        instanceof
+                                                                        javafx.scene.control
+                                                                                                .ListCell<
+                                                                                        ?>
+                                                                                cell
+                                                                && cell.isSelected())
+                                        .map(node -> (javafx.scene.control.ListCell<?>) node)
+                                        .findFirst()
+                                        .orElseThrow();
+                        assertCellColors(selected, "#ffffff", "#137b70");
+                        selected.pseudoClassStateChanged(
+                                javafx.css.PseudoClass.getPseudoClass("hover"), true);
+                        root.applyCss();
+                        assertCellColors(selected, "#ffffff", "#137b70");
+                        itemFilter(browser.get(), "Class").hide();
+                    });
+        } finally {
+            fx(
+                    () -> {
+                        browser.get().close();
+                        stage.get().close();
+                    });
+        }
+    }
+
+    private static void assertCellColors(
+            javafx.scene.control.ListCell<?> cell, String text, String background) {
+        if (!javafx.scene.paint.Color.web(text).equals(cell.getTextFill())
+                || cell.getBackground().getFills().stream()
+                        .noneMatch(
+                                fill ->
+                                        javafx.scene.paint.Color.web(background)
+                                                .equals(fill.getFill())))
+            throw new AssertionError(
+                    "Unreadable dropdown state: text="
+                            + cell.getTextFill()
+                            + ", background="
+                            + cell.getBackground());
     }
 
     private static void staleReplies() throws Exception {

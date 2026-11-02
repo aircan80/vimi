@@ -131,3 +131,8 @@
 /* Align browser actions with the controls beneath the filter labels. */
 .toolbar.research-toolbar { -fx-alignment: bottom-left; }
 .research-toolbar .button, .research-toolbar .combo-box, .research-toolbar .text-field { -fx-min-height: 28; }
+
+/* Keep popup text legible through hover, focus and selection states. */
+.combo-box-popup .list-view .list-cell { -fx-background-color: #fffefa; -fx-text-fill: #243e3c; }
+.combo-box-popup .list-view .list-cell:filled:hover { -fx-background-color: #dceee6; -fx-text-fill: #243e3c; }
+.combo-box-popup .list-view .list-cell:filled:selected { -fx-background-color: #137b70; -fx-text-fill: white; }
