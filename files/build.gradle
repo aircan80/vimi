@@ -47,14 +47,16 @@ configurations {
 }
 
 dependencies {
+    implementation 'com.fasterxml.jackson.core:jackson-core:2.20.1'
     api project(':builds')
     api project(':generated-store')
     testFixturesApi platform('org.junit:junit-bom:5.13.4')
     testFixturesApi 'org.junit.jupiter:junit-jupiter-api'
-    testFixturesImplementation testFixtures(project(':object-access'))
+    testFixturesApi testFixtures(project(':object-access'))
     testFixturesImplementation testFixtures(project(':builds'))
     testImplementation testFixtures(project(':object-access'))
     testImplementation testFixtures(project(':builds'))
+    testImplementation testFixtures(project(':generated-store'))
     testImplementation platform('org.junit:junit-bom:5.13.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
@@ -78,7 +80,7 @@ tasks.withType(Test).configureEach {
 }
 
 tasks.register('integrationTest', Test) {
-    description = 'Runs loopback HTTP contracts, streaming, timeouts and cancellation tests.'
+    description = 'Runs Files disk and layer-pipeline integration tests.'
     group = 'verification'
     testClassesDirs = sourceSets.integrationTest.output.classesDirs
     classpath = sourceSets.integrationTest.runtimeClasspath

@@ -106,8 +106,9 @@ public final class FileTypes {
         public FileRef {
             if ((fileDataId == null) == (path == null)
                     || fileDataId != null && (fileDataId < 0 || fileDataId > 0xffffffffL)
-                    || path != null && path.isBlank())
+                    || path != null && path.isBlank()) {
                 throw new IllegalArgumentException("Invalid file reference");
+            }
         }
 
         public static FileRef id(long id) {
@@ -156,8 +157,9 @@ public final class FileTypes {
                 FileReadState state, long offset, String code, String message, Instant observedAt) {
             if (state == FileReadState.COMPLETE
                     || state == FileReadState.PARTIAL
-                    || state == FileReadState.PROTECTED)
+                    || state == FileReadState.PROTECTED) {
                 throw new IllegalArgumentException("Failure carries no data");
+            }
             return new FileRead(state, offset, 0, List.of(), List.of(), code, message, observedAt);
         }
     }
@@ -192,8 +194,9 @@ public final class FileTypes {
         public static final FileFilter ALL = new FileFilter(0, 0xffffffffL, null, null, null, null);
 
         public FileFilter {
-            if (fromId < 0 || toId > 0xffffffffL)
+            if (fromId < 0 || toId > 0xffffffffL) {
                 throw new IllegalArgumentException("Invalid id range");
+            }
             formats = formats == null ? null : Set.copyOf(formats);
             storage = storage == null ? null : Set.copyOf(storage);
         }
@@ -217,14 +220,19 @@ public final class FileTypes {
     public record EnsureSelection(
             EnsureSelectionKind kind, List<FileRef> files, FileFilter filter) {
         public EnsureSelection {
-            if (kind == null) throw new NullPointerException("kind");
+            if (kind == null) {
+                throw new NullPointerException("kind");
+            }
             if (kind == EnsureSelectionKind.MATCHING) {
-                if (filter == null) throw new NullPointerException("filter");
+                if (filter == null) {
+                    throw new NullPointerException("filter");
+                }
                 files = null;
             } else {
                 files = List.copyOf(files);
-                if (kind == EnsureSelectionKind.ONE && files.size() != 1)
+                if (kind == EnsureSelectionKind.ONE && files.size() != 1) {
                     throw new IllegalArgumentException("One requires one file");
+                }
                 filter = null;
             }
         }

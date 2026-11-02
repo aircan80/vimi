@@ -8,7 +8,9 @@ public final class TactKeys implements TactKeySource {
     private final ConcurrentHashMap<Long, byte[]> keys = new ConcurrentHashMap<>();
 
     public TactKeys add(long name, byte[] key) {
-        if (key.length != 16) throw new IllegalArgumentException("TACT key is16 bytes");
+        if (key.length != 16) {
+            throw new IllegalArgumentException("TACT key is16 bytes");
+        }
         keys.put(name, key.clone());
         return this;
     }
