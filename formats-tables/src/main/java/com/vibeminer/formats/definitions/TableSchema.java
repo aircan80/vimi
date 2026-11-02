@@ -59,7 +59,9 @@ public record TableSchema(
 
     public static TableSchema fromBlock(Block block, SchemaMatch match, WowLocale locale) {
         var columns = new ArrayList<SchemaColumn>();
-        for (var field : block.fields()) columns.add(column(field, locale));
+        for (var field : block.fields()) {
+            columns.add(column(field, locale));
+        }
         return new TableSchema(columns, block.layoutHashes(), match, locale, block.comment());
     }
 
@@ -73,25 +75,35 @@ public record TableSchema(
                     case "locstring" -> ColumnKind.LOCSTRING;
                     default -> throw refuse(c.name(), "Unknown type family");
                 };
-        if (kind == ColumnKind.INT && (field.integerBits() == null || field.unsigned() == null))
+        if (kind == ColumnKind.INT && (field.integerBits() == null || field.unsigned() == null)) {
             throw refuse(c.name(), "Integer width required");
-        if (kind != ColumnKind.INT && (field.integerBits() != null || field.unsigned() != null))
+        }
+        if (kind != ColumnKind.INT && (field.integerBits() != null || field.unsigned() != null)) {
             throw refuse(c.name(), "Only integers have widths");
-        if (field.arrayLength() < 1) throw refuse(c.name(), "Positive array length required");
-        if (c.reference() != null && kind != ColumnKind.INT)
+        }
+        if (field.arrayLength() < 1) {
+            throw refuse(c.name(), "Positive array length required");
+        }
+        if (c.reference() != null && kind != ColumnKind.INT) {
             throw refuse(c.name(), "Only integers can be foreign keys");
+        }
         if (field.isId() || field.relationStorage()) {
             if (field.isId() && field.relationStorage()
                     || kind != ColumnKind.INT
-                    || field.arrayLength() != 1)
+                    || field.arrayLength() != 1) {
                 throw refuse(c.name(), "Id/relation must be separate scalar integers");
-        } else if (field.nonInline()) throw refuse(c.name(), "Noninline needs id/relation");
+            }
+        } else if (field.nonInline()) {
+            throw refuse(c.name(), "Noninline needs id/relation");
+        }
         var storage = field.nonInline() ? KeyStorage.NONINLINE : KeyStorage.INLINE;
         String own = field.comment();
         if (c.comment() != null && own != null) {
-            if (own.equals(c.comment())) own = null;
-            else if (own.startsWith(c.comment() + "\n"))
+            if (own.equals(c.comment())) {
+                own = null;
+            } else if (own.startsWith(c.comment() + "\n")) {
                 own = own.substring(c.comment().length() + 1);
+            }
         }
         return new SchemaColumn(
                 c.name(),

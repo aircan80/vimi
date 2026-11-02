@@ -60,7 +60,9 @@ final class DefinitionReaderTest {
                     text("COLUMNS\nint ID\nint ID"),
                     text("COLUMNS\n"),
                     text("COLUMNS\rint ID")
-                }) assertThrows(Db2FormatException.class, () -> DbdDefinitionReader.parse(value));
+                }) {
+            assertThrows(Db2FormatException.class, () -> DbdDefinitionReader.parse(value));
+        }
     }
 
     @Test
@@ -78,9 +80,21 @@ final class DefinitionReaderTest {
     @Test
     void allLocalesAreExactAndVersionComponentsAreUnsigned() {
         assertEquals(15, WowLocale.ALL.size());
-        for (var locale : WowLocale.ALL) assertSame(locale, WowLocale.parse(locale.code()));
+        for (var locale : WowLocale.ALL) {
+            assertSame(locale, WowLocale.parse(locale.code()));
+        }
         assertThrows(DefinitionException.class, () -> WowLocale.parse("enus"));
         assertEquals(4294967295L, DbdTypes.BuildVersion.parse("1.2.3.4294967295").build());
         assertThrows(Db2FormatException.class, () -> DbdTypes.BuildVersion.parse("1.02.3.4"));
+    }
+
+    @Test
+    void trailingNewlineDoesNotSpendAnotherLineAndDotnetWhitespaceTrims() {
+        var limits = new Limits(1024, 2, 100, 10, 10, 10, 10, 10, 100, 10, 1024);
+        assertEquals(
+                1,
+                DbdDefinitionReader.parseColumns(
+                                text("\u00a0COLUMNS\u00a0\nint ID\n"), limits, Cancellation.NONE)
+                        .size());
     }
 }

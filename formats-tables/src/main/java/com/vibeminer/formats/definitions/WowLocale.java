@@ -37,15 +37,20 @@ public enum WowLocale {
     }
 
     public static WowLocale tryParse(String code) {
-        for (var locale : values()) if (locale.code.equals(code)) return locale;
+        for (var locale : values()) {
+            if (locale.code.equals(code)) {
+                return locale;
+            }
+        }
         return null;
     }
 
     public static WowLocale parse(String code) {
         var result = tryParse(code);
-        if (result == null)
+        if (result == null) {
             throw new DefinitionException(
                     "DEFINITION_LOCALE_UNKNOWN", "An exact ROOT locale code is required");
+        }
         return result;
     }
 

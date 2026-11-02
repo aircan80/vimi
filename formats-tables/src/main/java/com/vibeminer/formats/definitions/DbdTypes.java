@@ -34,8 +34,9 @@ public final class DbdTypes {
                     || maxArrayLength < 1
                     || maxCommentCharacters < 1
                     || maxLayouts < 1
-                    || maxSelectionBytes < 1)
+                    || maxSelectionBytes < 1) {
                 throw new IllegalArgumentException("Positive DBD limits required");
+            }
         }
     }
 
@@ -61,9 +62,11 @@ public final class DbdTypes {
     public record BuildVersion(long major, long minor, long patch, long build)
             implements Comparable<BuildVersion> {
         public BuildVersion {
-            for (long value : new long[] {major, minor, patch, build})
-                if (value < 0 || value > 0xffffffffL)
+            for (long value : new long[] {major, minor, patch, build}) {
+                if (value < 0 || value > 0xffffffffL) {
                     throw new IllegalArgumentException("unsigned32 component required");
+                }
+            }
         }
 
         public static BuildVersion parse(String value) {
@@ -71,9 +74,10 @@ public final class DbdTypes {
                     || value.length() < 7
                     || value.length() > 43
                     || !value.matches(
-                            "(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)"))
+                            "(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)")) {
                 throw new Db2FormatException(
                         "DBD_INVALID", "Exact four-component numeric build required");
+            }
             try {
                 var p = value.split("\\.");
                 return new BuildVersion(
@@ -89,9 +93,13 @@ public final class DbdTypes {
         @Override
         public int compareTo(BuildVersion other) {
             int c = Long.compare(major, other.major);
-            if (c != 0) return c;
+            if (c != 0) {
+                return c;
+            }
             c = Long.compare(minor, other.minor);
-            if (c != 0) return c;
+            if (c != 0) {
+                return c;
+            }
             c = Long.compare(patch, other.patch);
             return c != 0 ? c : Long.compare(build, other.build);
         }

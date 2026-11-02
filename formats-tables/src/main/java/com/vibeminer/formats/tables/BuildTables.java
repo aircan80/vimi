@@ -1,0 +1,48 @@
+package com.vibeminer.formats.tables;
+
+import com.vibeminer.access.Cancellation;
+import com.vibeminer.builds.BuildTypes.BuildRef;
+import com.vibeminer.files.AsyncCursor;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
+
+/**
+ * Concurrent table reads for one build and locale. Close rejects new work and drains accepted
+ * calls.
+ */
+public interface BuildTables extends AutoCloseable {
+    BuildRef build();
+
+    String locale();
+
+    AsyncCursor<TableTypes.Entry> list(
+            TableTypes.ListFilter filter, TableTypes.Priority priority, Cancellation token);
+
+    CompletableFuture<TableTypes.Entry> check(
+            TableTypes.Ref table, TableTypes.Priority priority, Cancellation token);
+
+    CompletableFuture<TableTypes.SchemaResult> schema(
+            TableTypes.Ref table, TableTypes.Priority priority, Cancellation token);
+
+    CompletableFuture<TableTypes.Page> page(
+            TableTypes.PageRequest request, TableTypes.Priority priority, Cancellation token);
+
+    CompletableFuture<TableTypes.RowResult> get(
+            TableTypes.Ref table, long id, TableTypes.Priority priority, Cancellation token);
+
+    CompletableFuture<TableTypes.FollowResult> follow(
+            TableTypes.FollowRequest request, TableTypes.Priority priority, Cancellation token);
+
+    CompletableFuture<TableTypes.ReferencesResult> referencedBy(
+            TableTypes.ReferencesRequest request, TableTypes.Priority priority, Cancellation token);
+
+    CompletableFuture<TableTypes.PreloadResult> preload(
+            Consumer<TableTypes.PreloadProgress> progress, Cancellation token);
+
+    CompletableFuture<Void> closeAsync();
+
+    @Override
+    default void close() {
+        closeAsync().join();
+    }
+}

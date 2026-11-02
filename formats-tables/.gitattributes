@@ -1,0 +1,13 @@
+*.java text eol=lf
+*.gradle text eol=lf
+*.md text eol=lf
+*.cs text eol=lf
+*.csproj text eol=lf
+*.json text eol=lf
+*.txt text eol=lf
+*.tsv text eol=lf
+*.gz -text
+*.db2 -text
+# These unmodified upstream bytes are SHA-256 pinned at runtime.
+src/main/resources/com/vibeminer/formats/definitions/manifest.json -text
+src/main/resources/com/vibeminer/formats/definitions/sources.json -text

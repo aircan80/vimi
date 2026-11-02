@@ -58,58 +58,76 @@ public final class DbdDefinitionReader {
                 String body = line.text();
                 boolean layout = body.startsWith("LAYOUT ");
                 if (layout || body.startsWith("BUILD ") || body.startsWith("COMMENT ")) {
-                    if (!fields.isEmpty())
+                    if (!fields.isEmpty()) {
                         throw error("DBD_INVALID", "Selectors must precede fields");
+                    }
                     if (body.startsWith("COMMENT ")) {
-                        if (comment != null) throw error("DBD_INVALID", "Repeated block comment");
+                        if (comment != null) {
+                            throw error("DBD_INVALID", "Repeated block comment");
+                        }
                         comment = body.substring(8);
                         bounded(comment.length(), limits.maxCommentCharacters());
                         continue;
                     }
-                    if (layout && hasLayout) throw error("DBD_INVALID", "Repeated LAYOUT line");
+                    if (layout && hasLayout) {
+                        throw error("DBD_INVALID", "Repeated LAYOUT line");
+                    }
                     hasLayout |= layout;
                     for (var raw : body.substring(layout ? 7 : 6).split(",", -1)) {
                         bounded(++selectors, limits.maxSelectors());
-                        String value = raw.strip();
+                        String value = trim(raw);
                         if (layout) {
-                            if (!isLayout(value) || !layoutSet.add(value.toUpperCase(Locale.ROOT)))
+                            if (!isLayout(value)
+                                    || !layoutSet.add(value.toUpperCase(Locale.ROOT))) {
                                 throw error("DBD_INVALID", "Malformed or repeated layout");
+                            }
                             layouts.add(value.toUpperCase(Locale.ROOT));
                         } else {
                             var range = value.split("-", -1);
-                            if (range.length > 2)
+                            if (range.length > 2) {
                                 throw error("DBD_INVALID", "Malformed build range");
+                            }
                             var first = BuildVersion.parse(range[0]);
                             var last = range.length == 2 ? BuildVersion.parse(range[1]) : first;
-                            if (first.compareTo(last) > 0)
+                            if (first.compareTo(last) > 0) {
                                 throw error("DBD_INVALID", "Reversed build range");
+                            }
                             builds.add(new BuildRange(first, last));
                         }
                     }
                     continue;
                 }
                 var match = FIELD.matcher(body);
-                if (!match.matches()) throw error("DBD_UNSUPPORTED", "Unsupported field grammar");
+                if (!match.matches()) {
+                    throw error("DBD_UNSUPPORTED", "Unsupported field grammar");
+                }
                 var column = head.columns().get(match.group(2));
-                if (column == null || !seen.add(match.group(2)))
+                if (column == null || !seen.add(match.group(2))) {
                     throw error("DBD_INVALID", "Undefined or repeated field");
+                }
                 var annotations = new HashSet<String>();
-                if (match.group(1) != null)
-                    for (var a : match.group(1).split(",", -1))
+                if (match.group(1) != null) {
+                    for (var a : match.group(1).split(",", -1)) {
                         if (!List.of("id", "noninline", "relation").contains(a)
-                                || !annotations.add(a))
+                                || !annotations.add(a)) {
                             throw error("DBD_UNSUPPORTED", "Unsupported or repeated annotation");
+                        }
+                    }
+                }
                 Integer bits = null;
                 Boolean unsigned = null;
                 if (match.group(4) != null) {
                     int width = integer(match.group(4), "DBD_UNSUPPORTED");
-                    if (!column.family().equals("int") || !List.of(8, 16, 32, 64).contains(width))
+                    if (!column.family().equals("int") || !List.of(8, 16, 32, 64).contains(width)) {
                         throw error("DBD_UNSUPPORTED", "Unsupported scalar width");
+                    }
                     bits = width;
                     unsigned = match.group(3).equals("u");
                 }
                 int array = match.group(5) == null ? 1 : integer(match.group(5), "DBD_INVALID");
-                if (array < 1) throw error("DBD_INVALID", "Array length must be positive");
+                if (array < 1) {
+                    throw error("DBD_INVALID", "Array length must be positive");
+                }
                 bounded(array, limits.maxArrayLength());
                 String joined =
                         column.comment() == null
@@ -117,7 +135,9 @@ public final class DbdDefinitionReader {
                                 : line.comment() == null
                                         ? column.comment()
                                         : column.comment() + "\n" + line.comment();
-                if (joined != null) bounded(joined.length(), limits.maxCommentCharacters());
+                if (joined != null) {
+                    bounded(joined.length(), limits.maxCommentCharacters());
+                }
                 fields.add(
                         new Field(
                                 column,
@@ -130,17 +150,21 @@ public final class DbdDefinitionReader {
                                 joined));
                 bounded(fields.size(), limits.maxFieldsPerBlock());
             }
-            if ((builds.isEmpty() && layouts.isEmpty()) || fields.isEmpty())
+            if ((builds.isEmpty() && layouts.isEmpty()) || fields.isEmpty()) {
                 throw error("DBD_INVALID", "Block requires selectors and fields");
+            }
             layoutsTotal += layouts.size();
             bounded(layoutsTotal, limits.maxLayouts());
             long fieldCost = fields.stream().mapToLong(DbdDefinitionReader::selectionBytes).sum();
             cost += Math.max(1, layouts.size()) * fieldCost;
-            if (cost > limits.maxSelectionBytes())
+            if (cost > limits.maxSelectionBytes()) {
                 throw error("DBD_LIMIT", "Layout selection exceeds bound");
+            }
             blocks.add(new Block(layouts, builds, fields, comment));
         }
-        if (blocks.isEmpty()) throw error("DBD_INVALID", "Version block required");
+        if (blocks.isEmpty()) {
+            throw error("DBD_INVALID", "Version block required");
+        }
         token.check();
         return new DbdDocument(List.copyOf(head.columns().values()), blocks, cost);
     }
@@ -165,47 +189,71 @@ public final class DbdDefinitionReader {
             throw error("DBD_INVALID", "Strict UTF-8 required");
         }
         for (int i = 0; i < text.length(); i++) {
-            if ((i & 4095) == 0) token.check();
+            if ((i & 4095) == 0) {
+                token.check();
+            }
             char c = text.charAt(i);
             if (c == '\ufeff'
                     || Character.isISOControl(c) && c != '\t' && c != '\n' && c != '\r'
-                    || c == '\r' && (i + 1 == text.length() || text.charAt(i + 1) != '\n'))
+                    || c == '\r' && (i + 1 == text.length() || text.charAt(i + 1) != '\n')) {
                 throw error("DBD_INVALID", "Unsupported control character or line ending");
+            }
         }
         var groups = new ArrayList<List<Line>>();
         var group = new ArrayList<Line>();
         int count = 0;
-        for (var raw : text.split("\\r?\\n", -1)) {
+        var rawLines = text.split("\\r?\\n", -1);
+        int actualLines = rawLines.length - (text.endsWith("\n") ? 1 : 0);
+        for (int lineIndex = 0; lineIndex < actualLines; lineIndex++) {
+            var raw = rawLines[lineIndex];
             token.check();
             bounded(++count, limits.maxLines());
             bounded(raw.length(), limits.maxLineCharacters());
-            if (raw.stripLeading().startsWith("//")) continue;
+            if (trim(raw).startsWith("//")) {
+                continue;
+            }
             int at = raw.indexOf("//");
-            String body = (at < 0 ? raw : raw.substring(0, at)).strip();
-            String comment = at < 0 ? null : raw.substring(at + 2).strip();
+            String body = trim(at < 0 ? raw : raw.substring(0, at));
+            String comment = at < 0 ? null : trim(raw.substring(at + 2));
             if (comment != null) {
                 bounded(comment.length(), limits.maxCommentCharacters());
-                if (comment.isEmpty()) comment = null;
+                if (comment.isEmpty()) {
+                    comment = null;
+                }
             }
             if (body.isEmpty()) {
                 if (!group.isEmpty()) {
                     groups.add(group);
                     group = new ArrayList<>();
-                    if (columnsOnly) break;
+                    if (columnsOnly) {
+                        break;
+                    }
                 }
-            } else group.add(new Line(body, comment));
+            } else {
+                group.add(new Line(body, comment));
+            }
         }
-        if (!group.isEmpty()) groups.add(group);
-        if (groups.isEmpty() || !groups.getFirst().getFirst().text().equals("COLUMNS"))
+        if (!group.isEmpty()) {
+            groups.add(group);
+        }
+        if (groups.isEmpty() || !groups.getFirst().getFirst().text().equals("COLUMNS")) {
             throw error("DBD_INVALID", "Initial COLUMNS section required");
-        if (!columnsOnly) bounded(groups.size() - 1, limits.maxBlocks());
+        }
+        if (!columnsOnly) {
+            bounded(groups.size() - 1, limits.maxBlocks());
+        }
         var columns = new LinkedHashMap<String, Column>();
         for (var line : groups.getFirst().subList(1, groups.getFirst().size())) {
             token.check();
             var match = COLUMN.matcher(line.text());
-            if (!match.matches()) throw error("DBD_UNSUPPORTED", "Unsupported column grammar");
-            for (int i : new int[] {2, 3, 4})
-                if (match.group(i) != null) bounded(match.group(i).length(), 128);
+            if (!match.matches()) {
+                throw error("DBD_UNSUPPORTED", "Unsupported column grammar");
+            }
+            for (int i : new int[] {2, 3, 4}) {
+                if (match.group(i) != null) {
+                    bounded(match.group(i).length(), 128);
+                }
+            }
             var column =
                     new Column(
                             match.group(4),
@@ -215,12 +263,35 @@ public final class DbdDefinitionReader {
                             match.group(2) == null
                                     ? null
                                     : new Reference(match.group(2), match.group(3)));
-            if (columns.putIfAbsent(column.name(), column) != null)
+            if (columns.putIfAbsent(column.name(), column) != null) {
                 throw error("DBD_INVALID", "Repeated column");
+            }
             bounded(columns.size(), limits.maxColumns());
         }
-        if (columns.isEmpty()) throw error("DBD_EMPTY", "Table has no described columns");
+        if (columns.isEmpty()) {
+            throw error("DBD_EMPTY", "Table has no described columns");
+        }
         return new Head(groups, columns);
+    }
+
+    private static String trim(String value) {
+        int first = 0, last = value.length();
+        while (first < last && space(value.charAt(first))) {
+            first++;
+        }
+        while (last > first && space(value.charAt(last - 1))) {
+            last--;
+        }
+        return value.substring(first, last);
+    }
+
+    private static boolean space(char value) {
+        int type = Character.getType(value);
+        return value >= '\t' && value <= '\r'
+                || value == '\u0085'
+                || type == Character.SPACE_SEPARATOR
+                || type == Character.LINE_SEPARATOR
+                || type == Character.PARAGRAPH_SEPARATOR;
     }
 
     public static boolean isLayout(String value) {
@@ -236,7 +307,9 @@ public final class DbdDefinitionReader {
     }
 
     private static void bounded(long value, long maximum) {
-        if (value > maximum) throw error("DBD_LIMIT", "Definition exceeds configured bound");
+        if (value > maximum) {
+            throw error("DBD_LIMIT", "Definition exceeds configured bound");
+        }
     }
 
     public static long selectionBytes(Field field) {
@@ -258,8 +331,9 @@ public final class DbdDefinitionReader {
             long total = 0;
             for (var block : document.blocks()) {
                 long fields = 0;
-                for (var field : block.fields())
+                for (var field : block.fields()) {
                     fields = Math.addExact(fields, selectionBytes(field));
+                }
                 total =
                         Math.addExact(
                                 total,

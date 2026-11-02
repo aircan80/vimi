@@ -55,12 +55,19 @@ configurations {
 dependencies {
     testFixturesApi platform('org.junit:junit-bom:5.13.4')
     testFixturesApi 'org.junit.jupiter:junit-jupiter-api'
-    api project(':object-access')
+    api project(':files')
+    api project(':generated-store')
     implementation 'com.fasterxml.jackson.core:jackson-core:2.20.1'
     testImplementation platform('org.junit:junit-bom:5.13.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation testFixtures(project(':generated-store'))
+    testImplementation testFixtures(project(':files'))
+    testImplementation testFixtures(project(':object-access'))
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     integrationTestImplementation testFixtures(project(':formats-tables'))
+    integrationTestImplementation testFixtures(project(':files'))
+    integrationTestImplementation testFixtures(project(':builds'))
+    integrationTestImplementation testFixtures(project(':object-access'))
     integrationTestImplementation testFixtures(project(':network-clients'))
     interopTestImplementation testFixtures(project(':formats-tables'))
 }
@@ -113,3 +120,29 @@ checkstyle {
 }
 
 
+
+// Opt-in exchange with the unchanged pinned C# formats and generated-store implementations.
+def repoRoot = rootProject.layout.projectDirectory
+def referenceRoot = providers.gradleProperty('referenceRoot').orElse(repoRoot.file('../vibeminer').asFile.absolutePath)
+def dotnetExecutable = providers.gradleProperty('dotnet').orElse(repoRoot.file('../vibeminer/.local/toolchains/dotnet/dotnet').asFile.absolutePath)
+def csharpDirectory = layout.projectDirectory.dir('src/interopTest/csharp')
+tasks.register('buildCsharpInterop', Exec) {
+    workingDir repoRoot
+    environment 'DOTNET_CLI_HOME', repoRoot.dir('.local/dotnet').asFile.absolutePath
+    environment 'DOTNET_CLI_TELEMETRY_OPTOUT', '1'
+    commandLine dotnetExecutable.get(), 'build', csharpDirectory.file('Interop.csproj').asFile.absolutePath,
+        '-p:RestoreLockedMode=true', '-p:NuGetAudit=false', '-p:ReferenceRoot=' + referenceRoot.get(), '--nologo'
+}
+tasks.register('interopTest', Test) {
+    group = 'verification'
+    description = 'Exchanges generated table caches and portable row/identity bytes with pinned C#.'
+    dependsOn tasks.named('buildCsharpInterop')
+    testClassesDirs = sourceSets.interopTest.output.classesDirs
+    classpath = sourceSets.interopTest.runtimeClasspath
+    systemProperty 'vimi.dotnet', dotnetExecutable.get()
+    systemProperty 'vimi.tables.harness', csharpDirectory.file('bin/Debug/net10.0/VibeMiner.Formats.Tests.dll').asFile.absolutePath
+    inputs.files(fileTree(csharpDirectory) { include '*.cs', '*.csproj', 'packages.lock.json' })
+    inputs.file(referenceRoot.map { new File(it, 'src/backend/VibeMiner.Formats/bin/Release/net10.0/VibeMiner.Formats.dll') })
+    inputs.files(fileTree(csharpDirectory.dir('bin/Debug/net10.0')))
+    shouldRunAfter tasks.named('integrationTest')
+}
