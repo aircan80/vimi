@@ -231,8 +231,7 @@ public final class NativeWorkspaceCommitTest {
                                         null,
                                         null,
                                         null));
-        var directory = java.nio.file.Files.createTempDirectory("vimi-file-catalog-workspace-");
-        var generated = com.vibeminer.generated.DiskGeneratedStore.open(directory).join();
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
         var work =
                 new NativePreparationWork(
                         info, evidence, "enUS", loader, online, generated, null, local);
@@ -261,11 +260,6 @@ public final class NativeWorkspaceCommitTest {
             require(enumerations.get() == scans, "Reopen must skip the file enumeration");
         } finally {
             work.close();
-            generated.closeAsync().join();
-            try (var paths = java.nio.file.Files.walk(directory)) {
-                for (var path : paths.sorted(java.util.Comparator.reverseOrder()).toList())
-                    java.nio.file.Files.delete(path);
-            }
         }
     }
 }
