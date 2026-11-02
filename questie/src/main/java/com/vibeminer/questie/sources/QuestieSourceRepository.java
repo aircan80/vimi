@@ -195,7 +195,7 @@ public final class QuestieSourceRepository implements AutoCloseable {
         return submit(
                 token,
                 () -> {
-                    var values = new ArrayList<Release>();
+                    var unique = new LinkedHashMap<String, Release>();
                     try (var paths = Files.list(root.resolve("releases-v1"))) {
                         for (Path path : paths.sorted().toList()) {
                             token.check();
@@ -203,9 +203,11 @@ public final class QuestieSourceRepository implements AutoCloseable {
                                 continue;
                             }
                             rejectSymlink(path);
-                            values.add(parseRelease(readSmall(path)));
+                            Release release = parseRelease(readSmall(path));
+                            unique.put(releaseIdentity(release), release);
                         }
                     }
+                    var values = new ArrayList<>(unique.values());
                     values.sort(Comparator.comparing(Release::publishedAt).reversed());
                     return List.copyOf(values);
                 });
@@ -253,7 +255,9 @@ public final class QuestieSourceRepository implements AutoCloseable {
                         return new ReleaseCheck(
                                 latest,
                                 previous == null ? null : previous.tag(),
-                                previous == null || !Arrays.equals(bytes, previous.metadata()),
+                                previous == null
+                                        || !releaseIdentity(latest)
+                                                .equals(releaseIdentity(previous)),
                                 false,
                                 "Refreshed");
                     } catch (IOException failure) {
@@ -549,6 +553,28 @@ public final class QuestieSourceRepository implements AutoCloseable {
         if (matches != 1 || asset(release, filename).bytes() != snapshot.bytes()) {
             throw new IOException("Source artifact provenance missing or ambiguous");
         }
+    }
+
+    /** Download counters and presentation changes do not identify a new downloadable revision. */
+    private static String releaseIdentity(Release release) {
+        var raw = Json.object(Json.parse(release.metadata(), METADATA_LIMIT));
+        var identity = new LinkedHashMap<String, Object>();
+        for (String field : List.of("id", "tag_name", "target_commitish", "published_at")) {
+            identity.put(field, raw.get(field));
+        }
+        var assets = new ArrayList<Map<String, Object>>();
+        for (Object value : Json.array(raw.get("assets"))) {
+            var asset = Json.object(value);
+            var stable = new LinkedHashMap<String, Object>();
+            for (String field :
+                    List.of("id", "name", "size", "digest", "browser_download_url", "updated_at")) {
+                stable.put(field, asset.get(field));
+            }
+            assets.add(stable);
+        }
+        assets.sort(Comparator.comparing(value -> Json.string(value.get("name"))));
+        identity.put("assets", assets);
+        return hash(Json.bytes(identity));
     }
 
     private Release parseRelease(byte[] bytes) throws IOException {

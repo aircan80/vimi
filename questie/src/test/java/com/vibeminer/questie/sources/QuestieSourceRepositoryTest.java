@@ -444,6 +444,47 @@ final class QuestieSourceRepositoryTest {
         assertEquals(0, childCount(target));
     }
 
+    @Test
+    void downloadCountersAndCosmeticReleaseChangesDoNotReportANewVersion() {
+        try (var repo = open()) {
+            repo.refresh(Cancellation.NONE).join();
+            var changed = Json.object(Json.parse(release, 1000000));
+            changed.put("name", "A different display title");
+            changed.put("body", "Edited release description");
+            changed.put("reactions", Map.of("total_count", 12));
+            var assets = Json.array(changed.get("assets"));
+            for (Object asset : assets) {
+                Json.object(asset).put("download_count", 42);
+            }
+            java.util.Collections.reverse(assets);
+            release = Json.bytes(changed);
+            etag = "\"new-response-with-counts\"";
+            var checked = repo.refresh(Cancellation.NONE).join();
+            assertFalse(checked.changed());
+            assertFalse(checked.offline());
+            assertArrayEquals(release, checked.latest().metadata());
+            assertEquals(1, repo.releases(Cancellation.NONE).join().size());
+        }
+    }
+
+    @Test
+    void sameTagAssetReplacementReportsNewRevision() {
+        try (var repo = open()) {
+            repo.refresh(Cancellation.NONE).join();
+            var changed = Json.object(Json.parse(release, 1000000));
+            var asset = Json.object(Json.array(changed.get("assets")).getFirst());
+            asset.put("id", 12345);
+            asset.put("updated_at", "2026-11-02T13:00:00Z");
+            asset.put("digest", "sha256:" + "b".repeat(64));
+            release = Json.bytes(changed);
+            etag = "\"replacement-same-tag\"";
+            var checked = repo.refresh(Cancellation.NONE).join();
+            assertTrue(checked.changed());
+            assertEquals("v1", checked.previousTag());
+            assertEquals("v1", checked.latest().tag());
+        }
+    }
+
     private static long childCount(Path path) {
         try (var children = Files.list(path)) {
             return children.count();
