@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.vibeminer.access.Cancellation;
+import com.vibeminer.generated.GeneratedStore;
 import com.vibeminer.generated.MemoryGeneratedStore;
 import java.lang.reflect.Proxy;
 import java.time.Instant;
@@ -69,6 +70,54 @@ class PreparedTablesCacheTest {
                                     "Restore attempted full preparation/acquisition: "
                                             + method.getName());
                         });
+    }
+
+    @Test
+    void fastRestoreReadsOnlyInventoryAndPreservesAllOutcomes() {
+        var store = new MemoryGeneratedStore();
+        new PreparedTablesCache(store).save("v1", result(), Cancellation.NONE).join();
+        var reads = new AtomicInteger();
+        var inventoryOnly =
+                (GeneratedStore)
+                        Proxy.newProxyInstance(
+                                GeneratedStore.class.getClassLoader(),
+                                new Class<?>[] {GeneratedStore.class},
+                                (proxy, method, args) -> {
+                                    if (method.getName().equals("read") && args.length == 2) {
+                                        assertEquals(PreparedTablesCache.key("v1"), args[0]);
+                                        reads.incrementAndGet();
+                                        return store.read(
+                                                (com.vibeminer.generated.GeneratedKey) args[0],
+                                                (com.vibeminer.generated.Cancellation) args[1]);
+                                    }
+                                    throw new AssertionError(
+                                            "Reopen touched table artifacts: " + method.getName());
+                                });
+        var updates = new java.util.ArrayList<TableTypes.PreloadProgress>();
+        var restored =
+                new PreparedTablesCache(inventoryOnly)
+                        .restore("v1", updates::add, Cancellation.NONE)
+                        .join();
+        assertNotNull(restored);
+        assertEquals(result().tables(), restored.tables());
+        assertEquals(1, reads.get());
+        assertEquals(1, restored.progress().tablesFailed());
+        assertEquals(2, updates.size());
+        assertEquals(0, updates.getFirst().tablesDone());
+        assertEquals(2, updates.getLast().tablesDone());
+    }
+
+    @Test
+    void fastRestoreRejectsChangedIdentityCorruptionAndCancellation() {
+        var store = new MemoryGeneratedStore();
+        var cache = new PreparedTablesCache(store);
+        cache.save("v1", result(), Cancellation.NONE).join();
+        assertNull(cache.restore("v2", null, Cancellation.NONE).join());
+        var token = new Cancellation();
+        token.cancel();
+        assertThrows(CompletionException.class, () -> cache.restore("v1", null, token).join());
+        store.damage(PreparedTablesCache.key("v1"));
+        assertNull(cache.restore("v1", null, Cancellation.NONE).join());
     }
 
     @Test

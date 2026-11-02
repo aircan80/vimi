@@ -69,7 +69,7 @@ public final class PreparationHistoryTest {
                         BuildPreparation.Activity.RUNNING,
                         1,
                         4L,
-                        "cached tables verified",
+                        "cached tables restored",
                         null,
                         null,
                         java.util.List.of(),

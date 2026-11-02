@@ -29,7 +29,7 @@ final class TablesPipelineTest {
     @TempDir Path temporary;
 
     @Test
-    void nativeGeneratedRowsReopenWithoutEncodedSourceOrRedecoding() {
+    void inventoryReopensWithoutEncodedSourceAndMissingGraphRepairsOnAccess() {
         byte[] db2 = Db2Fixture.numeric("WDC5", 0, 32, 9, new long[0], true);
         var document =
                 Db2Fixture.definition("int ID\nint Value", "$id,noninline$ID<u32>\nValue<u32>");
@@ -43,7 +43,7 @@ final class TablesPipelineTest {
                                 new BundledDefinitions.Definition(
                                         "a".repeat(64), "fixture", document)));
         String identity = null;
-        for (int round = 0; round < 2; round++) {
+        for (int round = 0; round < 3; round++) {
             ObjectStore objects = ObjectStore.open(temporary.resolve("objects")).join();
             DiskGeneratedStore generated =
                     DiskGeneratedStore.open(temporary.resolve("generated")).join();
@@ -54,12 +54,31 @@ final class TablesPipelineTest {
                                 .add(100, "dbfilesclient/numbers.db2", db2, false, List.of());
                 var encoded = fixture.encoded.get(100L);
                 ObjectKey key = new ObjectKey(ObjectKey.ENCODED, encoded.key().bytes());
-                if (round == 0) {
+                if (round != 1) {
                     objects.put(List.of(new PutObject(key, encoded.bytes()))).join();
                 } else {
                     // No decoded-file cache exists: successful queries must use generated rows.
                     objects.delete(List.of(key)).join();
                     assertEquals(false, objects.has(key).join());
+                }
+                if (round == 2) {
+                    // The saved assessment survives. Only the requested graph needs repair,
+                    // using its encoded source locally, without a full inventory pass.
+                    var manifest =
+                            com.vibeminer.generated.GeneratedKey.hash(
+                                    java.nio.ByteBuffer.allocate(21)
+                                            .put(
+                                                    "table"
+                                                            .getBytes(
+                                                                    java.nio.charset
+                                                                            .StandardCharsets
+                                                                            .US_ASCII))
+                                            .put(
+                                                    com.vibeminer.generated.GeneratedKey.parse(
+                                                                    identity)
+                                                            .bytes())
+                                            .array());
+                    generated.delete(List.of(manifest)).join();
                 }
                 Tables service =
                         new TablesService(
@@ -72,6 +91,25 @@ final class TablesPipelineTest {
                 var open = service.forBuild(FilesScenario.REF, "enUS", Cancellation.NONE).join();
                 assertNotNull(open.tables());
                 try (var tables = open.tables()) {
+                    var inventory = new PreparedTablesCache(generated);
+                    if (round == 0) {
+                        inventory
+                                .save(
+                                        "fixture-build-locale-policy",
+                                        tables.prepareKnown(null, Cancellation.NONE).join(),
+                                        Cancellation.NONE)
+                                .join();
+                    } else {
+                        var restored =
+                                inventory
+                                        .restore(
+                                                "fixture-build-locale-policy",
+                                                null,
+                                                Cancellation.NONE)
+                                        .join();
+                        assertNotNull(restored);
+                        assertEquals(TableTypes.State.READY, restored.tables().getFirst().state());
+                    }
                     var checked =
                             tables.check(
                                             TableTypes.Ref.id(100),

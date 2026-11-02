@@ -53,7 +53,9 @@ Media content is requested on demand.
 
 Original CDN objects and generated data have separate storage roles. Prepared file
 catalogs, decoded tables and item-grid indexes persist across runs; reopening checks
-whether their identities still match. A saved historical readiness label does not
+whether their identities still match. The matching completed table inventory is
+restored without opening every table; each requested table retains its normal
+validation and repair path. A saved historical readiness label does not
 by itself make a newly opened workspace ready.
 
 ## Questie stays independent

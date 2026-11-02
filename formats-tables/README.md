@@ -142,15 +142,18 @@ API and cannot be claimed as downloaded.
 `PreparedTablesCache` saves the full completed known-table ledger, retaining
 protected/partial/absent outcomes and reasons. Its caller supplies the stable
 build/locale, catalog/definition, reader policy and key-fingerprint identity.
-Restore uses a **local-only** table handle to validate readable generated graphs;
-incompatible/missing artifacts produce a cache miss. It never calls prepareKnown,
-ensure or online acquisition during restore. Failed/canceled/unchecked passes
+Normal restore reads and validates just the saved inventory and its identity; it
+opens no individual table graphs and performs no acquisition. Changed inputs or a
+missing/corrupt inventory produce a cache miss. Table access still validates the
+requested graph and uses the normal repair path for missing/corrupt derived data.
+The overload accepting a **local-only** table handle remains available for explicit
+verification of every readable graph. Failed/canceled/unchecked passes
 cannot overwrite a completed inventory. Explicit enrichment may replace it.
 
 The small inventory pointer is replaceable derived data over immutable decoded
 row graphs. A crash/store failure during pointer replacement yields a cache miss;
 it cannot publish a false ready state or remove the underlying table rows.
 
-Prepared inventory checks emit `PreloadStage.RESTORING`, separately from downloading
-and preparing. Restoration still validates readable local table artifacts and can
-fall back to ordinary preparation if an input is missing, changed or corrupt.
+Inventory restoration emits `PreloadStage.RESTORING`, separately from downloading
+and preparing. “Tables ready” records completion of the matching preparation pass;
+it does not promise that every stored byte has been rechecked during this open.

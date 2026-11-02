@@ -31,7 +31,21 @@ public final class PreparedTablesCache {
         return GeneratedKey.hash((FORMAT + "\n" + identity).getBytes(StandardCharsets.UTF_8));
     }
 
-    /** The handle must be local-only: a cache check must not acquire missing inputs. */
+    /**
+     * Restores the completed assessment with one inventory read, without opening every table. The
+     * identity must cover build/locale, definitions, reader policy and keys. This is a saved
+     * assessment, not a disk scrub: individual table accesses still validate their generated graph
+     * and repair missing/corrupt derived data through the normal table pipeline.
+     */
+    public CompletableFuture<TableTypes.PreloadResult> restore(
+            String identity, Consumer<TableTypes.PreloadProgress> progress, Cancellation token) {
+        return restore(identity, null, progress, token);
+    }
+
+    /**
+     * Explicit verification path. The handle must be local-only: a cache check must not acquire
+     * missing inputs. Normal reopening uses the inventory-only overload instead.
+     */
     public CompletableFuture<TableTypes.PreloadResult> restore(
             String identity,
             BuildTables local,
@@ -82,7 +96,7 @@ public final class PreparedTablesCache {
                         var verified = new ArrayList<TableTypes.Entry>();
                         for (var entry : entries) {
                             token.check();
-                            if (TableQueries.isReadable(entry.state())) {
+                            if (local != null && TableQueries.isReadable(entry.state())) {
                                 var current =
                                         local.check(
                                                         TableTypes.Ref.id(entry.fileDataId()),
@@ -103,7 +117,7 @@ public final class PreparedTablesCache {
                             if (present(entry)) {
                                 done++;
                             }
-                            if (progress != null) {
+                            if (local != null && progress != null) {
                                 progress.accept(report(done, total, 0));
                             }
                         }
@@ -117,9 +131,13 @@ public final class PreparedTablesCache {
                                                                 !TableQueries.isReadable(
                                                                         entry.state()))
                                                 .count();
+                        var complete = report(total, total, failed);
+                        if (progress != null) {
+                            progress.accept(complete);
+                        }
                         return new TableTypes.PreloadResult(
                                 TableTypes.PreloadOutcome.COMPLETED,
-                                report(total, total, failed),
+                                complete,
                                 verified,
                                 com.vibeminer.files.FileTypes.FilesOpenState.OPEN,
                                 "TABLES_RESTORED",

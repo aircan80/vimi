@@ -32,7 +32,7 @@ public final class PreparationStatus {
 
     static boolean restoringTables(BuildPreparation.Snapshot snapshot) {
         return snapshot.phase() == BuildPreparation.Phase.TABLES
-                && "cached tables verified".equals(snapshot.unit());
+                && "cached tables restored".equals(snapshot.unit());
     }
 
     public static String readiness(BuildPreparation.Ready ready) {

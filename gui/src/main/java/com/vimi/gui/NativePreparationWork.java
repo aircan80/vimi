@@ -358,9 +358,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         var cache = new com.vibeminer.formats.tables.PreparedTablesCache(generated);
         String identity = tableCacheIdentity();
         if (!tablePassAttempted) {
-            try (var local = openTables(tablesService(token, false), token)) {
-                prepared = cache.restore(identity, local, progress, token).join();
-            }
+            prepared = cache.restore(identity, progress, token).join();
         }
         boolean restored = prepared != null;
         tablePassAttempted = true;

@@ -370,7 +370,7 @@ public final class BuildPreparation {
                             ? new Counter(
                                     value.tablesDone(),
                                     (long) value.tablesTotal(),
-                                    "cached tables verified")
+                                    "cached tables restored")
                             : value.stage() == TableTypes.PreloadStage.PREPARING
                                     ? new Counter(
                                             value.tablesDone(),
