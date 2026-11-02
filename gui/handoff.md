@@ -3,7 +3,9 @@
 ## Current preparation integration
 
 Default mode now uses real Metadata → Files → key bootstrap/known Tables preparation.
-Overview publishes at Metadata ready. Files has a payload-free assessment phase;
+Overview publishes at Metadata ready using the approved metric cards, explorer grid,
+Download & storage panel, readiness strip and disclosure layout. The compact build
+header is shared with the mock design; values bind real build/locale/readiness. Files has a payload-free assessment phase;
 community names are optional independent enrichment. Tables/Items/Creatures share
 one initial completion gate. Tables ready means all known addressable tables were
 processed with explicit unreadable/protected outcomes, not that all game data is
@@ -265,3 +267,5 @@ For integration:
 5. Treat download policy, operation progress and retained coverage as separate facts.
 6. Coordinate actual layer-7 build inclusion/packaging from the main worker; this
    branch deliberately contains no root build/CI/lockfile changes.
+
+Closing a live build retains its last assessed milestone/locale in the current app session, shown as Closed. After app restart, unassessed cache is not labeled unprepared. Cached artifacts still require verification on reopen.

@@ -33,6 +33,8 @@ public final class VimiApp extends Application {
     private boolean closing;
     private BuildPreparation.Job preparationFocus;
     private PreparationPane preparationPane;
+    private BuildPreparation.Job viewedPreparation;
+    private final Label liveHeaderStatus = new Label();
     private Runnable preparationOpenLabelUpdater;
     private final Map<String,String> preparationLocales = new HashMap<>();
     private final javafx.animation.Timeline preparationClock = new javafx.animation.Timeline(
@@ -50,6 +52,7 @@ public final class VimiApp extends Application {
     private javafx.scene.control.Dialog<Void> realOpeningDialog;
     private final Button openingActivity = new Button();
     private final Map<String, com.vibeminer.builds.BuildTypes.BuildOpenResult> realOpened = new java.util.LinkedHashMap<>();
+    private final Map<String, String> closedPreparations = new HashMap<>();
     private final Map<String, String> openingProblems = new HashMap<>();
     private long catalogGeneration;
     private final Button issuesButton = new Button("Refresh issues");
@@ -315,6 +318,7 @@ public final class VimiApp extends Application {
     }
 
     private void showBuilds() {
+        viewedPreparation = null;
         if (preparationPane != null) { preparationPane.close(); preparationPane = null; }
         navigationGeneration++;
         status.setText(service == null ? "Opening local build history…" : service.status() + " · " + builds.size() + " builds");
@@ -518,6 +522,8 @@ public final class VimiApp extends Application {
             service.preparation().release(job).whenComplete((value,error) -> Platform.runLater(() -> {
                 if (closing) return;
                 root.setDisable(false); preparationPane = null;
+                if (error == null) closedPreparations.put(job.build().identity(),
+                        PreparationStatus.closed(job.snapshot().ready(), job.locale()));
                 if (preparationFocus == job) preparationFocus = null;
                 showBuilds();
                 if (error != null) status.setText("Close failed: " + problem(error));
@@ -528,12 +534,14 @@ public final class VimiApp extends Application {
                 preparationFocus = enriched; showPreparedWorkspace(enriched);
             } catch (RuntimeException error) { status.setText(problem(error)); }
         });
-        root.setTop(header(null,null)); root.setCenter(preparationPane);
+        viewedPreparation = job;
+        root.setTop(preparedOverviewHeader(job)); root.setCenter(preparationPane);
         status.setText("Prepared data is scoped to this build and locale. Unknown and protected data remain explicit.");
     }
 
     private void updatePreparationActivity() {
         if (closing || service == null || service.preparation() == null) return;
+        if (viewedPreparation != null) liveHeaderStatus.setText(readyLabel(viewedPreparation.snapshot().ready()));
         var jobs = service.preparation().jobs();
         var focus = PreparationStatus.activityFocus(jobs,preparationFocus);
         preparationFocus = focus;
@@ -690,7 +698,7 @@ public final class VimiApp extends Application {
         if (!mockMode() && service != null && service.preparation() != null) {
             var jobs = service.preparation().jobs();
             return jobs.stream().filter(job -> job.build().identity().equals(build.identity())).reduce((before,after) -> after)
-                    .map(job -> PreparationPane.describe(job.snapshot()) + " · " + job.locale()).orElse("Not prepared");
+                    .map(job -> PreparationPane.describe(job.snapshot()) + " · " + job.locale()).orElseGet(() -> closedPreparations.getOrDefault(build.identity(), "Not opened · cache not assessed"));
         }
         if (!mockMode()) { return realOpeningActive && realOpeningBuild.identity().equals(build.identity()) ? "Opening…" : realOpened.containsKey(build.identity()) ? "Opened" : "Not opened"; }
         var job = preparations.latest(build);
@@ -960,6 +968,37 @@ public final class VimiApp extends Application {
                 }
             }
         }
+    }
+
+    private static String readyLabel(BuildPreparation.Ready ready) {
+        return switch (ready) {
+            case NOT_PREPARED -> "Not prepared";
+            case METADATA_READY -> "Metadata ready";
+            case FILES_READY -> "Files ready";
+            case TABLES_READY -> "Tables ready";
+        };
+    }
+
+    private HBox preparedOverviewHeader(BuildPreparation.Job job) {
+        var build = job.build();
+        HBox bar = header(null,null);
+        bar.getChildren().remove(1,bar.getChildren().size());
+        liveHeaderStatus.getStyleClass().setAll("header-value");
+        liveHeaderStatus.setText(readyLabel(job.snapshot().ready()));
+        HBox fields = new HBox(16,
+                headerField("GAME / EDITION",label("World of Warcraft · " + build.edition(),"header-value")),
+                headerField("PRODUCT ID",label(build.product(),"header-value")),
+                headerField("BUILD",label(build.version(),"header-value")),
+                headerField("LOCALE",label(job.locale(),"header-value")),
+                headerField("STATUS",liveHeaderStatus),
+                headerField("RETAINED",label("Not measured","retained-value")));
+        fields.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+        HBox.setHgrow(fields,Priority.ALWAYS);
+        Button choose = button("← Choose build",this::showBuilds);
+        choose.getStyleClass().add("header-menu");
+        choose.setMinWidth(Region.USE_PREF_SIZE);
+        bar.setSpacing(16);bar.getChildren().addAll(fields,choose);
+        return bar;
     }
 
     private HBox overviewHeader(BuildInfo b) {

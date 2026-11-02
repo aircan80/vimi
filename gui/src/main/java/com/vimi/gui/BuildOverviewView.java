@@ -18,7 +18,7 @@ import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 
-/** Landing-page presentation only. All research totals come from authored mock snapshots. */
+/** Approved Overview layouts for authored preview and measured live workspace facts. */
 public final class BuildOverviewView {
     private BuildOverviewView() {}
 
@@ -99,6 +99,107 @@ public final class BuildOverviewView {
         details.setAnimated(false);
         page.getChildren().addAll(details, text("Prototype only · no data is downloaded, decoded or persisted. All figures and readiness states are authored examples.", "muted"));
         return page;
+    }
+
+    /** Real Overview using the approved card/grid layout and measured workspace facts only. */
+    public static Live live(BuildPreparation.Job job, Consumer<String> navigate, Node preparationControls) {
+        return new Live(job,navigate,preparationControls);
+    }
+
+    public static final class Live {
+        private final VBox page=new VBox(18);
+        private final Label filesValue=text("Not measured","landing-metric"),filesScope=text("","muted"),
+                tablesValue=text("Not measured","landing-metric"),tablesScope=text("","muted"),
+                namesValue=text("Not measured","landing-metric"),namesScope=text("","muted"),
+                storedValue=text("Not measured","landing-metric"),storedScope=text("","muted");
+        private final Label configuration=text("","value"),fileReady=text("","value"),tableReady=text("","value"),
+                activity=text("","value"),counter=text("","muted"),retainedIds=text("Not measured","value"),unknownSizes=text("Not measured","value");
+        private final ProgressBar progress=new ProgressBar(-1);
+        private final Label fileDestination=text("Not measured","value"),tableDestination=text("Not measured","value"),
+                itemDestination=text("Not measured","value"),creatureDestination=text("Not measured","value"),
+                itemScope=text("","muted"),creatureScope=text("","muted");
+        private final Button files,tables,items,creatures;
+        private final VBox availability=new VBox(8);
+        private java.util.List<String> lastIssues=java.util.List.of();
+        private java.util.Map<com.vibeminer.formats.tables.TableTypes.State,Long> lastCounts=java.util.Map.of();
+        private boolean availabilityInitialized;
+        private final BuildPreparation.Job job;
+        private Live(BuildPreparation.Job job,Consumer<String> navigate,Node controls) {
+            this.job=java.util.Objects.requireNonNull(job);
+            page.setPadding(new Insets(24));
+            HBox title=new HBox(16,text("Build overview","h1"),space(),text("LIVE BUILD DATA","badge"));
+            title.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+            page.getChildren().addAll(title,text("Explore this exact build’s client data and choose what to retain locally.","subtitle"));
+            HBox metrics=new HBox(14,liveMetric("FILES CATALOGUED",filesValue,filesScope),
+                    liveMetric("READABLE TABLES",tablesValue,tablesScope),liveMetric("NAMED FILES",namesValue,namesScope),
+                    liveMetric("STORED CONTENT",storedValue,storedScope));
+            for(Node child:metrics.getChildren()){HBox.setHgrow(child,Priority.ALWAYS);((Region)child).setPrefWidth(240);((Region)child).setMaxWidth(Double.MAX_VALUE);}
+            page.getChildren().add(metrics);
+            progress.setMaxWidth(Double.MAX_VALUE);
+            VBox band=new VBox(10,new HBox(14,activity,space(),counter),progress,controls);
+            band.getStyleClass().addAll("card","preparation-band");
+            page.getChildren().add(band);
+            files=liveAction("Files",navigate);tables=liveAction("Tables",navigate);items=liveAction("Items",navigate);creatures=liveAction("Creatures",navigate);
+            GridPane destinations=new GridPane();destinations.setHgap(14);destinations.setVgap(14);
+            destinations.add(liveDestination("Files",fileDestination,text("Explore catalog membership, attributed names and local availability.","muted"),files),0,0);
+            destinations.add(liveDestination("Tables",tableDestination,text("Inspect records, field definitions and declared relationships.","muted"),tables),1,0);
+            destinations.add(liveDestination("Items",itemDestination,itemScope,items),0,1);
+            destinations.add(liveDestination("Creatures",creatureDestination,creatureScope,creatures),1,1);
+            for(Node child:destinations.getChildren()){GridPane.setHgrow(child,Priority.ALWAYS);((Region)child).setMaxWidth(Double.MAX_VALUE);}
+            for(int i=0;i<2;i++){var column=new javafx.scene.layout.ColumnConstraints();column.setPercentWidth(50);destinations.getColumnConstraints().add(column);}
+            VBox explore=new VBox(14,text("Explore this build","h2"),text("Source-backed facts for this build and research locale. Unmeasured scopes stay explicit.","muted"),destinations);
+            explore.setMinWidth(0);HBox.setHgrow(explore,Priority.ALWAYS);
+            RadioButton demand=new RadioButton("On demand"),all=new RadioButton("Download all");
+            ToggleGroup policy=new ToggleGroup();demand.setToggleGroup(policy);all.setToggleGroup(policy);demand.setSelected(true);all.setDisable(true);
+            HBox choices=new HBox(16,demand,all);choices.getStyleClass().add("download-choice");
+            VBox retention=new VBox(14,text("Download & storage","h2"),text("Download all is unavailable until this build’s download scope is measured.","muted"),
+                    choices,text("On demand · media loads as you explore","value"),text("Not measured","metric"),
+                    liveFact("Stored encoded content",text("Not measured","value")),liveFact("Selected variants stored at last file assessment",retainedIds),
+                    liveFact("Unknown decoded sizes",unknownSizes),text("File presence counts are not encoded byte coverage, installed-game size or reclaimable disk space.","muted"));
+            retention.getStyleClass().addAll("card","retention-panel");retention.setPrefWidth(345);retention.setMinWidth(300);retention.setMaxWidth(370);
+            page.getChildren().add(new HBox(20,explore,retention));
+            HBox readiness=new HBox(22,liveFact("Configuration",configuration),liveFact("File catalog",fileReady),liveFact("Table data",tableReady),fact("Remote availability","Not checked"));
+            readiness.getStyleClass().add("readiness-strip");page.getChildren().add(readiness);
+            VBox evidence=new VBox(12,fact("Build source",job.build().source().label()+" · "+job.build().source().description()),
+                    fact("Product / catalog identity",job.build().product()+" / "+job.build().identity()),fact("Build configuration",job.build().config()),
+                    fact("CDN configuration",job.source().cdnConfig()),fact("Acquisition route / research locale",job.source().region()+" / "+job.locale()),
+                    text("Catalog figures count locale-scoped FileDataIDs. Readable table counts include explicitly partial sources; unavailable and protected outcomes remain in the committed ledger. Names coverage and encoded byte scope have not been measured.","muted"));
+            evidence.setPadding(new Insets(14));var identity=new TitledPane("Build identity & measurement scope",evidence);identity.setExpanded(false);identity.setAnimated(false);
+            var details=new TitledPane("Availability details",availability);details.setExpanded(false);details.setAnimated(false);
+            page.getChildren().addAll(identity,details);
+            update(job.snapshot(),job.enrichingNames(),job.namesProblem());
+        }
+        public Node node(){return page;}
+        public void update(BuildPreparation.Snapshot snapshot,boolean namesRunning,String namesProblem) {
+            var model=OverviewPresentation.from(snapshot,namesRunning,namesProblem);
+            apply(filesValue,filesScope,model.files());apply(tablesValue,tablesScope,model.tables());
+            apply(namesValue,namesScope,model.names());apply(storedValue,storedScope,model.stored());
+            fileDestination.setText(model.files().value()+ (model.filesEnabled()?" distinct file IDs":""));
+            tableDestination.setText(model.tables().value()+(model.tablesEnabled()?" readable tables":""));
+            itemDestination.setText(model.items().value());itemScope.setText(model.items().scope());
+            creatureDestination.setText(model.creatures().value());creatureScope.setText(model.creatures().scope());
+            files.setDisable(!model.filesEnabled());tables.setDisable(!model.tablesEnabled());items.setDisable(!model.tablesEnabled());creatures.setDisable(!model.tablesEnabled());
+            configuration.setText(model.configurationReadiness());fileReady.setText(model.filesReadiness());tableReady.setText(model.tablesReadiness());
+            activity.setText(model.activity());counter.setText(model.counter());progress.setProgress(model.phaseProgress());progress.setVisible(model.active());progress.setManaged(model.active());
+            var summary=snapshot.files();retainedIds.setText(summary==null?"Not measured":count(summary.stored())+" / "+count(summary.files())+" selected variants");
+            unknownSizes.setText(summary==null?"Not measured":count(summary.unknownSize())+" FileDataIDs");
+            java.util.Map<com.vibeminer.formats.tables.TableTypes.State,Long> counts=model.tablesEnabled()
+                    ?snapshot.tables().stream().collect(java.util.stream.Collectors.groupingBy(com.vibeminer.formats.tables.TableTypes.Entry::state,java.util.TreeMap::new,java.util.stream.Collectors.counting()))
+                    :java.util.Map.of();
+            if(!availabilityInitialized || !lastIssues.equals(model.issues()) || !lastCounts.equals(counts)) {
+                availabilityInitialized=true;lastIssues=model.issues();lastCounts=java.util.Map.copyOf(counts);
+                availability.getChildren().clear();
+                if(model.issues().isEmpty())availability.getChildren().add(text("No preparation issues reported.","muted"));
+                else for(String issue:model.issues())availability.getChildren().add(text(issue,"muted"));
+                counts.forEach((state,total)->availability.getChildren().add(fact(state.name().replace('_',' '),count(total))));
+            }
+
+        }
+        private static void apply(Label value,Label scope,OverviewPresentation.Metric metric){value.setText(metric.value());scope.setText(metric.scope());}
+        private static VBox liveMetric(String title,Label value,Label scope){VBox result=new VBox(8,text(title,"eyebrow"),value,scope);result.getStyleClass().addAll("card","landing-stat");return result;}
+        private static VBox liveFact(String title,Label value){return new VBox(4,text(title,"muted"),value);}
+        private static Button liveAction(String area,Consumer<String> navigate){Button result=new Button("Explore "+area.toLowerCase(Locale.ROOT)+" →");result.getStyleClass().add("explore-action");result.setOnAction(event->navigate.accept(area));return result;}
+        private static VBox liveDestination(String area,Label value,Label explanation,Button action){VBox result=new VBox(10,text(area,"h2"),value,explanation,action);result.getStyleClass().addAll("card","destination-card");return result;}
     }
 
     private static VBox retention(BuildInfo build, ObjectProperty<String> mode) {

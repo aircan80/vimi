@@ -12,7 +12,8 @@ three preparation milestones:
    missing or unsupported data does not masquerade as readable data.
 
 Files becomes usable at its milestone. Tables, Items and Creatures share one initial
-gate until the first table pass finishes. Their real data browsers provide paged
+gate until the first table pass finishes. The approved Overview card/grid/storage layout now uses live preparation facts;
+unknown byte/name measurements remain explicit. Their real data browsers provide paged
 inspection; media inspection is explicitly on demand. These real browsers are a
 functional integration path, not the polished mock tooltip/3D rendering system.
 

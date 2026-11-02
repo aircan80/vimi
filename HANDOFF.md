@@ -2,6 +2,14 @@
 
 ## Latest status — 2026-11-01
 
+- Overview now uses the approved metric/explorer/retention layout with real
+  readiness, progress and gate bindings. Unknown build byte size and build-local
+  filename coverage remain explicitly unmeasured. Download-all is disabled until
+  that workflow exists. Mock layout remains available unchanged.
+- Closing a build keeps cached data and now shows Closed plus its last assessed
+  readiness/locale for this app session. With no session assessment the catalog
+  says Not opened / cache not assessed; reopening verifies cached inputs as before.
+
 - Layers 1–6 remain implemented within documented supported-format bounds. Layer 7
   preparation integration PR #53 was fast-forward merged at `e1ab35f` after all
   hosted checks passed (Linux/macOS/Windows unit/integration and Linux crash/C#

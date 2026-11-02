@@ -25,6 +25,12 @@ public final class PreparationStatusTest {
                                 List.of(),
                                 List.of(),
                                 null);
+                var closed = PreparationStatus.closed(ready, "enUS");
+                require(closed.startsWith("Closed ·"), "Closed is distinct from unprepared");
+                require(closed.contains(PreparationStatus.readiness(ready)), "Keep last milestone");
+                require(closed.endsWith("enUS"), "Keep assessed locale");
+                require(!closed.contains("Loading") && !closed.contains("Preparing"),
+                        "Closed must not report active preparation");
                 boolean files = ready.ordinal() >= BuildPreparation.Ready.FILES_READY.ordinal();
                 require(PreparationStatus.available("Files", ready) == files, "Files milestone");
                 for (String area : List.of("Tables", "Items", "Creatures")) {

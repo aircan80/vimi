@@ -5,13 +5,7 @@ public final class PreparationStatus {
     private PreparationStatus() {}
 
     public static String describe(BuildPreparation.Snapshot snapshot) {
-        String ready =
-                switch (snapshot.ready()) {
-                    case NOT_PREPARED -> "Not prepared";
-                    case METADATA_READY -> "Metadata ready";
-                    case FILES_READY -> "Files ready";
-                    case TABLES_READY -> "Tables ready";
-                };
+        String ready = readiness(snapshot.ready());
         String activity =
                 switch (snapshot.activity()) {
                     case IDLE -> "Idle";
@@ -31,6 +25,20 @@ public final class PreparationStatus {
         if (snapshot.busy() && snapshot.total() != null)
             activity += " " + snapshot.done() + "/" + snapshot.total() + " " + snapshot.unit();
         return ready + " · " + activity;
+    }
+
+    public static String readiness(BuildPreparation.Ready ready) {
+        return switch (ready) {
+            case NOT_PREPARED -> "Not prepared";
+            case METADATA_READY -> "Metadata ready";
+            case FILES_READY -> "Files ready";
+            case TABLES_READY -> "Tables ready";
+        };
+    }
+
+    /** A prior assessment, not a promise that closed resources are currently usable. */
+    public static String closed(BuildPreparation.Ready ready, String locale) {
+        return "Closed · last readiness: " + readiness(ready) + " · " + locale;
     }
 
     public static BuildPreparation.Job activityFocus(

@@ -15,10 +15,10 @@ import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
+import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListView;
-import javafx.scene.control.ProgressBar;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.SplitPane;
 import javafx.scene.control.TextArea;
@@ -32,15 +32,12 @@ import javafx.util.Duration;
 /** Real build workspace. Table-backed areas share one initial readiness gate. */
 public final class PreparationPane extends BorderPane implements AutoCloseable {
     private final BuildPreparation.Job job;
-    private final Label readiness = new Label();
-    private final Label filesFact = new Label(), tablesFact = new Label(), namesFact = new Label();
-    private final TextArea issues = new TextArea();
-    private final ProgressBar progress = new ProgressBar(-1);
+    private final BuildOverviewView.Live liveOverview;
     private final Map<String, Button> areas = new LinkedHashMap<>();
     private final Map<String, Browser> browsers = new LinkedHashMap<>();
     private final Timeline clock;
     private final Button retry, cancel;
-    private final VBox overview = new VBox(12);
+    private final Node overview;
     private boolean closed;
     private long workspaceRevision;
     private String currentArea = "Overview";
@@ -48,71 +45,30 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
     public PreparationPane(
             BuildPreparation.Job job, Runnable choose, Runnable release, Runnable enrich) {
         this.job = job;
-        var heading =
-                new VBox(
-                        5,
-                        label(job.build().edition() + " · " + job.build().product(), "eyebrow"),
-                        label(job.build().version() + " · " + job.locale(), "h2"));
-        var navigation = new HBox(8);
+        var navigation = new HBox(4);
+        navigation.getStyleClass().add("area-navigation");
         for (String area : List.of("Overview", "Files", "Tables", "Items", "Creatures")) {
             var button = new Button(area);
+            button.getStyleClass().add("area-link");
             button.setOnAction(event -> show(area));
             areas.put(area, button);
             navigation.getChildren().add(button);
         }
-        var top = new VBox(10, heading, navigation);
-        top.setPadding(new Insets(15));
-        setTop(top);
-        progress.setMaxWidth(Double.MAX_VALUE);
+        setTop(navigation);
         retry = new Button("Retry / enrich");
         retry.setOnAction(event -> enrich.run());
         cancel = new Button("Cancel preparation");
         cancel.setOnAction(event -> job.cancel());
-        var chooseButton = new Button("Choose build");
-        chooseButton.setOnAction(event -> choose.run());
         var closeButton = new Button("Close build");
         closeButton.setOnAction(event -> release.run());
-        var metadata = job.snapshot().metadata();
-        overview.getChildren()
-                .addAll(
-                        label("Overview", "h1"),
-                        readiness,
-                        progress,
-                        label("BUILD METADATA", "eyebrow"),
-                        new Label("Build config: " + job.build().config()),
-                        new Label(
-                                "Source: "
-                                        + job.source().region().toUpperCase(java.util.Locale.ROOT)),
-                        new Label(
-                                "Locales: "
-                                        + (metadata == null
-                                                ? "Preparing…"
-                                                : String.join(", ", metadata.locales()))),
-                        label("PREPARATION", "eyebrow"),
-                        filesFact,
-                        tablesFact,
-                        namesFact,
-                        new HBox(10, cancel, retry, chooseButton, closeButton),
-                        label("Availability details", "eyebrow"),
-                        issues,
-                        new Label(
-                                "Media is excluded from preparation and is acquired only on demand."));
-        overview.setPadding(new Insets(24));
-        issues.setEditable(false);
-        issues.setWrapText(true);
-        issues.setPrefRowCount(8);
+        liveOverview =
+                BuildOverviewView.live(job, this::show, new HBox(10, cancel, retry, closeButton));
+        overview = liveOverview.node();
         show("Overview");
         clock = new Timeline(new KeyFrame(Duration.millis(250), event -> update()));
         clock.setCycleCount(Timeline.INDEFINITE);
         clock.play();
         update();
-    }
-
-    private static Label label(String text, String style) {
-        var label = new Label(text);
-        label.getStyleClass().add(style);
-        label.setWrapText(true);
-        return label;
     }
 
     public static String describe(BuildPreparation.Snapshot snapshot) {
@@ -129,67 +85,9 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             var visible = browsers.get(currentArea);
             if (visible != null) visible.ensureLoaded();
         }
-        readiness.setText(describe(snapshot));
-        progress.setVisible(snapshot.busy());
-        progress.setManaged(snapshot.busy());
-        progress.setProgress(
-                snapshot.total() != null && snapshot.total() > 0
-                        ? Math.min(1, (double) snapshot.done() / snapshot.total())
-                        : -1);
+        liveOverview.update(snapshot, job.enrichingNames(), job.namesProblem());
         cancel.setDisable(!snapshot.busy() && !job.enrichingNames());
         retry.setDisable(snapshot.busy() || job.enrichingNames());
-        var files = snapshot.files();
-        filesFact.setText(
-                files == null
-                        ? "Files: "
-                                + (snapshot.busy()
-                                        ? "preparing catalog and local presence…"
-                                        : "not ready · " + snapshot.activity())
-                        : "Files at last local assessment: "
-                                + files.files()
-                                + " · Stored selected variants: "
-                                + files.stored()
-                                + " · Size unknown: "
-                                + files.unknownSize());
-        boolean tablesReady = snapshot.ready() == BuildPreparation.Ready.TABLES_READY;
-        tablesFact.setText(
-                tablesReady
-                        ? tableSummary(snapshot.tables())
-                        : !snapshot.busy()
-                                ? "Tables: not ready · " + snapshot.activity()
-                                : snapshot.ready().ordinal()
-                                                < BuildPreparation.Ready.FILES_READY.ordinal()
-                                        ? "Tables: waiting for Files"
-                                        : "Tables: preparing known table data locally…");
-        namesFact.setText(
-                job.enrichingNames()
-                        ? "Community names/types: enriching…"
-                        : job.namesProblem() != null
-                                ? "Community names unavailable: " + job.namesProblem()
-                                : snapshot.ready().ordinal()
-                                                >= BuildPreparation.Ready.FILES_READY.ordinal()
-                                        ? "Community names/types: independent enrichment"
-                                        : "Community names/types: waiting for Files");
-        var problems = new ArrayList<>(snapshot.issues());
-        if (snapshot.problem() != null) problems.add(snapshot.problem());
-        if (tablesReady)
-            for (var table : snapshot.tables()) {
-                if (table.state() != TableTypes.State.READY
-                        && table.state() != TableTypes.State.NOT_IN_BUILD
-                        && table.state() != TableTypes.State.NOT_IN_LOCALE)
-                    problems.add(
-                            table.name()
-                                    + " ("
-                                    + table.fileDataId()
-                                    + "): "
-                                    + table.state()
-                                    + (table.reason() == null ? "" : " · " + table.reason()));
-            }
-        String details =
-                problems.isEmpty()
-                        ? "No preparation issues reported."
-                        : String.join("\n", problems);
-        if (!issues.getText().equals(details)) issues.setText(details);
         for (var entry : areas.entrySet()) {
             boolean enabled = PreparationStatus.available(entry.getKey(), snapshot.ready());
             entry.getValue().setDisable(!enabled);
@@ -216,27 +114,13 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         }
     }
 
-    private static String tableSummary(List<TableTypes.Entry> tables) {
-        long absent =
-                tables.stream()
-                        .filter(
-                                t ->
-                                        t.state() == TableTypes.State.NOT_IN_BUILD
-                                                || t.state() == TableTypes.State.NOT_IN_LOCALE)
-                        .count();
-        long readable = tables.stream().filter(t -> t.state() == TableTypes.State.READY).count();
-        return "Known tables assessed: "
-                + tables.size()
-                + " · Fully readable: "
-                + readable
-                + " · Absent from build/locale: "
-                + absent
-                + " · Other outcomes: "
-                + (tables.size() - absent - readable);
-    }
-
     private void show(String area) {
         currentArea = area;
+        areas.forEach(
+                (name, button) -> {
+                    button.getStyleClass().remove("area-active");
+                    if (name.equals(area)) button.getStyleClass().add("area-active");
+                });
         if (area.equals("Overview")) {
             var scroll = new ScrollPane(overview);
             scroll.setFitToWidth(true);

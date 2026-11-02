@@ -117,3 +117,10 @@ tasks.register('nativeWorkspaceTest', JavaExec) {
     mainClass = 'com.vimi.gui.NativeWorkspaceCommitTest'
 }
 check.dependsOn nativeWorkspaceTest
+
+tasks.register('overviewPresentationTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.OverviewPresentationTest'
+}
+check.dependsOn overviewPresentationTest
