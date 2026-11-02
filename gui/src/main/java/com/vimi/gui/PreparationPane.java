@@ -195,13 +195,19 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             entry.getValue().setDisable(!enabled);
             entry.getValue()
                     .setText(PreparationStatus.tab(entry.getKey(), snapshot, job.enrichingNames()));
-            boolean active = entry.getKey().equals("Files")
-                    ? job.enrichingNames() || snapshot.busy() && snapshot.phase() == BuildPreparation.Phase.FILES
-                    : entry.getKey().equals("Tables") && snapshot.busy()
-                    && snapshot.phase().ordinal() >= BuildPreparation.Phase.KEYS.ordinal();
+            boolean active =
+                    entry.getKey().equals("Files")
+                            ? job.enrichingNames()
+                                    || snapshot.busy()
+                                            && snapshot.phase() == BuildPreparation.Phase.FILES
+                            : entry.getKey().equals("Tables")
+                                    && snapshot.busy()
+                                    && snapshot.phase().ordinal()
+                                            >= BuildPreparation.Phase.KEYS.ordinal();
             if (active && entry.getValue().getGraphic() == null) {
                 var indicator = new javafx.scene.control.ProgressIndicator(-1);
-                indicator.setPrefSize(14,14); indicator.setMaxSize(14,14);
+                indicator.setPrefSize(14, 14);
+                indicator.setMaxSize(14, 14);
                 entry.getValue().setGraphic(indicator);
             } else if (!active) entry.getValue().setGraphic(null);
             entry.getValue()
@@ -270,6 +276,9 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         private final String area;
         private final ListView<Record> records = new ListView<>();
         private final TextArea detail = new TextArea();
+        private final TextArea mediaDetail = new TextArea();
+        private Cancellation mediaToken = new Cancellation();
+        private long mediaGeneration;
         private final TextField search = new TextField();
         private final Label state = new Label();
         private final Button next = new Button("Next page");
@@ -304,24 +313,30 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             setTop(toolbar);
             detail.setEditable(false);
             detail.setWrapText(true);
+            mediaDetail.setEditable(false);
+            mediaDetail.setWrapText(true);
+            mediaDetail.setVisible(false);
+            mediaDetail.setManaged(false);
             media.setDisable(true);
             media.setOnAction(
                     event -> {
                         var record = records.getSelectionModel().getSelectedItem();
                         if (record != null && record.media() != null)
-                            details(record.media(), "Loading media asynchronously…");
+                            details(record.media(), "Loading media asynchronously…", true);
                     });
             records.getSelectionModel()
                     .selectedItemProperty()
                     .addListener(
                             (observable, before, record) -> {
                                 if (record != null) {
+                                    cancelMedia();
                                     media.setDisable(record.media() == null);
-                                    details(record.details(), "Loading local data…");
+                                    details(record.details(), "Loading local data…", false);
                                 }
                             });
-            var inspector = new VBox(10, detail, media);
+            var inspector = new VBox(10, detail, media, mediaDetail);
             VBox.setVgrow(detail, Priority.ALWAYS);
+            VBox.setVgrow(mediaDetail, Priority.ALWAYS);
             var split = new SplitPane(records, inspector);
             split.setDividerPositions(.48);
             setCenter(split);
@@ -338,14 +353,37 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             needsRefresh = true;
         }
 
+        private void cancelMedia() {
+            mediaToken.cancel();
+            mediaGeneration++;
+            mediaDetail.clear();
+            mediaDetail.setVisible(false);
+            mediaDetail.setManaged(false);
+        }
+
         private void details(
                 java.util.function.Function<Cancellation, CompletableFuture<?>> request,
-                String text) {
-            detailToken.cancel();
-            detailToken = new Cancellation();
-            var selectedToken = detailToken;
-            long selected = ++detailGeneration;
-            detail.setText(text);
+                String text,
+                boolean mediaRequest) {
+            final Cancellation selectedToken;
+            final long selected;
+            final TextArea target;
+            if (mediaRequest) {
+                mediaToken.cancel();
+                mediaToken = new Cancellation();
+                selectedToken = mediaToken;
+                selected = ++mediaGeneration;
+                target = mediaDetail;
+                mediaDetail.setVisible(true);
+                mediaDetail.setManaged(true);
+            } else {
+                detailToken.cancel();
+                detailToken = new Cancellation();
+                selectedToken = detailToken;
+                selected = ++detailGeneration;
+                target = detail;
+            }
+            target.setText(text);
             CompletableFuture.supplyAsync(
                             () -> request.apply(selectedToken),
                             command -> Thread.startVirtualThread(command))
@@ -360,11 +398,14 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
                             (value, error) ->
                                     Platform.runLater(
                                             () -> {
-                                                if (disposed || selected != detailGeneration)
-                                                    return;
+                                                if (disposed
+                                                        || selected
+                                                                != (mediaRequest
+                                                                        ? mediaGeneration
+                                                                        : detailGeneration)) return;
                                                 String textValue =
                                                         error == null ? value : errorMessage(error);
-                                                detail.setText(
+                                                target.setText(
                                                         textValue.length() > 131072
                                                                 ? textValue.substring(0, 131072)
                                                                         + "\nPreview truncated."
@@ -379,6 +420,7 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             refresh.setDisable(true);
             detailToken.cancel();
             detailGeneration++;
+            cancelMedia();
             long request = ++generation;
             token.cancel();
             token = new Cancellation();
@@ -596,6 +638,7 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         public void close() {
             disposed = true;
             lifetime.cancel();
+            cancelMedia();
             detailToken.cancel();
             token.cancel();
             detailGeneration++;
