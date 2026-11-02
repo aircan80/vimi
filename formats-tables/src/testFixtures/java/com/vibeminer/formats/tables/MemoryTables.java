@@ -7,7 +7,6 @@ import com.vibeminer.files.FileTypes.FilesOpenState;
 import com.vibeminer.formats.db2.Db2Types;
 import com.vibeminer.formats.definitions.TableSchema;
 import com.vibeminer.formats.definitions.WowLocale;
-import com.vibeminer.formats.internal.Json;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -50,6 +49,8 @@ public final class MemoryTables implements Tables {
             }
         }
         builds.put(new Key(build, locale), byId);
+        String prefix = build + "|" + locale + "|";
+        checked.removeIf(value -> value.startsWith(prefix));
         return this;
     }
 
@@ -78,7 +79,7 @@ public final class MemoryTables implements Tables {
                         build,
                         locale,
                         FilesOpenState.OPEN,
-                        new Handle(build, locale, tables),
+                        new Handle(build, locale),
                         null,
                         null,
                         null));
@@ -87,13 +88,11 @@ public final class MemoryTables implements Tables {
     private final class Handle implements BuildTables {
         private final BuildRef build;
         private final String locale;
-        private final TreeMap<Long, FakeTable> tables;
         private volatile boolean closed;
 
-        Handle(BuildRef build, String locale, TreeMap<Long, FakeTable> tables) {
+        Handle(BuildRef build, String locale) {
             this.build = build;
             this.locale = locale;
-            this.tables = tables;
         }
 
         @Override
@@ -106,6 +105,10 @@ public final class MemoryTables implements Tables {
             return locale;
         }
 
+        private TreeMap<Long, FakeTable> tables() {
+            return builds.get(new Key(build, locale));
+        }
+
         private void enter(String method, Cancellation token) {
             if (closed) {
                 throw new IllegalStateException("Tables closed");
@@ -116,9 +119,9 @@ public final class MemoryTables implements Tables {
 
         private FakeTable find(TableTypes.Ref ref) {
             if (ref.fileDataId() != null) {
-                return tables.get(ref.fileDataId());
+                return tables().get(ref.fileDataId());
             }
-            return tables.values().stream()
+            return tables().values().stream()
                     .filter(
                             t ->
                                     t.entry().name() != null
@@ -197,7 +200,14 @@ public final class MemoryTables implements Tables {
         }
 
         private String identity(FakeTable table) {
-            return Json.sha256(Json.bytes(table.rows())).substring(0, 32);
+            return "fake:"
+                    + build.buildConfig()
+                    + ":"
+                    + locale
+                    + ":"
+                    + table.entry().fileDataId()
+                    + ":"
+                    + (table.entry().contentKey() == null ? "" : table.entry().contentKey());
         }
 
         @Override
@@ -277,7 +287,7 @@ public final class MemoryTables implements Tables {
                 TableTypes.ListFilter filter, TableTypes.Priority priority, Cancellation token) {
             enter("list", token);
             var entries =
-                    tables.keySet().stream()
+                    tables().keySet().stream()
                             .map(id -> entry(TableTypes.Ref.id(id), false))
                             .filter(e -> TableQueries.matches(filter, e))
                             .toList();
@@ -347,7 +357,7 @@ public final class MemoryTables implements Tables {
                 @Override
                 public CompletableFuture<List<TableTypes.Entry>> list(Cancellation token) {
                     return CompletableFuture.completedFuture(
-                            tables.keySet().stream()
+                            tables().keySet().stream()
                                     .map(id -> entry(TableTypes.Ref.id(id), false))
                                     .toList());
                 }
@@ -355,7 +365,7 @@ public final class MemoryTables implements Tables {
                 @Override
                 public CompletableFuture<TableRelations.RelationSchema> schema(
                         TableTypes.Entry e, Cancellation token) {
-                    var f = tables.get(e.fileDataId());
+                    var f = tables().get(e.fileDataId());
                     return CompletableFuture.completedFuture(
                             new TableRelations.RelationSchema(
                                     f.schema() != null
@@ -397,16 +407,16 @@ public final class MemoryTables implements Tables {
                     new TableTypes.PreloadProgress(
                             TableTypes.PreloadStage.DOWNLOADING,
                             0,
-                            tables.size(),
+                            tables().size(),
                             0,
                             0,
                             0,
                             0,
                             0,
-                            tables.size(),
+                            tables().size(),
                             0);
             emit(progress, report);
-            for (long id : tables.keySet()) {
+            for (long id : tables().keySet()) {
                 if (token.isCanceled() || closed) {
                     return CompletableFuture.completedFuture(
                             new TableTypes.PreloadResult(
@@ -427,13 +437,13 @@ public final class MemoryTables implements Tables {
                         new TableTypes.PreloadProgress(
                                 TableTypes.PreloadStage.PREPARING,
                                 done,
-                                tables.size(),
+                                tables().size(),
                                 failures.size(),
                                 0,
                                 0,
                                 0,
                                 done,
-                                tables.size(),
+                                tables().size(),
                                 failures.size());
                 emit(progress, report);
             }
