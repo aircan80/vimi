@@ -274,3 +274,6 @@ before index acquisition, payload-free Files, protected-table accounting, retain
 lookups and offline reopen without community/network dependencies.
 
 GUI history coverage includes `:gui:preparationHistoryTest` in hosted unit checks.
+Questie backend unit coverage runs `:questie:test`; native integration/quality
+coverage runs `:questie:check :questie:installDist`. Its unit fixtures make no live
+GitHub requests, and SQLite-dependent tests belong to `integrationTest`.

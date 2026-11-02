@@ -97,3 +97,10 @@ checkstyle {
 
 
 
+
+tasks.named('check') { dependsOn tasks.named('integrationTest') }
+tasks.withType(JavaExec).configureEach {
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    def sqliteLibrary = providers.gradleProperty('sqliteLibrary')
+    if (sqliteLibrary.isPresent()) systemProperty 'vibeminer.sqlite.library', sqliteLibrary.get()
+}

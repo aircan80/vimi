@@ -323,6 +323,54 @@ class QuestiePersistenceTest {
                 source.directory());
     }
 
+    @Test
+    void applicationFacadeComparesRetainedNamedFieldsWithoutOpeningAWowBuild() throws Exception {
+        String left, right;
+        try (var data = new QuestieDataRepository(directory.resolve("derived"))) {
+            left =
+                    data.prepare(fixture("compare-left", false), ignored -> {}, Cancellation.NONE)
+                            .join()
+                            .id();
+            right =
+                    data.prepare(
+                                    fixture("compare-right", false, "Vegetable"),
+                                    ignored -> {},
+                                    Cancellation.NONE)
+                            .join()
+                            .id();
+        }
+        try (var repository =
+                com.vibeminer.questie.QuestieRepository.open(directory, Cancellation.NONE).join()) {
+            var compared =
+                    repository
+                            .compareEntity(
+                                    left, right, EntityKind.ITEM, 117, "enUS", Cancellation.NONE)
+                            .join();
+            assertTrue(compared.presentBefore());
+            assertTrue(compared.presentAfter());
+            assertTrue(compared.sameInterpretation());
+            assertEquals(1, compared.changes().size());
+            assertEquals("name", compared.changes().getFirst().field());
+            assertEquals("Meat", compared.changes().getFirst().before());
+            assertEquals("Vegetable", compared.changes().getFirst().after());
+            assertTrue(
+                    repository
+                            .compareEntity(
+                                    left, left, EntityKind.ITEM, 117, "enUS", Cancellation.NONE)
+                            .join()
+                            .changes()
+                            .isEmpty());
+            var missing =
+                    repository
+                            .compareEntity(
+                                    left, right, EntityKind.NPC, 999, "enUS", Cancellation.NONE)
+                            .join();
+            assertFalse(missing.presentBefore());
+            assertFalse(missing.presentAfter());
+            assertTrue(missing.scope().contains("Static corrected QuestieDB"));
+        }
+    }
+
     private SourceSnapshot fixtureUnchecked(String name, boolean corrupt) {
         try {
             return fixture(name, corrupt);
@@ -332,6 +380,11 @@ class QuestiePersistenceTest {
     }
 
     private SourceSnapshot fixture(String name, boolean corrupt) throws IOException {
+        return fixture(name, corrupt, "Meat");
+    }
+
+    private SourceSnapshot fixture(String name, boolean corrupt, String itemName)
+            throws IOException {
         var sourceDir = Files.createDirectories(directory.resolve(name));
         var archive = sourceDir.resolve("archive.zip");
         var toc =
@@ -348,7 +401,7 @@ class QuestiePersistenceTest {
         metadata(
                 toc,
                 "X-Item-117-S",
-                Map.of(1, "Meat", "p", 8226),
+                Map.of(1, itemName, "p", 8226),
                 false); // npcDrops(2), questRewards(6), vendors(14)
         metadata(toc, "X-Item-117-2", List.of(54), false);
         metadata(toc, "X-Item-117-6", List.of(2), false);
