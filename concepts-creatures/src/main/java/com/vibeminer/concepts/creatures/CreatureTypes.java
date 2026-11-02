@@ -264,11 +264,42 @@ public final class CreatureTypes {
             Instant observedAt,
             List<String> keyNames,
             BuildModelTypes.ReadState skinState,
-            List<String> skinKeyNames) {
+            List<String> skinKeyNames,
+            List<BuildModelTypes.Reference> references) {
+        public CreatureModel(
+                CreatureModelState state,
+                long fileDataId,
+                BuildModelTypes.ReadState readState,
+                CreatureAppearance appearance,
+                List<CreatureTexture> textures,
+                Long mainSkinFileDataId,
+                String code,
+                String message,
+                Instant observedAt,
+                List<String> keyNames,
+                BuildModelTypes.ReadState skinState,
+                List<String> skinKeyNames) {
+            this(
+                    state,
+                    fileDataId,
+                    readState,
+                    appearance,
+                    textures,
+                    mainSkinFileDataId,
+                    code,
+                    message,
+                    observedAt,
+                    keyNames,
+                    skinState,
+                    skinKeyNames,
+                    List.of());
+        }
+
         public CreatureModel {
             textures = textures == null ? null : List.copyOf(textures);
             keyNames = keyNames == null ? null : List.copyOf(keyNames);
             skinKeyNames = skinKeyNames == null ? null : List.copyOf(skinKeyNames);
+            references = List.copyOf(references);
         }
     }
 }

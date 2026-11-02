@@ -74,17 +74,38 @@ public final class CreaturesService implements Creatures {
         Objects.requireNonNull(build);
         FileLocales.bitOf(locale);
         token.check();
-        return tables.forBuild(build, locale, token)
-                .thenApply(
-                        open ->
-                                new CreaturesOpenResult(
-                                        build,
-                                        locale,
-                                        open.state(),
-                                        open.tables() == null ? null : new Handle(open.tables()),
-                                        open.code(),
-                                        open.message(),
-                                        open.observedAt()));
+        CompletableFuture<CreaturesOpenResult> result = new CompletableFuture<>();
+        tables.forBuild(build, locale, token)
+                .whenComplete(
+                        (open, error) -> {
+                            if (error != null) {
+                                result.completeExceptionally(CreatureWork.unwrap(error));
+                                return;
+                            }
+                            Handle handle =
+                                    open.tables() == null ? null : new Handle(open.tables());
+                            try {
+                                token.check();
+                                if (!result.complete(
+                                                new CreaturesOpenResult(
+                                                        build,
+                                                        locale,
+                                                        open.state(),
+                                                        handle,
+                                                        open.code(),
+                                                        open.message(),
+                                                        open.observedAt()))
+                                        && handle != null) {
+                                    handle.closeAsync();
+                                }
+                            } catch (Throwable failed) {
+                                if (handle != null) {
+                                    handle.closeAsync();
+                                }
+                                result.completeExceptionally(failed);
+                            }
+                        });
+        return result;
     }
 
     private final class Handle implements BuildCreatures {
@@ -125,7 +146,9 @@ public final class CreaturesService implements Creatures {
             CreatureWork.submit(
                             () -> {
                                 token.check();
-                                return action.get();
+                                T value = action.get();
+                                token.check();
+                                return value;
                             })
                     .whenComplete(
                             (value, error) -> {
@@ -730,7 +753,8 @@ public final class CreaturesService implements Creatures {
                         null,
                         null,
                         null,
-                        null);
+                        null,
+                        read.references());
             }
             long skin = m2.skinFileDataIds().getFirst();
             var skinRead =
@@ -755,7 +779,8 @@ public final class CreaturesService implements Creatures {
                         null,
                         null,
                         skinRead.state(),
-                        skinRead.keyNames());
+                        skinRead.keyNames(),
+                        read.references());
             }
             var batches = CreatureDisplayRules.drawnTextures(m2, skinRead.skin());
             List<CreatureTexture> textures =
@@ -774,7 +799,8 @@ public final class CreaturesService implements Creatures {
                         null,
                         null,
                         skinRead.state(),
-                        null);
+                        null,
+                        read.references());
             }
             List<CreatureTexture> inspected = new ArrayList<>();
             CreatureAppearance stop = null;
@@ -833,7 +859,8 @@ public final class CreaturesService implements Creatures {
                     null,
                     null,
                     skinRead.state(),
-                    null);
+                    null,
+                    read.references());
         }
     }
 }
