@@ -282,9 +282,10 @@ Initial catalog creation also avoids a full presence/name pass.
 
 Decoded tables already persisted. The completed known-table outcome ledger now
 persists too, keyed by source, pinned definitions/catalog, decoder policy, locale
-and key fingerprints. Readable graphs are checked locally before reuse; missing,
-corrupt or incompatible artifacts fall back to preparation. Explicit enrichment
-reassesses the table ledger. Key bootstrap and in-memory concept handles still
+and key fingerprints. A matching ledger restores with one inventory read, without
+opening every readable table. Stale or missing/corrupt inventories fall back to
+preparation; each requested table retains normal graph validation and repair.
+Explicit enrichment reassesses the ledger. Key bootstrap and in-memory concept handles still
 initialize on reopen; this is not a permanent ready flag.
 
 Native integration checks reopen both stores and forbid repeated full file-ID

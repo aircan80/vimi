@@ -1,6 +1,110 @@
 # vimi development handoff
 
-## Latest status — 2026-11-01
+## Latest status — 2026-11-02: returning development to Linux
+
+This section supersedes historical status below. The user is switching development
+machines only: **do not copy, migrate or synchronize application/cache data**.
+Leave the Mac's data untouched; use the Linux machine's own data directory.
+
+### Committed application state
+
+- `main` is pushed through `b40ce84` (PR #62, fast-forward merged). The user tried
+  the updated app on macOS and reported that reopening is better. No application
+  code remains uncommitted. The preexisting untracked root `md` is unrelated and
+  must remain untouched.
+- Faster cached-table reopen: `PreparedTablesCache.restore(identity, progress,
+  token)` reads the completed inventory once instead of opening/checking every
+  readable table. Existing cache format/identity is preserved, so this change
+  does not force a new preparation. Identity covers build/configuration, locale,
+  pinned definitions/catalog, reader policy and key fingerprints. A stale,
+  missing or corrupt inventory falls back to preparation; individual requested
+  table graphs retain normal validation/repair. The overload taking local-only
+  `BuildTables` remains available for explicit verification. Restore emits only
+  initial/final progress and the GUI says “cached tables restored”.
+- Generic decoded table rows persist in generated RecordFile pack objects with a
+  SQLite object index; they are not individual SQL tables. The Items grid has its
+  own derived SQLite projection. File catalogs also persist, avoiding repeat full
+  FileDataID enumeration. Key bootstrap and research lookup initialization still
+  run on reopen; no promise that total reopening is instantaneous.
+- PR #57 (`8373863`) completed the Items SQLite catalog: whole-catalog search,
+  filtering and sorting happen before paging; matching totals and localized
+  class/subclass labels are returned. Only the current page enters the GUI.
+  Details and Layer 6 base stat calculations are separate requests; visible row
+  icons load asynchronously without selection. Stats remain a bounded supported
+  policy, not certified exact WoW Forever tooltip parity.
+- PR #58 (`49008b9`) fixed blank selected dropdown labels, unreadable popup hover
+  text and research toolbar alignment. PR #59 (`87be21b`) added durable historical
+  preparation receipts and distinguished local table restoration from fresh
+  processing. A historical readiness marker is not a live resource handle.
+- PR #61 is merged through `7429c4c`: the independent Questie backend is complete,
+  with official release checking/downloading, immutable originals, versioned
+  derived SQLite data, localized queries, item source evidence, entity comparisons
+  and CLI. No Questie GUI wiring or build-opening dependency exists yet. Read
+  `questie/README.md` and `questie/UPSTREAM.md` before extending it; preserve upstream
+  notices and the documented mixed historic rights caveat. No upstream data is
+  bundled in Git.
+- Root `architecture.md` now documents the seven layers/components with Mermaid,
+  preparation/persistence and the separate Questie application path.
+
+### Latest validation
+
+- macOS 27.2 / ARM64, Homebrew OpenJDK 25.0.5.0.3, Gradle wrapper 9.1.0,
+  native SQLite 3.54.1. Latest application validation at `b40ce84`:
+
+  ```sh
+  ./gradlew :formats-tables:check :gui:check :gui:installDist \
+    -PsqliteLibrary=/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib
+  ```
+
+  `JAVA_HOME` pointed to the Homebrew full JDK 25; the native library override is
+  Mac-specific and must not be reused on Linux. All tasks passed: table unit tests
+  71/71 and native integration 1/1, no failures/errors/skips; GUI JavaExec harnesses
+  also passed. Tests enforce one inventory read without per-table artifact reads,
+  stale/corrupt inventory rejection, cancellation, disk reopen without encoded
+  source and on-access repair after deleting a saved table manifest.
+- The offline GUI pipeline restored its 1,270-entry fixture ledger in 5 ms. This
+  is not a real-build total-opening benchmark.
+- Hosted CI for the same application commit passed unit and integration suites
+  on Linux, Windows and macOS, plus Linux crash recovery and Java/C# compatibility.
+  One redundant PR macOS unit job remained unassigned with no steps; it was
+  canceled after the identical commit's push macOS unit suite passed. No failing
+  test was waived. PR #62 is merged and remote/local main matched at handoff.
+
+### Resume on Linux
+
+1. Read `AGENTS.md`, this latest status and `architecture.md`. Inspect local changes
+   before updating; preserve Linux-local work. Fetch and fast-forward `main` if
+   clean, without resetting or overwriting local changes. The handoff documentation
+   commit follows `b40ce84` on remote main.
+2. Use a full Linux JDK 25 and the Linux native SQLite library (`libsqlite3.so.0`
+   by default); Gradle downloads the platform's JavaFX dependencies. Rebuild on
+   Linux instead of reusing the Mac's installed distribution. No .NET/reference
+   checkout is needed for normal Java checks or GUI execution.
+3. In a Linux desktop session:
+
+   ```sh
+   ./gradlew :formats-tables:check :gui:check :gui:installDist
+   ./gradlew :gui:run
+   ```
+
+   On headless Linux, GUI rendering checks need a virtual display, such as Xvfb;
+   an interactive app needs a desktop display. Supply `-PsqliteLibrary` only if
+   default native library discovery fails, using the actual Linux library path.
+4. Use the Linux machine's existing/default data only. There is no data-transfer
+   task. Builds not already prepared on Linux will legitimately need an initial
+   preparation; cached builds there should use the new fast restore path.
+5. Keep author/committer `aircan80 <329744803+aircan80@users.noreply.github.com>`.
+   Continue using feature branches and fast-forward/squash integration only;
+   user authorization to merge ready changes without another approval persists.
+
+Remaining scope: hands-on Windows certification and packaging remain deferred;
+Linux GUI smoke testing is the immediate continuation. Other grids still retain
+some page-scoped filter/sort behavior; Creature.db2 is not a complete NPC catalog.
+All-NPC enrichment, CDN-only talents, final item tooltip/scaling parity and Questie
+GUI integration remain future work. Settings mockups live in a separate gui/design
+worktree/session; do not overwrite or assume they have been integrated.
+
+## Previous status — 2026-11-01 (historical)
 
 - Durable preparation cache: Layer 4 PreparedFileCatalog persists locale-scoped
   immutable file records in generated RecordFile storage. Restore validates its
