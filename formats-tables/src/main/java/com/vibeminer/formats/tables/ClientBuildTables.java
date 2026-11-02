@@ -215,6 +215,7 @@ final class ClientBuildTables implements BuildTables {
         if (table == null) {
             return null;
         }
+        ask = ask && !options.localDefinitionsOnly();
         boolean acquired = false;
         try {
             if (ask) {
@@ -312,9 +313,10 @@ final class ClientBuildTables implements BuildTables {
                                 content,
                                 limits,
                                 encodingScope());
-                if (!definitions
-                        .refreshDue(manifest.get(id).tableId(), version, layout, token)
-                        .join()) {
+                if (options.localDefinitionsOnly()
+                        || !definitions
+                                .refreshDue(manifest.get(id).tableId(), version, layout, token)
+                                .join()) {
                     var hit = generated.open(source, keys, token).join();
                     if (hit != null) {
                         backgroundBuilds.stored(source);
@@ -1182,6 +1184,17 @@ final class ClientBuildTables implements BuildTables {
     @Override
     public CompletableFuture<TableTypes.PreloadResult> preload(
             Consumer<TableTypes.PreloadProgress> progress, Cancellation token) {
+        return runPreload(progress, token, false);
+    }
+
+    @Override
+    public CompletableFuture<TableTypes.PreloadResult> prepareKnown(
+            Consumer<TableTypes.PreloadProgress> progress, Cancellation token) {
+        return runPreload(progress, token, true).copy();
+    }
+
+    private CompletableFuture<TableTypes.PreloadResult> runPreload(
+            Consumer<TableTypes.PreloadProgress> progress, Cancellation token, boolean known) {
         var local = new Cancellation();
         synchronized (gate) {
             if (closed) {
@@ -1193,7 +1206,7 @@ final class ClientBuildTables implements BuildTables {
         var delivery = new ProgressOutbox(progress);
         CompletableFuture<TableTypes.PreloadResult> work;
         try {
-            work = preloadCore(delivery::publish, local);
+            work = preloadCore(delivery::publish, local, known);
         } catch (RuntimeException error) {
             registration.close();
             synchronized (gate) {
@@ -1213,11 +1226,12 @@ final class ClientBuildTables implements BuildTables {
     }
 
     private CompletableFuture<TableTypes.PreloadResult> preloadCore(
-            Consumer<TableTypes.PreloadProgress> progress, Cancellation token) {
+            Consumer<TableTypes.PreloadProgress> progress, Cancellation token, boolean known) {
         return operation(
                 Cancellation.NONE,
                 ignored -> {
                     var failures = new ArrayList<TableTypes.Entry>();
+                    var ledger = new ArrayList<TableTypes.Entry>();
                     var current =
                             new java.util.concurrent.atomic.AtomicReference<>(
                                     new TableTypes.PreloadProgress(
@@ -1234,18 +1248,25 @@ final class ClientBuildTables implements BuildTables {
                     try {
                         token.check();
                         var entries =
-                                listCore(
-                                        TableTypes.ListFilter.ALL,
-                                        TableTypes.Priority.BACKGROUND,
-                                        token);
+                                known
+                                        ? knownEntries(token)
+                                        : listCore(
+                                                TableTypes.ListFilter.ALL,
+                                                TableTypes.Priority.BACKGROUND,
+                                                token);
                         var eligible =
                                 entries.stream()
                                         .filter(
                                                 e ->
-                                                        e.state() != TableTypes.State.NO_DEFINITION
-                                                                && e.state()
-                                                                        != TableTypes.State
-                                                                                .DEFINITION_UNUSABLE
+                                                        (known
+                                                                        || (e.state()
+                                                                                        != TableTypes
+                                                                                                .State
+                                                                                                .NO_DEFINITION
+                                                                                && e.state()
+                                                                                        != TableTypes
+                                                                                                .State
+                                                                                                .DEFINITION_UNUSABLE))
                                                                 && e.state()
                                                                         != TableTypes.State
                                                                                 .NOT_IN_BUILD
@@ -1253,11 +1274,28 @@ final class ClientBuildTables implements BuildTables {
                                                                         != TableTypes.State
                                                                                 .NOT_IN_LOCALE)
                                         .toList();
+                        if (known) {
+                            for (var item : entries) {
+                                if (item.state() == TableTypes.State.NOT_IN_BUILD
+                                        || item.state() == TableTypes.State.NOT_IN_LOCALE) {
+                                    ledger.add(item);
+                                }
+                            }
+                        }
+                        var requested =
+                                known
+                                        ? eligible.stream()
+                                                .filter(
+                                                        item ->
+                                                                !TableQueries.isReadable(
+                                                                        item.state()))
+                                                .toList()
+                                        : entries;
                         var report =
                                 new TableTypes.PreloadProgress(
                                         TableTypes.PreloadStage.DOWNLOADING,
                                         0,
-                                        entries.size(),
+                                        requested.size(),
                                         0,
                                         0,
                                         0,
@@ -1270,7 +1308,7 @@ final class ClientBuildTables implements BuildTables {
                         var ensured =
                                 files.ensure(
                                                 FileTypes.EnsureSelection.many(
-                                                        entries.stream()
+                                                        requested.stream()
                                                                 .map(
                                                                         e ->
                                                                                 FileRef.id(
@@ -1308,6 +1346,9 @@ final class ClientBuildTables implements BuildTables {
                                                 },
                                                 token)
                                         .join();
+                        if (known && ensured.outcome() == FileTypes.EnsureOutcome.CANCELED) {
+                            throw new java.util.concurrent.CancellationException();
+                        }
                         var byId = new HashMap<Long, FileTypes.FileEnsured>();
                         for (var file : ensured.files()) {
                             if (file.fileDataId() != null) {
@@ -1335,9 +1376,15 @@ final class ClientBuildTables implements BuildTables {
                             }
                             var file = byId.get(table.fileDataId());
                             TableTypes.Entry checked;
+                            if (known
+                                    && file != null
+                                    && file.state() == FileTypes.FileEnsureState.CANCELED) {
+                                throw new java.util.concurrent.CancellationException();
+                            }
                             if (file != null
                                     && file.state() != FileTypes.FileEnsureState.STORED
-                                    && file.state() != FileTypes.FileEnsureState.ALREADY_STORED) {
+                                    && file.state() != FileTypes.FileEnsureState.ALREADY_STORED
+                                    && !(known && TableQueries.isReadable(table.state()))) {
                                 checked =
                                         entry(
                                                 table.fileDataId(),
@@ -1371,6 +1418,9 @@ final class ClientBuildTables implements BuildTables {
                                     checked = p.entry();
                                 }
                             }
+                            if (known) {
+                                ledger.add(checked);
+                            }
                             if (!TableQueries.isReadable(checked.state())
                                     && checked.state() != TableTypes.State.ENCRYPTED) {
                                 failures.add(checked);
@@ -1392,12 +1442,35 @@ final class ClientBuildTables implements BuildTables {
                             current.set(report);
                             emit(progress, report);
                         }
+                        token.check();
+                        if (known) {
+                            ledger.sort(
+                                    java.util.Comparator.comparingLong(
+                                            TableTypes.Entry::fileDataId));
+                        }
                         return new TableTypes.PreloadResult(
-                                filesFailed == 0 && failures.isEmpty()
-                                        ? TableTypes.PreloadOutcome.COMPLETED
-                                        : TableTypes.PreloadOutcome.INCOMPLETE,
+                                known
+                                        ? (ledger.stream()
+                                                        .anyMatch(
+                                                                item ->
+                                                                        item.state()
+                                                                                == TableTypes.State
+                                                                                        .STORE_FAILED)
+                                                ? TableTypes.PreloadOutcome.FAILED
+                                                : ledger.stream()
+                                                                .anyMatch(
+                                                                        item ->
+                                                                                item.state()
+                                                                                        == TableTypes
+                                                                                                .State
+                                                                                                .NOT_CHECKED)
+                                                        ? TableTypes.PreloadOutcome.INCOMPLETE
+                                                        : TableTypes.PreloadOutcome.COMPLETED)
+                                        : filesFailed == 0 && failures.isEmpty()
+                                                ? TableTypes.PreloadOutcome.COMPLETED
+                                                : TableTypes.PreloadOutcome.INCOMPLETE,
                                 current.get(),
-                                failures,
+                                known ? ledger : failures,
                                 null,
                                 null,
                                 null);
@@ -1414,12 +1487,40 @@ final class ClientBuildTables implements BuildTables {
                                         ? TableTypes.PreloadOutcome.CANCELED
                                         : TableTypes.PreloadOutcome.FAILED,
                                 current.get(),
-                                failures,
+                                known ? ledger : failures,
                                 null,
                                 canceled ? null : "TABLE_PRELOAD_FAILED",
                                 canceled ? null : cause.getMessage());
                     }
                 });
+    }
+
+    private List<TableTypes.Entry> knownEntries(Cancellation token) {
+        var entries = new ArrayList<TableTypes.Entry>();
+        // Manifest is copied from the definition provider at handle creation. Community filename
+        // enrichment cannot expand or change the denominator during this pass.
+        for (long id : List.copyOf(manifest.keySet())) {
+            token.check();
+            try (var prepared =
+                    prepare(
+                            TableTypes.Ref.id(id),
+                            TableTypes.Priority.BACKGROUND,
+                            false,
+                            true,
+                            token)) {
+                var item = prepared.entry();
+                entries.add(
+                        new TableTypes.Entry(
+                                item.fileDataId(),
+                                item.name(),
+                                item.state(),
+                                true,
+                                item.reason(),
+                                item.counts(),
+                                item.contentKey()));
+            }
+        }
+        return List.copyOf(entries);
     }
 
     private static void emit(

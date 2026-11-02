@@ -39,6 +39,16 @@ public interface BuildTables extends AutoCloseable {
     CompletableFuture<TableTypes.PreloadResult> preload(
             Consumer<TableTypes.PreloadProgress> progress, Cancellation token);
 
+    /**
+     * Processes the frozen known-table inventory. Unlike preload, tables contains every known
+     * outcome (including absent entries); COMPLETED means assessed, not universally readable.
+     */
+    default CompletableFuture<TableTypes.PreloadResult> prepareKnown(
+            Consumer<TableTypes.PreloadProgress> progress, Cancellation token) {
+        return CompletableFuture.failedFuture(
+                new UnsupportedOperationException("Known-table preparation is not supported"));
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override

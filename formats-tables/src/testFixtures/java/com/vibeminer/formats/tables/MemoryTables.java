@@ -460,6 +460,107 @@ public final class MemoryTables implements Tables {
         }
 
         @Override
+        public CompletableFuture<TableTypes.PreloadResult> prepareKnown(
+                Consumer<TableTypes.PreloadProgress> progress, Cancellation token) {
+            enter("prepareKnown", Cancellation.NONE);
+            var inventory = new TreeMap<>(tables());
+            var ledger = new ArrayList<TableTypes.Entry>();
+            int done = 0;
+            int total =
+                    (int)
+                            inventory.values().stream()
+                                    .filter(
+                                            table ->
+                                                    table.entry().state()
+                                                                    != TableTypes.State.NOT_IN_BUILD
+                                                            && table.entry().state()
+                                                                    != TableTypes.State
+                                                                            .NOT_IN_LOCALE)
+                                    .count();
+            TableTypes.PreloadProgress report =
+                    new TableTypes.PreloadProgress(
+                            TableTypes.PreloadStage.PREPARING, 0, 0, 0, 0, 0, 0, 0, total, 0);
+            for (var table : inventory.values()) {
+                if (token.isCanceled() || closed) {
+                    return CompletableFuture.completedFuture(
+                            new TableTypes.PreloadResult(
+                                    TableTypes.PreloadOutcome.CANCELED,
+                                    report,
+                                    ledger,
+                                    null,
+                                    null,
+                                    null));
+                }
+                var item = table.entry();
+                ledger.add(
+                        new TableTypes.Entry(
+                                item.fileDataId(),
+                                item.name(),
+                                item.state(),
+                                true,
+                                item.reason(),
+                                item.counts(),
+                                item.contentKey()));
+                if (item.state() != TableTypes.State.NOT_IN_BUILD
+                        && item.state() != TableTypes.State.NOT_IN_LOCALE) {
+                    done++;
+                }
+                int unavailable =
+                        (int)
+                                ledger.stream()
+                                        .filter(
+                                                value ->
+                                                        value.state()
+                                                                        != TableTypes.State
+                                                                                .NOT_IN_BUILD
+                                                                && value.state()
+                                                                        != TableTypes.State
+                                                                                .NOT_IN_LOCALE
+                                                                && !TableQueries.isReadable(
+                                                                        value.state()))
+                                        .count();
+                report =
+                        new TableTypes.PreloadProgress(
+                                TableTypes.PreloadStage.PREPARING,
+                                done,
+                                total,
+                                unavailable,
+                                0,
+                                0,
+                                0,
+                                done,
+                                total,
+                                unavailable);
+                emit(progress, report);
+            }
+            return CompletableFuture.completedFuture(
+                    new TableTypes.PreloadResult(
+                            token.isCanceled()
+                                    ? TableTypes.PreloadOutcome.CANCELED
+                                    : ledger.stream()
+                                                    .anyMatch(
+                                                            item ->
+                                                                    item.state()
+                                                                            == TableTypes.State
+                                                                                    .STORE_FAILED)
+                                            ? TableTypes.PreloadOutcome.FAILED
+                                            : ledger.stream()
+                                                            .anyMatch(
+                                                                    item ->
+                                                                            item.state()
+                                                                                    == TableTypes
+                                                                                            .State
+                                                                                            .NOT_CHECKED)
+                                                    ? TableTypes.PreloadOutcome.INCOMPLETE
+                                                    : TableTypes.PreloadOutcome.COMPLETED,
+                            report,
+                            ledger,
+                            null,
+                            null,
+                            null));
+        }
+
+        @Override
         public CompletableFuture<Void> closeAsync() {
             closed = true;
             return CompletableFuture.completedFuture(null);

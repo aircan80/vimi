@@ -105,3 +105,34 @@ certification and release packaging remain separate. The implemented reader
 supports the reference's bounded subset rather than every historical DB2 format;
 other magics, unsupported layouts, malformed framing and exceeded limits remain
 explicit refusals.
+
+## Preparation of the known inventory
+
+`BuildTables.prepareKnown(progress, token)` is an additive preparation boundary for
+application readiness. The existing `preload` contract and its pinned C# behavior
+remain unchanged.
+
+The new operation freezes the handle's catalog of known, nonzero FileDataIDs;
+community filenames do not expand its scope. Its result contains a complete,
+FileDataID-ordered outcome ledger on successful completion, including absent and
+not-in-locale entries. Absent/not-in-locale entries are excluded from the actual
+table-work denominator. Present known files with missing/unusable definitions are
+still acquired and explicitly assessed. Unknown files outside the manifest remain
+outside this preparation pass.
+
+`COMPLETED` means every in-scope table was assessed, not that every table is
+readable. Partial, encrypted, missing, unsupported, corrupt and unavailable data
+remain explicit per-table outcomes. Inspect that ledger to describe availability;
+`tablesFailed` is a diagnostic count, not a readiness predicate. Cancellation,
+store/system failures and still-unchecked data do not establish completed
+preparation. Generated readable tables can be reused without reacquiring a missing
+original encoded file.
+
+Use `TablesOptions.withLocalDefinitionsOnly()` for a prepared session or key
+bootstrap that must not implicitly refresh/fetch community definitions. Existing
+constructors preserve the original behavior. The application should bind an
+immutable key-status snapshot and stable definition provider to each preparation
+context; later enrichment creates a replacement generation/handle. Generated
+table identities already include definition/source and relevant key fingerprints.
+Catalog entries without a known nonzero FileDataID are not addressable by this
+API and cannot be claimed as downloaded.

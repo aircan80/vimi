@@ -16,7 +16,40 @@ public record TablesOptions(
         TableWorkScheduler scheduler,
         int maxScanRows,
         int maxReferenceSources,
-        long maxReferenceScanRows) {
+        long maxReferenceScanRows,
+        boolean localDefinitionsOnly) {
+    public TablesOptions(
+            BiFunction<BuildRef, Cancellation, CompletableFuture<String>> buildVersion,
+            Db2Types.Limits limits,
+            Function<BuildRef, KeyStatus> keys,
+            TableWorkScheduler scheduler,
+            int maxScanRows,
+            int maxReferenceSources,
+            long maxReferenceScanRows) {
+        this(
+                buildVersion,
+                limits,
+                keys,
+                scheduler,
+                maxScanRows,
+                maxReferenceSources,
+                maxReferenceScanRows,
+                false);
+    }
+
+    /** Keeps prepared reads and bootstrap independent of background community refresh. */
+    public TablesOptions withLocalDefinitionsOnly() {
+        return new TablesOptions(
+                buildVersion,
+                limits,
+                keys,
+                scheduler,
+                maxScanRows,
+                maxReferenceSources,
+                maxReferenceScanRows,
+                true);
+    }
+
     public TablesOptions(BiFunction<BuildRef, Cancellation, CompletableFuture<String>> version) {
         this(
                 version,
