@@ -3,8 +3,9 @@
 ## Latest status — 2026-11-01
 
 - Layers 1–6 remain implemented within documented supported-format bounds. Layer 7
-  preparation integration is on `integration/preparation`; hosted validation/merge
-  is pending. Current main before this integration is `9b87915`.
+  preparation integration PR #53 was fast-forward merged at `e1ab35f` after all
+  hosted checks passed (Linux/macOS/Windows unit/integration and Linux crash/C#
+  compatibility).
 - Agreed pipeline: Metadata (configs/ENCODING/ROOT) publishes real Overview early;
   Files prepares indexes and ID/locale/size/local-presence facts without payload or
   type inspection; key bootstrap then known table processing/lookups runs in the
@@ -28,6 +29,8 @@
   enrichment commit, prepared reads not joining CDN flights, readiness/activity
   gates, protected tables, no media access and native offline reopen. Authored
   JavaFX scenes were rendered and inspected; screenshots are in docs/images.
+  A live launch exposed a null empty-activity-list bug, fixed with a headless
+  regression and verified by relaunch. The user is reviewing the running app.
 - Up to four build/locale contexts are retained, with one preparation pipeline at a
   time. Names may continue independently. Close build releases its context; app
   close cancels/drains all jobs and retired resources. Phase progress is measured
