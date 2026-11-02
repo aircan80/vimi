@@ -2,7 +2,8 @@
 
 ## Latest status — 2026-11-01
 
-- Overview now uses the approved metric/explorer/retention layout with real
+- Overview restoration PR #54 was fast-forward merged at `e3f0e11` after all
+  hosted checks passed, including Windows integration. Overview now uses the approved metric/explorer/retention layout with real
   readiness, progress and gate bindings. Unknown build byte size and build-local
   filename coverage remain explicitly unmeasured. Download-all is disabled until
   that workflow exists. Mock layout remains available unchanged.
