@@ -651,5 +651,11 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
 - Hands-on Windows certification remains deferred; hosted jobs retain all platforms.
 
 - Local asset integration validation passes root `check assemble`, the asset C# golden
-  regeneration suite and all 15 CI helper/gate tests. Assets contribute 80 unit,
-  one real disk pipeline and one C# golden case; all have zero failures/skips.
+  regeneration suite and all 15 CI helper/gate tests. Assets contribute 81 unit,
+  one real disk pipeline and two C# golden/transport cases; all have zero failures/skips.
+
+- Hosted assets checks exposed fixture portability only: Windows CRLF checkout of
+  an identity text golden and Linux/macOS gzip OS-header differences. Text fixtures
+  are pinned LF; expected text is normalized, while production identities remain LF.
+  Gzip wrappers compare their verified decompressed original payload, and VMG1/VMIM
+  retain byte-exact checks. Local full assets checks/interop pass after regressions.
