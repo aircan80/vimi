@@ -367,4 +367,57 @@ final class ItemsLifecycleTest {
         release.complete(null);
         closing.join();
     }
+
+    @Test
+    void idleCloseReturnsWithoutBlockingAndObserversCannotForgeDrain() throws Exception {
+        var lower = data().forBuild(ItemsWorld.BUILD, "enUS", Cancellation.NONE).join().tables();
+        var closeEntered = new CountDownLatch(1);
+        var release = new CompletableFuture<Void>();
+        var wrapped =
+                (BuildTables)
+                        Proxy.newProxyInstance(
+                                BuildTables.class.getClassLoader(),
+                                new Class<?>[] {BuildTables.class},
+                                (proxy, method, args) -> {
+                                    if (method.getName().equals("closeAsync")) {
+                                        closeEntered.countDown();
+                                        return release.thenCompose(ignored -> lower.closeAsync());
+                                    }
+                                    return invoke(lower, method, args);
+                                });
+        Tables tables =
+                (b, l, c) ->
+                        CompletableFuture.completedFuture(
+                                new TableTypes.OpenResult(
+                                        b,
+                                        l,
+                                        FileTypes.FilesOpenState.OPEN,
+                                        wrapped,
+                                        null,
+                                        null,
+                                        null));
+        var handle =
+                new ItemsService(
+                                tables,
+                                new MemoryFiles(),
+                                new BlpImages(new MemoryGeneratedStore()))
+                        .forBuild(ItemsWorld.BUILD, "enUS", Cancellation.NONE)
+                        .join()
+                        .items();
+        var returned = new CompletableFuture<CompletableFuture<Void>>();
+        Thread.startVirtualThread(() -> returned.complete(handle.closeAsync()));
+        try {
+            var firstObserver = returned.get(5, TimeUnit.SECONDS);
+            assertTrue(closeEntered.await(5, TimeUnit.SECONDS));
+            assertFalse(firstObserver.isDone());
+            firstObserver.cancel(false);
+            var secondObserver = handle.closeAsync();
+            assertFalse(secondObserver.isDone());
+            release.complete(null);
+            secondObserver.get(5, TimeUnit.SECONDS);
+        } finally {
+            release.complete(null);
+            handle.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
 }

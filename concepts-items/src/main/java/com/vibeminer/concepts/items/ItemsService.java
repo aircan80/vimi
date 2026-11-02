@@ -165,7 +165,15 @@ public final class ItemsService implements Items {
                 }
             }
             if (dispose) {
-                dispose();
+                startDisposal();
+            }
+        }
+
+        private void startDisposal() {
+            try {
+                Thread.startVirtualThread(this::dispose);
+            } catch (Throwable failure) {
+                drained.completeExceptionally(failure);
             }
         }
 
@@ -205,7 +213,7 @@ public final class ItemsService implements Items {
                 }
             }
             if (dispose) {
-                dispose();
+                startDisposal();
             }
             return drained.copy();
         }
