@@ -1,6 +1,6 @@
 # Continuous integration
 
-The `Unit tests` workflow runs `:object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test` on GitHub-hosted
+The `Unit tests` workflow runs `:object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test` on GitHub-hosted
 `ubuntu-24.04`, `windows-2025` and `macos-15` runners. Each job installs a full
 Temurin Java 25 JDK matching the runner architecture. The fast tasks need neither
 native SQLite nor .NET nor the original C# checkout. Generated record tests use
@@ -11,7 +11,7 @@ enabled; formatting and native integration are separate checks.
 Run the same task locally with:
 
 ```sh
-./gradlew :object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test --no-daemon --console=plain
+./gradlew :object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test --no-daemon --console=plain
 ```
 
 Use `gradlew.bat` in a Windows terminal. Hosted jobs use the checked-in Unix
@@ -34,8 +34,8 @@ python3 -m unittest discover -s scripts/ci -p '*_test.py'
 
 The validation group contains `object-store`, its consumer `generated-store`,
 and the independent `network-clients` component, plus layer 2 `object-access` and
-its layer 3 consumer `builds`. The historical `object_store` selector output conservatively
-selects all five components. Any code, public-interface, test, fixture,
+its layer 3 consumer `builds`, and layer 4 `files`. The historical `object_store` selector output conservatively
+selects all six components. Any code, public-interface, test, fixture,
 Gradle, dependency, wrapper, configuration, workflow or unknown-path change selects
 all components on all three platforms. Markdown/reStructuredText, root license
 notices and documentation images skip them; executable/build/workflow directories
@@ -49,7 +49,7 @@ When another component is introduced, add its root and consumer relationships to
 the selector before making selection narrower. Public-interface and shared-fixture
 changes must select affected consumers too; shared build/wrapper/workflow changes
 must continue to select all components. The generated-store consumes object-store; object-access consumes object-store
-and network-clients; builds consumes object-access;
+and network-clients; builds consumes object-access; files consumes builds, object-access and generated-store;
 changes to any component currently run all five.
 
 Each platform retains JUnit XML and HTML test reports for seven days, including
@@ -79,7 +79,7 @@ move to the appropriate machine.
 
 The independent `Integration tests` workflow uses the same conservative component
 selection and an always-running `Integration tests` aggregate check. Its platform
-jobs run `:object-store:integrationTest :generated-store:check :network-clients:check :object-access:check :builds:check` separately from the
+jobs run `:object-store:integrationTest :generated-store:check :network-clients:check :object-access:check :builds:check :files:check` separately from the
 fast unit workflow and
 retain independent `integration-reports-*` XML/HTML artifacts for seven days.
 Every disk test uses temporary synthetic stores.
@@ -117,13 +117,12 @@ dispatch and a Monday 05:00 UTC schedule force both suites. Scheduled/manual eve
 become available after the workflow reaches the default branch.
 
 The interoperation job checks out public `aircan80/vibeminer` at commit
-`4fd92d2a36add50c9b82e1c92bf72706e8d0df2b`, sparse to the Objects, Generated, Cdn, ObjectAccess and Builds projects,
+`4fd92d2a36add50c9b82e1c92bf72706e8d0df2b`, sparse to the Objects, Generated, Cdn, ObjectAccess, Builds and Files projects,
 root build properties, editor settings and `global.json`. It installs the specified
-.NET SDK 10.0.402 and builds `VibeMiner.Generated` and its `VibeMiner.Objects`
-dependency, then `VibeMiner.Builds` and its ObjectAccess/Cdn dependencies, in Release with locked NuGet
-restore. Java and reference checkouts occupy sibling `vimi/` and `vibeminer/`
+.NET SDK 10.0.402 and builds `VibeMiner.Generated` and `VibeMiner.Files`,
+including their Objects/Builds/ObjectAccess/Cdn dependencies, in Release with locked NuGet restore. Java and reference checkouts occupy sibling `vimi/` and `vibeminer/`
 directories, as required by the existing reference harness. The Java invocation is
-`:object-store:interopTest` with the absolute `dotnet` executable resolved from
+`:object-store:interopTest :generated-store:interopTest :builds:interopTest :files:interopTest` with the absolute `dotnet` executable resolved from
 `command -v dotnet`, plus an explicit SQLite library path. The harness expects an
 absolute executable path; a bare `-Pdotnet=dotnet` is not sufficient.
 Missing reference source, SDK, dependencies or assembly fails rather than skipping.
@@ -210,3 +209,13 @@ supplied SQLite library; no second bundled native dependency is introduced.
 The Linux compatibility job additionally runs `:builds:interopTest` against the
 pinned C# schema v1 catalog, and retains its XML/HTML reports. Tests use temporary
 synthetic fixtures; they do not perform live service requests or use user data.
+
+## Layer 4 coverage
+
+Files unit suites exercise independent fake/shared contracts, decoded ranges,
+Salsa20 vectors, BLTE integrity/protected/wrong-key cases, lifecycle, bounded
+admission, Ensure cancellation/progress, names/parser/index/delta behavior and
+offline reconstruction. Integration includes the disk-backed Files pipeline with
+real object/generated stores and names reconstruction after generated-index deletion.
+Linux compatibility exchanges VMLD and names indexes through `:files:interopTest`,
+using the pinned C# Files reference (including all lower projects).

@@ -603,3 +603,24 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
 - Layers 1–3 are implemented within the documented resource/performance bounds.
   Next implementation scope is layers 4–7. Native Windows testing and platform/
   release issues remain deferred; large real-data performance is not certified.
+
+## Layer 4 Files integration (active PR)
+
+- Parallel Files and names implementations integrated on integration/files.
+  All Files APIs are implemented, with independent memory fake/shared contracts,
+  protected BLTE/Salsa20 reads, ranges/streams, format detection and Ensure jobs.
+- Community names: consent, strict CSV, generated record-file indexes, portable
+  VMLD delta chains, resumable staging and offline reconstruction. Healthy obsolete
+  generated indexes are retained conservatively until reachability collection; see
+  files/NAMES.md for this qualification and admission/resource bounds.
+- Local root check/assemble passes. New Files evidence: 71 unit + 1 disk pipeline
+  + 4 bidirectional C# exchange cases, no skips/failures. The pipeline reopens real
+  object/generated stores and reconstructs names after deleting the index.
+- Review fixed Ensure cancellation after a result-valued lower-layer response and
+  bounded virtual-thread admission without blocking child operations on permits.
+- Layer 5 is active in parallel/formats-tables and parallel/formats-assets; do not
+  mark it complete yet. Tables review is correcting shared-generation cancellation
+  ownership, .NET float text parity and malformed generated metadata repair.
+  Assets review is correcting a real Files stream monitor deadlock; all fixes need
+  regression evidence before merge. Root owns shared CI/Gradle integration.
+- Hands-on Windows testing remains deferred; hosted checks retain all platforms.

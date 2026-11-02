@@ -37,6 +37,8 @@ class SelectionTest(unittest.TestCase):
             "object-access/build.gradle",
             "builds/src/main/java/com/vibeminer/builds/Builds.java",
             "builds/build.gradle",
+            "files/src/main/java/com/vibeminer/files/Files.java",
+            "files/build.gradle",
         ]:
             with self.subTest(path=path):
                 self.assertTrue(selection.select([path]))

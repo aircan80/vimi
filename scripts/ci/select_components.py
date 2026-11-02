@@ -24,7 +24,7 @@ def documentation_only(path):
 
 
 def select(paths):
-    # Conservatively select all existing components and consumers (layers 1–3).
+    # Conservatively select all existing components and consumers (layers 1–4).
     # The historical object_store output gates the complete validation group.
     # Unknown paths also select all; narrow only with explicit consumer-graph rules.
     return any(not documentation_only(path) for path in paths)

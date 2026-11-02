@@ -1,7 +1,7 @@
 # vimi
 
 Java desktop port of VibeMiner using its seven-layer architecture. The first
-components cover layer 1 primitives, layer 2 object access and layer 3 builds.
+components cover layer 1 primitives, layer 2 object access, layer 3 builds and layer 4 files.
 The JavaFX GUI belongs in layer 7 and is not implemented yet.
 
 ## Setup
@@ -198,6 +198,7 @@ Future components will declare project dependencies, for example
 `implementation project(':object-store')`; fakes and shared contracts can be
 consumed with `testImplementation testFixtures(project(':object-store'))`.
 
+- `files/`: layer 4 build/locale filesystem, decoding, Ensure and community names.
 - `builds/`: layer 3 discovery/catalog, metadata opening/resolution and download tracking.
 - `object-access/`: layer 2 local/shared/CDN coordination, observations and commit feeds.
 - `network-clients/`: layer 1 HTTP clients, routes/range planning, fakes and loopback tests.
@@ -320,8 +321,7 @@ visibility and repeated offline reopen/rebuild without network requests. The
 optional `:builds:interopTest` exchanges catalog caches with the pinned C# Builds
 reference; see the module README for its Release-build prerequisite.
 
-Layer 4 files, layer 5 formats, layer 6 game concepts and the JavaFX application
-remain separate work. Native Windows machine certification stays deferred.
+Layer 5 formats, layer 6 game concepts and the JavaFX application remain separate work. Native Windows machine certification stays deferred.
 
 ## Current limits
 
@@ -369,3 +369,21 @@ failures are tested. Real power-cut testing has not been performed. The generate
 [`generated-store/`](generated-store/README.md). Layer 1 network primitives are
 implemented in [`network-clients/`](network-clients/README.md). Layers 2 and 3
 are implemented separately; layers 4–7 and application packaging remain future work.
+
+## Files (layer 4)
+
+[`files/`](files/README.md) binds file handles to a build and locale, providing
+listing, stat, whole/range/seekable reads, BLTE/Salsa20 decoding with explicit
+protected holes, format detection and cancellable Ensure jobs. Community names
+use consent-controlled observations through layer 2 and a rebuildable generated
+index; see [names, staging and portable deltas](files/NAMES.md).
+
+```sh
+./gradlew :files:test
+./gradlew :files:check :files:assemble -PsqliteLibrary=/absolute/path/to/sqlite-library
+./gradlew :files:interopTest -Pdotnet=/absolute/path/to/dotnet -PsqliteLibrary=/absolute/path/to/sqlite-library
+```
+
+The opt-in interop suite needs the pinned C# `VibeMiner.Files` project built in
+Release and the reference checkout as a sibling (or `-PreferenceRoot=/path/to/vibeminer`).
+It exchanges VMLD deltas and names record-file indexes in both directions.

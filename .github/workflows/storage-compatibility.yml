@@ -123,6 +123,7 @@ jobs:
             /src/backend/VibeMiner.Cdn/
             /src/backend/VibeMiner.ObjectAccess/
             /src/backend/VibeMiner.Builds/
+            /src/backend/VibeMiner.Files/
             /Directory.Build.props
             /.editorconfig
             /global.json
@@ -157,13 +158,13 @@ jobs:
       - name: Build pinned CSharp reference
         run: |
           dotnet build ../vibeminer/src/backend/VibeMiner.Generated/VibeMiner.Generated.csproj --configuration Release -p:RestoreLockedMode=true -p:NuGetAudit=false --nologo
-          dotnet build ../vibeminer/src/backend/VibeMiner.Builds/VibeMiner.Builds.csproj --configuration Release -p:RestoreLockedMode=true -p:NuGetAudit=false --nologo
+          dotnet build ../vibeminer/src/backend/VibeMiner.Files/VibeMiner.Files.csproj --configuration Release -p:RestoreLockedMode=true -p:NuGetAudit=false --nologo
       - name: Run Java-CSharp interoperability tests
         env:
           SQLITE_LIBRARY: ${{ steps.sqlite.outputs.library }}
         run: |
           dotnet_executable="$(command -v dotnet)"
-          ./gradlew :object-store:interopTest :generated-store:interopTest :builds:interopTest "-Pdotnet=$dotnet_executable" "-PsqliteLibrary=$SQLITE_LIBRARY" --no-daemon --console=plain
+          ./gradlew :object-store:interopTest :generated-store:interopTest :builds:interopTest :files:interopTest "-Pdotnet=$dotnet_executable" "-PsqliteLibrary=$SQLITE_LIBRARY" --no-daemon --console=plain
       - name: Retain interoperability test reports
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -175,7 +176,9 @@ jobs:
             vimi/generated-store/build/reports/tests/interopTest/
             vimi/generated-store/build/test-results/interopTest/TEST-*.xml
             vimi/builds/build/reports/tests/interopTest/
+            vimi/files/build/reports/tests/interopTest/
             vimi/builds/build/test-results/interopTest/TEST-*.xml
+            vimi/files/build/test-results/interopTest/TEST-*.xml
           if-no-files-found: warn
           retention-days: 7
 
