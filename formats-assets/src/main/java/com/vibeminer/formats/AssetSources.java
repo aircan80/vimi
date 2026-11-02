@@ -42,7 +42,7 @@ public final class AssetSources {
                                 while (buffer.hasRemaining()) {
                                     token.check();
                                     int read = stream.read(buffer, token).join();
-                                    if (read < 0) {
+                                    if (read <= 0) {
                                         throw new java.util.concurrent.CompletionException(
                                                 new java.io.EOFException());
                                     }
