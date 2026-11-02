@@ -1,0 +1,135 @@
+buildscript {
+    configurations.classpath {
+        resolutionStrategy.activateDependencyLocking()
+    }
+}
+
+plugins {
+    id 'java-library'
+    id 'java-test-fixtures'
+    id 'checkstyle'
+    id 'com.diffplug.spotless' version '8.10.4'
+}
+
+group = 'com.vibeminer'
+version = '0.1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+dependencyLocking {
+    lockAllConfigurations()
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+    withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs += ['-Xlint:all', '-Werror']
+}
+
+sourceSets {
+    integrationTest {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+        resources.srcDir 'src/test/resources'
+    }
+    interopTest {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+}
+configurations {
+    integrationTestImplementation.extendsFrom testImplementation
+    integrationTestRuntimeOnly.extendsFrom testRuntimeOnly
+    interopTestImplementation.extendsFrom testImplementation
+    interopTestRuntimeOnly.extendsFrom testRuntimeOnly
+}
+
+dependencies {
+    api project(':concepts-core')
+    api project(':formats-assets')
+    testFixturesApi platform('org.junit:junit-bom:5.13.4')
+    testFixturesApi 'org.junit.jupiter:junit-jupiter-api'
+    testImplementation testFixtures(project(':generated-store'))
+    testImplementation testFixtures(project(':files'))
+    testImplementation testFixtures(project(':formats-tables'))
+    testImplementation testFixtures(project(':concepts-items'))
+    testImplementation platform('org.junit:junit-bom:5.13.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+// Fast unit and in-memory contract tests are the normal development command.
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    maxParallelForks = 1
+    def sqliteLibrary = providers.gradleProperty('sqliteLibrary')
+    if (sqliteLibrary.isPresent()) {
+        systemProperty 'vibeminer.sqlite.library', sqliteLibrary.get()
+        inputs.file(sqliteLibrary).withPropertyName('sqliteLibrary')
+    }
+    testLogging {
+        events 'failed', 'skipped'
+        exceptionFormat = 'full'
+    }
+
+}
+
+spotless {
+    java {
+        target 'src/**/*.java'
+        forbidWildcardImports()
+        googleJavaFormat('1.30.0').aosp()
+        removeUnusedImports()
+        trimTrailingWhitespace()
+        endWithNewline()
+    }
+}
+
+checkstyle {
+    toolVersion = '10.26.1'
+    configFile = rootProject.file('config/checkstyle/checkstyle.xml')
+    maxWarnings = 0
+}
+
+
+
+tasks.register('integrationTest', Test) {
+    description = 'Runs item service composition checks.'
+    group = 'verification'
+    testClassesDirs = sourceSets.integrationTest.output.classesDirs
+    classpath = sourceSets.integrationTest.runtimeClasspath
+    shouldRunAfter tasks.named('test')
+}
+tasks.named('check') { dependsOn tasks.named('integrationTest') }
+
+// Optional independent regeneration from the pinned, unchanged C# source.
+def referenceRoot = providers.gradleProperty('referenceRoot').orElse(rootProject.layout.projectDirectory.file('../vibeminer').asFile.absolutePath)
+def dotnetExecutable = providers.gradleProperty('dotnet').orElse(rootProject.layout.projectDirectory.file('../vibeminer/.local/toolchains/dotnet/dotnet').asFile.absolutePath)
+def csharpDirectory = layout.projectDirectory.dir('src/interopTest/csharp')
+def interopOutput = layout.buildDirectory.dir('interop-goldens')
+tasks.register('buildCsharpInterop', Exec) {
+    environment 'DOTNET_CLI_HOME', rootProject.layout.projectDirectory.dir('.local/dotnet').asFile.absolutePath
+    environment 'DOTNET_CLI_TELEMETRY_OPTOUT', '1'
+    commandLine dotnetExecutable.get(), 'run', '--project', csharpDirectory.file('ItemsInterop.csproj').asFile.absolutePath,
+        '-p:RestoreLockedMode=true', '-p:ReferenceRoot=' + referenceRoot.get(), '--', interopOutput.get().asFile.absolutePath
+}
+tasks.register('interopTest', Test) {
+    description = 'Regenerates item facts with unchanged pinned C# and checks checked-in goldens.'
+    group = 'verification'
+    dependsOn tasks.named('buildCsharpInterop')
+    testClassesDirs = sourceSets.interopTest.output.classesDirs
+    classpath = sourceSets.interopTest.runtimeClasspath
+    systemProperty 'vimi.items.goldens', layout.projectDirectory.dir('src/test/resources/golden').asFile.absolutePath
+    systemProperty 'vimi.items.interop', interopOutput.get().asFile.absolutePath
+    inputs.files(fileTree(csharpDirectory) { include '*.cs', '*.csproj', 'packages.lock.json' })
+    inputs.dir(interopOutput)
+}
