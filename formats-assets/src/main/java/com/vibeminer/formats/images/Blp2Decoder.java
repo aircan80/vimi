@@ -139,10 +139,22 @@ public final class Blp2Decoder {
         int depth = header[9] & 255, alpha = header[10] & 255, flags = header[11] & 255;
         Encoding encoding = profile(header[8] & 255, depth, alpha);
         if (encoding == null) {
-            throw error("UNSUPPORTED", "Unsupported BLP colour/alpha profile.");
+            throw error(
+                    "UNSUPPORTED",
+                    "BLP colour encoding "
+                            + (header[8] & 255)
+                            + " with alpha depth "
+                            + depth
+                            + " and alpha encoding "
+                            + alpha
+                            + " is not supported.");
         }
         if (!isMipFlags(flags)) {
-            throw error("UNSUPPORTED", "Unsupported BLP mip flags.");
+            throw error(
+                    "UNSUPPORTED",
+                    "BLP mip byte 0x"
+                            + Integer.toHexString(flags)
+                            + " is not supported; only 0x00, 0x01, 0x10 and 0x11 are.");
         }
         int width = dimension(u(header, 12), limits), height = dimension(u(header, 16), limits);
         int minimum = encoding == Encoding.PALETTED ? HEADER_BYTES + 1024 : HEADER_BYTES;

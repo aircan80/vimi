@@ -7,5 +7,6 @@
 <Compile Include="$(ReferenceRoot)/src/backend/VibeMiner.Formats/Models/*.cs" Link="Reference/Models/%(Filename)%(Extension)"/>
 <Compile Include="$(ReferenceRoot)/src/backend/VibeMiner.Formats/Models/Geometry/*.cs" Link="Reference/Geometry/%(Filename)%(Extension)"/>
 <Compile Include="$(ReferenceRoot)/tests/backend/VibeMiner.Formats.Testing/ModelFixtures.cs" Link="Reference/ModelFixtures.cs"/>
+<Compile Include="$(ReferenceRoot)/tests/backend/VibeMiner.Formats.Tests/Models/AppearanceModels.cs" Link="Reference/AppearanceModels.cs"/>
 </ItemGroup>
 </Project>

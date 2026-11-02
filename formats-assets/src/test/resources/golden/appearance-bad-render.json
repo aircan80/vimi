@@ -1,0 +1,1 @@
+{"StaticWeights":[true],"Plan":{"Draws":[],"Textures":[],"Decline":{"Reason":4,"BatchOrdinal":0,"TextureOrdinal":null,"Message":"The batch material uses render flags 0x02; only 0x01, 0x04, 0x08 and 0x10 are drawn."},"Effects":{"Particles":0,"Ribbons":0,"Lights":0,"ShadowBatches":0,"UnbatchedSections":0,"BlendedBatches":0,"EnvTransforms":0}}}

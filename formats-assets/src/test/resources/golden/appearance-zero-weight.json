@@ -1,0 +1,1 @@
+{"StaticWeights":[false],"Plan":{"Draws":[],"Textures":[],"Decline":{"Reason":2,"BatchOrdinal":0,"TextureOrdinal":0,"Message":"The batch texture weight is not a proven constant full opacity."},"Effects":{"Particles":0,"Ribbons":0,"Lights":0,"ShadowBatches":0,"UnbatchedSections":0,"BlendedBatches":0,"EnvTransforms":0}}}

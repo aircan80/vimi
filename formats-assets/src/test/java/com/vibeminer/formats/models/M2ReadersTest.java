@@ -25,8 +25,18 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 final class M2ReadersTest {
     static byte[] golden(String name) {
-        try (var input = M2ReadersTest.class.getResourceAsStream("/golden/" + name)) {
-            return java.util.Objects.requireNonNull(input).readAllBytes();
+        java.io.InputStream resource = M2ReadersTest.class.getResourceAsStream("/golden/" + name);
+        try {
+            if (resource == null) {
+                resource =
+                        new java.util.zip.GZIPInputStream(
+                                java.util.Objects.requireNonNull(
+                                        M2ReadersTest.class.getResourceAsStream(
+                                                "/golden/" + name + ".gz")));
+            }
+            try (var input = resource) {
+                return input.readAllBytes();
+            }
         } catch (IOException e) {
             throw new AssertionError(e);
         }
