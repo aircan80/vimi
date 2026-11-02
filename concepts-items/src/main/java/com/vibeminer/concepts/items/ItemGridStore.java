@@ -12,12 +12,18 @@ final class ItemGridStore implements AutoCloseable {
     static final String FORMAT = "vibeminer-item-grid-sqlite-v1";
     private final DerivedDatabase database;
     private final String identity;
+    private final Path path;
     private long available;
     private String message;
 
-    private ItemGridStore(DerivedDatabase database, String identity) {
+    private ItemGridStore(DerivedDatabase database, String identity, Path path) {
         this.database = database;
         this.identity = identity;
+        this.path = path;
+    }
+
+    List<Path> files() {
+        return List.of(path, path.resolveSibling(path.getFileName() + "-wal"));
     }
 
     static ItemGridStore open(Path directory, String identity, Cancellation token) {
@@ -27,7 +33,9 @@ final class ItemGridStore implements AutoCloseable {
                                     directory.resolve("items-" + identity + ".sqlite"),
                                     bridge.value)
                             .join();
-            var store = new ItemGridStore(db, identity);
+            var store =
+                    new ItemGridStore(
+                            db, identity, directory.resolve("items-" + identity + ".sqlite"));
             try {
                 db.transaction(
                                 session -> {

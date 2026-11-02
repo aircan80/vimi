@@ -1453,6 +1453,31 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 });
     }
 
+    /** Bounded local index lookup; absent entries use -1 and payloads are never read. */
+    public CompletableFuture<List<Long>> storedLengths(List<ObjectKey> keys, Cancellation token) {
+        if (keys.size() > 4096) {
+            return CompletableFuture.failedFuture(
+                    new IllegalArgumentException("At most 4096 keys"));
+        }
+        var owned = List.copyOf(keys);
+        return reading(
+                token,
+                idx -> {
+                    var lengths = new ArrayList<Long>();
+                    idx.db.exec("BEGIN");
+                    try {
+                        for (var key : owned) {
+                            token.check();
+                            var row = idx.find(key);
+                            lengths.add(row == null ? -1L : row.length());
+                        }
+                    } finally {
+                        idx.db.uncancelled(() -> idx.db.exec("ROLLBACK"));
+                    }
+                    return List.copyOf(lengths);
+                });
+    }
+
     public CompletableFuture<Stats> stats() {
         return reading(
                 Cancellation.NONE,

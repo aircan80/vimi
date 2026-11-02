@@ -358,4 +358,49 @@ final class GeneratedTablesTest {
                 2,
                 tables.open(source(null), TactKeyStatus.NONE, Cancellation.NONE).join().rowCount());
     }
+
+    @Test
+    void savedGraphInventorySharesAcrossBuildsWithoutReadingSegmentsOrChangingObjects() {
+        var memory = new MemoryGeneratedStore();
+        var tables = new GeneratedTables(memory);
+        tables.store(
+                        source("build-a"),
+                        TactKeyStatus.NONE,
+                        content(new AtomicInteger(), List.of(), List.of()),
+                        Cancellation.NONE)
+                .join();
+        int ranges = memory.rangeReads(), puts = memory.puts();
+        var first =
+                tables.savedArtifacts(source("build-a"), TactKeyStatus.NONE, Cancellation.NONE)
+                        .join();
+        var second =
+                tables.savedArtifacts(source("build-b"), TactKeyStatus.NONE, Cancellation.NONE)
+                        .join();
+        assertEquals(new java.util.HashSet<>(memory.keys()), new java.util.HashSet<>(first));
+        assertEquals(first, second);
+        assertEquals(
+                ranges, memory.rangeReads(), "Accounting must not verify or decode row segments");
+        assertEquals(puts, memory.puts());
+    }
+
+    @Test
+    void unreadableInventoryDoesNotDeleteOrRepairProducerData() {
+        var memory = new MemoryGeneratedStore();
+        var tables = new GeneratedTables(memory);
+        var table =
+                tables.store(
+                                source(null),
+                                TactKeyStatus.NONE,
+                                content(new AtomicInteger(), List.of(), List.of()),
+                                Cancellation.NONE)
+                        .join();
+        var before = memory.keys();
+        memory.damage(com.vibeminer.generated.GeneratedKey.parse(table.identity()));
+        assertThrows(
+                RuntimeException.class,
+                () ->
+                        tables.savedArtifacts(source(null), TactKeyStatus.NONE, Cancellation.NONE)
+                                .join());
+        assertEquals(new java.util.HashSet<>(before), new java.util.HashSet<>(memory.keys()));
+    }
 }

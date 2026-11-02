@@ -81,6 +81,17 @@ public final class DiskGeneratedStore implements GeneratedStore {
         return new ObjectKey(ObjectKey.GENERATED, key.bytes());
     }
 
+    /** Local index lengths only; no generated payload decompression or reads. */
+    public CompletableFuture<List<Long>> storedLengths(
+            List<GeneratedKey> keys, Cancellation token) {
+        var owned = List.copyOf(keys);
+        return call(
+                () ->
+                        store.storedLengths(
+                                owned.stream().map(DiskGeneratedStore::key).toList(),
+                                token.objectToken()));
+    }
+
     @Override
     public CompletableFuture<Boolean> has(GeneratedKey key, Cancellation cancellation) {
         return call(

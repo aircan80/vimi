@@ -44,6 +44,16 @@ flowchart TB
 | **6 — Game concepts** | `concepts-core`, `concepts-items`, `concepts-creatures`, `concepts-effects` | Join game tables into meaningful entities, attributes and relationships. Own item calculations and indexed grid queries. |
 | **7 — Application/UI** | `gui` | Compose services, manage preparation/activity, present pages and request details/media asynchronously. |
 
+## Accounting is an application service
+
+`accounting` exposes a JavaFX-free reporting interface and a rebuildable SQLite
+reference projection. The application composes adapters from Builds, Files, Formats
+and Concepts; those lower components do not depend on accounting. Canonical retained
+build membership persists separately from live GUI contexts. Original/derived
+payload attribution, provider/global scope, coverage and whole-library file lengths
+remain distinct. Accounting never gates readiness or authorizes deletion. See
+[accounting/README.md](accounting/README.md).
+
 ## Preparation and persistence
 
 Opening a build acquires metadata and opens Overview. Background preparation then

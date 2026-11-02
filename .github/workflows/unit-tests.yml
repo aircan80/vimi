@@ -81,7 +81,7 @@ jobs:
             gradle/wrapper/gradle-wrapper.properties
           overwrite-settings: false
       - name: Run component unit tests
-        run: ./gradlew :object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test :formats-tables:test :concepts-core:test :concepts-items:test :concepts-creatures:test :concepts-effects:test :questie:test :gui:prototypeTest :gui:backendTest :gui:openingTest :gui:preparationTest :gui:localMetadataTest :gui:preparationStatusTest :gui:nativeWorkspaceTest :gui:overviewPresentationTest :gui:researchBrowserDataTest :gui:iconRequestsTest :gui:preparationHistoryTest --no-daemon --console=plain
+        run: ./gradlew :object-store:test :generated-store:test :network-clients:test :object-access:test :builds:test :files:test :formats-assets:test :formats-tables:test :concepts-core:test :concepts-items:test :concepts-creatures:test :concepts-effects:test :questie:test :accounting:test :gui:prototypeTest :gui:backendTest :gui:openingTest :gui:preparationTest :gui:localMetadataTest :gui:preparationStatusTest :gui:nativeWorkspaceTest :gui:overviewPresentationTest :gui:researchBrowserDataTest :gui:iconRequestsTest :gui:preparationHistoryTest --no-daemon --console=plain
       - name: Retain unit test reports
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -134,6 +134,17 @@ final class TablesPipelineTest {
                                             Cancellation.NONE)
                                     .join();
                     assertEquals(TableTypes.PageState.OK, page.state(), page.message());
+                    var artifacts =
+                            tables.savedArtifacts(TableTypes.Ref.id(100), Cancellation.NONE).join();
+                    assertEquals(
+                            true,
+                            artifacts.size() >= 3,
+                            "Saved graph includes node, manifest and record segments");
+                    assertEquals(
+                            true,
+                            artifacts.contains(
+                                    com.vibeminer.generated.GeneratedKey.parse(page.identity())));
+
                     assertEquals(2, page.rows().size());
                     assertEquals(List.of("7", "9"), page.rows().getFirst().row().values());
                     assertEquals(List.of("8", "9"), page.rows().get(1).row().values());

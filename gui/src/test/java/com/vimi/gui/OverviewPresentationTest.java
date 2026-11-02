@@ -1,6 +1,7 @@
 package com.vimi.gui;
 
 import com.vibeminer.formats.tables.TableTypes;
+
 import java.util.List;
 
 /** Pure presentation contracts; no JavaFX toolkit, mock snapshot data or native libraries. */
@@ -47,6 +48,7 @@ public final class OverviewPresentationTest {
     }
 
     public static void main(String[] args) {
+        accountingScopesRemainExplicit();
         unknownIsNotZero();
         filesFactsDoNotBecomeByteCoverage();
         committedLedgerCountsQualifyPartialSources();
@@ -55,7 +57,66 @@ public final class OverviewPresentationTest {
         terminalAndNamesActivitiesStayDistinct();
         enrichmentPreservesGatesAndCommittedFacts();
         emptyLedgerIsMeasuredZero();
-        System.out.println("OverviewPresentation: 8 pure live-data contracts passed");
+        System.out.println("OverviewPresentation: 9 pure live-data contracts passed");
+    }
+
+    private static void accountingScopesRemainExplicit() {
+        var usage =
+                new com.vibeminer.accounting.UsageIndex.Figures(
+                        new com.vibeminer.accounting.UsageIndex.Split(10, 20, 0, 0),
+                        new com.vibeminer.accounting.UsageIndex.Split(5, 7, 0, 100),
+                        90,
+                        2,
+                        3,
+                        1,
+                        3,
+                        1,
+                        false,
+                        java.time.Instant.EPOCH.plusSeconds(1));
+        var accounting =
+                new BuildAccounting(
+                        usage,
+                        new com.vibeminer.files.names.NameCoverage.Result(8, 3),
+                        "listfile-v1",
+                        null,
+                        false,
+                        new com.vibeminer.accounting.LibraryUsage.Totals(
+                                java.util.Map.of(
+                                        com.vibeminer.accounting.LibraryUsage.Kind.ORIGINAL_PACKS,
+                                        500L),
+                                1,
+                                true));
+        var model =
+                OverviewPresentation.from(
+                        snapshot(
+                                BuildPreparation.Ready.FILES_READY,
+                                BuildPreparation.Activity.IDLE,
+                                BuildPreparation.Phase.IDLE,
+                                new BuildPreparation.FilesSummary(8, 0, 0, false),
+                                List.of(),
+                                0,
+                                null),
+                        false,
+                        null,
+                        accounting);
+        require(
+                model.names().value().equals("3 / 8")
+                        && model.names().scope().contains("listfile-v1"),
+                "Names retain provider snapshot and locale scope");
+        require(
+                model.stored().value().equals("30 B / 90 B"),
+                "Stored bytes are actual payloads, denominator is published bytes");
+        require(
+                model.stored().scope().contains("split provisional")
+                        && !model.stored().scope().contains("Build-only"),
+                "Unindexed builds must not create a unique claim");
+        require(
+                model.derived().scope().contains("Attribution incomplete")
+                        && model.derived().scope().contains("SQLite files 100 B"),
+                "Derived payloads and database file lengths remain separate");
+        require(
+                model.library().value().equals("500 B") && !model.tablesEnabled(),
+                "Disk measurements never grant preparation readiness");
     }
 
     private static void unknownIsNotZero() {

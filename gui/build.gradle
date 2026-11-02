@@ -15,6 +15,7 @@ def classifier = platform + (arch in ['aarch64', 'arm64'] ? '-aarch64' : '')
 
 dependencies {
     implementation project(':builds')
+    implementation project(':accounting')
     implementation project(':formats-tables')
     implementation project(':concepts-items')
     implementation project(':concepts-creatures')
@@ -154,3 +155,10 @@ tasks.register('preparationHistoryTest', JavaExec) {
     mainClass = 'com.vimi.gui.PreparationHistoryTest'
 }
 check.dependsOn preparationHistoryTest
+
+// Authored Overview fixture; opt in because this requires a display.
+tasks.register('overviewAccountingUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.OverviewAccountingUiTest'
+}

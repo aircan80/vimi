@@ -14,6 +14,7 @@ import com.vibeminer.network.CdnKey;
 import com.vibeminer.store.ObjectKey;
 import com.vibeminer.store.ObjectStore;
 import com.vibeminer.store.StoreTypes;
+
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Proxy;
 import java.nio.file.Files;
@@ -142,6 +143,8 @@ public final class PreparationPipelineIntegrationTest {
                 var generated = DiskGeneratedStore.open(directory.resolve("generated")).join();
                 var online = CachingObjectSource.localOnly(store, store);
                 var local = CachingObjectSource.localOnly(store, store);
+                var accounting = OverviewAccounting.open(directory, store, generated, online);
+                require(accounting != null, "Accounting projection must open");
                 var mediaRequests = new AtomicInteger();
                 var indexRequests = new AtomicInteger();
                 var jobPublished = new CompletableFuture<BuildPreparation.Job>();
@@ -167,7 +170,8 @@ public final class PreparationPipelineIntegrationTest {
                                                                         mediaEncoded.bytes()))) {
                                                     mediaRequests.incrementAndGet();
                                                     throw new AssertionError(
-                                                            "Preparation/warmup must not acquire media");
+                                                            "Preparation/warmup must not acquire"
+                                                                + " media");
                                                 }
                                                 if (request.key().type() == ObjectKey.ARCHIVE_INDEX
                                                         || request.key().type()
@@ -178,7 +182,8 @@ public final class PreparationPipelineIntegrationTest {
                                                                     .join()
                                                                     .metadataReady()
                                                                     .isDone(),
-                                                            "Early metadata must publish before index acquisition for Files");
+                                                            "Early metadata must publish before"
+                                                                + " index acquisition for Files");
                                                 }
                                             }
                                             try {
@@ -229,7 +234,13 @@ public final class PreparationPipelineIntegrationTest {
                                                                                             .incrementAndGet();
                                                                                     require(
                                                                                             !restoring,
-                                                                                            "Cached reopen must not enumerate the full file catalog");
+                                                                                            "Cached"
+                                                                                                + " reopen"
+                                                                                                + " must"
+                                                                                                + " not enumerate"
+                                                                                                + " the full"
+                                                                                                + " file"
+                                                                                                + " catalog");
                                                                                 }
                                                                                 try {
                                                                                     return method
@@ -292,7 +303,8 @@ public final class PreparationPipelineIntegrationTest {
                                                             generated,
                                                             community,
                                                             local)
-                                                    .withHistory(history));
+                                                    .withHistory(history)
+                                                    .withAccounting(accounting));
                     var job = engine.start(build, sourceEvidence, "enUS");
                     jobPublished.complete(job);
                     job.metadataReady().get(20, TimeUnit.SECONDS);
@@ -303,7 +315,8 @@ public final class PreparationPipelineIntegrationTest {
                             "Production pipeline must reach Tables-ready: " + result.problem());
                     require(
                             result.files().files() == 2 && !result.files().presenceAssessed(),
-                            "Persisted file baseline counts ROOT entries without a full presence assessment");
+                            "Persisted file baseline counts ROOT entries without a full presence"
+                                + " assessment");
                     require(
                             result.tables().stream()
                                     .anyMatch(
@@ -315,7 +328,8 @@ public final class PreparationPipelineIntegrationTest {
                                     + result.tables());
                     require(
                             indexRequests.get() > 0 && mediaRequests.get() == 0,
-                            "Full Files prerequisite indexes are acquired after metadata, media is not");
+                            "Full Files prerequisite indexes are acquired after metadata, media is"
+                                + " not");
                     require(
                             restoring ? enumerations.get() == 0 : enumerations.get() > 0,
                             "Only the initial preparation enumerates file IDs");
@@ -329,6 +343,24 @@ public final class PreparationPipelineIntegrationTest {
                                     && work.tablesHandle() != null
                                     && work.itemsHandle() != null,
                             "Real workspace handles retained for data-only readers");
+                    long accountingDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
+                    while ((work.accounting().usage() == null
+                                    || work.accounting().usage().measuredAt().equals(Instant.EPOCH)
+                                    || work.accounting().measuring())
+                            && System.nanoTime() < accountingDeadline) Thread.sleep(20);
+                    var usage = work.accounting();
+                    require(
+                            usage.usage() != null
+                                    && !usage.usage().measuredAt().equals(Instant.EPOCH),
+                            "Background original inventory must publish: " + usage.problem());
+                    require(
+                            usage.usage().publishedObjects() > 0
+                                    && usage.usage().original().onlyThisBuild() > 0,
+                            "Stored encoded payloads use the immutable EN ledger");
+                    require(
+                            !usage.usage().derivedComplete(),
+                            "Unregistered assets/providers keep derived attribution incomplete");
+                    require(mediaRequests.get() == 0, "Accounting must not acquire media");
                     require(
                             work.itemsHandle()
                                             .getData(
@@ -342,6 +374,7 @@ public final class PreparationPipelineIntegrationTest {
                             "Protected item data read remains typed, not fatal or media-fetching");
                 } finally {
                     if (engine != null) engine.closeAsync().get(20, TimeUnit.SECONDS);
+                    accounting.closeAsync().join();
                     opener.closeAsync().join();
                     local.closeAsync().join();
                     online.closeAsync().join();
@@ -350,7 +383,8 @@ public final class PreparationPipelineIntegrationTest {
                 }
             }
             System.out.println(
-                    "PreparationPipelineIntegration: protected-table preparation and offline cached reopen passed");
+                    "PreparationPipelineIntegration: protected-table preparation and offline cached"
+                        + " reopen passed");
         } finally {
             try (var paths = Files.walk(directory)) {
                 for (var path : paths.sorted(java.util.Comparator.reverseOrder()).toList())

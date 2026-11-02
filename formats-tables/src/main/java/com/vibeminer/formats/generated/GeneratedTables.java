@@ -171,6 +171,82 @@ public final class GeneratedTables implements GeneratedTableStore {
                                 }));
     }
 
+    @Override
+    public CompletableFuture<List<GeneratedKey>> savedArtifacts(
+            GeneratedTableSource source, KeyStatus keys, Cancellation token) {
+        return async(
+                () ->
+                        withToken(
+                                token,
+                                t -> {
+                                    var lookup = new Lookup(source, keys, false);
+                                    var result = inventory(lookup, t);
+                                    if (result == null && source.encodingScope() != null) {
+                                        result =
+                                                inventory(
+                                                        new Lookup(
+                                                                source,
+                                                                keys,
+                                                                true,
+                                                                lookup.statuses()),
+                                                        t);
+                                    }
+                                    if (result == null) {
+                                        throw new IllegalStateException(
+                                                "Saved table graph unavailable");
+                                    }
+                                    return result;
+                                }));
+    }
+
+    private List<GeneratedKey> inventory(
+            Lookup lookup, com.vibeminer.generated.Cancellation token) {
+        List<String> set = List.of();
+        var objects = new java.util.LinkedHashSet<GeneratedKey>();
+        objects.add(layoutKey(lookup.source().contentKey()));
+        for (int step = 0; step < MAX_CHAIN_STEPS; step++) {
+            token.check();
+            var key = lookup.node(set);
+            var read = store.read(key, token).join();
+            if (read.state() == GeneratedTypes.ReadState.ABSENT) {
+                return null;
+            }
+            if (read.state() != GeneratedTypes.ReadState.PRESENT) {
+                throw new IllegalStateException("Unreadable saved node");
+            }
+            var node = Json.convert(Json.parse(read.bytes(), 1 << 20), Node.class);
+            if (!NODE.equals(node.format())
+                    || !lookup.echo().equals(node.identity())
+                    || !used(node.keys()).equals(node.keys())) {
+                throw new IllegalStateException("Invalid saved node");
+            }
+            objects.add(key);
+            if (node.keys().equals(set)) {
+                var file = RecordFile.open(store, manifest(key), token).join();
+                if (file.file() == null || file.state() != GeneratedTypes.ReadState.PRESENT) {
+                    throw new IllegalStateException("Unreadable saved manifest");
+                }
+                var metadata =
+                        Json.convert(Json.parse(file.file().metadata(), 16 << 20), Metadata.class);
+                if (!META.equals(metadata.format())
+                        || !lookup.echo().equals(metadata.identity())
+                        || !metadata.keysUsed().equals(set)
+                        || !used(metadata.holeKeys()).equals(metadata.holeKeys())
+                        || !set.containsAll(metadata.holeKeys())
+                        || !metadata.holeKeys().isEmpty() && !lookup.scoped()) {
+                    throw new IllegalStateException("Invalid saved graph metadata");
+                }
+                objects.addAll(file.file().keys());
+                return List.copyOf(objects);
+            }
+            if (node.keys().size() <= set.size() || !node.keys().containsAll(set)) {
+                throw new IllegalStateException("Invalid saved node chain");
+            }
+            set = node.keys();
+        }
+        throw new IllegalStateException("Saved node chain exceeds bound");
+    }
+
     private GeneratedTable openChain(Lookup lookup, com.vibeminer.generated.Cancellation token) {
         List<String> set = List.of();
         for (int step = 0; step < MAX_CHAIN_STEPS; step++) {
@@ -418,6 +494,16 @@ public final class GeneratedTables implements GeneratedTableStore {
 
     @Override
     public CompletableFuture<String> layoutOf(String contentKey, Cancellation token) {
+        return layoutOf(contentKey, token, true);
+    }
+
+    @Override
+    public CompletableFuture<String> savedLayoutOf(String contentKey, Cancellation token) {
+        return layoutOf(contentKey, token, false);
+    }
+
+    private CompletableFuture<String> layoutOf(
+            String contentKey, Cancellation token, boolean repair) {
         if (contentKey == null || !contentKey.matches("[0-9a-f]{32}")) {
             throw new IllegalArgumentException("Canonical CKey required");
         }
@@ -443,7 +529,9 @@ public final class GeneratedTables implements GeneratedTableStore {
                                         }
                                         return layout.layout();
                                     } catch (IllegalArgumentException | NullPointerException e) {
-                                        store.delete(List.of(key), t).join();
+                                        if (repair) {
+                                            store.delete(List.of(key), t).join();
+                                        }
                                         return null;
                                     }
                                 }));

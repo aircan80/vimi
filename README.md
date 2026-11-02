@@ -192,6 +192,16 @@ rebuilds, writer exclusion, chunked staging resume in both directions, and
 whole/incremental verification refusal vectors. C# build output stays in the ignored `bin/` and `obj/` directories
 next to its project. The CLI home stays in ignored `.local/dotnet/`.
 
+## Overview measurements
+
+Live Overview measures community-name coverage and stored encoded payloads in the
+background. Sharing is relative to canonical builds retained in this local library;
+unindexed builds make the split provisional. Derived figures show the measured
+portion (catalog/table graphs and current Items database), with incomplete coverage
+for remaining asset/provider inventories. Whole-library file lengths include global,
+unattributed and container bytes separately from per-build payload attribution.
+See [storage accounting](accounting/README.md) for scopes, refresh behavior and tests.
+
 ## Component boundaries and layout
 
 Each substantial component is a Gradle subproject that produces its own library

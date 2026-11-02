@@ -1,0 +1,83 @@
+buildscript {
+    configurations.classpath {
+        resolutionStrategy.activateDependencyLocking()
+    }
+}
+
+plugins {
+    id 'java-library'
+    id 'checkstyle'
+    id 'com.diffplug.spotless' version '8.10.4'
+}
+
+group = 'com.vibeminer'
+version = '0.1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+dependencyLocking {
+    lockAllConfigurations()
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+    withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs += ['-Xlint:all', '-Werror']
+}
+
+dependencies {
+    api project(':object-store')
+    testImplementation platform('org.junit:junit-bom:5.13.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+spotless {
+    java {
+        target 'src/**/*.java'
+        forbidWildcardImports()
+        googleJavaFormat('1.30.0').aosp()
+        removeUnusedImports()
+        trimTrailingWhitespace()
+        endWithNewline()
+    }
+}
+
+checkstyle {
+    toolVersion = '10.26.1'
+    configFile = rootProject.file('config/checkstyle/checkstyle.xml')
+    maxWarnings = 0
+}
+
+
+sourceSets {
+    integrationTest {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+}
+configurations {
+    integrationTestImplementation.extendsFrom testImplementation
+    integrationTestRuntimeOnly.extendsFrom testRuntimeOnly
+}
+tasks.register('integrationTest', Test) {
+    testClassesDirs = sourceSets.integrationTest.output.classesDirs
+    classpath = sourceSets.integrationTest.runtimeClasspath
+    def sqliteLibrary = providers.gradleProperty('sqliteLibrary')
+    if (sqliteLibrary.isPresent()) {
+        systemProperty 'vibeminer.sqlite.library', sqliteLibrary.get()
+        inputs.file(sqliteLibrary).withPropertyName('sqliteLibrary')
+    }
+}
+check.dependsOn integrationTest

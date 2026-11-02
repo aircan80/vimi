@@ -29,6 +29,7 @@ import com.vibeminer.formats.tables.TableTypes;
 import com.vibeminer.formats.tables.TablesOptions;
 import com.vibeminer.formats.tables.TablesService;
 import com.vibeminer.generated.GeneratedStore;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -38,6 +39,19 @@ import java.util.function.Consumer;
 
 /** One retained build/locale workspace; public data methods never acquire media. */
 public final class NativePreparationWork implements BuildPreparation.Work {
+    private BuildUsageAccounting usageAccounting;
+
+    NativePreparationWork withAccounting(OverviewAccounting value) {
+        if (value != null)
+            usageAccounting = new BuildUsageAccounting(value, info, ref, locale, community);
+        return this;
+    }
+
+    @Override
+    public BuildAccounting accounting() {
+        return usageAccounting == null ? null : usageAccounting.view();
+    }
+
     private PreparationHistory history;
 
     NativePreparationWork withHistory(PreparationHistory value) {
@@ -48,6 +62,8 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     @Override
     public void assessed(BuildPreparation.Ready ready) {
         if (history != null) history.record(info, ref, locale, ready);
+        if (ready == BuildPreparation.Ready.TABLES_READY && usageAccounting != null)
+            usageAccounting.workspace(published.tables(), published.items());
     }
 
     private final java.nio.file.Path indexDirectory;
@@ -64,7 +80,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     private final AtomicReference<BuildTactKeys.KeySet> keys = new AtomicReference<>();
     private final AtomicBoolean namesEnabled = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
-    private com.vibeminer.builds.Build opened;
+    private volatile com.vibeminer.builds.Build opened;
     private volatile BuildFiles fileHandle;
     private final Object handlesGate = new Object();
 
@@ -264,6 +280,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                         catalog.files(),
                         (indexesReady - started) / 1_000_000,
                         (System.nanoTime() - indexesReady) / 1_000_000);
+        if (usageAccounting != null) usageAccounting.files(opened, catalog);
         return new BuildPreparation.FilesSummary(catalog.files(), 0, catalog.unknownSize(), false);
     }
 
@@ -366,7 +383,8 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             System.getLogger(NativePreparationWork.class.getName())
                     .log(
                             System.Logger.Level.INFO,
-                            "Prepared table inventory unavailable or stale; assessing known tables");
+                            "Prepared table inventory unavailable or stale; assessing known"
+                                    + " tables");
             try (var preparing = openTables(tablesService(token, true), token)) {
                 prepared = preparing.prepareKnown(progress, token).join();
             }
@@ -376,6 +394,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         }
         token.check();
         if (prepared.outcome() != TableTypes.PreloadOutcome.COMPLETED) return prepared;
+        if (usageAccounting != null) usageAccounting.tables(identity, prepared.tables());
         System.getLogger(NativePreparationWork.class.getName())
                 .log(
                         System.Logger.Level.INFO,
@@ -676,7 +695,10 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     public void enrichNames(Cancellation token) {
         var status = community.update(false, token).join();
         token.check();
-        if (status.state() == NamesTypes.FileNamesState.READY) namesEnabled.set(true);
+        if (status.state() == NamesTypes.FileNamesState.READY) {
+            namesEnabled.set(true);
+            if (usageAccounting != null) usageAccounting.namesReady();
+        }
         if (status.state() == NamesTypes.FileNamesState.FAILED)
             throw new IllegalStateException(status.code() + " " + status.message());
     }
@@ -688,6 +710,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             if (!closed.compareAndSet(false, true)) return;
             waiting = List.copyOf(retirementJobs);
         }
+        if (usageAccounting != null) usageAccounting.close();
         CompletableFuture.allOf(waiting.toArray(CompletableFuture[]::new)).join();
         final List<Workspace> owned = new ArrayList<>();
         synchronized (handlesGate) {

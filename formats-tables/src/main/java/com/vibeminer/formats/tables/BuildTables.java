@@ -49,6 +49,13 @@ public interface BuildTables extends AutoCloseable {
                 new UnsupportedOperationException("Known-table preparation is not supported"));
     }
 
+    /** Existing local generated graph only; never creates a table or opens encoded payloads. */
+    default CompletableFuture<java.util.List<com.vibeminer.generated.GeneratedKey>> savedArtifacts(
+            TableTypes.Ref table, Cancellation token) {
+        return CompletableFuture.failedFuture(
+                new UnsupportedOperationException("Saved artifact inventory unavailable"));
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override

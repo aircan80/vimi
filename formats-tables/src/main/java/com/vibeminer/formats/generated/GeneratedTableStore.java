@@ -21,7 +21,21 @@ public interface GeneratedTableStore {
             Function<Cancellation, CompletableFuture<GeneratedTableContent>> build,
             Cancellation token);
 
+    /**
+     * Enumerate a saved graph through nodes/manifests without reading row segments or repairing it.
+     */
+    default CompletableFuture<List<com.vibeminer.generated.GeneratedKey>> savedArtifacts(
+            GeneratedTableSource source, KeyStatus keys, Cancellation token) {
+        return CompletableFuture.failedFuture(
+                new UnsupportedOperationException("Saved graph inventory unavailable"));
+    }
+
     CompletableFuture<String> layoutOf(String contentKey, Cancellation token);
+
+    default CompletableFuture<String> savedLayoutOf(String contentKey, Cancellation token) {
+        return CompletableFuture.failedFuture(
+                new UnsupportedOperationException("Read-only layout inventory unavailable"));
+    }
 
     String identityOf(
             GeneratedTableSource source, KeyStatus keys, List<String> used, boolean encrypted);

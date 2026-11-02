@@ -71,6 +71,18 @@ public final class ListfileStore implements LoadedNames {
         this.hasher = hasher;
     }
 
+    @Override
+    public String revision() {
+        return metadata.release().sha256();
+    }
+
+    @Override
+    public List<GeneratedKey> artifactKeys() {
+        var keys = new LinkedHashSet<GeneratedKey>(names.keys());
+        keys.addAll(paths.keys());
+        return List.copyOf(keys);
+    }
+
     public Release release() {
         return metadata.release;
     }

@@ -1,6 +1,49 @@
 # vimi development handoff
 
-## Latest status — 2026-11-02: returning development to Linux
+## Latest status — 2026-11-02: Overview accounting (#63)
+
+This section supersedes historical status below. Implementation is on
+`feature/storage-accounting`; #63 records hosted CI and integration evidence.
+
+- Added the separate JavaFX-free `accounting` library, `StorageAccounting` boundary
+  and persistent SQLite `UsageIndex`. Canonical retained-build membership survives
+  GUI close/restart. Producer snapshots replace atomically; failed/canceled imports
+  preserve prior generations. No data deletion, GC, pack-format change or migration.
+- Live Overview now measures selected-locale community-name coverage and actual
+  locally indexed encoded payload lengths versus all published ENCODING variants.
+  Unknown retained build inventories make sharing provisional. Regional acquisition
+  routes share the canonical BuildInfo identity rather than becoming separate owners.
+- App adapters attribute generated file catalogs, table inventories/graphs, the
+  global listfile index and current Items database/WAL files. Table inventory reads
+  nodes/manifests without row-segment reads or cache repair. Asset/remaining provider
+  inventories are tracked in #64: derived totals explicitly remain a measured portion.
+- Name coverage is cached by canonical owner, catalog/locale and provider content
+  fingerprint. Corruption never becomes a measured zero. Accounting runs separately
+  from preparation; requests coalesce per context. Store events, restart and periodic
+  reconciliation update local presence. Physical library file lengths are separate
+  from payloads and reclaimable space; no databases are checkpointed for measurement.
+- See accounting/README.md for definitions, producer coverage, limits and commands.
+  architecture.md and README link the service; hosted workflows include its checks.
+  docs/images/overview-accounting.png is an authored-data UI fixture, not live data.
+- Linux affected checks passed for accounting, object-store, generated-store, builds,
+  files, formats-tables, concepts-items and GUI; quality and installDist passed.
+  Accounting has 1 fast unit and 8 SQLite integration cases. Existing explicit-library
+  startup probe skips under default library discovery; hosted CI supplies the override.
+  Nine pure Overview contracts, offline GUI accounting/reopen, authored scene rendering
+  and all 18 CI helper tests passed. Broader Windows/macOS evidence follows in #63.
+- This Linux ARM64 machine uses the matching Gluon JavaFX 25.0.1 SDK through a temporary
+  Gradle init repository because Maven Central lacks the pinned Linux ARM64 artifacts.
+  The local SDK/init override is outside Git; x64 Linux and macOS/Windows use the
+  existing Maven dependencies. Do not mistake that local setup for a committed
+  reproducible Linux ARM64 packaging fix.
+- The installed GUI distribution was rebuilt locally. An already-running GUI keeps
+  its old classes until it is closed/relaunched; do not assume the current window
+  picked up the new accounting code. Continue using this machine's own data only.
+- Keep the public noreply author/committer identity and fast-forward/squash integration.
+  Hands-on Windows certification and release packaging remain deferred. Independent
+  Settings design work remains outside this branch.
+
+## Previous status — 2026-11-02: returning development to Linux
 
 This section supersedes historical status below. The user is switching development
 machines only: **do not copy, migrate or synchronize application/cache data**.

@@ -19,6 +19,11 @@ public interface Build {
 
     Iterable<Long> fileDataIds(String locale, long fromId);
 
+    /** Published encoded variants across all locales, without payload I/O. */
+    default java.util.List<BuildContent.Entry> encodedContentPage(int offset, int limit) {
+        return BuildContent.page(this, offset, limit);
+    }
+
     default Iterable<Long> fileDataIds(String locale) {
         return fileDataIds(locale, 0);
     }

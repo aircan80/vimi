@@ -1,6 +1,7 @@
 package com.vimi.gui;
 
 import com.vibeminer.formats.tables.TableTypes;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -11,6 +12,8 @@ public record OverviewPresentation(
         Metric tables,
         Metric names,
         Metric stored,
+        Metric derived,
+        Metric library,
         Metric items,
         Metric creatures,
         boolean filesEnabled,
@@ -31,6 +34,14 @@ public record OverviewPresentation(
 
     public static OverviewPresentation from(
             BuildPreparation.Snapshot snapshot, boolean namesRunning, String namesProblem) {
+        return from(snapshot, namesRunning, namesProblem, null);
+    }
+
+    public static OverviewPresentation from(
+            BuildPreparation.Snapshot snapshot,
+            boolean namesRunning,
+            String namesProblem,
+            BuildAccounting accounting) {
         boolean filesReady =
                 snapshot.ready().ordinal() >= BuildPreparation.Ready.FILES_READY.ordinal();
         boolean tablesReady = snapshot.ready() == BuildPreparation.Ready.TABLES_READY;
@@ -52,7 +63,8 @@ public record OverviewPresentation(
                         ? new Metric(filePending, "File catalog has not been prepared")
                         : new Metric(
                                 count(fileSummary.files()),
-                                "Distinct FileDataIDs · Selected variants stored at last file assessment: "
+                                "Distinct FileDataIDs · Selected variants stored at last file"
+                                        + " assessment: "
                                         + (fileSummary.presenceAssessed()
                                                 ? count(fileSummary.stored())
                                                 : "Not assessed; checked while browsing"));
@@ -79,6 +91,112 @@ public record OverviewPresentation(
                                 : "Build-scoped filename coverage has not been measured");
         var stored =
                 new Metric("Not measured", "Stored encoded bytes and total byte scope are unknown");
+        Metric derived = new Metric("Not measured", "Derived attribution has not been measured");
+        Metric library = new Metric("Not measured", "Library file lengths have not been measured");
+        if (accounting != null) {
+            if (accounting.names() != null) {
+                var coverage = accounting.names();
+                names =
+                        new Metric(
+                                count(coverage.named()) + " / " + count(coverage.files()),
+                                "Community labels · selected locale · "
+                                        + accounting.nameRevision());
+            } else if (accounting.measuring())
+                names = new Metric("Measuring…", "Selected-locale community-name coverage");
+            var measured = accounting.usage();
+            if (measured != null && !measured.measuredAt().equals(java.time.Instant.EPOCH)) {
+                var original = measured.original();
+                long storedBytes = original.onlyThisBuild() + original.shared() + original.global();
+                String scope =
+                        (measured.incompleteBuilds() == 0
+                                        ? "Build-only "
+                                        : "Only this indexed build ")
+                                + bytes(original.onlyThisBuild())
+                                + " · Shared "
+                                + bytes(original.shared())
+                                + " · "
+                                + count(measured.retainedBuilds())
+                                + " retained builds"
+                                + (measured.incompleteBuilds() > 0
+                                        ? " · "
+                                                + count(measured.incompleteBuilds())
+                                                + " not indexed; split provisional"
+                                        : "")
+                                + " · All published encoded variants"
+                                + (measured.sizeMismatches() > 0
+                                        ? " · "
+                                                + count(measured.sizeMismatches())
+                                                + " declared/stored size discrepancies"
+                                        : "")
+                                + " · Measured "
+                                + measured.measuredAt();
+                stored =
+                        new Metric(
+                                bytes(storedBytes) + " / " + bytes(measured.publishedBytes()),
+                                scope);
+                var generated = measured.derived();
+                derived =
+                        new Metric(
+                                bytes(generated.onlyThisBuild() + generated.shared()),
+                                (measured.derivedComplete()
+                                                ? "Build-only "
+                                                : "Measured portion · Only this indexed build ")
+                                        + bytes(generated.onlyThisBuild())
+                                        + " · Shared "
+                                        + bytes(generated.shared())
+                                        + (measured.derivedComplete()
+                                                ? ""
+                                                : " · Attribution incomplete")
+                                        + (generated.databaseBytes() > 0
+                                                ? " · SQLite files "
+                                                        + bytes(generated.databaseBytes())
+                                                : ""));
+            } else if (accounting.measuring())
+                stored = new Metric("Measuring…", "Local encoded payloads; no downloads");
+            if (accounting.library() != null) {
+                var disk = accounting.library();
+                library =
+                        new Metric(
+                                bytes(disk.total()),
+                                "Original packs "
+                                        + bytes(
+                                                disk.bytes()
+                                                        .getOrDefault(
+                                                                com.vibeminer.accounting
+                                                                        .LibraryUsage.Kind
+                                                                        .ORIGINAL_PACKS,
+                                                                0L))
+                                        + " · Generated packs "
+                                        + bytes(
+                                                disk.bytes()
+                                                        .getOrDefault(
+                                                                com.vibeminer.accounting
+                                                                        .LibraryUsage.Kind
+                                                                        .GENERATED_PACKS,
+                                                                0L))
+                                        + " · Databases "
+                                        + bytes(
+                                                disk.bytes()
+                                                        .getOrDefault(
+                                                                com.vibeminer.accounting
+                                                                        .LibraryUsage.Kind
+                                                                        .DATABASES,
+                                                                0L))
+                                        + " · WAL "
+                                        + bytes(
+                                                disk.bytes()
+                                                        .getOrDefault(
+                                                                com.vibeminer.accounting
+                                                                        .LibraryUsage.Kind.WAL,
+                                                                0L))
+                                        + " · Includes global/unattributed data, staging and"
+                                        + " overhead"
+                                        + (disk.complete()
+                                                ? ""
+                                                : " · Scan incomplete; paths excluded or changed")
+                                        + " · Point-in-time; not allocated/reclaimable space");
+            }
+        }
         String stopped =
                 snapshot.busy()
                         ? "Preparing…"
@@ -128,12 +246,15 @@ public record OverviewPresentation(
         } else if (namesRunning) counter = "Filename coverage is not measured";
         var issues = new ArrayList<>(snapshot.issues());
         if (snapshot.problem() != null) issues.add(snapshot.problem());
+        if (accounting != null && accounting.problem() != null) issues.add(accounting.problem());
         if (namesProblem != null) issues.add("Community names: " + namesProblem);
         return new OverviewPresentation(
                 files,
                 tables,
                 names,
                 stored,
+                derived,
+                library,
                 records(snapshot, "Item", tablesReady),
                 records(snapshot, "Creature", tablesReady),
                 filesReady,
@@ -146,6 +267,14 @@ public record OverviewPresentation(
                 progress,
                 snapshot.busy() || namesRunning,
                 issues);
+    }
+
+    private static String bytes(long value) {
+        if (value < 1024) return value + " B";
+        if (value < 1024L * 1024) return String.format(Locale.ROOT, "%.1f KiB", value / 1024d);
+        if (value < 1024L * 1024 * 1024)
+            return String.format(Locale.ROOT, "%.1f MiB", value / (1024d * 1024));
+        return String.format(Locale.ROOT, "%.2f GiB", value / (1024d * 1024 * 1024));
     }
 
     private static boolean present(TableTypes.Entry entry) {

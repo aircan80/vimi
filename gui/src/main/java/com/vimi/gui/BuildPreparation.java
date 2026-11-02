@@ -91,6 +91,8 @@ public final class BuildPreparation {
 
         default void enrichNames(Cancellation token) {}
 
+        default BuildAccounting accounting() {return null;}
+
         /** Historical UI receipt only; invoked on the pipeline worker, never grants readiness. */
         default void assessed(Ready ready) {}
 

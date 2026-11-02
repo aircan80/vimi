@@ -13,5 +13,15 @@ public interface LoadedNames {
     CompletableFuture<List<NamesTypes.NameEntry>> from(
             long fromId, int limit, Cancellation cancellation);
 
+    /** Stable content fingerprint, or null when the provider cannot identify its snapshot. */
+    default String revision() {
+        return null;
+    }
+
+    /** Saved generated index objects; empty means no inventory is exposed by this provider. */
+    default List<com.vibeminer.generated.GeneratedKey> artifactKeys() {
+        return List.of();
+    }
+
     boolean isDamaged();
 }

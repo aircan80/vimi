@@ -124,6 +124,9 @@ public final class BuildOverviewView {
         private java.util.Map<com.vibeminer.formats.tables.TableTypes.State,Long> lastCounts=java.util.Map.of();
         private boolean availabilityInitialized;
         private final BuildPreparation.Job job;
+        private final Label derivedValue=text("Not measured","value"),derivedScope=text("","muted"),
+                libraryValue=text("Not measured","value"),libraryScope=text("","muted"),
+                retainedStored=text("Not measured","value");
         private Live(BuildPreparation.Job job,Consumer<String> navigate,Node controls) {
             this.job=java.util.Objects.requireNonNull(job);
             page.setPadding(new Insets(24));
@@ -152,9 +155,12 @@ public final class BuildOverviewView {
             RadioButton demand=new RadioButton("On demand"),all=new RadioButton("Download all");
             ToggleGroup policy=new ToggleGroup();demand.setToggleGroup(policy);all.setToggleGroup(policy);demand.setSelected(true);all.setDisable(true);
             HBox choices=new HBox(16,demand,all);choices.getStyleClass().add("download-choice");
-            VBox retention=new VBox(14,text("Download & storage","h2"),text("Download all is unavailable until this build’s download scope is measured.","muted"),
-                    choices,text("On demand · media loads as you explore","value"),text("Not measured","metric"),
-                    liveFact("Stored encoded content",text("Not measured","value")),liveFact("Selected variants stored at last file assessment",retainedIds),
+            VBox retention=new VBox(14,text("Download & storage","h2"),text("Content downloads on demand. Bulk download is unavailable.","muted"),
+                    choices,text("On demand · media loads as you explore","value"),
+                    liveFact("Stored / published encoded payloads",retainedStored),
+                    liveFact("Derived payloads · measured portion",derivedValue),derivedScope,
+                    liveFact("Whole library · file lengths",libraryValue),libraryScope,
+                    liveFact("Selected variants stored at last file assessment",retainedIds),
                     liveFact("Unknown decoded sizes",unknownSizes),text("File presence counts are not encoded byte coverage, installed-game size or reclaimable disk space.","muted"));
             retention.getStyleClass().addAll("card","retention-panel");retention.setPrefWidth(345);retention.setMinWidth(300);retention.setMaxWidth(370);
             page.getChildren().add(new HBox(20,explore,retention));
@@ -163,7 +169,7 @@ public final class BuildOverviewView {
             VBox evidence=new VBox(12,fact("Build source",job.build().source().label()+" · "+job.build().source().description()),
                     fact("Product / catalog identity",job.build().product()+" / "+job.build().identity()),fact("Build configuration",job.build().config()),
                     fact("CDN configuration",job.source().cdnConfig()),fact("Acquisition route / research locale",job.source().region()+" / "+job.locale()),
-                    text("Catalog figures count locale-scoped FileDataIDs. Readable table counts include explicitly partial sources; unavailable and protected outcomes remain in the committed ledger. Names coverage and encoded byte scope have not been measured.","muted"));
+                    text("Catalog figures count locale-scoped FileDataIDs. Readable table counts include explicitly partial sources; unavailable and protected outcomes remain in the committed ledger. Names count locale-selected FileDataIDs with community labels. Encoded byte coverage includes all published ENCODING variants, deduplicated by encoded object identity. Sharing is relative to retained library builds; global data and container overhead are outside build payload attribution.","muted"));
             evidence.setPadding(new Insets(14));var identity=new TitledPane("Build identity & measurement scope",evidence);identity.setExpanded(false);identity.setAnimated(false);
             var details=new TitledPane("Availability details",availability);details.setExpanded(false);details.setAnimated(false);
             page.getChildren().addAll(identity,details);
@@ -171,9 +177,10 @@ public final class BuildOverviewView {
         }
         public Node node(){return page;}
         public void update(BuildPreparation.Snapshot snapshot,boolean namesRunning,String namesProblem) {
-            var model=OverviewPresentation.from(snapshot,namesRunning,namesProblem);
+            var model=OverviewPresentation.from(snapshot,namesRunning,namesProblem,job.work()==null?null:job.work().accounting());
             apply(filesValue,filesScope,model.files());apply(tablesValue,tablesScope,model.tables());
             apply(namesValue,namesScope,model.names());apply(storedValue,storedScope,model.stored());
+            apply(derivedValue,derivedScope,model.derived());apply(libraryValue,libraryScope,model.library());retainedStored.setText(model.stored().value());
             fileDestination.setText(model.files().value()+ (model.filesEnabled()?" distinct file IDs":""));
             tableDestination.setText(model.tables().value()+(model.tablesEnabled()?" readable tables":""));
             itemDestination.setText(model.items().value());itemScope.setText(model.items().scope());
@@ -181,7 +188,7 @@ public final class BuildOverviewView {
             files.setDisable(!model.filesEnabled());tables.setDisable(!model.tablesEnabled());items.setDisable(!model.tablesEnabled());creatures.setDisable(!model.tablesEnabled());
             configuration.setText(model.configurationReadiness());fileReady.setText(model.filesReadiness());tableReady.setText(model.tablesReadiness());
             activity.setText(model.activity());counter.setText(model.counter());progress.setProgress(model.phaseProgress());progress.setVisible(model.active());progress.setManaged(model.active());
-            var summary=snapshot.files();retainedIds.setText(summary==null?"Not measured":count(summary.stored())+" / "+count(summary.files())+" selected variants");
+            var summary=snapshot.files();retainedIds.setText(summary==null || !summary.presenceAssessed()?"Not assessed; checked while browsing":count(summary.stored())+" / "+count(summary.files())+" selected variants");
             unknownSizes.setText(summary==null?"Not measured":count(summary.unknownSize())+" FileDataIDs");
             java.util.Map<com.vibeminer.formats.tables.TableTypes.State,Long> counts=model.tablesEnabled()
                     ?snapshot.tables().stream().collect(java.util.stream.Collectors.groupingBy(com.vibeminer.formats.tables.TableTypes.Entry::state,java.util.TreeMap::new,java.util.stream.Collectors.counting()))

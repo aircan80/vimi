@@ -10,6 +10,7 @@ import com.vibeminer.builds.Products;
 import com.vibeminer.network.NetworkClients;
 import com.vibeminer.store.History;
 import com.vibeminer.store.ObjectStore;
+
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -67,6 +68,7 @@ public final class BuildApplication {
                         BuildOpening opening = null;
                         BuildPreparation preparation = null;
                         com.vibeminer.generated.DiskGeneratedStore generated = null;
+                        OverviewAccounting accounting = null;
                         BackendBuildService service = null;
                         try {
                             token.check();
@@ -102,6 +104,36 @@ public final class BuildApplication {
                             var ownedGenerated = generated;
                             var preparationHistory = new PreparationHistory(generated);
                             preparationHistory.load();
+                            accounting =
+                                    OverviewAccounting.open(
+                                            directory,
+                                            objects,
+                                            ownedGenerated,
+                                            (com.vibeminer.access.StoreCommits) source);
+                            if (accounting != null) {
+                                try {
+                                    for (String retained :
+                                            preparationHistory.retainedIdentities()) {
+                                        accounting
+                                                .index
+                                                .retain(
+                                                        retained,
+                                                        false,
+                                                        "encoding",
+                                                        com.vibeminer.accounting.UsageIndex.Role
+                                                                .BLIZZARD_ENCODED)
+                                                .join();
+                                    }
+                                } catch (RuntimeException unavailable) {
+                                    System.getLogger(BuildApplication.class.getName())
+                                            .log(
+                                                    System.Logger.Level.WARNING,
+                                                    "Prior accounting membership could not be"
+                                                        + " loaded");
+                                }
+                            }
+                            var ownedAccounting = accounting;
+
                             var workspaceOpener = opener;
                             var workspaceSource = source;
                             var workspaceLocalSource = localSource;
@@ -128,7 +160,8 @@ public final class BuildApplication {
                                                                     directory
                                                                             .resolve("derived")
                                                                             .resolve("grids"))
-                                                            .withHistory(preparationHistory));
+                                                            .withHistory(preparationHistory)
+                                                            .withAccounting(ownedAccounting));
                             var ownedPreparation = preparation;
                             var ownedOpener = opener;
                             var ownedOpening = opening;
@@ -149,6 +182,14 @@ public final class BuildApplication {
                                                                                     ::closeAsync,
                                                                             ownedOpening
                                                                                     ::closeAsync,
+                                                                            () ->
+                                                                                    ownedAccounting
+                                                                                                    == null
+                                                                                            ? CompletableFuture
+                                                                                                    .completedFuture(
+                                                                                                            null)
+                                                                                            : ownedAccounting
+                                                                                                    .closeAsync(),
                                                                             ownedOpener::closeAsync,
                                                                             ownedCatalog
                                                                                     ::closeAsync,
@@ -172,6 +213,7 @@ public final class BuildApplication {
                                     List<Supplier<CompletableFuture<Void>>> close =
                                             new ArrayList<>();
                                     if (preparation != null) close.add(preparation::closeAsync);
+                                    if (accounting != null) close.add(accounting::closeAsync);
                                     if (opening != null) close.add(opening::closeAsync);
                                     if (opener != null) close.add(opener::closeAsync);
                                     if (catalog != null) close.add(catalog::closeAsync);

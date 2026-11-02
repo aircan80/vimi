@@ -129,6 +129,13 @@ public final class ItemsService implements Items {
         private final RelationIndexes relations;
         private final Semaphore catalogGate = new Semaphore(1);
         private volatile ItemGridStore index;
+
+        @Override
+        public java.util.List<java.nio.file.Path> savedDatabaseFiles() {
+            var current = index;
+            return current == null ? java.util.List.of() : current.files();
+        }
+
         private ItemCatalog unavailableCatalog;
         private final Semaphore filesGate = new Semaphore(1);
         private BuildFiles buildFiles;

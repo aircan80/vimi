@@ -62,6 +62,8 @@ public final class PreparationHistory {
         }
     }
 
+    List<String> retainedIdentities() {return List.copyOf(receipts.keySet());}
+
     String summary(BuildInfo build) {
         var receipt = receipts.get(build.identity());
         if (receipt == null

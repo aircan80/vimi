@@ -799,6 +799,44 @@ final class ClientBuildTables implements BuildTables {
     }
 
     @Override
+    public CompletableFuture<List<com.vibeminer.generated.GeneratedKey>> savedArtifacts(
+            TableTypes.Ref table, Cancellation token) {
+        return operation(
+                token,
+                t -> {
+                    long id = id(table);
+                    var stat = files.stat(FileRef.id(id), t).join();
+                    String content = stat.file() == null ? null : stat.file().contentKey();
+                    if (content == null || !manifest.containsKey(id)) {
+                        throw new IllegalStateException("No saved table source");
+                    }
+                    String layout = generated.savedLayoutOf(content, t).join();
+                    if (layout == null) {
+                        throw new IllegalStateException("No saved table layout");
+                    }
+                    var definition = resolve(id, layout, false, t);
+                    if (definition.state() != TableDefinitions.State.RESOLVED) {
+                        throw new IllegalStateException("No local table definition");
+                    }
+                    var selection =
+                            definition.definition().document().selectFile(version, layout, t);
+                    if (selection.blocks().size() != 1) {
+                        throw new IllegalStateException("Ambiguous saved table definition");
+                    }
+                    var source =
+                            GeneratedTableSource.forBlock(
+                                    selection.blocks().getFirst(),
+                                    locale(),
+                                    content,
+                                    limits,
+                                    encodingScope());
+                    return generated
+                            .savedArtifacts(source, options.keys().apply(build()), t)
+                            .join();
+                });
+    }
+
+    @Override
     public CompletableFuture<TableTypes.Page> page(
             TableTypes.PageRequest request, TableTypes.Priority priority, Cancellation token) {
         TableQueries.validate(request);

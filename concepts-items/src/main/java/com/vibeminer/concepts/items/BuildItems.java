@@ -61,6 +61,11 @@ public interface BuildItems extends AutoCloseable {
                 new UnsupportedOperationException("Warmup not supported"));
     }
 
+    /** Current derived database files only; empty means the projection has not been prepared. */
+    default java.util.List<java.nio.file.Path> savedDatabaseFiles() {
+        return java.util.List.of();
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override
