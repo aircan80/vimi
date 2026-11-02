@@ -33,6 +33,14 @@ public final class PreparationStatus {
         return ready + " · " + activity;
     }
 
+    public static BuildPreparation.Job activityFocus(
+            java.util.List<BuildPreparation.Job> jobs, BuildPreparation.Job prior) {
+        for (var job : jobs) if (job.snapshot().busy()) return job;
+        for (var job : jobs) if (job.enrichingNames()) return job;
+        if (prior != null && jobs.contains(prior)) return prior;
+        return jobs.isEmpty() ? null : jobs.getLast();
+    }
+
     public static boolean available(String area, BuildPreparation.Ready ready) {
         return switch (area) {
             case "Overview" -> ready.ordinal() >= BuildPreparation.Ready.METADATA_READY.ordinal();

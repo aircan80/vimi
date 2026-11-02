@@ -6,6 +6,9 @@ public final class PreparationStatusTest {
     private PreparationStatusTest() {}
 
     public static void main(String[] args) {
+        require(
+                PreparationStatus.activityFocus(List.of(), null) == null,
+                "Empty immutable activity list must allow no selected build");
         for (var ready : BuildPreparation.Ready.values())
             for (var activity : BuildPreparation.Activity.values()) {
                 var snapshot =

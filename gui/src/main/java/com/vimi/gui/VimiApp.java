@@ -33,6 +33,7 @@ public final class VimiApp extends Application {
     private boolean closing;
     private BuildPreparation.Job preparationFocus;
     private PreparationPane preparationPane;
+    private Runnable preparationOpenLabelUpdater;
     private final Map<String,String> preparationLocales = new HashMap<>();
     private final javafx.animation.Timeline preparationClock = new javafx.animation.Timeline(
             new javafx.animation.KeyFrame(javafx.util.Duration.millis(250),event -> updatePreparationActivity()));
@@ -345,6 +346,7 @@ public final class VimiApp extends Application {
     }
 
     private void inspect() {
+        preparationOpenLabelUpdater = null;
         inspector.getChildren().clear();
         if (selected == null) {
             inspector.getChildren().add(label("Select a build to inspect its identity.", "muted"));
@@ -410,6 +412,7 @@ public final class VimiApp extends Application {
             };
             regions.valueProperty().addListener((observable, before, after) -> updateOpenLabel.run());
             locale.valueProperty().addListener((observable,before,after) -> updateOpenLabel.run());
+            preparationOpenLabelUpdater = updateOpenLabel;
             updateOpenLabel.run();
             open.setOnAction(event -> {
                 if (service.preparation() != null) {
@@ -532,14 +535,17 @@ public final class VimiApp extends Application {
     private void updatePreparationActivity() {
         if (closing || service == null || service.preparation() == null) return;
         var jobs = service.preparation().jobs();
-        var focus = jobs.stream().filter(job -> job.snapshot().busy()).findFirst()
-                .orElseGet(() -> jobs.stream().filter(BuildPreparation.Job::enrichingNames).findFirst().orElse(jobs.contains(preparationFocus) ? preparationFocus : jobs.isEmpty() ? null : jobs.getLast()));
+        var focus = PreparationStatus.activityFocus(jobs,preparationFocus);
         preparationFocus = focus;
+        if (table.getScene() != null) {
+            table.refresh();
+            if (preparationOpenLabelUpdater != null) preparationOpenLabelUpdater.run();
+        }
         boolean visible = focus != null;
         openingActivity.setVisible(visible); openingActivity.setManaged(visible);
         boolean busy = visible && (focus.snapshot().busy() || focus.enrichingNames());
         openingSpinner.setVisible(busy); openingSpinner.setManaged(busy);
-        if (visible) openingActivity.setText(focus.build().version() + " · " + PreparationPane.describe(focus.snapshot())
+        if (visible) openingActivity.setText(focus.build().version() + " · " + focus.locale() + " · " + PreparationPane.describe(focus.snapshot())
                 + (focus.enrichingNames() ? " · Enriching names" : "")
                 + (busy ? " · " + (focus.elapsedSeconds()/60) + "m " + (focus.elapsedSeconds()%60) + "s" : "") + " · View");
     }
@@ -684,7 +690,7 @@ public final class VimiApp extends Application {
         if (!mockMode() && service != null && service.preparation() != null) {
             var jobs = service.preparation().jobs();
             return jobs.stream().filter(job -> job.build().identity().equals(build.identity())).reduce((before,after) -> after)
-                    .map(job -> PreparationPane.describe(job.snapshot())).orElse("Not prepared");
+                    .map(job -> PreparationPane.describe(job.snapshot()) + " · " + job.locale()).orElse("Not prepared");
         }
         if (!mockMode()) { return realOpeningActive && realOpeningBuild.identity().equals(build.identity()) ? "Opening…" : realOpened.containsKey(build.identity()) ? "Opened" : "Not opened"; }
         var job = preparations.latest(build);
