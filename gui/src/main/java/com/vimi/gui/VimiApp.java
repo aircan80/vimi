@@ -32,6 +32,13 @@ public final class VimiApp extends Application {
     private java.util.concurrent.CompletableFuture<? extends BuildService> startup;
     private boolean closing;
     private boolean loading;
+    private BuildInfo realOpeningBuild;
+    private String realOpeningRegion;
+    private boolean realOpeningActive;
+    private javafx.scene.control.Dialog<Void> realOpeningDialog;
+    private final Button openingActivity = new Button();
+    private final Map<String, com.vibeminer.builds.BuildTypes.BuildOpenResult> realOpened = new java.util.LinkedHashMap<>();
+    private final Map<String, String> openingProblems = new HashMap<>();
     private long catalogGeneration;
     private final Button issuesButton = new Button("Refresh issues");
     private final javafx.scene.control.ProgressIndicator catalogActivity = new javafx.scene.control.ProgressIndicator(-1);
@@ -129,7 +136,16 @@ public final class VimiApp extends Application {
             dialog.getDialogPane().setContent(details);
             dialog.show();
         });
-        var statusBar = new HBox(12, status, spacer(), issuesButton);
+        openingActivity.setVisible(false);
+        openingActivity.setManaged(false);
+        openingActivity.setOnAction(event -> {
+            if (realOpeningActive) showRealOpening();
+            else if (realOpeningBuild != null) {
+                selected = realOpeningBuild;
+                showBuilds();
+            }
+        });
+        var statusBar = new HBox(12, status, spacer(), openingActivity, issuesButton);
         root.setBottom(statusBar);
         Scene scene = new Scene(surface, 1320, 850);
         scene.addEventFilter(javafx.scene.input.KeyEvent.KEY_PRESSED, event -> {
@@ -322,12 +338,39 @@ public final class VimiApp extends Application {
                         + (observation.current() ? " · Current" : " · Saved"),
                         "CDN config: " + observation.cdnConfig() + "\nLast observed: " + observation.lastSeen()));
             }
-            Button open = new Button("Open build");
+            var regions = new ComboBox<BuildInfo.RegionEvidence>();
+            regions.setConverter(new javafx.util.StringConverter<>() {
+                @Override public String toString(BuildInfo.RegionEvidence value) {
+                    return value == null ? "" : value.region().toUpperCase(Locale.ROOT) + " · "
+                            + (value.current() ? "Current" : "Saved") + " · " + value.cdnConfig();
+                }
+                @Override public BuildInfo.RegionEvidence fromString(String value) { throw new UnsupportedOperationException(); }
+            });
+            b.observations().stream().sorted(java.util.Comparator.comparing(observation -> !observation.current())).forEach(regions.getItems()::add);
+            if (!regions.getItems().isEmpty()) regions.setValue(regions.getItems().getFirst());
+            regions.setAccessibleText("Build source region");
+            regions.setMinWidth(0);
+            regions.setMaxWidth(Double.MAX_VALUE);
+            Button open = new Button(realOpened.containsKey(b.identity()) ? "View opened build" : "Open build");
             open.getStyleClass().addAll("primary", "open-build");
             open.setMaxWidth(Double.MAX_VALUE);
-            open.setDisable(true);
-            inspector.getChildren().addAll(open,
-                    label("Build opening and Overview will be connected next. Download coverage has not been measured.", "muted"));
+            open.setDisable(service.opening() == null || regions.getValue() == null || realOpeningActive);
+            Runnable updateOpenLabel = () -> {
+                var ready = realOpened.get(b.identity());
+                var choice = regions.getValue();
+                open.setText(ready != null && choice != null && ready.build().region().equals(choice.region())
+                        && ready.build().cdnConfig().equals(choice.cdnConfig()) ? "View opened build" : "Open build");
+            };
+            regions.valueProperty().addListener((observable, before, after) -> updateOpenLabel.run());
+            updateOpenLabel.run();
+            open.setOnAction(event -> {
+                var ready = realOpened.get(b.identity());
+                if (ready != null && ready.build().region().equals(regions.getValue().region()) && ready.build().cdnConfig().equals(regions.getValue().cdnConfig())) showOpenedBuild(b, ready);
+                else startRealOpening(b, regions.getValue());
+            });
+            inspector.getChildren().addAll(label("SOURCE REGION", "eyebrow"), regions, open,
+                    label("Opening reads authenticated configurations, encoding, ROOT and indexes. Download coverage is not measured by this operation.", "muted"));
+            if (openingProblems.containsKey(b.identity())) inspector.getChildren().add(notice("Opening problem", openingProblems.get(b.identity())));
             return;
         }
         selectedPreparation = label(preparationSummary(b), "value");
@@ -359,6 +402,89 @@ public final class VimiApp extends Application {
         updatePreparationControls();
     }
 
+    private void startRealOpening(BuildInfo build, BuildInfo.RegionEvidence region) {
+        if (realOpeningActive || closing) return;
+        realOpeningBuild = build;
+        realOpeningRegion = region.region();
+        realOpeningActive = true;
+        openingProblems.remove(build.identity());
+        realOpened.remove(build.identity());
+        openingActivity.setText("Opening " + build.version() + "… View");
+        openingActivity.setVisible(true);
+        openingActivity.setManaged(true);
+        inspect();
+        showRealOpening();
+        service.opening().open(build, region).whenComplete((result, error) -> Platform.runLater(() -> {
+            if (closing) return;
+            realOpeningActive = false;
+            boolean attached = realOpeningDialog != null && realOpeningDialog.isShowing();
+            if (realOpeningDialog != null) realOpeningDialog.close();
+            realOpeningDialog = null;
+            if (error != null) {
+                openingProblems.put(build.identity(), error instanceof java.util.concurrent.CancellationException
+                        || error.getCause() instanceof java.util.concurrent.CancellationException ? "Opening canceled" : problem(error));
+            } else if (result.state() == com.vibeminer.builds.BuildTypes.BuildOpenState.OPEN) {
+                realOpened.put(build.identity(), result);
+                if (realOpened.size() > 4) realOpened.remove(realOpened.keySet().iterator().next());
+            } else {
+                openingProblems.put(build.identity(), result.state() + " · " + result.part() + " · "
+                        + result.code() + " · " + result.message());
+            }
+            openingActivity.setText(realOpened.containsKey(build.identity()) ? "Ready to view: " + build.version()
+                    : "Opening stopped: " + build.version());
+            inspect();
+            if (attached && realOpened.containsKey(build.identity())) showOpenedBuild(build, realOpened.get(build.identity()));
+            else if (attached) {
+                var alert = new javafx.scene.control.Alert(javafx.scene.control.Alert.AlertType.INFORMATION,
+                        openingProblems.get(build.identity()));
+                alert.initOwner(root.getScene().getWindow());
+                alert.setHeaderText("Build was not opened");
+                alert.show();
+            }
+        }));
+    }
+
+    private void showRealOpening() {
+        if (!realOpeningActive) return;
+        if (realOpeningDialog != null && realOpeningDialog.isShowing()) return;
+        var dialog = new javafx.scene.control.Dialog<Void>();
+        realOpeningDialog = dialog;
+        dialog.initOwner(root.getScene().getWindow());
+        dialog.setTitle("Opening build");
+        dialog.setHeaderText(realOpeningBuild.version() + " · " + realOpeningRegion.toUpperCase(Locale.ROOT));
+        var spinner = new javafx.scene.control.ProgressIndicator(-1);
+        spinner.setPrefSize(28, 28);
+        var message = label("Reading and verifying build metadata…", "value");
+        dialog.getDialogPane().setContent(new VBox(12, spinner, message,
+                label("Hide keeps this operation running. Progress is indeterminate.", "muted")));
+        var hide = new javafx.scene.control.ButtonType("Hide", javafx.scene.control.ButtonBar.ButtonData.CANCEL_CLOSE);
+        var cancel = new javafx.scene.control.ButtonType("Cancel opening", javafx.scene.control.ButtonBar.ButtonData.LEFT);
+        dialog.getDialogPane().getButtonTypes().addAll(hide, cancel);
+        var cancelButton = (Button) dialog.getDialogPane().lookupButton(cancel);
+        cancelButton.addEventFilter(javafx.event.ActionEvent.ACTION, event -> {
+            event.consume();
+            cancelButton.setDisable(true);
+            message.setText("Stopping…");
+            service.opening().cancel();
+        });
+        dialog.show();
+    }
+
+    private void showOpenedBuild(BuildInfo build, com.vibeminer.builds.BuildTypes.BuildOpenResult result) {
+        navigationGeneration++;
+        var metadata = result.opened().metadata();
+        var content = new VBox(16, label("BUILD OPENED", "eyebrow"), label(build.version(), "h1"),
+                fact("Product", build.product()), fact("Source region", result.build().region()),
+                fact("Build config", result.build().buildConfig()), fact("CDN config", result.build().cdnConfig()),
+                fact("Metadata build name", metadata.buildName()), fact("Files in ROOT", Integer.toString(metadata.fileCount())),
+                fact("Archives", Integer.toString(metadata.archiveCount())),
+                fact("Available locales", String.join(", ", metadata.locales())),
+                notice("Authenticated metadata is ready", "This is the opened build's metadata. Overview measurements and research screens will be connected separately."),
+                button("Choose build", this::showBuilds));
+        content.setPadding(new Insets(28));
+        root.setCenter(scroll(content));
+    }
+
     @Override
     public void stop() {
         preparations.close();
@@ -384,7 +510,7 @@ public final class VimiApp extends Application {
     }
 
     private String preparationSummary(BuildInfo build) {
-        if (!mockMode()) { return "Not assessed"; }
+        if (!mockMode()) { return realOpeningActive && realOpeningBuild.identity().equals(build.identity()) ? "Opening…" : realOpened.containsKey(build.identity()) ? "Opened" : "Not opened"; }
         var job = preparations.latest(build);
         return job == null ? (build.prepared() ? "Prepared" : "Not prepared") : job.summary();
     }

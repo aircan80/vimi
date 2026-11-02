@@ -767,3 +767,14 @@ All push/PR aggregate checks were green before main advanced.
 
 Native Windows certification and real-data performance remain
 separate; layer 7 owns JavaFX composition, application settings/jobs and rendering.
+
+## Real build opening integration
+
+Work on `integration/gui-opening` connects Open build to the existing BuildOpener
+through app-owned BuildOpening. Exact regional CDN evidence is selected explicitly.
+The indeterminate popup offers Hide/Cancel; hidden completion never forces
+navigation. Success displays real authenticated metadata, not mock Overview data.
+Application shutdown drains/cancels the operation before closing its dependencies.
+No lower-layer progress API is added. Full root check/assemble and GUI installDist
+pass; 8 opening contracts, 10 catalog adapter contracts, prototype checks and native
+composition/reopen checks pass. Hosted integration is pending.

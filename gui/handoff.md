@@ -4,7 +4,8 @@
 
 The prototype has been imported onto the current backend and included as root
 `:gui`. Default mode now connects only the Builds catalog/refresh/inspector to
-layers 1–3. Opening and later screens remain deferred; `--mock` preserves the
+layers 1–3. Real opening is now connected through an app-owned cancellable single-operation
+boundary; success shows verified metadata, while later screens remain deferred; `--mock` preserves the
 approved full design preview. Catalog load/refresh has an indeterminate activity
 indicator and explicit busy button labels; lower layers were not changed for
 progress. Use root `:gui:check`, `:gui:run` and

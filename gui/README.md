@@ -2,8 +2,11 @@
 
 The first connected screen is **Builds**: offline history listing, explicit published
 version refresh, product/status/search filters, selection and regional provenance.
-Build opening and the remaining screens are not connected yet. Open build is
-disabled in real mode; download coverage and preparation are explicitly unmeasured.
+Real opening uses the selected regional CDN configuration and the backend build
+opener. Its popup offers Hide (continue in background) and Cancel opening. No
+percentage is invented. Successful opens show authenticated metadata; later
+Overview measurements and research screens remain unconnected. Download coverage
+remains explicitly unmeasured.
 
 The original approved design remains available with `--mock`, including preparation,
 Overview, Files, Tables, Items and Creatures. Mock mode uses authored fixtures and
@@ -177,3 +180,13 @@ item/facts/effects services; missing calculations must not be guessed.
 Eight unmodified Blizzard sample icon JPEGs are bundled for offline display;
 provenance is in `src/main/resources/items/README.md`. No runtime icon downloads,
 game-byte decoding, external APIs or backend connections are introduced.
+
+## Real opening
+
+Opening may fetch and persist authenticated configurations, encoding, ROOT and
+indexes; it is not a Download all operation. One opening is admitted at a time.
+Cancellation retains the admission slot until lower work retires; failures leave
+the catalog usable and permit explicit retry. Hiding the popup prevents automatic
+navigation on completion; its activity button returns to the result. Closing the
+application cancels/drains opening before releasing stores and network resources.
+`openingTest` exercises deterministic provider/cancellation/lifecycle contracts.

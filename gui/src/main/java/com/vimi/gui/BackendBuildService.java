@@ -17,6 +17,9 @@ import java.util.function.Supplier;
 /** Catalog-only GUI adapter. All lower calls run on a bounded serial virtual worker. */
 public final class BackendBuildService implements BuildService {
     private final BuildCatalog catalog;
+    private BuildOpening opening;
+    public BackendBuildService withOpening(BuildOpening value) { opening = value; return this; }
+    @Override public BuildOpening opening() { return opening; }
     private final Function<Cancellation, CompletableFuture<List<String>>> discovered;
     private final Supplier<CompletableFuture<Void>> cleanup;
     private final Cancellation token = new Cancellation();

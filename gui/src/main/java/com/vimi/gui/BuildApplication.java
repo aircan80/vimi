@@ -5,6 +5,7 @@ import com.vibeminer.access.Cancellation;
 import com.vibeminer.access.ObjectSource;
 import com.vibeminer.access.ObservationAdapters;
 import com.vibeminer.builds.Catalog;
+import com.vibeminer.builds.BuildOpener;
 import com.vibeminer.builds.Products;
 import com.vibeminer.network.NetworkClients;
 import com.vibeminer.store.History;
@@ -48,6 +49,8 @@ public final class BuildApplication {
                 NetworkClients network = null;
                 CachingObjectSource source = null;
                 Catalog catalog = null;
+                BuildOpener opener = null;
+                BuildOpening opening = null;
                 BackendBuildService service = null;
                 try {
                     token.check();
@@ -58,20 +61,27 @@ public final class BuildApplication {
                             List.of(ObservationAdapters.versions(network)));
                     catalog = Catalog.open(source,directory.resolve("catalog.sqlite"),new Catalog.Options(),token).join();
                     token.check();
+                    opener = new BuildOpener(source);
+                    opening = new BuildOpening(opener);
+                    var ownedOpener = opener;
+                    var ownedOpening = opening;
                     var ownedObjects = objects;
                     var ownedNetwork = network;
                     var ownedSource = source;
                     var ownedCatalog = catalog;
                     service = new BackendBuildService(catalog,
                             cancellation -> discoverProducts(ownedSource,cancellation),
-                            () -> closeAll(List.of(ownedCatalog::closeAsync,ownedSource::closeAsync,
-                                    ownedNetwork::closeAsync,ownedObjects::closeAsync)));
+                            () -> closeAll(List.of(ownedOpening::closeAsync,ownedOpener::closeAsync,
+                                    ownedCatalog::closeAsync,ownedSource::closeAsync,
+                                    ownedNetwork::closeAsync,ownedObjects::closeAsync))).withOpening(opening);
                     if (!result.complete(service)) service.closeAsync().join();
                 } catch (Throwable failure) {
                     try {
                         if (service != null) service.closeAsync().join();
                         else {
                             List<Supplier<CompletableFuture<Void>>> close = new ArrayList<>();
+                            if (opening != null) close.add(opening::closeAsync);
+                            if (opener != null) close.add(opener::closeAsync);
                             if (catalog != null) close.add(catalog::closeAsync);
                             if (source != null) close.add(source::closeAsync);
                             if (network != null) close.add(network::closeAsync);

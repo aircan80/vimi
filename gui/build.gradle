@@ -69,3 +69,10 @@ tasks.register('integrationTest', JavaExec) {
     mainClass = 'com.vimi.gui.BuildApplicationIntegrationTest'
 }
 check.dependsOn integrationTest
+
+tasks.register('openingTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.BuildOpeningTest'
+}
+check.dependsOn openingTest

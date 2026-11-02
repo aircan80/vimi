@@ -13,6 +13,8 @@ public interface BuildService {
         return listBuilds();
     }
 
+    default BuildOpening opening() { return null; }
+
     default boolean mockMode() { return true; }
 
     default List<String> problems() { return List.of(); }
