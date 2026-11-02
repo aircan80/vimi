@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.generated.Cancellation;
+import com.vibeminer.generated.DerivedDatabase;
 import com.vibeminer.questie.QuestieTypes.EntityKind;
 import com.vibeminer.questie.QuestieTypes.Flavor;
 import com.vibeminer.questie.QuestieTypes.SourceSnapshot;
@@ -125,6 +126,71 @@ class QuestiePersistenceTest {
                                 .fields()
                                 .get("name"));
             }
+        }
+    }
+
+    @Test
+    void itemSourcesReturnLocalizedSummariesWithoutReadingUnrelatedFullFields() throws Exception {
+        var source = fixture("summary", false);
+        var root = directory.resolve("summaries");
+        String version;
+        try (var repository = new QuestieDataRepository(root)) {
+            version = repository.prepare(source, p -> {}, Cancellation.NONE).join().id();
+        }
+        // The summary path must use projected names, not deserialize full entity or translation
+        // documents. Poison those unrelated blobs so an accidental N+1 lookup fails this test.
+        try (var database =
+                DerivedDatabase.open(root.resolve(version + ".sqlite"), Cancellation.NONE).join()) {
+            database.transaction(
+                            session -> {
+                                session.execute(
+                                        "UPDATE entities SET fields=? WHERE kind='NPC' AND id=54",
+                                        new byte[] {'{'});
+                                session.execute(
+                                        "UPDATE translations SET fields=? WHERE locale='deDE' AND kind='NPC' AND id=54",
+                                        new byte[] {'{'});
+                                session.execute(
+                                        "INSERT INTO item_sources(item_id,kind,entity_id,relation,evidence,field) VALUES(117,'NPC',9999,'DROP','DECLARED','Item.npcDrops')");
+                                return null;
+                            },
+                            Cancellation.NONE)
+                    .join();
+        }
+        try (var repository = new QuestieDataRepository(root);
+                var handle = repository.open(version, Cancellation.NONE).join()) {
+            var result = handle.itemSources(117, "deDE", Cancellation.NONE).join();
+            var localized =
+                    result.sources().stream()
+                            .filter(s -> s.kind() == EntityKind.NPC && s.id() == 54)
+                            .findFirst()
+                            .orElseThrow()
+                            .entity()
+                            .orElseThrow();
+            assertEquals("Händlerin", localized.name());
+            assertTrue(localized.translated());
+            assertEquals(version, localized.versionId());
+            assertEquals("X-Npc-54", localized.provenanceKey());
+            assertEquals("deDE", localized.locale());
+            assertTrue(
+                    result.sources().stream()
+                            .filter(s -> s.id() == 9999)
+                            .findFirst()
+                            .orElseThrow()
+                            .entity()
+                            .isEmpty());
+            var english =
+                    handle.itemSources(117, "enUS", Cancellation.NONE).join().sources().stream()
+                            .filter(s -> s.kind() == EntityKind.NPC && s.id() == 54)
+                            .findFirst()
+                            .orElseThrow()
+                            .entity()
+                            .orElseThrow();
+            assertEquals("Vendor", english.name());
+            assertFalse(english.translated());
+            assertTrue(
+                    handle.itemSources(6948, "enUS", Cancellation.NONE).join().sources().isEmpty());
+            assertTrue(handle.itemSources(6948, "enUS", Cancellation.NONE).join().itemPresent());
+            assertFalse(handle.itemSources(99999, "enUS", Cancellation.NONE).join().itemPresent());
         }
     }
 
@@ -298,6 +364,7 @@ class QuestiePersistenceTest {
                 false);
         metadata(toc, "X-Quest-2-12", List.of(-2), false);
         metadata(toc, "X-l10n-deDE-Item", List.of(Map.of(1, "Fleisch")), true);
+        metadata(toc, "X-l10n-deDE-Npc", List.of(Map.of(1, "Händlerin")), true);
         if (corrupt) {
             toc.append("## X-Item-6948-S: ~2~\n## X-Item-6948-S-1: AA\n");
         }

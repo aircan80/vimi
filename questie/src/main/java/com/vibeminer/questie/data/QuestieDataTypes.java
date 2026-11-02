@@ -44,6 +44,19 @@ public final class QuestieDataTypes {
         }
     }
 
+    /**
+     * Lightweight identity for relationship rows; request lookup separately for full fields. Name
+     * may be null for a known entity with no recorded name.
+     */
+    public record EntitySummary(
+            String versionId,
+            EntityKind kind,
+            long id,
+            String locale,
+            String name,
+            boolean translated,
+            String provenanceKey) {}
+
     public record EntityPage(List<EntityRecord> entities, long total, int offset, int limit) {
         public EntityPage {
             entities = List.copyOf(entities);
@@ -72,7 +85,7 @@ public final class QuestieDataTypes {
             long id,
             SourceEvidence evidence,
             String evidenceField,
-            Optional<EntityRecord> entity) {}
+            Optional<EntitySummary> entity) {}
 
     /** Empty sources means no recorded sources in this static snapshot, not proof of no sources. */
     public record ItemSources(

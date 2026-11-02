@@ -5,6 +5,7 @@ import com.vibeminer.generated.DerivedDatabase;
 import com.vibeminer.questie.QuestieTypes.EntityKind;
 import com.vibeminer.questie.data.QuestieDataTypes.EntityPage;
 import com.vibeminer.questie.data.QuestieDataTypes.EntityRecord;
+import com.vibeminer.questie.data.QuestieDataTypes.EntitySummary;
 import com.vibeminer.questie.data.QuestieDataTypes.ItemSource;
 import com.vibeminer.questie.data.QuestieDataTypes.ItemSources;
 import com.vibeminer.questie.data.QuestieDataTypes.PreparedVersion;
@@ -129,25 +130,47 @@ public final class QuestieDataHandle implements AutoCloseable {
         check(EntityKind.ITEM, itemId, locale);
         return database.read(
                 s -> {
-                    boolean present =
-                            !s.query("SELECT id FROM entities WHERE kind='ITEM' AND id=?", itemId)
-                                    .isEmpty();
+                    boolean present = false;
                     var sources = new ArrayList<ItemSource>();
                     for (var row :
                             s.query(
-                                    "SELECT kind,entity_id,relation,evidence,field FROM item_sources WHERE item_id=? ORDER BY relation,kind,entity_id,evidence,field",
-                                    itemId)) {
+                                    "SELECT EXISTS(SELECT 1 FROM entities WHERE kind='ITEM' AND id=w.item_id),"
+                                            + "r.kind,r.entity_id,r.relation,r.evidence,r.field,e.id,COALESCE(t.name,e.name),"
+                                            + "CASE WHEN t.name IS NOT NULL THEN 1 ELSE 0 END,e.provenance "
+                                            + "FROM (SELECT ? AS item_id) w "
+                                            + "LEFT JOIN item_sources r ON r.item_id=w.item_id "
+                                            + "LEFT JOIN entities e ON e.kind=r.kind AND e.id=r.entity_id "
+                                            + "LEFT JOIN translations t ON t.locale=? AND t.kind=e.kind AND t.id=e.id "
+                                            + "ORDER BY r.relation,r.kind,r.entity_id,r.evidence,r.field",
+                                    itemId,
+                                    locale)) {
                         token.check();
-                        var kind = EntityKind.parse((String) row[0]);
-                        long id = ((Number) row[1]).longValue();
+                        present = ((Number) row[0]).longValue() != 0;
+                        if (row[1] == null) {
+                            continue;
+                        }
+                        var kind = EntityKind.parse((String) row[1]);
+                        long id = ((Number) row[2]).longValue();
+                        Optional<EntitySummary> summary =
+                                row[6] == null
+                                        ? Optional.empty()
+                                        : Optional.of(
+                                                new EntitySummary(
+                                                        version.id(),
+                                                        kind,
+                                                        id,
+                                                        locale,
+                                                        (String) row[7],
+                                                        ((Number) row[8]).longValue() != 0,
+                                                        (String) row[9]));
                         sources.add(
                                 new ItemSource(
-                                        Relation.valueOf((String) row[2]),
+                                        Relation.valueOf((String) row[3]),
                                         kind,
                                         id,
-                                        SourceEvidence.valueOf((String) row[3]),
-                                        (String) row[4],
-                                        lookup(s, kind, id, locale)));
+                                        SourceEvidence.valueOf((String) row[4]),
+                                        (String) row[5],
+                                        summary));
                     }
                     return new ItemSources(
                             version.id(),
