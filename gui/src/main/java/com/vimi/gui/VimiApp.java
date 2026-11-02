@@ -141,8 +141,12 @@ public final class VimiApp extends Application {
         openingActivity.setOnAction(event -> {
             if (realOpeningActive) showRealOpening();
             else if (realOpeningBuild != null) {
-                selected = realOpeningBuild;
-                showBuilds();
+                var ready = realOpened.get(realOpeningBuild.identity());
+                if (ready != null) showOpenedBuild(realOpeningBuild, ready);
+                else {
+                    selected = realOpeningBuild;
+                    showBuilds();
+                }
             }
         });
         var statusBar = new HBox(12, status, spacer(), openingActivity, issuesButton);
