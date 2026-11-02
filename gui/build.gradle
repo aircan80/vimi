@@ -1,0 +1,38 @@
+plugins {
+    id 'application'
+}
+
+repositories { mavenCentral() }
+
+def platform = System.getProperty('os.name').toLowerCase().contains('mac') ? 'mac' :
+        (System.getProperty('os.name').toLowerCase().contains('win') ? 'win' : 'linux')
+def arch = System.getProperty('os.arch')
+def classifier = platform + (arch in ['aarch64', 'arm64'] ? '-aarch64' : '')
+
+dependencies {
+    ['base', 'graphics', 'controls'].each {
+        implementation "org.openjfx:javafx-${it}:25.0.1:${classifier}"
+    }
+}
+
+application {
+    mainClass = 'com.vimi.gui.Launcher'
+    applicationDefaultJvmArgs = ['--enable-native-access=ALL-UNNAMED']
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 25
+    options.compilerArgs += ['-Xlint:all', '-Werror']
+}
+
+tasks.register('prototypeTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.PrototypeTest'
+}
+check.dependsOn prototypeTest
+
+// Tests use the explicit dependency-free JavaExec harness above, not JUnit discovery.
+tasks.named('test') {
+    enabled = false
+}

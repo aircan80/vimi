@@ -1,0 +1,127 @@
+.root { -fx-font-family: 'System'; -fx-font-size: 13px; -fx-background: #f5f4ef; -fx-base: #faf9f5; -fx-accent: #137b70; -fx-focus-color: #137b70; -fx-faint-focus-color: #137b7030; -fx-text-fill: #243e3c; }
+.label { -fx-text-fill: #243e3c; }
+.header { -fx-alignment: center-left; -fx-padding: 6 12; -fx-background-color: #fffefa; -fx-border-color: transparent transparent #d9e0d9 transparent; }
+.brand-vibe, .brand-miner { -fx-font-size: 22px; -fx-font-weight: bold; }
+.brand-vibe { -fx-text-fill: #243e3c; }
+.brand-miner { -fx-text-fill: #137b70; }
+.nav { -fx-font-weight: bold; -fx-font-size: 14px; }
+.badge { -fx-font-size: 10px; -fx-font-weight: bold; -fx-text-fill: #88611f; -fx-background-color: #faf0d9; -fx-padding: 5 9; -fx-background-radius: 4; }
+.toolbar { -fx-padding: 8 12; -fx-alignment: center-left; }
+.button, .combo-box, .text-field { -fx-background-radius: 5; -fx-border-radius: 5; -fx-padding: 8 12; }
+.button { -fx-background-color: #fffefa; -fx-border-color: #cddbd4; -fx-text-fill: #175e57; -fx-cursor: hand; }
+.button:hover { -fx-background-color: #e4f1eb; }
+.button:focused { -fx-border-color: #137b70; }
+.button.primary { -fx-background-color: #147b70; -fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 12; }
+.inspector { -fx-background-color: #faf9f5; }
+.eyebrow { -fx-font-size: 10px; -fx-font-weight: bold; -fx-text-fill: #586a64; }
+.h1 { -fx-font-size: 30px; -fx-font-weight: bold; }
+.h2 { -fx-font-size: 19px; -fx-font-weight: bold; }
+.metric { -fx-font-size: 27px; -fx-font-weight: bold; }
+.subtitle { -fx-font-size: 14px; -fx-text-fill: #586a64; }
+.muted { -fx-text-fill: #586a64; -fx-font-size: 12px; }
+.value { -fx-font-weight: bold; }
+.card { -fx-padding: 22; -fx-background-color: #fffefa; -fx-background-radius: 9; -fx-border-color: #d8e1d9; -fx-border-radius: 9; }
+.notice { -fx-padding: 14; -fx-background-color: #e5f1eb; -fx-background-radius: 5; -fx-border-color: #ccded4; -fx-border-radius: 5; }
+.status { -fx-padding: 8 16; -fx-background-color: #eae9e1; -fx-max-width: infinity; -fx-text-fill: #586a64; -fx-font-size: 11px; }
+.table-view { -fx-background-color: transparent; -fx-border-color: #d8e1d9; }
+.table-view .column-header { -fx-background-color: #f1f2ec; -fx-padding: 6 5; }
+.table-view .column-header .label { -fx-alignment: center-left; -fx-text-fill: #586a64; -fx-font-size: 11px; }
+.table-row-cell { -fx-cell-size: 34px; -fx-background-color: #fffefa; -fx-border-color: transparent transparent #e9ece5 transparent; }
+.table-row-cell:odd { -fx-background-color: #f8f7f0; }
+.table-row-cell:selected { -fx-background-color: #dceee6; -fx-border-color: transparent transparent transparent #137b70; -fx-border-width: 0 0 0 3; }
+.table-cell { -fx-alignment: center-left; -fx-text-fill: #243e3c; -fx-padding: 4 8; -fx-border-color: transparent; }
+.progress-bar .bar { -fx-background-color: #438d76; -fx-background-insets: 0; }
+.progress-bar .track { -fx-background-color: #e3e8df; }
+.scroll-pane, .scroll-pane > .viewport { -fx-background-color: transparent; }
+
+/* Compact filters without shrinking actions elsewhere in the workspace. */
+.toolbar .button, .toolbar .combo-box, .toolbar .text-field { -fx-padding: 4 9; }
+/* ComboBox adds its own label/arrow padding inside the control padding. */
+.toolbar .combo-box { -fx-padding: 0; }
+.toolbar .combo-box > .list-cell { -fx-padding: 4 9; }
+.toolbar .combo-box > .arrow-button { -fx-padding: 0 8; }
+
+.toolbar .refresh-button { -fx-background-color: #e5f1eb; -fx-border-color: #137b70; -fx-text-fill: #137b70; -fx-font-weight: bold; }
+.toolbar .refresh-button:hover { -fx-background-color: #d5e9df; }
+.toolbar .refresh-button:pressed { -fx-background-color: #c5dfd3; }
+
+.builds-title-row { -fx-border-color: transparent transparent #d9e0d9 transparent; }
+
+.download-source { -fx-padding: 0; }
+.download-source > .list-cell { -fx-padding: 4 9; }
+.download-source > .arrow-button { -fx-padding: 0 8; }
+.button.open-build { -fx-font-size: 16px; -fx-background-radius: 10; -fx-border-radius: 10; }
+/* Fully replace Modena's layered button edges, including its focused state. */
+.button.open-build {
+    -fx-background-insets: 0;
+    -fx-border-insets: 0;
+    -fx-border-color: #147b70;
+    -fx-border-width: 1;
+    -fx-effect: null;
+}
+.button.open-build:hover { -fx-background-color: #116e64; -fx-border-color: #116e64; }
+.button.open-build:armed { -fx-background-color: #0d6057; -fx-border-color: #0d6057; }
+.button.open-build:focused {
+    -fx-background-insets: 0;
+    -fx-border-color: #147b70, #88611f;
+    -fx-border-insets: 0, -3;
+    -fx-border-radius: 10, 13;
+    -fx-border-width: 1, 2;
+}
+
+/* Shared branding bar with readable label-over-value build facts. */
+.header { -fx-min-height: 60; -fx-pref-height: 60; -fx-max-height: 60; }
+.header-label { -fx-font-size: 11px; -fx-font-weight: bold; -fx-text-fill: #586a64; }
+.header-value { -fx-font-size: 13px; -fx-font-weight: normal; }
+.header-fields { -fx-padding: 0; -fx-background-insets: 0; }
+.header-fields > .viewport { -fx-background-color: #fffefa; }
+.header-menu { -fx-font-size: 13px; -fx-padding: 3 7; }
+.combo-box.header-menu { -fx-padding: 0; }
+.combo-box.header-menu > .list-cell { -fx-padding: 1 4; }
+.combo-box.header-menu > .arrow-button { -fx-padding: 0 4; }
+
+/* System Bold at 13px truncates the percent glyph on this macOS JavaFX runtime. */
+.retained-value { -fx-font-size: 13px; -fx-font-weight: normal; }
+
+.area-navigation { -fx-padding: 0 16; -fx-background-color: #fffefa; -fx-border-color: transparent transparent #d9e0d9 transparent; }
+.button.area-link { -fx-padding: 11 14; -fx-background-color: transparent; -fx-background-insets: 0; -fx-border-color: transparent; -fx-border-radius: 0; -fx-background-radius: 0; -fx-text-fill: #586a64; }
+.button.area-link:hover { -fx-background-color: #edf5ef; }
+.button.area-link.area-active { -fx-text-fill: #137b70; -fx-font-weight: bold; -fx-border-color: transparent transparent #137b70 transparent; -fx-border-width: 0 0 3 0; }
+.button.area-link:focused { -fx-background-color: #e5f1eb; }
+.research-details { -fx-font-size: 13px; -fx-line-spacing: 5; }
+.list-view { -fx-background-color: #fffefa; -fx-border-color: #d8e1d9; }
+.list-view .list-cell { -fx-background-color: #fffefa; -fx-border-color: transparent transparent #e9ece5 transparent; }
+.list-view .list-cell:filled:selected { -fx-background-color: #dceee6; -fx-border-color: transparent transparent transparent #137b70; -fx-border-width: 0 0 0 3; }
+
+.landing-stat { -fx-padding: 17; }
+.landing-metric { -fx-font-size: 25px; -fx-font-weight: normal; }
+.destination-card { -fx-padding: 18; }
+.retention-panel { -fx-padding: 20; -fx-background-color: #edf4ee; }
+.download-choice { -fx-padding: 11 0; }
+.storage-metric { -fx-font-size: 24px; -fx-font-weight: normal; }
+.button.explore-action { -fx-background-color: #e5f1eb; -fx-border-color: #b8d4c7; -fx-padding: 7 10; }
+.readiness-strip { -fx-padding: 14 18; -fx-background-color: #eaece5; -fx-background-radius: 6; }
+
+/* File rows contain exactly one line; details belong in the inspector. */
+.files-grid .table-row-cell { -fx-cell-size: 28px; }
+.files-grid .table-cell { -fx-padding: 3 8; -fx-wrap-text: false; }
+
+.preparation-overlay { -fx-background-color: rgba(22, 43, 40, 0.25); }
+.preparation-popup { -fx-background-color: #fffefa; -fx-background-radius: 12; -fx-border-color: #c5d8cc; -fx-border-radius: 12; -fx-effect: dropshadow(gaussian, rgba(20,40,35,0.22), 24, 0, 0, 8); }
+.preparation-message { -fx-font-size: 13px; -fx-text-fill: #586a64; }
+.preparation-demo { -fx-padding: 12 0 0 0; -fx-border-color: #e2e7df transparent transparent transparent; }
+.preparation-demo .button { -fx-font-size: 11px; -fx-padding: 5 8; }
+
+.item-filters { -fx-padding: 4 12 12 12; }
+.item-filters .text-field { -fx-padding: 4 8; }
+.item-filters .combo-box { -fx-padding: 0; }
+.item-filters .combo-box > .list-cell { -fx-padding: 4 8; }
+.item-filters .combo-box > .arrow-button { -fx-padding: 0 6; }
+.items-grid .table-row-cell { -fx-cell-size: 36px; }
+.items-grid .table-cell { -fx-padding: 3 6; -fx-wrap-text: false; }
+.wow-item-tooltip { -fx-background-color: linear-gradient(to bottom, #11172d, #080d1d); -fx-padding: 18; -fx-background-radius: 7; -fx-border-color: #a39b7a; -fx-border-width: 2; -fx-border-radius: 7; }
+.wow-item-name { -fx-font-size: 17px; -fx-font-weight: bold; }
+.wow-item-tooltip .wow-line, .wow-item-tooltip .wow-plain { -fx-text-fill: #f1f1ee; -fx-font-size: 13px; }
+.wow-item-tooltip .wow-level { -fx-text-fill: #ffd100; -fx-font-size: 13px; }
+.wow-item-tooltip .wow-stat { -fx-text-fill: #1eff00; -fx-font-size: 13px; }
+.wow-item-tooltip .wow-flavor { -fx-text-fill: #ffd100; -fx-font-size: 13px; -fx-font-style: italic; }
