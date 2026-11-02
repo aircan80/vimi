@@ -72,6 +72,10 @@ public final class BuildOpener implements Builds {
     private final ObjectSource source;
     private final Options options;
     private final OpenCache cache;
+    private final MetadataCache<MetadataContext> metadataCache;
+    private CompletableFuture<Void> closeResult;
+    private final java.util.concurrent.atomic.AtomicBoolean closing =
+            new java.util.concurrent.atomic.AtomicBoolean();
     private final ThreadPoolExecutor indexes;
 
     public BuildOpener(ObjectSource source) {
@@ -83,6 +87,11 @@ public final class BuildOpener implements Builds {
         this.options = Objects.requireNonNull(options);
         cache =
                 new OpenCache(
+                        options.maxOpenBuilds(),
+                        options.maxConcurrentOpens(),
+                        options.maxQueuedOpens());
+        metadataCache =
+                new MetadataCache<>(
                         options.maxOpenBuilds(),
                         options.maxConcurrentOpens(),
                         options.maxQueuedOpens());
@@ -100,7 +109,81 @@ public final class BuildOpener implements Builds {
     @Override
     public CompletableFuture<BuildOpenResult> open(BuildRef build, Cancellation cancellation) {
         Objects.requireNonNull(build);
+        if (closing.get()) {
+            return CompletableFuture.failedFuture(
+                    new BuildOpenException("BUILD_OPEN_CLOSED", "Build opener is closed"));
+        }
         return cache.open(build, token -> openOnce(build, token), cancellation);
+    }
+
+    @Override
+    public CompletableFuture<BuildTypes.MetadataOpenResult> metadata(
+            BuildRef build, Cancellation token) {
+        Objects.requireNonNull(build);
+        if (closing.get()) {
+            return CompletableFuture.failedFuture(
+                    new BuildOpenException("BUILD_OPEN_CLOSED", "Build opener is closed"));
+        }
+        return metadataCache
+                .open(build, cancellation -> readMetadata(build, cancellation), token)
+                .handle(
+                        (context, error) -> {
+                            if (error == null) {
+                                return new BuildTypes.MetadataOpenResult(
+                                        build,
+                                        BuildOpenState.OPEN,
+                                        context.metadata(),
+                                        null,
+                                        null,
+                                        null,
+                                        null);
+                            }
+                            Throwable cause = error;
+                            while (cause instanceof CompletionException
+                                    && cause.getCause() != null) {
+                                cause = cause.getCause();
+                            }
+                            if (cause instanceof OpenFailed failed) {
+                                return new BuildTypes.MetadataOpenResult(
+                                        build,
+                                        failed.state,
+                                        null,
+                                        failed.part,
+                                        failed.code,
+                                        failed.getMessage(),
+                                        failed.observedAt);
+                            }
+                            if (cause instanceof RuntimeException runtime) {
+                                throw runtime;
+                            }
+                            if (cause instanceof Error fatal) {
+                                throw fatal;
+                            }
+                            throw new CompletionException(cause);
+                        });
+    }
+
+    private record MetadataContext(
+            CdnContext cdn,
+            ConfigFiles.CdnConfig config,
+            EncodingTable encoding,
+            RootTable root,
+            BuildMetadata metadata) {}
+
+    private Build readBuild(BuildRef build, Cancellation token) {
+        MetadataContext context =
+                metadataCache
+                        .open(build, cancellation -> readMetadata(build, cancellation), token)
+                        .join();
+        token.check();
+        ArchiveLocations locations = readIndexes(context.config(), context.cdn(), token);
+        return new OpenedBuild(
+                build,
+                context.metadata(),
+                context.cdn(),
+                context.encoding(),
+                context.root(),
+                locations);
     }
 
     private BuildOpenResult openOnce(BuildRef build, Cancellation token) {
@@ -129,7 +212,7 @@ public final class BuildOpener implements Builds {
         }
     }
 
-    private Build readBuild(BuildRef build, Cancellation token) {
+    private MetadataContext readMetadata(BuildRef build, Cancellation token) {
         token.check();
         var route =
                 CdnsRoutes.route(
@@ -225,7 +308,6 @@ public final class BuildOpener implements Builds {
                         token);
         RootTable root =
                 parse(BuildPart.ROOT, () -> RootTable.parse(rootBytes, rootLimits, token::check));
-        ArchiveLocations locations = readIndexes(cdnConfig, context, token);
         BuildMetadata metadata =
                 new BuildMetadata(
                         buildConfig.buildName(),
@@ -235,7 +317,8 @@ public final class BuildOpener implements Builds {
                         cdnConfig.archives().size(),
                         root.fileCount(),
                         BuildLocales.of(root.localeUnion()));
-        return new OpenedBuild(build, metadata, context, encoding, root, locations);
+        token.check();
+        return new MetadataContext(context, cdnConfig, encoding, root, metadata);
     }
 
     private record IndexRequest(ObjectRequest request, BuildPart part, CdnKey key) {}
@@ -476,26 +559,34 @@ public final class BuildOpener implements Builds {
         }
     }
 
-    public CompletableFuture<Void> closeAsync() {
-        return cache.closeAsync()
-                .thenCompose(
-                        ignored -> {
-                            indexes.shutdown();
-                            CompletableFuture<Void> done = new CompletableFuture<>();
-                            Thread.startVirtualThread(
-                                    () -> {
-                                        try {
-                                            while (!indexes.awaitTermination(1, TimeUnit.DAYS)) {
-                                                /* Drain index work. */
-                                            }
-                                            done.complete(null);
-                                        } catch (InterruptedException e) {
-                                            Thread.currentThread().interrupt();
-                                            done.completeExceptionally(e);
-                                        }
-                                    });
-                            return done;
-                        });
+    public synchronized CompletableFuture<Void> closeAsync() {
+        if (closeResult != null) {
+            return closeResult.copy();
+        }
+        closing.set(true);
+        closeResult =
+                cache.closeAsync()
+                        .thenCompose(ignored -> metadataCache.closeAsync())
+                        .thenCompose(
+                                ignored -> {
+                                    indexes.shutdown();
+                                    CompletableFuture<Void> done = new CompletableFuture<>();
+                                    Thread.startVirtualThread(
+                                            () -> {
+                                                try {
+                                                    while (!indexes.awaitTermination(
+                                                            1, TimeUnit.DAYS)) {
+                                                        /* Drain index work. */
+                                                    }
+                                                    done.complete(null);
+                                                } catch (InterruptedException e) {
+                                                    Thread.currentThread().interrupt();
+                                                    done.completeExceptionally(e);
+                                                }
+                                            });
+                                    return done;
+                                });
+        return closeResult.copy();
     }
 }
 

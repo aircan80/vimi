@@ -148,3 +148,25 @@ boundary is fetched through verified ranges into a bounded encoded array (up to
 the configured 512 MiB cap). Supported large metadata is not refused merely for
 crossing the whole-read boundary. Full encoded-array retention and Java collection
 overhead remain explicit memory characteristics.
+
+### Early authenticated metadata
+
+`Builds.metadata(build, cancellation)` returns `MetadataOpenResult`: authenticated configurations,
+ENCODING and ROOT-derived `BuildMetadata`, with the same typed failure states/parts/codes as full
+opening. `BuildOpener` stops before fetching any archive/file indexes. It never publishes a partially
+initialized `Build`. The interface default falls back to full opening for existing third-party/fake
+implementations; only providers overriding the method promise this early milestone.
+
+A private bounded cache shares successful validated contexts across metadata waiters and subsequent
+full opens. Full `open` still requires and validates all indexes. Metadata and full-open admission each
+use the existing configured concurrency/queue limits (defaults 2/64), with separate workers to avoid
+nested-open deadlock. Each cache retains at most `maxOpenBuilds` entries (default 4); in the worst case
+up to eight distinct metadata contexts can be retained across both caches, although reused entries
+share parsed data. Failed/canceled contexts are not retained. One canceled waiter does not stop a
+surviving metadata/full-open waiter; close rejects new requests, drains full work, metadata work and
+index workers, and protects its private completion from observer cancellation.
+
+This milestone reports completion, not an invented percentage. It does not measure stored/downloaded
+coverage, generate Files catalogs or prepare research tables. Existing key-ledger measurements remain
+separate work. Deterministic tests prove index-free success, later index failure, context reuse,
+legacy-provider compatibility, bounded LRU/admission, shared cancellation, retries and protected drain.

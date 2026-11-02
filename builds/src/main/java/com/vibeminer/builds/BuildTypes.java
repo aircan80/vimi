@@ -63,6 +63,16 @@ public final class BuildTypes {
             String message,
             Instant observedAt) {}
 
+    /** Authenticated configurations, ENCODING and ROOT facts; archive indexes are not required. */
+    public record MetadataOpenResult(
+            BuildRef build,
+            BuildOpenState state,
+            BuildMetadata metadata,
+            BuildPart part,
+            String code,
+            String message,
+            Instant observedAt) {}
+
     public record BuildMetadata(
             String buildName,
             CdnKey rootContentKey,

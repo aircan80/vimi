@@ -9,6 +9,22 @@ import java.util.concurrent.CompletableFuture;
 public interface Builds {
     CompletableFuture<BuildOpenResult> open(BuildRef build, Cancellation cancellation);
 
+    /** Compatible fallback for providers that only implement full opening. */
+    default CompletableFuture<BuildTypes.MetadataOpenResult> metadata(
+            BuildRef build, Cancellation cancellation) {
+        return open(build, cancellation)
+                .thenApply(
+                        result ->
+                                new BuildTypes.MetadataOpenResult(
+                                        result.build(),
+                                        result.state(),
+                                        result.opened() == null ? null : result.opened().metadata(),
+                                        result.part(),
+                                        result.code(),
+                                        result.message(),
+                                        result.observedAt()));
+    }
+
     default CompletableFuture<BuildOpenResult> open(BuildRef build) {
         return open(build, Cancellation.NONE);
     }
