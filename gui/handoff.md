@@ -294,3 +294,10 @@ Durable preparation caches now restore immutable file facts and completed table
 outcomes. Files does not perform a full mutable presence/name scan on initial
 catalog creation or reopen. Presence is shown as unassessed globally and checked
 per browser page. See README Durable reopen; no old status is trusted permanently.
+
+Items now uses typed SQLite queries across all prepared readable records, with
+matching totals and 100-row page results. Selection fetches richer details and
+Layer 6 base attribute calculation separately. Class/subclass display localized
+labels; visible row icons have bounded asynchronous requests independent of focus.
+Other grids retain page-scoped dropdown/sort behavior. Authored rendered UI tests
+now check request wiring and unselected icons; they do not certify live data parity.

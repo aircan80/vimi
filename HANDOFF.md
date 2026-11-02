@@ -815,3 +815,26 @@ latest-only delivery and no arbitrary overall percentage. Layer 2 batch progress
 exists but is object-completion-only; live byte telemetry would require further
 L1/L2 work and retry/shared-transfer accounting. No progress API changes have been
 implemented. Initial Overview readiness is separate from full ROOT/index opening.
+
+## Current local browser and item work (2026-11-02)
+
+PR #55 connected the approved Files/Tables/Items/Creatures browsers to live data.
+PR #56 added durable prepared file catalogs and known-table outcome ledgers; all
+hosted checks passed. PR #56 landed with a merge commit (2c4c783), contrary to the
+requested FF/squash policy; use an actual local `merge --ff-only` plus push for the
+next integration.
+
+The item follow-up adds a shared bounded asynchronous derived SQLite connection,
+versioned local item projection and typed full-catalog search/filter/sort/paging
+with matching totals. Only page rows enter the GUI. Details/Layer 6 base attributes
+are a separate call; row icons load without selection. Class/subclass labels use
+selected-locale tables. Other grids still have their previous page-scoped dropdown
+and sort behavior. NPC universe/catalog and CDN-only talent UI remain deferred;
+Creature.db2 is not a complete NPC catalog.
+
+Base allocation stats now have a bounded backend policy using RandPropPoints and
+numeric GameTables. Missing inputs/scaling context remain explicit. This is not
+certified WoW Forever 1.60.1.70707 final-tooltip parity; see docs/item-attributes.md.
+Source facts/C# compatibility remain unchanged. Checks, real SQLite grid/reopen
+integration, authored JavaFX UI review and items/tables/generated C# interop passed.
+Native hands-on Windows certification/packaging remain deferred.
