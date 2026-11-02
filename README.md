@@ -198,6 +198,10 @@ Future components will declare project dependencies, for example
 `implementation project(':object-store')`; fakes and shared contracts can be
 consumed with `testImplementation testFixtures(project(':object-store'))`.
 
+- `concepts-items/`: layer 6 item facts, appearances, models, icons and armor material provenance.
+- `concepts-creatures/`: layer 6 creatures, display chains and static appearance evidence.
+- `concepts-effects/`: layer 6 item effects, reviewed rules, spell names and definition provenance.
+- `concepts-core/`: shared layer 6 query/cursor rules and bounded reverse relation indexes.
 - `formats-tables/`: layer 5 DB2/definitions, generated tables, query/relations and preload.
 - `formats-assets/`: layer 5 BLP images, native M2/SKIN models and VMG1 artifacts.
 - `files/`: layer 4 build/locale filesystem, decoding, Ensure and community names.
@@ -323,7 +327,7 @@ visibility and repeated offline reopen/rebuild without network requests. The
 optional `:builds:interopTest` exchanges catalog caches with the pinned C# Builds
 reference; see the module README for its Release-build prerequisite.
 
-Layer 5 table formats remain active work. Layer 6 game concepts and the JavaFX application follow. Native Windows machine certification stays deferred.
+Layers 1–6 are implemented within the documented supported-format bounds. Layer 7 application wiring and JavaFX integration follow. Native Windows machine certification stays deferred.
 
 ## Current limits
 
@@ -425,5 +429,31 @@ Inputs come through Files; fetched definitions come through layer 2 observations
 C# exchange needs the pinned reference Formats project built in Release. The native
 pipeline reopens stores, removes the encoded DB2 source, and verifies that schema,
 rows, copies and identity still come from the durable generated table. Unsupported
-formats remain explicit, matching the reference. Layers 6–7 remain implementation
-work; hands-on Windows certification and large real-data throughput remain deferred.
+formats remain explicit, matching the reference. Hands-on Windows certification
+and large real-data throughput remain deferred.
+
+
+## Game concepts (layer 6)
+
+[`concepts-items/`](concepts-items/README.md),
+[`concepts-creatures/`](concepts-creatures/README.md) and
+[`concepts-effects/`](concepts-effects/README.md) expose separate asynchronous
+build/locale handles over layer 5. Each publishes an independent in-memory fake
+and shared consumer contracts. [`concepts-core/`](concepts-core/README.md) shares
+bounded reverse relations, literal name matching and canonical bound cursors.
+
+The modules cover the pinned C# Concepts production scope and complete verified
+backend gaps: armor material joins, creature dependency visibility and read
+coalescing, effect definition-match provenance, source-change retries and handle
+cancellation/draining. Unknown appearance choices and unsupported rendering
+bindings remain explicit. The services describe game data and static appearance
+evidence; the future application supplies JavaFX controls and rendering.
+
+```sh
+./gradlew check assemble -PsqliteLibrary=/absolute/path/to/sqlite-library
+./gradlew :concepts-core:interopTest :concepts-items:interopTest :concepts-creatures:interopTest :concepts-effects:interopTest -Pdotnet=/absolute/path/to/dotnet -PreferenceRoot=/absolute/path/to/vibeminer
+```
+
+The opt-in compatibility checks regenerate synthetic goldens from the pinned
+original C# sources. See each module README for reference build prerequisites,
+admission and relation budgets, supported profiles and remaining application work.

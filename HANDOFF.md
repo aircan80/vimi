@@ -2,21 +2,25 @@
 
 ## Latest status — 2026-11-01
 
-- Layers 1–5 are implemented in Java and merged into main, within the documented
-  pinned C# supported-format/resource bounds. Latest reviewed code: de5af49.
-- Parallel work completed: Files PR #46 (147b71b), asset formats PR #47 (3e501fb),
-  table formats PR #48 (de5af49), all fast-forward merges after green hosted checks.
-  Issues #44 and #45 are closed.
-- Full local validation: 933 cases across eight modules, zero failures/errors/skips,
-  plus 15 CI helper checks, formatting, Checkstyle, assembly and standalone public
-  consumer compilation. Hosted unit/integration checks passed Linux/macOS/Windows;
-  Linux crash and C# compatibility checks passed.
+- Layers 1–6 are implemented in Java within the documented pinned C#
+  supported-format/resource bounds. Layer 6 integration is on
+  `parallel/game-concepts`, tracking issue #49; merge/check results follow below.
+- Layer 6 comprises `concepts-core`, `concepts-items`, `concepts-creatures` and
+  `concepts-effects`. All pinned Concepts production files are ported, with
+  independent fakes/contracts and original C# golden regeneration. Verified
+  additions complete armor material provenance, creature dependency visibility
+  and read coalescing, effect definition-match provenance, relation schema retries
+  and accepted-operation cancellation/draining. Unknown rendering/default choices
+  remain explicit rather than inferred.
+- Full local build/check/assembly and ten C# compatibility suites pass. Root CI
+  includes all twelve modules; 18 Python CI helper tests pass. A final creature
+  lifecycle follow-up and standalone public consumer compilation are being checked.
 - Native Windows machine certification, real-corpus throughput and release packaging
-  remain deferred. Java API/collection/page memory differences and the names-index
-  retention qualification are documented per module.
-- Next unimplemented backend scope is layer 6 game concepts; layer 7 application
-  wiring remains separate. The user has an independent mock JavaFX design session
-  in /Users/aircan/Development/vimi-gui on gui/design; do not modify its work.
+  remain deferred. Hosted Windows checks remain enabled. Java API/collection/page
+  memory differences and resource budgets are documented per module.
+- Next implementation scope is layer 7 application wiring and GUI integration.
+  The independent mock JavaFX design session is in
+  /Users/aircan/Development/vimi-gui on gui/design; do not modify its work.
 - The preexisting untracked root md file remains untouched. Earlier sections below
   record historical milestones; use this section and the final integration notes
   for current state.
@@ -714,3 +718,28 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
 - PR #48 compatibility: https://github.com/aircan80/vimi/actions/runs/41368067508
 - Corresponding push runs also pass. All three parallel component PRs are merged;
   no Files/Formats integration work remains. Reference C# checkout is unchanged.
+
+## Layer 6 game-concepts integration
+
+Parallel implementation and independent review covered all Items, Creatures and
+ItemEffects production files at C# reference `4fd92d2`; the current reference
+checkout's later `1d6632e` has identical Concepts sources/contracts. The original
+reference files were not modified. Each module README documents supported
+profiles and backend versus renderer scope.
+
+The shared relation index now refreshes schema/column selection when source
+identity changes, including changes before the first page. Tests cover both
+content-key and layout changes, reservation release, canceled owners/waiters and
+partial-table absence. MemoryTables handles now observe reseeded tables and use
+the C# fake identity framing without repeatedly hashing every row.
+
+Independent review found and fixed accepted-future cancellation leaks, late-open
+cleanup, terminal explicit-token checks and exposed mutable close futures.
+Admission remains bounded and fail-fast; close drains accepted operations before
+releasing lower resources. Item armor joins use only verified declared foreign
+keys and retain raw component sections. Creature model references expose typed
+lower-layer evidence. Effect layout-match warnings preserve definition provenance
+even when later rows cannot be read.
+
+Tracking issue: #49. Native Windows certification and real-data performance remain
+separate; layer 7 owns JavaFX composition, application settings/jobs and rendering.
