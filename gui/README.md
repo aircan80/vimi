@@ -183,6 +183,9 @@ game-byte decoding, external APIs or backend connections are introduced.
 
 ## Real opening
 
+The source selector defaults to US when observed, preferring current US evidence.
+If US is absent, it uses another observed region rather than inventing a route.
+
 Opening may fetch and persist authenticated configurations, encoding, ROOT and
 indexes; it is not a Download all operation. One opening is admitted at a time.
 Cancellation retains the admission slot until lower work retires; failures leave

@@ -351,7 +351,11 @@ public final class VimiApp extends Application {
                 @Override public BuildInfo.RegionEvidence fromString(String value) { throw new UnsupportedOperationException(); }
             });
             b.observations().stream().sorted(java.util.Comparator.comparing(observation -> !observation.current())).forEach(regions.getItems()::add);
-            if (!regions.getItems().isEmpty()) regions.setValue(regions.getItems().getFirst());
+            if (!regions.getItems().isEmpty()) {
+                regions.setValue(regions.getItems().stream()
+                        .filter(observation -> observation.region().equalsIgnoreCase("us"))
+                        .findFirst().orElse(regions.getItems().getFirst()));
+            }
             regions.setAccessibleText("Build source region");
             regions.setMinWidth(0);
             regions.setMaxWidth(Double.MAX_VALUE);
