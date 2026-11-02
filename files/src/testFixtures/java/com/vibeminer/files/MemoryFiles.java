@@ -314,6 +314,16 @@ public final class MemoryFiles implements Files {
 
         @Override
         public AsyncCursor<BuildFile> list(FileFilter filter, Cancellation token) {
+            return listing(filter, token, false);
+        }
+
+        @Override
+        public AsyncCursor<BuildFile> listMetadata(FileFilter filter, Cancellation token) {
+            return listing(filter, token, true);
+        }
+
+        private AsyncCursor<BuildFile> listing(
+                FileFilter filter, Cancellation token, boolean metadataOnly) {
             check(token);
             var snapshot =
                     entries.values().stream()
@@ -336,6 +346,20 @@ public final class MemoryFiles implements Files {
                     List<BuildFile> out = new ArrayList<>();
                     while (at < snapshot.size() && out.size() < limit) {
                         var f = current(snapshot.get(at++));
+                        if (metadataOnly) {
+                            var type = FormatDetection.detect(null, f.path());
+                            f =
+                                    new BuildFile(
+                                            f.fileDataId(),
+                                            f.path(),
+                                            f.pathSource(),
+                                            f.size(),
+                                            f.contentKey(),
+                                            type.format(),
+                                            type.source(),
+                                            f.storage(),
+                                            f.encrypted());
+                        }
                         if (f.fileDataId() < filter.fromId()
                                 || f.fileDataId() > filter.toId()
                                 || filter.pathPrefix() != null

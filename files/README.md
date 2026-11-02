@@ -94,3 +94,11 @@ wrong keys, admission and cancellation. `MemoryFiles` is an independent decoded-
 fake; `FilesScenario` composes the real Files implementation over lower-layer fakes.
 Native Windows testing and measured large-data/live-service performance certification
 remain deferred; deterministic macOS results are the current evidence.
+
+`BuildFiles.listMetadata(filter, cancellation)` is the payload-free listing boundary for preparation
+and data-only browsers. It uses build indexes, batched object presence and already available names;
+it never reads encoded objects, BLTE frames or content headers, and never updates names. A known name
+may provide an extension-only format hint. Without a name, format is `UNKNOWN`, even when a prior
+content read cached a detected format. Format filters apply to these metadata-only hints. Existing
+`list` retains its content-aware behavior. Providers that have not implemented metadata-only listing
+explicitly throw `UnsupportedOperationException`; the default never falls back to sniffing content.

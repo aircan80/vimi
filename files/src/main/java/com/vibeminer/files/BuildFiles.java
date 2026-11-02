@@ -23,6 +23,15 @@ public interface BuildFiles extends AutoCloseable {
 
     AsyncCursor<BuildFile> list(FileFilter filter, Cancellation cancellation);
 
+    /**
+     * Index/presence/name facts only: never opens encoded payloads or sniffs content headers.
+     * Format filtering uses available name extensions only; without a name the format is UNKNOWN.
+     * The default refuses rather than silently falling back to content-inspecting listing.
+     */
+    default AsyncCursor<BuildFile> listMetadata(FileFilter filter, Cancellation cancellation) {
+        throw new UnsupportedOperationException("Metadata-only file listing is not implemented");
+    }
+
     CompletableFuture<FileStat> stat(FileRef file, Cancellation cancellation);
 
     CompletableFuture<Boolean> exists(FileRef file, Cancellation cancellation);

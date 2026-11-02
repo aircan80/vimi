@@ -247,6 +247,10 @@ final class BuildFilesHandle implements BuildFiles {
                 known != null && known != FileFormat.UNKNOWN
                         ? new FormatDetection.Detected(known, FileFormatSource.MAGIC)
                         : FormatDetection.detect(null, file.path());
+        return formatted(file, detected);
+    }
+
+    private static BuildFile formatted(BuildFile file, FormatDetection.Detected detected) {
         return new BuildFile(
                 file.fileDataId(),
                 file.path(),
@@ -445,6 +449,11 @@ final class BuildFilesHandle implements BuildFiles {
         return new Listing(opened(), Objects.requireNonNull(filter), token, true);
     }
 
+    @Override
+    public AsyncCursor<BuildFile> listMetadata(FileFilter filter, Cancellation token) {
+        return new Listing(opened(), Objects.requireNonNull(filter), token, false, true);
+    }
+
     private record Entry(long id, FileVariant variant, String path) {}
 
     private final class Listing implements AsyncCursor<BuildFile> {
@@ -452,6 +461,7 @@ final class BuildFilesHandle implements BuildFiles {
         final FileFilter filter;
         final Cancellation token;
         final boolean detect;
+        final boolean metadataOnly;
         final Iterator<Long> ids;
         final ArrayDeque<BuildFile> pending = new ArrayDeque<>();
         boolean closed, ended;
@@ -500,10 +510,20 @@ final class BuildFilesHandle implements BuildFiles {
         }
 
         Listing(Build built, FileFilter filter, Cancellation token, boolean detect) {
+            this(built, filter, token, detect, false);
+        }
+
+        Listing(
+                Build built,
+                FileFilter filter,
+                Cancellation token,
+                boolean detect,
+                boolean metadataOnly) {
             this.built = built;
             this.filter = filter;
             this.token = token;
             this.detect = detect;
+            this.metadataOnly = metadataOnly;
             ids = built.fileDataIds(locale, filter.fromId()).iterator();
             if (filter.fromId() > filter.toId()
                     || filter.formats() != null && filter.formats().isEmpty()) {
@@ -614,7 +634,12 @@ final class BuildFilesHandle implements BuildFiles {
                                 entry.path() == null
                                         ? FilePathSource.NONE
                                         : FilePathSource.LISTFILE);
-                if (detect || filter.formats() != null) {
+                if (metadataOnly) {
+                    var projected = formatted(file, FormatDetection.detect(null, file.path()));
+                    if (filter.formats() == null || filter.formats().contains(projected.format())) {
+                        pending.add(projected);
+                    }
+                } else if (detect || filter.formats() != null) {
                     jobs.add(Io.async(() -> format(file, entry.variant(), built, call)));
                     if (jobs.size() == 8) {
                         drain(jobs);
