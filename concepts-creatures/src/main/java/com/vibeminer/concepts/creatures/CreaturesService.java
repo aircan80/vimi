@@ -83,8 +83,14 @@ public final class CreaturesService implements Creatures {
                                 return;
                             }
                             Handle handle =
-                                    open.tables() == null ? null : new Handle(open.tables());
+                                    open.state() == FileTypes.FilesOpenState.OPEN
+                                                    && open.tables() != null
+                                            ? new Handle(open.tables())
+                                            : null;
                             try {
+                                if (handle == null && open.tables() != null) {
+                                    open.tables().closeAsync().join();
+                                }
                                 token.check();
                                 if (!result.complete(
                                                 new CreaturesOpenResult(
@@ -202,7 +208,7 @@ public final class CreaturesService implements Creatures {
             synchronized (gate) {
                 closed = true;
                 cleanup();
-                return drained;
+                return drained.copy();
             }
         }
 

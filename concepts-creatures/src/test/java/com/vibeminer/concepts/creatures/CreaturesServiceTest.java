@@ -201,6 +201,8 @@ final class CreaturesServiceTest {
                 service.forBuild(CreatureWorld.BUILD, "enUS", Cancellation.NONE).join().creatures();
         var pending = handle.get(10, P, Cancellation.NONE);
         assertTrue(entered.await(5, TimeUnit.SECONDS));
+        var observer = handle.closeAsync();
+        observer.complete(null);
         var close = handle.closeAsync();
         assertFalse(close.isDone());
         assertFalse(closed.get());
@@ -325,6 +327,51 @@ final class CreaturesServiceTest {
                         null,
                         null,
                         null));
+        assertTrue(closed.await(5, TimeUnit.SECONDS));
+    }
+
+    @Test
+    void failedOpenNeverPublishesStrayLowerHandle() throws Exception {
+        var world = new CreatureWorld().with(CreatureWorld.creatures(List.of()));
+        var real =
+                world.tables
+                        .forBuild(CreatureWorld.BUILD, "enUS", Cancellation.NONE)
+                        .join()
+                        .tables();
+        var closed = new CountDownLatch(1);
+        BuildTables wrapped =
+                (BuildTables)
+                        Proxy.newProxyInstance(
+                                getClass().getClassLoader(),
+                                new Class<?>[] {BuildTables.class},
+                                (proxy, method, args) -> {
+                                    if (method.getName().equals("closeAsync")) {
+                                        closed.countDown();
+                                        return real.closeAsync();
+                                    }
+                                    try {
+                                        return method.invoke(real, args);
+                                    } catch (InvocationTargetException error) {
+                                        throw error.getCause();
+                                    }
+                                });
+        Tables tables =
+                (build, locale, token) ->
+                        CompletableFuture.completedFuture(
+                                new TableTypes.OpenResult(
+                                        build,
+                                        locale,
+                                        FileTypes.FilesOpenState.NEEDS_NETWORK,
+                                        wrapped,
+                                        "BUILD_NEEDS_NETWORK",
+                                        "offline",
+                                        null));
+        var service =
+                new CreaturesService(
+                        tables, world.files, new BlpImages(new MemoryGeneratedStore()));
+        var opened = service.forBuild(CreatureWorld.BUILD, "enUS", Cancellation.NONE).join();
+        assertEquals(FileTypes.FilesOpenState.NEEDS_NETWORK, opened.state());
+        assertNull(opened.creatures());
         assertTrue(closed.await(5, TimeUnit.SECONDS));
     }
 }
