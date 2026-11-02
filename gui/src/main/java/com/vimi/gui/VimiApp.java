@@ -34,6 +34,7 @@ public final class VimiApp extends Application {
     private boolean loading;
     private long catalogGeneration;
     private final Button issuesButton = new Button("Refresh issues");
+    private final javafx.scene.control.ProgressIndicator catalogActivity = new javafx.scene.control.ProgressIndicator(-1);
     private final Button refreshButton = new Button("↻  Refresh builds");
     private final BorderPane root = new BorderPane();
     private final javafx.scene.layout.StackPane surface = new javafx.scene.layout.StackPane(root);
@@ -152,6 +153,12 @@ public final class VimiApp extends Application {
         stage.setMinWidth(1000);
         stage.setMinHeight(680);
         stage.setScene(scene);
+        catalogActivity.setMinSize(20, 20);
+        catalogActivity.setPrefSize(20, 20);
+        catalogActivity.setMaxSize(20, 20);
+        catalogActivity.getStyleClass().add("catalog-activity");
+        catalogActivity.setFocusTraversable(false);
+        showCatalogActivity("Loading history…");
         refreshButton.setOnAction(event -> loadBuilds(true));
         refreshButton.setDisable(true);
         stage.setOnCloseRequest(event -> {
@@ -166,6 +173,7 @@ public final class VimiApp extends Application {
         startup.whenComplete((result, error) -> Platform.runLater(() -> {
             if (closing) { return; }
             if (error != null) {
+                showCatalogActivity(null);
                 status.setText("Could not open build history: " + problem(error));
                 table.setPlaceholder(new Label("Build history could not be opened. Close and reopen after checking the data directory."));
                 return;
@@ -194,9 +202,18 @@ public final class VimiApp extends Application {
         return error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
     }
 
+    private void showCatalogActivity(String message) {
+        boolean busy = message != null;
+        catalogActivity.setVisible(busy);
+        catalogActivity.setManaged(busy);
+        catalogActivity.setAccessibleText(busy ? message : "Build catalog idle");
+        refreshButton.setText(busy ? message : "↻  Refresh builds");
+    }
+
     private void loadBuilds(boolean refreshSources) {
         if (service == null || loading || closing) { return; }
         loading = true;
+        showCatalogActivity(refreshSources ? "Refreshing builds…" : "Loading history…");
         refreshButton.setDisable(true);
         long generation = ++catalogGeneration;
         status.setText(refreshSources ? "Checking published builds… Saved history stays available." : "Reading saved build history…");
@@ -205,6 +222,7 @@ public final class VimiApp extends Application {
         request.whenComplete((result, error) -> Platform.runLater(() -> {
             if (closing || generation != catalogGeneration) { return; }
             loading = false;
+            showCatalogActivity(null);
             refreshButton.setDisable(false);
             if (error != null) {
                 status.setText("Could not load builds: " + problem(error) + ". Refresh builds to retry.");
@@ -254,7 +272,7 @@ public final class VimiApp extends Application {
         Button refresh = refreshButton;
         refresh.setAccessibleText("Refresh builds");
         refresh.getStyleClass().add("refresh-button");
-        HBox titleRow = new HBox(12, label("Builds", "nav"), spacer(), refresh);
+        HBox titleRow = new HBox(12, label("Builds", "nav"), spacer(), catalogActivity, refresh);
         titleRow.getStyleClass().addAll("toolbar", "builds-title-row");
         HBox filters = new HBox(12, search, product, scope, button("Clear filters", () -> {
             search.clear();
@@ -353,6 +371,7 @@ public final class VimiApp extends Application {
         catalogGeneration++;
         preparations.close();
         root.setDisable(true);
+        showCatalogActivity("Closing history…");
         status.setText("Closing build history…");
         var cleanup = startup == null ? java.util.concurrent.CompletableFuture.<Void>completedFuture(null)
                 : startup.handle((ready, error) -> ready)

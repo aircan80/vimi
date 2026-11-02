@@ -38,6 +38,9 @@ Startup reads saved history without network requests; **Refresh builds** observe
 published metadata and persists it through the existing backend. This does not
 download game content, establish content availability or measure retention.
 Refresh issues remain inspectable without discarding readable history.
+An indeterminate activity indicator and a “Refreshing builds…” button label stay
+visible while refresh is running. Loading saved history also shows activity; no
+percentage or transfer progress is inferred from the catalog API.
 
 Application startup, refresh and resource closure run off the JavaFX thread;
 refreshes coalesce and shutdown cancels/drains work before exiting. The check task

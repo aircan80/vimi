@@ -25,7 +25,9 @@
   `gui/design` commit `7b30528` was imported on `integration/gui-builds`; the original
   worktree remains untouched. Builds now connects offline catalog listing, explicit
   refresh and provenance inspection; real opening and all later screens remain
-  pending. `--mock` preserves the approved full design preview.
+  pending. `--mock` preserves the approved full design preview. Catalog startup and
+  refresh show an indeterminate activity indicator and busy button label; lower
+  layers were not modified to add progress.
 - GUI is a root subproject with locked JavaFX dependencies confined to layer 7.
   Full root check/assemble and GUI installDist pass, along with the prototype
   harness, 10 adapter contracts, native persisted-history/reopen checks and 18 CI
