@@ -2,11 +2,16 @@ package com.vimi.gui;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.comparison.ComparisonInput;
+import com.vibeminer.concepts.comparison.ComparisonService;
 import com.vibeminer.concepts.comparison.ComparisonTypes;
+import com.vibeminer.concepts.comparison.SealedCandidateInput;
 import com.vibeminer.concepts.comparison.TempBudget;
 import com.vibeminer.concepts.comparison.inputs.FilesInventoryInput;
 import com.vibeminer.concepts.comparison.inputs.PreparedTableRowsSource;
 import com.vibeminer.concepts.comparison.inputs.TableInventoryInput;
+import com.vibeminer.concepts.comparison.items.ItemsSnapshot;
+import com.vibeminer.concepts.comparison.items.ItemsStageCodec;
+import com.vibeminer.concepts.items.PreparedItemTypes;
 import com.vibeminer.files.keys.TactKeys;
 
 import java.nio.charset.StandardCharsets;
@@ -43,8 +48,22 @@ final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
         boolean definitions =
                 sources == null || sources.policy(DataSourcesService.Id.DEFINITIONS).enabled();
         var receipts = contexts.comparisonReceipts();
-        var budget = request.tableId() == null ? null : new TempBudget();
+        boolean items = request.area().equals("Items");
+        var budget = request.tableId() == null && !items ? null : new TempBudget();
+        final ItemsSnapshot snapshot;
+        try {
+            snapshot =
+                    items
+                            ? new ItemsSnapshot(
+                                    budget, PreparedItemTypes.Selection.defaults(), token)
+                            : null;
+        } catch (java.io.IOException failure) {
+            budget.close();
+            throw new java.util.concurrent.CompletionException(failure);
+        }
         return new ComparisonCoordinator.EndpointOpener() {
+            private int opened;
+
             @Override
             public ComparisonCoordinator.Opened open(
                     BuildInfo build, String locale, String area, Cancellation cancellation) {
@@ -53,6 +72,8 @@ final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
                         locale,
                         area,
                         request.tableId(),
+                        snapshot,
+                        opened++ == 0 ? ItemsSnapshot.Side.A : ItemsSnapshot.Side.B,
                         budget,
                         keys,
                         definitions,
@@ -64,8 +85,42 @@ final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
             public void prepare(
                     ComparisonCoordinator.Opened before,
                     ComparisonCoordinator.Opened after,
-                    Cancellation cancellation) {
-                if (request.tableId() != null) {
+                    Cancellation cancellation)
+                    throws Exception {
+                if (snapshot != null) {
+                    var a = (PreparedItemsComparisonInput) before.input();
+                    var b = (PreparedItemsComparisonInput) after.input();
+                    a.capture(cancellation);
+                    b.capture(cancellation);
+                    snapshot.sealPairScope();
+                    if (snapshot.admittedFieldCount() == 0)
+                        throw new IllegalStateException(
+                                "No compatible recorded Items fields are available. "
+                                        + String.join("; ", snapshot.reasons()));
+                    var codec = new ItemsStageCodec(snapshot);
+                    a.finish(
+                            file ->
+                                    SealedCandidateInput.adopt(
+                                            file,
+                                            itemsDescriptor(
+                                                    request.before(),
+                                                    request.beforeLocale(),
+                                                    snapshot,
+                                                    ItemsSnapshot.Side.A),
+                                            budget,
+                                            codec::projectCandidate));
+                    b.finish(
+                            file ->
+                                    SealedCandidateInput.adopt(
+                                            file,
+                                            itemsDescriptor(
+                                                    request.after(),
+                                                    request.afterLocale(),
+                                                    snapshot,
+                                                    ItemsSnapshot.Side.B),
+                                            budget,
+                                            codec::projectCandidate));
+                } else if (request.tableId() != null) {
                     ((PreparedRawComparisonInput) before.input()).prepare(cancellation);
                     ((PreparedRawComparisonInput) after.input()).prepare(cancellation);
                 }
@@ -77,7 +132,20 @@ final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
             }
 
             @Override
+            public ComparisonService.MemoryPlan memoryPlan() {
+                return snapshot == null
+                        ? ComparisonService.MemoryPlan.standard()
+                        : ComparisonService.MemoryPlan.withSnapshotMetadata();
+            }
+
+            @Override
+            public TempBudget.Reservation retainedMetadata() {
+                return snapshot == null ? null : snapshot.metadataReservation();
+            }
+
+            @Override
             public void close() {
+                if (snapshot != null) snapshot.close();
                 if (budget != null) budget.close();
             }
         };
@@ -88,6 +156,8 @@ final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
             String locale,
             String area,
             Long tableId,
+            ItemsSnapshot snapshot,
+            ItemsSnapshot.Side side,
             TempBudget budget,
             TactKeys keys,
             boolean definitions,
@@ -115,7 +185,40 @@ final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
             dependencies.put("comparison.acquisition", "local-only");
             dependencies.put("comparison.names", "unassessed");
             dependencies.put("comparison.storage", "unassessed");
-            if (area.equals("Files")) {
+            if (area.equals("Items")) {
+                if (!definitions)
+                    throw new IllegalStateException(
+                            "Table definitions are disabled; Items comparison is unavailable.");
+                var issues = work.keysPreparedLocal(token);
+                dependencies.put(
+                        "items.bootstrap.key-issues",
+                        String.join("; ", issues.stream().limit(16).toList()));
+                dependencies.put("comparison.policy", "items-increment-A-v1");
+                dependencies.put("comparison.names", "recorded-source-qualified");
+                dependencies.put(
+                        "scope.description",
+                        "Recorded Item and ItemSparse facts; source-qualified conflicts retained;"
+                                + " membership unknown; effects and assets unassessed");
+                snapshot.registerEndpoint(side, dependencies);
+                input =
+                        new PreparedItemsComparisonInput(
+                                descriptor(
+                                        build,
+                                        locale,
+                                        "items.ItemID.v1",
+                                        "items-increment-A-pending",
+                                        dependencies),
+                                cancellation ->
+                                        LocalItemsComparison.capture(
+                                                work,
+                                                locale,
+                                                dependencies,
+                                                side,
+                                                snapshot,
+                                                temporaryParent,
+                                                budget,
+                                                cancellation));
+            } else if (area.equals("Files")) {
                 dependencies.put(
                         "scope.description",
                         "Selected-locale file content-key and decoded-size metadata; names and live"
@@ -244,6 +347,13 @@ final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
                     ? runtime
                     : new java.util.concurrent.CompletionException(failure);
         }
+    }
+
+    private static ComparisonTypes.Descriptor itemsDescriptor(
+            BuildInfo build, String locale, ItemsSnapshot snapshot, ItemsSnapshot.Side side) {
+        var dependencies = new LinkedHashMap<>(snapshot.dependencies(side));
+        dependencies.put("items.scope.reasons", String.join("; ", snapshot.reasons()));
+        return descriptor(build, locale, "items.ItemID.v1", snapshot.fieldScope(), dependencies);
     }
 
     private static ComparisonTypes.Descriptor descriptor(

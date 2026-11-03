@@ -2,10 +2,7 @@ package com.vimi.gui;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.comparison.ComparisonTypes;
-import java.util.List;
-import java.util.Objects;
-import java.util.concurrent.CompletableFuture;
-import java.util.function.Supplier;
+
 import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
 import javafx.application.Platform;
@@ -21,6 +18,11 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import javafx.util.Duration;
+
+import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Supplier;
 
 /** Session-only local inventory comparison. Backend handles belong to the composition owner. */
 final class CompareView extends BorderPane implements AutoCloseable {
@@ -424,8 +426,8 @@ final class CompareView extends BorderPane implements AutoCloseable {
                     .add(
                             text(
                                     session == null
-                                            ? "Not compared. Choose Files or Tables, then Compare"
-                                                    + " local data."
+                                            ? "Not compared. Choose Files, Tables or Items, then"
+                                                  + " Compare local data."
                                             : "Session-only "
                                                     + runArea
                                                     + (capturedRequest != null
@@ -433,22 +435,30 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                                                             != null
                                                             ? " raw table findings. Known-equal"
                                                                     + " rows are"
-                                                            : " inventory findings. Known-equal"
+                                                            : " findings. Known-equal"
                                                                     + " records are")
                                                     + " omitted; other areas are not assessed.",
                                     "muted"));
             content.getChildren().addAll(pageStatus, coverageDetails);
-        } else if (area.equals("Files") || area.equals("Tables")) {
+        } else if (area.equals("Files") || area.equals("Tables") || area.equals("Items")) {
             content.getChildren()
                     .add(
                             text(
                                     raw
-                                            ? "Recorded columns from one prepared table. Membership is uncertified; gameplay meaning is unassessed."
-                                            : "Local "
-                                                    + area.toLowerCase(java.util.Locale.ROOT)
-                                                    + " inventory only. Readability and source"
-                                                    + " coverage remain separate from content"
-                                                    + " changes.",
+                                            ? "Recorded columns from one prepared table. Membership"
+                                                  + " is uncertified; gameplay meaning is"
+                                                  + " unassessed."
+                                            : area.equals("Items")
+                                                    ? "Recorded Item / ItemSparse facts with"
+                                                          + " source-qualified conflicts."
+                                                          + " Membership is uncertified; effects"
+                                                          + " and assets are unassessed."
+                                                    : "Local "
+                                                            + area.toLowerCase(
+                                                                    java.util.Locale.ROOT)
+                                                            + " inventory only. Readability and"
+                                                            + " source coverage remain separate"
+                                                            + " from content changes.",
                                     "muted"));
             if (area.equals("Tables")) {
                 content.getChildren().add(rawControls);
@@ -482,7 +492,11 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                             + " available.",
                                     "muted"));
         compare.setDisable(
-                pending || running() || !(area.equals("Files") || area.equals("Tables")));
+                pending
+                        || running()
+                        || !(area.equals("Files")
+                                || area.equals("Tables")
+                                || area.equals("Items")));
         rawCompare.setDisable(pending || running() || !area.equals("Tables"));
         selectedTable.setDisable(
                 !inventoryTableSelection(results.getSelectionModel().getSelectedItem()));
@@ -613,7 +627,9 @@ final class CompareView extends BorderPane implements AutoCloseable {
         compare.setDisable(
                 running
                         || pending
-                        || !(selectedArea.equals("Files") || selectedArea.equals("Tables")));
+                        || !(selectedArea.equals("Files")
+                                || selectedArea.equals("Tables")
+                                || selectedArea.equals("Items")));
         var message =
                 progress.state() == ComparisonTypes.RunState.COMPLETED
                         ? conciseProgressMessage(progress.message())
@@ -669,7 +685,9 @@ final class CompareView extends BorderPane implements AutoCloseable {
 
     private static String requestMode(Request request) {
         return request.tableId() == null
-                ? request.area() + " inventory"
+                ? request.area().equals("Items")
+                        ? "Recorded Items facts"
+                        : request.area() + " inventory"
                 : "Raw table rows · FileDataID " + request.tableId();
     }
 
@@ -680,7 +698,9 @@ final class CompareView extends BorderPane implements AutoCloseable {
                         ? "Prepared table rows"
                         : "Tables".equals(runArea)
                                 ? "Table inventory"
-                                : "Selected-locale file inventory";
+                                : "Items".equals(runArea)
+                                        ? "Recorded Items facts"
+                                        : "Selected-locale file inventory";
         return words(value.completeness().toString())
                 + " · "
                 + scope
@@ -720,6 +740,19 @@ final class CompareView extends BorderPane implements AutoCloseable {
     }
 
     private static String fieldLabel(String key) {
+        if (key.startsWith("item.")) {
+            var parts = key.split("\\.", 5);
+            if (parts.length == 5) {
+                String source =
+                        parts[1].equals("ITEM_SPARSE")
+                                ? "ItemSparse"
+                                : parts[1].equals("ITEM") ? "Item" : parts[1];
+                return source
+                        + " · "
+                        + words(parts[2])
+                        + (parts[4].equals("scalar") ? "" : " [" + parts[4] + "]");
+            }
+        }
         return switch (key) {
             case "record.isCopy" -> "Copy record";
             case "record.copySource" -> "Copy source ID";
@@ -760,7 +793,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                             if (failure != null || page == null) {
                                                 pageError.setText(
                                                         "Findings page unavailable. Existing"
-                                                                + " findings remain; retry this page.");
+                                                            + " findings remain; retry this page.");
                                                 retryOffset = offset;
                                                 retryDirection = direction;
                                                 retryPage.setVisible(true);
@@ -1005,8 +1038,8 @@ final class CompareView extends BorderPane implements AutoCloseable {
         pendingSelection.setText(
                 changed
                         ? "Selection changed. Findings and progress still belong to the captured"
-                                + " pair above. Compare local data again after this run finishes, or"
-                                + " cancel it."
+                              + " pair above. Compare local data again after this run finishes, or"
+                              + " cancel it."
                         : "");
         pendingSelection.setVisible(changed);
         pendingSelection.setManaged(changed);

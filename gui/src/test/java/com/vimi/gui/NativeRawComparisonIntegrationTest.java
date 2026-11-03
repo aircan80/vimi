@@ -96,6 +96,22 @@ public final class NativeRawComparisonIntegrationTest {
                         require(
                                 forbidden.get() == 0,
                                 "Missing graph does not acquire bytes or names");
+                        var itemsRequest =
+                                new BuildComparisons.Request(info, "enUS", info, "enUS", "Items");
+                        boolean itemsRejected = false;
+                        try {
+                            manager.start(itemsRequest, new Cancellation())
+                                    .get(20, TimeUnit.SECONDS);
+                        } catch (java.util.concurrent.ExecutionException expected) {
+                            itemsRejected = true;
+                        }
+                        require(
+                                itemsRejected,
+                                "Items with no assessable prepared dependency are unavailable, not"
+                                    + " zero-change");
+                        require(
+                                forbidden.get() == 0,
+                                "Unavailable Items never acquire missing dependencies");
                         seedGraph(library, info, cdn);
                         var storedBefore = library.stats().join();
                         var before =
@@ -123,7 +139,7 @@ public final class NativeRawComparisonIntegrationTest {
                                             && session.progress().b().completeness()
                                                     == ComparisonTypes.Completeness.UNKNOWN,
                                     "Readable prepared rows do not certify global membership"
-                                        + " completeness");
+                                            + " completeness");
                             require(
                                     session.page(0, 10).join().rows().isEmpty(),
                                     "Equal typed authored rows produce no false findings");
@@ -147,7 +163,7 @@ public final class NativeRawComparisonIntegrationTest {
                                                     .get("raw.graph.identity")
                                                     .matches("[0-9a-f]{32}"),
                                     "Native source records exact graph and interpretation"
-                                        + " fingerprints");
+                                            + " fingerprints");
                             require(
                                     session.before()
                                             .namespace()
@@ -155,6 +171,50 @@ public final class NativeRawComparisonIntegrationTest {
                                     "Both prepared inputs use the same typed raw namespace");
                         } finally {
                             session.closeAsync().get(20, TimeUnit.SECONDS);
+                        }
+                        var itemsSession =
+                                manager.start(itemsRequest, new Cancellation())
+                                        .get(20, TimeUnit.SECONDS);
+                        try {
+                            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+                            while (itemsSession.progress().state()
+                                    == ComparisonTypes.RunState.RUNNING) {
+                                require(
+                                        System.nanoTime() < deadline,
+                                        "Native Items scan terminates");
+                                Thread.sleep(5);
+                            }
+                            require(
+                                    itemsSession.progress().state()
+                                            == ComparisonTypes.RunState.COMPLETED,
+                                    "Native Items scan completes: "
+                                            + itemsSession.progress().message());
+                            require(
+                                    itemsSession.progress().observed() == 3,
+                                    "Missing ItemSparse does not erase qualified Item IDs including"
+                                        + " unsigned maximum");
+                            require(
+                                    itemsSession.before().namespace().equals("items.ItemID.v1"),
+                                    "Native Items pins source-qualified item namespace");
+                            require(
+                                    itemsSession
+                                            .before()
+                                            .dependencies()
+                                            .get("items.scope.reasons")
+                                            .contains("ITEM_SPARSE"),
+                                    "Global unsupported dependency remains visible in coverage"
+                                        + " reasons");
+                            require(
+                                    itemsSession.progress().a().completeness()
+                                            == ComparisonTypes.Completeness.UNKNOWN,
+                                    "Prepared Item dependency does not certify complete"
+                                        + " membership");
+                            require(
+                                    itemsSession.page(0, 10).join().rows().isEmpty(),
+                                    "Equal known Item facts with globally unavailable Sparse yield"
+                                        + " no invented changes");
+                        } finally {
+                            itemsSession.closeAsync().get(20, TimeUnit.SECONDS);
                         }
                         require(
                                 java.util.Objects.equals(
@@ -171,7 +231,7 @@ public final class NativeRawComparisonIntegrationTest {
                                         && storedBefore.liveBytes() == storedAfter.liveBytes()
                                         && storedBefore.packBytes() == storedAfter.packBytes(),
                                 "Prepared comparison performs no object writes, repairs or graph"
-                                    + " rebuilding");
+                                        + " rebuilding");
                     } finally {
                         manager.closeAsync().get(20, TimeUnit.SECONDS);
                     }
@@ -182,8 +242,8 @@ public final class NativeRawComparisonIntegrationTest {
                 library.closeAsync().join();
             }
             System.out.println(
-                    "Native raw comparison: authored SQLite/pack graph, missing-graph rejection,"
-                        + " cached rows and forbidden acquisition passed");
+                    "Native raw/Items comparison: authored SQLite/pack graph, missing-graph rejection,"
+                            + " cached rows and forbidden acquisition passed");
         } finally {
             try (var paths = Files.walk(directory)) {
                 for (var path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) {

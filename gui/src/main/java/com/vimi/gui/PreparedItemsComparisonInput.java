@@ -24,6 +24,7 @@ final class PreparedItemsComparisonInput implements ComparisonInput {
     private ComparisonTypes.Descriptor descriptor;
     private Capture capture;
     private BudgetedTempFile candidates;
+    private java.nio.file.Path directory;
     private ComparisonInput prepared;
     private CompletableFuture<Void> closing;
 
@@ -38,6 +39,7 @@ final class PreparedItemsComparisonInput implements ComparisonInput {
             throw new IllegalStateException("Items input is already captured or closed");
         token.check();
         candidates = Objects.requireNonNull(capture.capture(token));
+        directory = candidates.path().getParent();
         capture = null;
     }
 
@@ -81,6 +83,7 @@ final class PreparedItemsComparisonInput implements ComparisonInput {
                     try {
                         if (prepared != null) prepared.closeAsync().join();
                         if (candidates != null) candidates.close();
+                        if (directory != null) java.nio.file.Files.deleteIfExists(directory);
                         prepared = null;
                         candidates = null;
                         capture = null;
