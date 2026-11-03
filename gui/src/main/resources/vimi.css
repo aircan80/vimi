@@ -50,7 +50,7 @@
 .product-sidebar { -fx-padding: 20 10; -fx-background-color: #edf2ec; -fx-border-color: transparent #d9e0d9 transparent transparent; }
 .product-sidebar > .eyebrow { -fx-padding: 0 10; }
 .list-view.product-menu { -fx-background-color: transparent; -fx-border-color: transparent; -fx-background-insets: 0; -fx-padding: 0; }
-.list-view.product-menu .list-cell { -fx-background-color: transparent; -fx-border-color: transparent; -fx-padding: 9 10; -fx-cursor: hand; }
+.list-view.product-menu .list-cell { -fx-text-fill: #243e3c; -fx-background-color: transparent; -fx-border-color: transparent; -fx-padding: 9 10; -fx-cursor: hand; }
 .list-view.product-menu .list-cell:filled:hover { -fx-background-color: #e1ebe2; -fx-background-radius: 6; }
 .list-view.product-menu .list-cell:filled:selected { -fx-background-color: #d4e8de; -fx-background-radius: 6; -fx-border-color: transparent transparent transparent #137b70; -fx-border-width: 0 0 0 3; }
 .product-name { -fx-font-weight: bold; }

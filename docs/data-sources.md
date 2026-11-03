@@ -29,7 +29,7 @@ workspace data and completed provider objects are retained.
 
 The page lists retained archives and prepared databases by source identity and
 flavor. It exposes observed release checks, named-release/flavor downloads,
-preparation/rebuild, safe cancellation and default selection for each flavor.
+preparation/reuse, safe cancellation and default selection for each flavor.
 Local files are not downloaded merely by opening the screen. No deletion is offered.
 
 Archive bytes and prepared SQLite file lengths are separate provider-local figures,
@@ -67,3 +67,7 @@ product filtering, and enabled/disabled workspace cache isolation. A separate li
 smoke test in temporary storage checked official releases, downloaded Forever
 v1.0.10, prepared 46,957 records with 10 locales, and selected/resolved its default
 through `wowf`. It did not alter the user's application library.
+
+Source page rendered from an isolated live-test library (not the user library):
+
+![Questie source management](images/data-sources-live.png)

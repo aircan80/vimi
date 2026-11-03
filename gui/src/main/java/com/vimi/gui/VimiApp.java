@@ -45,6 +45,7 @@ public final class VimiApp extends Application {
     private final javafx.animation.Timeline preparationClock = new javafx.animation.Timeline(
             new javafx.animation.KeyFrame(javafx.util.Duration.millis(250),event -> updatePreparationActivity()));
     private boolean loading;
+    private boolean catalogReloadPending, catalogRefreshPending;
     private BuildInfo realOpeningBuild;
     private String realOpeningRegion;
     private boolean realOpeningActive;
@@ -308,7 +309,19 @@ public final class VimiApp extends Application {
     }
 
     private void loadBuilds(boolean refreshSources) {
-        if (service == null || loading || closing) { return; }
+        if (service == null || closing) return;
+        if (loading) { catalogReloadPending = true; catalogRefreshPending |= refreshSources; return; }
+        if (service.settings() != null) {
+            String priorProduct = product.getSelectionModel().getSelectedItem();
+            updatingProducts = true;
+            try {
+                product.getItems().setAll(service.settings().enabledProducts());
+                product.getSelectionModel().select(product.getItems().contains(priorProduct) ? priorProduct
+                        : product.getItems().isEmpty() ? null : product.getItems().getFirst());
+                product.refresh();
+            } finally { updatingProducts = false; }
+            filter();
+        }
         loading = true;
         showCatalogActivity(refreshSources ? "Refreshing builds…" : "Loading history…");
         refreshButton.setDisable(true);
@@ -319,6 +332,11 @@ public final class VimiApp extends Application {
         request.whenComplete((result, error) -> Platform.runLater(() -> {
             if (closing || generation != catalogGeneration) { return; }
             loading = false;
+            if (catalogReloadPending) {
+                boolean refreshAgain = catalogRefreshPending;
+                catalogReloadPending = catalogRefreshPending = false;
+                Platform.runLater(() -> loadBuilds(refreshAgain));
+            }
             showCatalogActivity(null);
             refreshButton.setDisable(false);
             if (error != null) {
@@ -337,7 +355,8 @@ public final class VimiApp extends Application {
             updatingProducts = true;
             try {
                 product.getItems().clear();
-                builds.stream().map(BuildInfo::product).distinct().sorted().forEach(product.getItems()::add);
+                if (service.settings() != null) product.getItems().addAll(service.settings().enabledProducts());
+                else builds.stream().map(BuildInfo::product).distinct().sorted().forEach(product.getItems()::add);
                 product.getSelectionModel().select(firstCatalog && selected != null
                         ? selected.product()
                         : product.getItems().contains(priorProduct) ? priorProduct
@@ -361,10 +380,12 @@ public final class VimiApp extends Application {
     private String productName(String code) {
         return builds.stream().filter(build -> code.equals(build.product()))
                 .map(BuildInfo::edition).filter(name -> name != null && !name.isBlank())
-                .findFirst().orElse(code);
+                .findFirst().orElse(com.vibeminer.builds.Products.name(code));
     }
 
     private void filter() {
+        String activeProduct = product.getSelectionModel().getSelectedItem();
+        if (selected != null && !java.util.Objects.equals(selected.product(), activeProduct)) selected = null;
         String query = search.getText().strip().toLowerCase(Locale.ROOT);
         List<BuildInfo> visible = builds.stream()
                 .filter(b -> (b.version() + " " + b.product() + " " + b.edition()).toLowerCase(Locale.ROOT).contains(query))

@@ -142,7 +142,7 @@ final class DataSourcesView extends BorderPane {
                         service == null
                                 ? text(
                                         "Source management is available in the local-library"
-                                            + " application.",
+                                                + " application.",
                                         "muted")
                                 : livePage(selectedSource));
         tick();
@@ -263,7 +263,7 @@ final class DataSourcesView extends BorderPane {
                                             ? "Automatic listfile updates"
                                             : "Release checks",
                                     checks,
-                                    "Last successful check: " + service.checkedAt(id)));
+                                    "Last successful check: " + checkedDate(id)));
         }
         var provenance =
                 new TitledPane(
@@ -419,14 +419,19 @@ final class DataSourcesView extends BorderPane {
                                                                 + String.join(
                                                                         ", ", version.locales()),
                                                         "muted"),
-                                                text("Prepared: " + version.preparedAt(), "muted"));
-                            if (!version.diagnostics().isEmpty())
-                                selection
-                                        .getChildren()
-                                        .add(
                                                 text(
-                                                        String.join(" · ", version.diagnostics()),
-                                                        "value"));
+                                                        "Prepared: " + date(version.preparedAt()),
+                                                        "muted"));
+                            if (!version.diagnostics().isEmpty()) {
+                                var notes =
+                                        new TitledPane(
+                                                "Preparation notes",
+                                                text(
+                                                        String.join("\n\n", version.diagnostics()),
+                                                        "muted"));
+                                notes.setExpanded(false);
+                                selection.getChildren().add(notes);
+                            }
                             HBox controls = new HBox(10);
                             if (prepared)
                                 controls.getChildren()
@@ -442,7 +447,7 @@ final class DataSourcesView extends BorderPane {
                                     .add(
                                             liveAction(
                                                     prepared
-                                                            ? "Rebuild database"
+                                                            ? "Verify / prepare"
                                                             : "Prepare database",
                                                     !prepared,
                                                     () -> service.prepare(version.sourceId())));
@@ -613,6 +618,23 @@ final class DataSourcesView extends BorderPane {
                     render();
                 });
         return button;
+    }
+
+    private String checkedDate(DataSourcesService.Id source) {
+        String value = service.checkedAt(source);
+        try {
+            return date(java.time.Instant.parse(value));
+        } catch (java.time.format.DateTimeParseException ignored) {
+            return value;
+        }
+    }
+
+    private static String date(java.time.Instant value) {
+        if (value == null) return "Unknown";
+        return java.time.format.DateTimeFormatter.ofLocalizedDateTime(
+                        java.time.format.FormatStyle.MEDIUM, java.time.format.FormatStyle.SHORT)
+                .withZone(java.time.ZoneId.systemDefault())
+                .format(value);
     }
 
     private static String bytes(long value) {

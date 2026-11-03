@@ -46,3 +46,5 @@ Offline fixtures exercise default channels, discovery and custom IDs, explicit
 choices across restart, restore-default behavior, retained payloads, callback-safe
 shutdown, disabled-product catalog access and unsupported schema refusal. No live
 network service or real user data is used.
+
+![Product selection settings](images/product-settings.png)
