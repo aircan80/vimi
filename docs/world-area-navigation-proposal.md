@@ -29,10 +29,16 @@ remains visible. Present matching tiles as explicit choices; selecting a match
 sets the existing starting tile. **Open explorer** uses a source height reference
 inside the matching chunk, with the existing altitude offset and camera orientation.
 The raw MCNK origin Z is only a height base. Derive the entry reference from
-MCVT sample72 (row8/column4): X=px−TILE_SIZE/32, Y=py−TILE_SIZE/32,
-Z=pz+height[72], then add the existing camera altitude offset. Retain raw origin
-separately. A hole may occupy that point; this is free flight, not walkable-ground
-or collision certification. Never silently jump to a nonmatching tile center.
+an actually retained triangle: choose the first nonholed cell in row-major order
+and its center sample `row*17+column+9`. Native X is
+`px−(2*row+1)*TILE_SIZE/256`, native Y is
+`py−(column+0.5)*TILE_SIZE/128`, and Z is `pz+height[sample]`; add the existing
+camera altitude offset. Retain raw origin separately. Fully holed chunks still
+supply area matches but no rendered entry reference. For a tile, choose the first
+matching chunk with a rendered entry; otherwise show the tile as matching but
+**No rendered terrain entry** and disable automatic explorer entry for that result.
+This remains free flight, not collision or walkability certification. Never
+silently jump to a nonmatching tile center.
 A tile can contain multiple areas. No matches with failures/cancellation means
 not found in the checked readable subset, never proof of absence.
 
@@ -74,8 +80,8 @@ This first slice is session-only, no persistent index or generated-object writes
 
 At most4096 unique inventory tiles, checked in inventory order. One file at a time,
 32MiB existing decoded source bound, at most256 area chunks, at most4096 matches
-(one per tile), and32 diagnostic samples. Retain the first matching chunk in
-source order as that tile's explicit entry point; show chunk coordinates and
+(one per tile), and32 diagnostic samples. Retain the first matching chunk with a rendered entry in
+source order as that tile's entry point; show chunk coordinates and
 match count, not a guessed average across disconnected areas. Do not retain
 source arrays or all nonmatching chunk records after a tile completes. Avoid
 per-progress full-list cloning: publish counts at most10Hz and immutable match
@@ -103,5 +109,5 @@ No automatic retries or background whole-continent scans.
   prerelease follows successful packaged checks.
 
 Review: acceptance approved e42a347 with explicit implementation gates above.
-Domain required deriving entry height from MCVT rather than raw originZ; corrected
-here before implementation. Await corrected entry-reference approval.
+Domain required deriving entry height from MCVT rather than raw originZ and
+respecting holes; corrected here before implementation. Await final approval.
