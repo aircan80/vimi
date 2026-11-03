@@ -106,7 +106,7 @@ with the table generation and drained before borrowed tables close. Workspace
 revision changes invalidate catalogue/model selection; browsing other areas keeps
 asset acquisition lazy.
 
-## Legacy cutout correction and current material limits
+## Reviewed static material profiles
 
 The narrowly reviewed M2 version272 profile accepts the second raw batch field
 as a matching section reference, retaining the existing zero-field profile.
@@ -119,14 +119,23 @@ Read-only Forever 1.60.1.70755 evidence:
 | Mount | Recorded chain | Qualified material coverage |
 | --- | --- | --- |
 | Skeletal Horse #28 | link23 → display5228 → model491 → M2 file126304 | Corrected 3/3 sections, 2 textures, 2 cutouts; a fresh component restores the corrected derivative. |
-| Black War Raptor #79 | link74 → display14388 → model1916 → M2 file125649 | 3/5; reflective ENV armor and an additive billboard card remain unsupported. |
-| Great Brown Kodo #103 | link174 → display14578 → model1914 → M2 file124696 | Corrected textured body sections; small unlit/additive passes remain outside current support. |
+| Black War Raptor #79 | link74 → display14388 → model1916 → M2 file125649 | 5/5 sections, including two-texture reflective ENV armor and two additive camera-facing cards. |
+| Great Brown Kodo #103 | link174 → display14578 → model1914 → M2 file124696 | 4/4 sections, including unlit opaque detail and two additive camera-facing cards. |
 
 CPU and actual Vulkan previews agree on the same private payloads, including
 qualified/raw and textured/neutral modes. Game payloads and screenshots remain
 outside Git. Downloads and generated writes for these proofs used scratch stores;
-the application library stayed read-only. These are static partial previews.
+the application library stayed read-only. These are static bind/rest previews, not animated game-client parity.
 
-The next rendering work adds reviewed reflective two-texture materials, unlit/
-additive blending and camera-facing billboards. It must preserve CPU/GPU parity
-and explicit fallback for profiles that remain unknown.
+The exact reviewed profiles now support per-vertex sphere-map ENV coordinates,
+two-texture opaque modulation, unlit opaque detail and additive rigid leaf cards.
+Cards use verified own-track absence and bind/rest positions; animated ancestors
+are intentionally unevaluated. Unknown profiles retain explicit fallback.
+Texture-off mode remains neutral lit opaque geometry.
+
+Final private acceptance compared 36 actual Linux Vulkan frames against CPU output:
+three mounts, four cameras and qualified/raw/texture-off modes. Minimum silhouette
+agreement was 99.9837%; maximum intersected RGB mean error was 0.523/255.
+Cold and fresh-instance restored appearances were byte-identical, with all retained
+source receipts verified. No game assets or screenshots are committed. Actual
+Metal/D3D rendering remains unqualified. See [review](model-materials-review.md).

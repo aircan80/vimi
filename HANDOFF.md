@@ -1,36 +1,30 @@
 # vimi development handoff
 
-## Mount materials and World grid — current continuation
+## Static mount materials — current Linux continuation
 
-The user reported Mount 79 (Black War Raptor), then Mount 103 (Great Brown Kodo,
-display 14578 / link 174) as partially textured. The open build is actually
-wowf 1.60.1.70755, enUS. Private read-only/scratch proofs are under
-`/tmp/vimi-live-mount79-proof`. Root branch `fix/mount-display-visibility` corrects
-legacy version272 cutout admission, adds Mounts-only material qualification with
-raw diagnostics, repairs GPU controls, and transposes only the World grid and
-hit testing. File IDs and 3D terrain coordinates are unchanged. See the
-[fix review](docs/mount-world-fix-review.md). Hosted checks gate merge.
-Never overwrite a running snapshot; the user currently uses
-`.local/apps/activity-59a8dd5` (PID3966371 during the proof).
+PR #141 is FF-merged at `f10febd`: legacy cutout qualification, mount controls and
+World continent-grid orientation. All hosted checks passed. Alpha.12 is published
+as an explicit prerelease with 18 assets (run `41699368086`).
 
-The user explicitly asked to add full rendering features, then requested the
-roadmap and continued work. NEXT ACTIVE WORK: reflective two-texture ENV
-materials, unlit/additive blending and camera-facing billboards for mounts 79/103.
-Obtain a reviewed concrete design before implementation. Architecture owns API
-and native design, domain owns primary math/admission, and acceptance owns actual
-asset/bone facts. Root ships current fixes while design proceeds. Qualified
-filtering does not establish full appearance support. After materials: GPU
-terrain, verified zone-to-terrain navigation, native platform acceptance, broader
-comparison, and race animation/equipment.
+Full static materials are implemented on `feature/model-material-profiles`,
+worktree `/tmp/vimi-model-materials-integration`, production revision `4167c4c`.
+Independent scoped implementation approvals and full local checks pass; see
+[material review](docs/model-materials-review.md). Next gate: hosted native CI,
+then FF integration and alpha.13 packaging with committed release notes.
 
-Alpha.12 packaging run `41699368086` succeeded after retrying the macOS ARM
-runner, which was canceled before starting any steps on its first attempt.
-The release is verified published as an explicit prerelease with all 18 assets.
-Current fixes are PR #141 at `f10febd`; all hosted integration and compatibility
-checks passed, with macOS unit runners still queued at this checkpoint.
-The full-material integration branch is `feature/model-material-profiles`,
-worktree `/tmp/vimi-model-materials-integration`, based on those fixes. Proposal
-`1109b52` is undergoing domain/root review before implementation.
+Read-only Forever 1.60.1.70755 proofs qualify Mount79 Black War Raptor 5/5 sections
+and Mount103 Great Brown Kodo 4/4, with reflective armor, unlit detail and additive
+camera-facing rigid cards. Mount28 remains 3/3. Private evidence stays under
+`/tmp/vimi-live-mount79-proof`; no game assets/screenshots enter Git. Static bind/rest
+mode does not evaluate ancestor animation, particles or arbitrary materials.
+Linux Vulkan is exercised; native Metal/D3D runtime acceptance remains open.
+
+Never overwrite a running snapshot. Existing immutable launcher:
+`.local/apps/mount-world-f10febd/bin/vimi-gui-prototype`.
+After delivery: GPU terrain (World remains CPU rendered), verified zone-to-terrain
+navigation, native platform acceptance, broader comparison, race profiles,
+animation and equipment. The user explicitly requests parallel agents and wants
+the GPU viewer inline. No Mac transfer or blocking product question is active.
 
 ## GUI activity continuation — 2026-11-03
 
