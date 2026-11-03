@@ -237,3 +237,137 @@ scene serialization and queued-upload lifetime before accepting this ledger.
 - [Its old terrain fragment](https://github.com/Kruithne/wow.export/blob/4474fa460eb9b1b6130994a42a232ecd6af64681/src/shaders/adt.fragment.old.shader): direct weights/opaqueRGB; its CPU exporter instead uses sequential interpolation, so do not copy that conflicting math.
 - [Noggit59e58add terrain fragment](https://github.com/wowdev/noggit3/blob/59e58add868608339fe292970196985d4ce050ff/src/glsl/terrain_frag.glsl) and [texture conversion](https://github.com/wowdev/noggit3/blob/59e58add868608339fe292970196985d4ce050ff/src/noggit/texture_set.cpp): big-alpha direct weights versus explicit old-alpha conversion. Its four-layer editor is not evidence for unbounded layer counts.
 - [Whiteout35d068de BLP specification](https://github.com/FernandoS27/WhiteoutLib/blob/35d068dedde5cedff1c6bd2216de27dfe0af6bb6/docs/BLP_FILE_FORMAT_SPECIFICATION.md) and [parser](https://github.com/FernandoS27/WhiteoutLib/blob/35d068dedde5cedff1c6bd2216de27dfe0af6bb6/src/whiteout/textures/blp/parser.cpp): handmade mip flag2 and declared mip chains. This does not authorize its permissive fallback behavior in Vimi.
+
+## Stage2 API checkpoint (after approved decoder dbcb658)
+
+No implementation is authorized by this section alone. Target integration baseline
+is the future world-appearance branch: all eight `Tile` companion fields already
+exist there, along with `WorldPlacementSource`; do not alter their wire/constructors.
+Root and domain approved the Stage1 decoder. Its full assets/C# checks and actual
+thirteen-original public decodes pass, with independent BC2/BC3 block-byte parity;
+that does not yet prove an atlas or renderer.
+
+### Shared root grid facts
+
+Add `WorldFormats.adtGrid(byte[], BooleanSupplier)` backed by the existing private
+ADT walker. Existing `adt`/`adtAreas` calls keep their admission, output arrays,
+source float arithmetic and allocation behavior. The new method returns immutable
+`TerrainGrid(List<GridChunk>)`; it never reconstructs a grid from generic mesh
+positions or invents an association with a different file.
+
+`GridChunk` exposes source ordinal, recorded header x/y, raw flags, native float
+originX/Y/Z,145 raw height offsets, normalized64-bit fine-cell holes, and optional
+bounded MCCV facts. The source sample order remains17 staggered rows,9/8 columns;
+`position(row,col)` uses exactly the current float position/height arithmetic.
+Heights/colors expose readonly buffers backed by private defensive copies, not
+mutable arrays or repeated whole-array clones. Grid metadata, including optional
+colors and issues, is capped1MiB per tile. Source files are capped2MiB for this
+first texture profile; the geometry reader's existing larger cap is unchanged.
+
+Optional color state is `ABSENT`, `BGRA8` or `UNSUPPORTED`; duplicate/wrong-size
+MCCV does not convert a valid height grid into different geometry. It declines
+that chunk's texture appearance. Geometry truncation/invalid heights/duplicate
+coordinate failures keep the existing walker behavior. An absent color has neutral
+factor1; a present first-profile color requires145 BGRA tuples/alpha255.
+
+First texture admission requires all256 unique root chunks in canonical source
+order `x=ordinal%16,y=ordinal/16`; the texture stream's headerless ordinal is paired
+only with that validated source order. Header x increments nativeY and header y
+increments nativeX. Native anchors/heights are retained without welding; explicit
+source-to-atlas mapping/large-coordinate precision tests remain required before
+rendering. This API also supplies the LOD experiment's source-grid provenance,
+without approving its reduction/error thresholds.
+
+### WDT/tex0 facts and mask owner
+
+Add a separate `WorldTextureFormats` class, keeping `WorldFormats.World` unchanged:
+
+```java
+Inventory inventory(byte[] wdt, BooleanSupplier canceled)
+TextureData read(byte[] tex0, BooleanSupplier canceled)
+// Inventory: existing immutable World plus exact unsigned MPHD flags/provenance.
+// TextureData: AutoCloseable, private source bytes and immutable checked metadata.
+```
+
+The inventory method uses the checked WDT walk and all eight recorded MAID fields,
+with extra profile facts for unique MPHD32. It does not infer a texture path.
+`TextureData` exposes ordered MDID/MHID, MAMP and at most256 `ChunkTexture` metadata
+records, each holding at most8 layer declarations and exact MCAL intervals.
+This is optional appearance evidence; malformed outer chunk framing makes the
+texture input unavailable while old geometry remains readable. Independently
+bounded per-chunk unsupported flags/references yield typed declined-chunk reasons.
+
+The owner defensively copies at most8MiB once; no raw slice/backing-array escapes.
+`decodeAlphas(ordinal, ByteBuffer target, BooleanSupplier canceled)` writes into
+caller-owned scratch for that chunk only, at most7×4096=28672bytes. It verifies
+RLE/raw exact consumption and sum≤255 and returns the used mask count or typed
+chunk decline. Closing releases its source reference and future decode calls fail.
+Do not materialize all256×7 masks: that would add7340032bytes before clone costs.
+A full-eight-layer authored tile must prove the streaming scratch bound. Layer
+metadata and encoded source are retained only while composing one tile.
+
+### Pure atlas composition
+
+Add `TerrainAtlasComposer` and immutable `TerrainTileAtlas` in rendering-world;
+this module consumes format facts/decoded RGBA data, not `BuildFiles` or a BLP
+reader. Define a bounded `DiffuseMip` value with FileDataID, content key, original
+mip profile/level/dimensions and readonly4² RGBA pixels. A map holds at most64
+recorded diffuse IDs; missing/unavailable/unsupported entries remain explicit.
+The service obtains these values through the approved decoder and authenticated
+source receipts, not by trusting arbitrary metadata constructors as file proof.
+
+```java
+Composition compose(WorldFormats.Tile tile, TerrainGrid grid,
+                    WorldTextureFormats.TextureData textures,
+                    Map<Long, DiffuseMip> diffuse, BooleanSupplier canceled)
+// Composition: atlas, supported/total chunks and immutable bounded reasons.
+```
+
+Composition performs no IO, acquisition, threads or persistence. It evaluates the
+previously specified pixel-center/direct-weight/MCCV contract, produces exactly
+512² RGBA bytes, and clears unsupported chunk rectangles to alpha0/RGB0. It does
+not resize a missing mip or partially renormalize unavailable layers. `TileAtlas`
+retains private pixels, validated native mapping and256 coverage bits; readonly
+views are cheap and never expose its backing arrays. Constructor/caller-copy peaks
+are counted explicitly. Snapshot lists share atlas objects and never clone pixels.
+
+### Source service and ownership
+
+`WorldTerrainTextureSource` in concepts-world borrows `BuildFiles` and optional
+`GeneratedStore`; it owns its worker/cancellation/lifetime and leases an explicitly
+shared atlas pool. Proposed entry:
+
+```java
+CompletableFuture<Result> read(MapInfo map, Tile tile, Cancellation token,
+                               Consumer<Progress> progress)
+CompletableFuture<Void> closeAsync()
+// Result: state, bound Receipt, optional atlas, texture coverage and reasons.
+```
+
+Re-read/recheck WDT receipt first; the tile coordinates and every root/tex0 ID must
+match its recorded tuple. Read/recheck the root and tex0 keys and each used diffuse
+key, binding build/locale/map/tile/source ordinals, profile revisions and chosen
+mips. Compare before/after stat identity; complete streams only, no protected holes.
+A bounded read overload may take a stricter source-byte limit while all existing
+`WorldFileBytes` callers retain their previous limit. Root bytes are released
+before tex0 bytes are acquired; retain only compact grid facts. Read BLP through
+bounded asset ranges so a4² decode does not retain its entire source image.
+
+One source request and one replaceable pending request; cancellation drains the
+actual active file before another begins or close completes. Progress is bounded
+and emitted off FX. Geometry never waits for this worker. No provider refresh,
+whole-map texture prefetch or filename guessing. The shared pool enforces eighteen
+unique payloads across caches/current/pending owners; it is not a per-service18
+allowance. If both snapshots pin every lease, discard obsolete pending work before
+allocating more. Persistence stores only a recipe-bound atlas/coverage/reasons,
+not raw-profile2 images in the old strict payload. Unknown/protected/missing source
+receipts cannot become a persisted successful composition; readable partial
+appearance remains available without claiming complete dependencies.
+
+Parent48MiB is conditional on this ownership:18MiB unique atlas pool + at most
+16MiB tex0 caller/owner copy peak +1MiB grid/metadata + bounded per-chunk masks,
+4² image data, atlas construction/serialization scratch and cancellation overlap.
+Any full-mask DTO clone, full-image accessor copy, extra independently retained
+cache, or second active source invalidates that ledger and must be corrected or
+reviewed explicitly before UI/child wiring. The source helper alone does not add
+a new `BuildWorld` method or alter the GUI until its lifecycle/receipt tests pass.
