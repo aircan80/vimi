@@ -101,6 +101,10 @@ final class CompareView extends BorderPane implements AutoCloseable {
     private final Controller controller;
     private final ListView<ComparisonTypes.Result> results = new ListView<>();
     private final Label pageStatus = text("Not compared", "muted");
+    private final Label coverageText = text("Not assessed", "muted");
+    private final javafx.scene.control.TitledPane coverageDetails =
+            new javafx.scene.control.TitledPane();
+    private final ScrollPane contentScroll = new ScrollPane(content);
     private final Label capturedPair = text("No captured comparison pair", "muted");
     private final Label pendingSelection = text("", "muted");
     private final Label pageError = text("", "muted");
@@ -351,6 +355,21 @@ final class CompareView extends BorderPane implements AutoCloseable {
                             selectedTable.setDisable(!inventoryTableSelection(b));
                         });
         VBox.setVgrow(results, Priority.ALWAYS);
+        results.setMinHeight(180);
+        var coverageScroll = new ScrollPane(coverageText);
+        coverageScroll.setFitToWidth(true);
+        coverageScroll.setPrefHeight(160);
+        coverageScroll.setMinHeight(80);
+        coverageScroll.setMaxHeight(180);
+        coverageDetails.setText("Coverage details");
+        coverageDetails.setAccessibleText("Coverage details, exact scopes and every reason");
+        coverageDetails.setContent(coverageScroll);
+        coverageDetails.setExpanded(false);
+        contentScroll.setMinHeight(0);
+        contentScroll.setFitToWidth(true);
+        contentScroll.setFitToHeight(true);
+        contentScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        contentScroll.setStyle("-fx-background-color: transparent; -fx-background: transparent;");
         previous.setDisable(true);
         next.setDisable(true);
         previous.setOnAction(
@@ -418,7 +437,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                                                     + " records are")
                                                     + " omitted; other areas are not assessed.",
                                     "muted"));
-            content.getChildren().add(pageStatus);
+            content.getChildren().addAll(pageStatus, coverageDetails);
         } else if (area.equals("Files") || area.equals("Tables")) {
             content.getChildren()
                     .add(
@@ -445,6 +464,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                 results,
                                 new HBox(8, previous, next, retryPage),
                                 pageStatus,
+                                coverageDetails,
                                 pageError);
             else
                 content.getChildren()
@@ -505,6 +525,8 @@ final class CompareView extends BorderPane implements AutoCloseable {
         pageHistory.clear();
         results.getItems().clear();
         pageStatus.setText("Not assessed · comparison starting");
+        coverageDetails.setExpanded(false);
+        coverageText.setText("Capture has not completed.");
         status.setText("Opening dedicated local inputs… No acquisition is requested.");
         renderedState = null;
         CompletableFuture<Session> opening;
@@ -605,6 +627,11 @@ final class CompareView extends BorderPane implements AutoCloseable {
         status.setTooltip(new javafx.scene.control.Tooltip(safe(progress.message())));
         pageStatus.setText(
                 "Before: " + coverage(progress.a()) + "\nAfter: " + coverage(progress.b()));
+        coverageText.setText(
+                "Before\n"
+                        + fullCoverage(progress.a())
+                        + "\n\nAfter\n"
+                        + fullCoverage(progress.b()));
         pageStatus.setTooltip(
                 new javafx.scene.control.Tooltip(
                         "Before full scope: "
@@ -648,19 +675,16 @@ final class CompareView extends BorderPane implements AutoCloseable {
 
     private String coverage(ComparisonTypes.Coverage value) {
         if (value == null) return "Not assessed";
-        var scope = value.scope();
-        if (scope.matches(".*[0-9a-fA-F]{32,}.*")) {
-            scope =
-                    capturedRequest != null && capturedRequest.tableId() != null
-                            ? "Prepared table rows"
-                            : "Tables".equals(runArea)
-                                    ? "Table inventory"
-                                    : "Selected-locale file inventory";
-        }
+        var scope =
+                capturedRequest != null && capturedRequest.tableId() != null
+                        ? "Prepared table rows"
+                        : "Tables".equals(runArea)
+                                ? "Table inventory"
+                                : "Selected-locale file inventory";
         return words(value.completeness().toString())
                 + " · "
                 + scope
-                + (value.issues().isEmpty() ? "" : " · " + String.join("; ", value.issues()));
+                + (value.issues().isEmpty() ? "" : " · " + value.issues().size() + " notes");
     }
 
     private static String fullCoverage(ComparisonTypes.Coverage value) {
@@ -1053,13 +1077,13 @@ final class CompareView extends BorderPane implements AutoCloseable {
         if (!narrow) {
             body.setLeft(areas);
             body.setRight(inspectorScroll);
-            body.setCenter(content);
+            body.setCenter(contentScroll);
             compactArea.setVisible(false);
             compactArea.setManaged(false);
         } else {
             compactArea.setVisible(true);
             compactArea.setManaged(true);
-            body.setCenter(drawer ? new VBox(10, back, inspectorScroll) : content);
+            body.setCenter(drawer ? new VBox(10, back, inspectorScroll) : contentScroll);
         }
         details.setVisible(narrow);
         details.setManaged(narrow);

@@ -47,15 +47,13 @@ public final class CompareUiTest {
                                     ? ComparisonTypes.Completeness.UNKNOWN
                                     : ComparisonTypes.Completeness.PARTIAL,
                             rawFacts ? "raw-verified-cells-v1:" + "a".repeat(64) : "Authored files",
-                            rawFacts
-                                    ? List.of("Membership is uncertified", "Protected rows")
-                                    : List.of("Protected rows")),
+                            rawFacts ? rawReasons() : List.of("Protected rows")),
                     new ComparisonTypes.Coverage(
                             rawFacts
                                     ? ComparisonTypes.Completeness.PARTIAL
                                     : ComparisonTypes.Completeness.COMPLETE,
                             rawFacts ? "raw-verified-cells-v1:" + "b".repeat(64) : "Authored files",
-                            List.of()),
+                            rawFacts ? rawReasons() : List.of()),
                     rawFacts
                             ? "Session-only findings; known-equal rows omitted; no persistent report; findings-only, known-equal rows omitted"
                             : "Findings only");
@@ -109,20 +107,28 @@ public final class CompareUiTest {
                                         unknown,
                                         ComparisonTypes.Difference.UNKNOWN,
                                         ComparisonTypes.Aspect.CONTENT));
-                var record =
-                        new ComparisonTypes.Record("00000000000000000001", Map.of(), List.of());
+                var rows =
+                        java.util.stream.IntStream.rangeClosed(1, 58)
+                                .mapToObj(
+                                        id -> {
+                                            var record =
+                                                    new ComparisonTypes.Record(
+                                                            String.format(
+                                                                    java.util.Locale.ROOT,
+                                                                    "%020d",
+                                                                    id),
+                                                            Map.of(),
+                                                            List.of());
+                                            return new ComparisonTypes.Result(
+                                                    record.key(),
+                                                    ComparisonTypes.Membership.BOTH,
+                                                    record,
+                                                    record,
+                                                    deltas);
+                                        })
+                                .toList();
                 return CompletableFuture.completedFuture(
-                        new ComparisonTypes.ResultPage(
-                                offset,
-                                List.of(
-                                        new ComparisonTypes.Result(
-                                                record.key(),
-                                                ComparisonTypes.Membership.BOTH,
-                                                record,
-                                                record,
-                                                deltas)),
-                                null,
-                                progress()));
+                        new ComparisonTypes.ResultPage(offset, rows, null, progress()));
             }
             var old = field("authored-content-before");
             var current = field("authored-content-after");
@@ -317,9 +323,15 @@ public final class CompareUiTest {
                                         && !filter.getItems().contains("Unchanged")
                                         && !filter.getItems().contains("All records"),
                                 "Findings-only filters");
+                        var coverageDetails = coveragePane(view);
+                        require(
+                                !coverageDetails.isExpanded(),
+                                "Coverage reasons are collapsed by default");
+                        coverageDetails.setExpanded(true);
                         require(
                                 labels(view).contains("Protected rows"),
-                                "Coverage reasons visible");
+                                "Coverage reasons available in explicit details");
+                        coverageDetails.setExpanded(false);
                         require(
                                 labels(view)
                                         .contains(
@@ -598,7 +610,9 @@ public final class CompareUiTest {
                         .filter(
                                 node ->
                                         node instanceof javafx.scene.control.ListCell<?> item
-                                                && item.getItem() instanceof ComparisonTypes.Result)
+                                                && item.getItem()
+                                                        instanceof ComparisonTypes.Result result
+                                                && result.key().equals("00000000000000000001"))
                         .map(node -> (javafx.scene.control.ListCell<?>) node)
                         .findFirst()
                         .orElseThrow();
@@ -646,10 +660,56 @@ public final class CompareUiTest {
                         .findFirst()
                         .orElseThrow();
         require(
-                coverage.getText().contains("Membership is uncertified")
-                        && coverage.getText().contains("Protected rows")
-                        && coverage.getText().contains("After: Partial"),
-                "Human coverage retains every issue and differing states");
+                coverage.getText().contains("4 notes")
+                        && coverage.getText().contains("After: Partial")
+                        && !coverage.getText().contains("Membership is uncertified"),
+                "Main coverage keeps side certainty and note count compact");
+        var coverageDetails = coveragePane(view);
+        require(!coverageDetails.isExpanded(), "Detailed reasons are collapsed by default");
+        for (double width : new double[] {1320, 900}) {
+            view.resize(width, 878);
+            view.applyCss();
+            view.layout();
+            var findings = findings(view);
+            require(
+                    findings.getHeight() >= 160,
+                    "Long coverage cannot collapse findings at width " + width);
+            var center =
+                    (javafx.scene.control.ScrollPane)
+                            view.lookupAll(".scroll-pane").stream()
+                                    .filter(
+                                            node ->
+                                                    node
+                                                                    instanceof
+                                                                    javafx.scene.control.ScrollPane
+                                                                            scroll
+                                                            && scroll.getContent()
+                                                                    instanceof
+                                                                    javafx.scene.layout.VBox box
+                                                            && box.getChildren().contains(findings))
+                                    .findFirst()
+                                    .orElseThrow();
+            var viewport = center.lookup(".viewport");
+            var visible = viewport.localToScene(viewport.getBoundsInLocal());
+            var listBounds = findings.localToScene(findings.getBoundsInLocal());
+            require(
+                    Math.min(visible.getMaxY(), listBounds.getMaxY())
+                                    - Math.max(visible.getMinY(), listBounds.getMinY())
+                            >= 160,
+                    "At least160px of findings remain in the actual center viewport at width "
+                            + width);
+        }
+        coverageDetails.setExpanded(true);
+        view.applyCss();
+        view.layout();
+        for (var reason : rawReasons())
+            require(labels(view).contains(reason), "Expanded details retain every complete reason");
+        require(
+                labels(view).contains("a".repeat(64)) && labels(view).contains("b".repeat(64)),
+                "Expanded details retain both exact source fingerprints");
+        coverageDetails.setExpanded(false);
+        view.resize(1320, 878);
+        view.layout();
         require(
                 !coverage.getText().contains("a".repeat(64))
                         && coverage.getTooltip().getText().contains("a".repeat(64)),
@@ -664,6 +724,46 @@ public final class CompareUiTest {
                         && coverage.getMinHeight() == javafx.scene.layout.Region.USE_PREF_SIZE,
                 "Narrow labels wrap instead of hiding uncertainty");
         screenshot(view.getScene(), "comparison-raw-authored");
+    }
+
+    private static List<String> rawReasons() {
+        return List.of(
+                "Membership is uncertified. "
+                        + "Readable rows do not certify absence across every protected section. "
+                                .repeat(6),
+                "Protected rows. "
+                        + "Missing original data remains unknown and must not become a deletion claim. "
+                                .repeat(6),
+                "Unverified columns. "
+                        + "Raw and narrowed interpretations are outside assessed field scope. "
+                                .repeat(6),
+                "Source loss. "
+                        + "A missing segment invalidates capture without repair or fallback. "
+                                .repeat(6));
+    }
+
+    private static javafx.scene.control.TitledPane coveragePane(CompareView view) {
+        return (javafx.scene.control.TitledPane)
+                view.lookupAll(".titled-pane").stream()
+                        .filter(
+                                node ->
+                                        node instanceof javafx.scene.control.TitledPane pane
+                                                && pane.getText().equals("Coverage details"))
+                        .findFirst()
+                        .orElseThrow();
+    }
+
+    private static ListView<?> findings(CompareView view) {
+        return (ListView<?>)
+                view.lookupAll(".list-view").stream()
+                        .filter(
+                                node ->
+                                        node instanceof ListView<?> list
+                                                && !list.getItems().isEmpty()
+                                                && list.getItems().getFirst()
+                                                        instanceof ComparisonTypes.Result)
+                        .findFirst()
+                        .orElseThrow();
     }
 
     private static javafx.scene.control.TextField rawId(CompareView view) {
