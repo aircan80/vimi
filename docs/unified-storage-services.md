@@ -55,13 +55,14 @@ truncated to the durable indexed boundary; it is not replayed as an ownerless
 object. Process-termination tests cover both sides of publication. This does not
 simulate physical power loss.
 
-## Builds-only milestone
+## Build loading and full preparation
 
-The native composition opens authenticated build/CDN configurations, ROOT and
-ENCODING. It does not fetch archive/file indexes or initialize file catalogs,
-tables, item grids, names or research preparation. `BuildOpener.openMetadataBuild`
-exposes metadata and the ENCODING object ledger; the existing full opening API is
-retained for later layers.
+The native composition publishes authenticated build/CDN configurations, ROOT and
+ENCODING first, then prepares archive indexes, Files, Tables and the existing
+Items/Creatures/Effects research services. `BuildOpener.openMetadataBuild` remains
+the metadata-only boundary. Full preparation retains its immutable storage context
+until workspaces and inventory work drain. Preparation readiness is versioned in
+`builds_preparation_*` tables, separately from metadata load status.
 
 `BuildRegistry` owns `builds_registry*` tables. Canonical statuses are DISCOVERED,
 LOADING, LOADED, FAILED and INTERRUPTED. LOADED means successful metadata opening,
@@ -82,6 +83,21 @@ rows do not each trigger an expensive full inventory calculation.
 Original and derived payload bytes, unique/shared build bytes and global overlap
 come from the catalog. Relational table/database bytes are excluded from per-build
 object totals. Whole-library physical overhead can be measured separately.
+
+Every derived object written or read through `PackGeneratedStore` is associated
+with its build/provider before the operation completes. This includes manifests,
+segments and cache hits, so the native accounting adapter skips legacy artifact
+graph enumeration entirely. Image cache sharing across builds/locales survives
+restart without another payload write. Providers have GLOBAL owners; their
+standalone objects are not charged to a build. Global overlap is a subset of a
+build's unique/shared partition, never an additional bucket.
+
+Coverage describes the shared library, not old standalone caches or external
+provider archives. Explicit unresolved inventory expectations remain incomplete,
+including after a failed/corrupt import. Physical presence alone proves neither
+semantic validity nor unknown legacy ownership. Measurement does not decode data,
+fetch media, remove unregistered artifacts or promise reclaimable disk space.
+
 
 ## Preservation and lifecycle
 

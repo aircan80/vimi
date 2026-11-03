@@ -169,6 +169,100 @@ final class UnifiedStorageAccountingTest {
     }
 
     @Test
+    void providerOwnershipAndPendingInventoriesRemainDistinctFromBuildCoverage() throws Exception {
+        ObjectStore library = ObjectStore.openLibrary(directory).join();
+        try (var catalog = LibraryCatalog.open(library.databasePath()).join()) {
+            var accounting =
+                    UnifiedStorageAccounting.open(library.databasePath(), catalog, library).join();
+            try {
+                accounting
+                        .retain("build", false, "encoding", UsageIndex.Role.BLIZZARD_ENCODED)
+                        .join();
+                accounting
+                        .replace(
+                                "build",
+                                "encoding",
+                                "v1",
+                                inventory(List.of()),
+                                neverPresence(),
+                                Cancellation.NONE)
+                        .join();
+                var asset = new ObjectKey(ObjectKey.GENERATED, new byte[16]);
+                byte[] providerKey = new byte[16];
+                providerKey[0] = 1;
+                var providerIndex = new ObjectKey(ObjectKey.GENERATED, providerKey);
+                var global =
+                        library.forOwner(
+                                "provider:example",
+                                LibraryCatalog.Scope.GLOBAL,
+                                "index",
+                                LibraryCatalog.Role.DERIVED);
+                global.put(
+                                List.of(
+                                        new StoreTypes.PutObject(asset, new byte[17]),
+                                        new StoreTypes.PutObject(providerIndex, new byte[23])))
+                        .join();
+                library.forOwner(
+                                "build",
+                                LibraryCatalog.Scope.BUILD,
+                                "assets",
+                                LibraryCatalog.Role.DERIVED)
+                        .read(asset)
+                        .join();
+                var before = accounting.figures("build").join();
+                assertEquals(17, before.derived().onlyThisBuild());
+                assertEquals(0, before.derived().shared());
+                assertEquals(0, before.derived().global(), "Global overlap is not additive");
+                assertTrue(before.derivedComplete());
+                assertEquals(
+                        40,
+                        catalog.figures("provider:example", Cancellation.NONE)
+                                .join()
+                                .derived()
+                                .storedBytes());
+                assertEquals(
+                        17,
+                        catalog.figures("build", Cancellation.NONE)
+                                .join()
+                                .derived()
+                                .sharedWithGlobalBytes());
+                catalog.expect(
+                                "other-build",
+                                LibraryCatalog.Scope.BUILD,
+                                "old-unreconciled",
+                                LibraryCatalog.Role.DERIVED)
+                        .join();
+                assertFalse(
+                        accounting.figures("build").join().derivedComplete(),
+                        "Unresolved retained inventories cannot become complete empty data");
+                var failures =
+                        assertThrows(
+                                CompletionException.class,
+                                () ->
+                                        catalog.replace(
+                                                        "other-build",
+                                                        "old-unreconciled",
+                                                        "damaged",
+                                                        (limit, token) -> {
+                                                            throw new IllegalStateException(
+                                                                    "Damaged snapshot");
+                                                        },
+                                                        Cancellation.NONE)
+                                                .join());
+                assertTrue(failures.getCause() != null);
+                assertFalse(accounting.figures("build").join().derivedComplete());
+                assertEquals(17, accounting.figures("build").join().derived().onlyThisBuild());
+                assertEquals(
+                        2, library.stats().join().objects(), "Reporting never deletes payloads");
+            } finally {
+                accounting.closeAsync().join();
+            }
+        } finally {
+            library.closeAsync().join();
+        }
+    }
+
+    @Test
     void failedProducerClosesCursorAndKeepsPriorGeneration() {
         ObjectStore library = ObjectStore.openLibrary(directory).join();
         try (LibraryCatalog catalog = LibraryCatalog.open(library.databasePath()).join()) {

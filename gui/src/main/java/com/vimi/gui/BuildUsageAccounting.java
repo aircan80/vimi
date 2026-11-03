@@ -195,6 +195,19 @@ final class BuildUsageAccounting {
             }
         }
         originals();
+        if (accounting.unified()) {
+            // Owner-bound writes and cache reads publish every derived dependency atomically.
+            // Reopening record files here would duplicate that inventory and read payloads merely
+            // to measure them. Names coverage is a separate semantic query, not byte accounting.
+            if (coverage && hasNames) {
+                names();
+            }
+            token.check();
+            usage = index.figures(info.identity()).join();
+            accounting.changed();
+            problem = null;
+            return;
+        }
         var catalog = files;
         if (catalog != null) {
             generated(source("file-catalog"), "record-file-v1", catalog.records().keys());
@@ -428,7 +441,7 @@ final class BuildUsageAccounting {
                                 measured.named(),
                                 token)
                         .join();
-                var keys = snapshot.artifactKeys();
+                var keys = accounting.unified() ? List.<GeneratedKey>of() : snapshot.artifactKeys();
                 String provider =
                         accounting.unified() ? "provider:community-listfile" : "provider:listfile";
                 if (!keys.isEmpty()) {

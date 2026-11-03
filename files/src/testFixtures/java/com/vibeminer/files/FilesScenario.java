@@ -133,6 +133,16 @@ public final class FilesScenario {
 
     public FilesScenario add(
             long id, String path, byte[] decoded, boolean stored, List<FileHole> holes) {
+        return add(id, path, decoded, stored, holes, FileLocales.bitOf("enUS"));
+    }
+
+    public FilesScenario add(
+            long id,
+            String path,
+            byte[] decoded,
+            boolean stored,
+            List<FileHole> holes,
+            long localeFlags) {
         List<FileFixtures.Chunk> chunks = new ArrayList<>();
         long at = 0;
         for (var hole : holes) {
@@ -164,7 +174,7 @@ public final class FilesScenario {
         encoded.put(id, body);
         var variant =
                 new FileVariant(
-                        2,
+                        localeFlags,
                         holes.isEmpty() ? 0 : 0x8000000,
                         new CdnKey(FileFixtures.md5(decoded)),
                         (long) decoded.length,
@@ -182,23 +192,28 @@ public final class FilesScenario {
             objects.remote(key, body.bytes());
         }
         if (fake != null) {
-            fake.add(
-                    REF,
-                    "enUS",
-                    new BuildFile(
-                            id,
-                            null,
-                            FilePathSource.NONE,
-                            (long) decoded.length,
-                            variant.contentKey().hex(),
-                            FormatDetection.magic(decoded),
-                            FormatDetection.magic(decoded) == FileFormat.UNKNOWN
-                                    ? FileFormatSource.NONE
-                                    : FileFormatSource.MAGIC,
-                            stored ? FileStorage.STORED : FileStorage.NOT_STORED,
-                            !holes.isEmpty()),
-                    decoded,
-                    holes);
+            for (String locale : FileLocales.NAMES) {
+                if ((localeFlags & FileLocales.bitOf(locale)) == 0) {
+                    continue;
+                }
+                fake.add(
+                        REF,
+                        locale,
+                        new BuildFile(
+                                id,
+                                null,
+                                FilePathSource.NONE,
+                                (long) decoded.length,
+                                variant.contentKey().hex(),
+                                FormatDetection.magic(decoded),
+                                FormatDetection.magic(decoded) == FileFormat.UNKNOWN
+                                        ? FileFormatSource.NONE
+                                        : FileFormatSource.MAGIC,
+                                stored ? FileStorage.STORED : FileStorage.NOT_STORED,
+                                !holes.isEmpty()),
+                        decoded,
+                        holes);
+            }
         }
         return this;
     }

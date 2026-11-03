@@ -1,9 +1,36 @@
 # Storage accounting
 
-The current native builds-only app uses the shared pack index and `LibraryCatalog`
-for authoritative ownership/presence. This module retains the legacy `UsageIndex`
-contracts and `LegacyCatalogOwners` intent importer. The projection described below
-is not refreshed as a second presence index by the new app. See
+The native app uses `UnifiedStorageAccounting` over the shared pack index and
+`LibraryCatalog`. Original and derived object ownership is authoritative at
+publication and on successful owner-bound cache reads. All saved dependencies are
+covered, including image caches, record manifests/segments and provider indexes.
+Accounting reads catalog/index metadata; it does not reopen or decode those
+artifacts to rediscover their sizes. SQLite query-table bytes are excluded.
+
+Community listfile originals and indexes use a global provider owner. Bundled
+schemas/keys are application resources, not stored payloads. Model/appearance
+results that exist only in memory or caller-owned outputs are not saved objects.
+Questie source archives and its separate relational snapshots remain outside the
+pack library's per-build attribution. Future binary provider artifacts must use
+immutable owner-bound capabilities just like current producers.
+
+An object's stored byte count is distinct from semantic validity. Unsupported,
+stale or corrupt artifacts remain physical bytes until explicitly repaired or
+removed by their owning service. Failed inventory replacement keeps the prior
+snapshot; unresolved expected inventories keep coverage incomplete. Reporting
+never authorizes deletion. Old standalone caches remain included in physical
+library measurements, not silently attributed to new build owners. They are
+reused/reconciled only with verified ownership; no empty inventory is invented.
+
+Current coverage applies to objects in the shared library. Reference membership
+survives workspace closure and restart. Cache hits can change unique/shared
+attribution without writing a new object; a read-only SQLite data-version watcher
+invalidates GUI figures after committed changes. Original ENCODING membership
+still needs a completed inventory before original sharing is definitive.
+
+The module also retains the legacy `UsageIndex` contracts and
+`LegacyCatalogOwners` intent importer. The following separate-presence projection
+is retained for legacy callers; the native app does not maintain it. See
 [the unified service guide](../docs/unified-storage-services.md).
 
 A JavaFX-free application service with a `StorageAccounting` interface and SQLite
@@ -97,7 +124,7 @@ rollback, metadata reconciliation, name-cache fingerprint changes and physical
 file classification. GUI integration checks offline preparation/reopen without
 extra media downloads or repeat full file-catalog enumeration.
 
-Asset and remaining provider inventory follow-up: [#64](https://github.com/aircan80/vimi/issues/64).
+Unified asset/provider accounting: [#64](https://github.com/aircan80/vimi/issues/64).
 
 Authored UI fixture (illustrative values, not a real build measurement):
 

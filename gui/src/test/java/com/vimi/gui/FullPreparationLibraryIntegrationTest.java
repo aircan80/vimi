@@ -162,6 +162,32 @@ public final class FullPreparationLibraryIntegrationTest {
                                 generated > 0 && attributed > 0,
                                 "Generated file/table artifacts live in shared packs with build"
                                         + " ownership");
+                        long redundantInventories =
+                                database.run(
+                                        Cancellation.NONE,
+                                        false,
+                                        session ->
+                                                ((Number)
+                                                                session.query(
+                                                                                "SELECT count(*)"
+                                                                                    + " FROM"
+                                                                                    + " catalog_expected"
+                                                                                    + " WHERE"
+                                                                                    + " owner=? AND"
+                                                                                    + " role='DERIVED'"
+                                                                                    + " AND source"
+                                                                                    + " NOT GLOB"
+                                                                                    + " 'storage:*'",
+                                                                                owner)
+                                                                        .getFirst()[0])
+                                                        .longValue());
+                        require(
+                                redundantInventories == 0,
+                                "Unified accounting uses publication metadata, not artifact graph"
+                                    + " scans");
+                        require(
+                                work.accounting().usage().derivedComplete(),
+                                "All current library derived objects have authoritative ownership");
                         long mediaReads =
                                 database.run(
                                         Cancellation.NONE,
@@ -205,7 +231,7 @@ public final class FullPreparationLibraryIntegrationTest {
                         require(
                                 "TABLES_READY".equals(readiness),
                                 "Preparation readiness is persisted in the shared SQL receipt"
-                                    + " table");
+                                        + " table");
                         if (round == 0) generatedAfterFirst = generated;
                         else
                             require(
@@ -216,7 +242,8 @@ public final class FullPreparationLibraryIntegrationTest {
                             service.historicalPreparation(build) != null
                                     && service.historicalPreparation(build)
                                             .contains("Tables ready"),
-                            "Preparation receipts persist through the shared library receipt table");
+                            "Preparation receipts persist through the shared library receipt"
+                                + " table");
                 } finally {
                     service.closeAsync().get(20, TimeUnit.SECONDS);
                 }

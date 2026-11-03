@@ -1,5 +1,22 @@
 # vimi development handoff
 
+## Accounting completion — #64 (2026-11-02)
+
+Shared-library ownership replaces the old asset/provider inventory follow-up's
+need for separate producer graph snapshots. The native adapter now skips legacy
+file/table graph accounting; all saved dependencies already publish ownership
+atomically through the owner-bound store. Name coverage remains a separate query.
+
+Focused tests cover image-cache sharing across owners/locales and restart,
+provider-only objects/global overlap, unresolved/corrupt inventories and full
+preparation without redundant derived inventories. Legacy standalone caches and
+Questie relational/source files remain outside per-build object attribution;
+physical library totals can include them. No deletion or empty-owner inference.
+
+Download all is being implemented independently under #74 in
+`feature/download-all` (separate worktree); coordinate its app composition changes
+before merging. It is not GitHub issue #2 (CI epic).
+
 ## Current milestone — full preparation on the unified pack library (2026-11-02)
 
 This section supersedes the builds-only limitation below. Story #72 restores the
