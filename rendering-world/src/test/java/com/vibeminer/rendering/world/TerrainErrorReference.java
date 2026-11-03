@@ -20,6 +20,18 @@ final class TerrainErrorReference {
         }
     }
 
+    record NativeVertex(float x, float y, float z) {
+        NativeVertex {
+            for (float value : new float[] {x, y, z}) {
+                if (!Float.isFinite(value) || Math.abs(value) > 1_000_000) {
+                    throw new IllegalArgumentException("Invalid native sample");
+                }
+            }
+        }
+    }
+
+    record NativeTriangle(NativeVertex a, NativeVertex b, NativeVertex c) {}
+
     record Triangle(Vertex a, Vertex b, Vertex c) {}
 
     record Result(double upperBound, long operations) {}
@@ -45,6 +57,10 @@ final class TerrainErrorReference {
         }
         var left = prepare(fine);
         var right = prepare(coarse);
+        return comparePrepared(left, right);
+    }
+
+    private Result comparePrepared(T[] left, T[] right) {
         nonoverlap(left);
         nonoverlap(right);
         R[] coveredLeft = new R[left.length], coveredRight = new R[right.length];
@@ -86,6 +102,70 @@ final class TerrainErrorReference {
             rounded = Math.nextUp(rounded);
         }
         return new Result(rounded, operations);
+    }
+
+    Result compareNative(List<NativeTriangle> fine, List<NativeTriangle> coarse) {
+        if (fine.isEmpty()
+                || coarse.isEmpty()
+                || fine.size() > MAX_TRIANGLES
+                || coarse.size() > MAX_TRIANGLES) {
+            throw new IllegalArgumentException("Native triangle count outside bounds");
+        }
+        float minX = Float.POSITIVE_INFINITY, minY = minX, maxX = -minX, maxY = -minX;
+        for (var partition : List.of(fine, coarse)) {
+            for (var triangle : partition) {
+                tick();
+                for (var vertex : new NativeVertex[] {triangle.a(), triangle.b(), triangle.c()}) {
+                    minX = Math.min(minX, vertex.x());
+                    minY = Math.min(minY, vertex.y());
+                    maxX = Math.max(maxX, vertex.x());
+                    maxY = Math.max(maxY, vertex.y());
+                }
+            }
+        }
+        if ((double) maxX - minX > 64 || (double) maxY - minY > 64) {
+            throw new IllegalArgumentException("Native MCNK span exceeds oracle profile");
+        }
+        R originX = binary(minX), originY = binary(minY);
+        return comparePrepared(
+                prepareNative(fine, originX, originY), prepareNative(coarse, originX, originY));
+    }
+
+    private T[] prepareNative(List<NativeTriangle> triangles, R originX, R originY) {
+        T[] result = new T[triangles.size()];
+        for (int i = 0; i < result.length; i++) {
+            tick();
+            var t = triangles.get(i);
+            var a = nativePoint(t.a(), originX, originY);
+            var b = nativePoint(t.b(), originX, originY);
+            var c = nativePoint(t.c(), originX, originY);
+            R signed = cross(a, b, c);
+            if (signed.sign() == 0) {
+                throw new IllegalArgumentException("Degenerate native triangle");
+            }
+            result[i] =
+                    signed.sign() > 0
+                            ? new T(
+                                    a,
+                                    b,
+                                    c,
+                                    binary(t.a().z()),
+                                    binary(t.b().z()),
+                                    binary(t.c().z()))
+                            : new T(
+                                    a,
+                                    c,
+                                    b,
+                                    binary(t.a().z()),
+                                    binary(t.c().z()),
+                                    binary(t.b().z()));
+        }
+        return result;
+    }
+
+    private P nativePoint(NativeVertex v, R originX, R originY) {
+        // Exact subtraction rebases arithmetic without changing any input float sample.
+        return new P(binary(v.x()).sub(originX), binary(v.y()).sub(originY));
     }
 
     private T[] prepare(List<Triangle> triangles) {
