@@ -29,7 +29,7 @@ import java.util.concurrent.TimeUnit;
 public final class FullPreparationLibraryIntegrationTest {
     private FullPreparationLibraryIntegrationTest() {}
 
-    private record Fixture(ObjectKey buildConfig, ObjectKey media) {}
+    record Fixture(ObjectKey buildConfig, ObjectKey media) {}
 
     public static void main(String[] args) throws Exception {
         Path directory = Files.createTempDirectory("vimi-full-library-preparation-");
@@ -297,7 +297,7 @@ public final class FullPreparationLibraryIntegrationTest {
         }
     }
 
-    private static Fixture seed(Path directory) throws Exception {
+    static Fixture seed(Path directory) throws Exception {
         var fixture = new SyntheticBuild();
         byte[] db2 = new byte[128];
         System.arraycopy(MetadataFixtures.text("WDC5"), 0, db2, 0, 4);

@@ -145,6 +145,11 @@ public final class ComparisonService implements AutoCloseable {
         return peakRetainedInputBytes;
     }
 
+    /** Whether start accepted input ownership; retained after close to prevent double cleanup. */
+    public synchronized boolean inputsAccepted() {
+        return started;
+    }
+
     public Progress progress() {
         return progress;
     }

@@ -27,6 +27,8 @@ public interface BuildService {
 
     default BuildDownloads downloads() { return null; }
 
+    default BuildComparisons comparisons() { return null; }
+
     default SettingsService settings() { return null; }
 
     default BuildPreparation preparation() { return null; }

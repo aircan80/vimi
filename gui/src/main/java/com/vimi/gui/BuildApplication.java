@@ -187,6 +187,11 @@ public final class BuildApplication {
                                 fullContexts.communityNames(), ownership, keyClient == null ? network : keyClient, tactOwner, tactOwner, network, network);
                         cleanup.addFirst(dataSources::closeAsync);
                         fullContexts.withSources(dataSources);
+                        Path comparisonWork = directory.resolve("derived").resolve("comparison-work");
+                        ComparisonTemporaryFiles.cleanStale(comparisonWork);
+                        var comparisons = new ComparisonCoordinator(
+                                new LocalComparisonFactory(fullContexts, dataSources), comparisonWork);
+                        cleanup.addFirst(comparisons::closeAsync);
                         var preparation = new BuildPreparation(fullContexts);
                         cleanup.addFirst(preparation::closeAsync);
                         cleanup.addFirst(
@@ -216,6 +221,7 @@ public final class BuildApplication {
                                                 () -> closeAll(cleanup))
                                         .withOpening(opening)
                                         .withPreparation(preparation)
+                                        .withComparisons(comparisons)
                                         .withDownloads(downloads)
                                         .withDataSources(dataSources)
                                         .withSettings(settings)

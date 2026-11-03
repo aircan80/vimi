@@ -31,7 +31,7 @@ final class NativePreparationContexts implements BuildPreparation.Factory {
     private final ObjectStore library;
     private final LibraryCatalog ownership;
     private final BuildRegistry registry;
-    private final NetworkClients network;
+    private final com.vibeminer.network.CdnClient network;
     private final ObjectReader legacy;
     private final PreparationHistory history;
     private final OverviewAccounting accounting;
@@ -53,6 +53,13 @@ final class NativePreparationContexts implements BuildPreparation.Factory {
             OverviewAccounting accounting,
             Path grids,
             Consumer<BuildInfo> statusChanged) {
+        this(library, ownership, registry, network, network, legacy, history, accounting, grids, statusChanged);
+    }
+
+    NativePreparationContexts(ObjectStore library, LibraryCatalog ownership, BuildRegistry registry,
+            com.vibeminer.network.CdnClient network, com.vibeminer.network.ListfileClient listfile,
+            ObjectReader legacy, PreparationHistory history, OverviewAccounting accounting,
+            Path grids, Consumer<BuildInfo> statusChanged) {
         this.library = library;
         this.ownership = ownership;
         this.registry = registry;
@@ -75,7 +82,7 @@ final class NativePreparationContexts implements BuildPreparation.Factory {
                         originalNames,
                         legacy,
                         network,
-                        List.of(ObservationAdapters.listfile(network)));
+                        List.of(ObservationAdapters.listfile(listfile)));
         var generatedNames =
                 new PackGeneratedStore(
                         library,
@@ -98,13 +105,30 @@ final class NativePreparationContexts implements BuildPreparation.Factory {
     NativePreparationContexts withSources(DataSourcesService sources) { sourcePolicies = sources; return this; }
     CommunityFileNames communityNames() { return names; }
 
+    List<PreparationHistory.Receipt> comparisonReceipts() {
+        return history == null ? List.of() : history.retainedReceipts();
+    }
+
     @Override
     public synchronized NativePreparationWork create(
             BuildInfo info, BuildInfo.RegionEvidence evidence, String locale) {
+        return createWork(info, evidence, locale, false, true,
+                com.vibeminer.files.keys.TactKeys.EMPTY);
+    }
+
+    synchronized NativePreparationWork createLocalComparison(BuildInfo info,
+            BuildInfo.RegionEvidence evidence, String locale, boolean definitions,
+            com.vibeminer.files.keys.TactKeys pinnedKeys) {
+        return createWork(info, evidence, locale, true, definitions, pinnedKeys);
+    }
+
+    private NativePreparationWork createWork(BuildInfo info, BuildInfo.RegionEvidence evidence,
+            String locale, boolean localOnly, boolean definitions,
+            com.vibeminer.files.keys.TactKeys pinnedKeys) {
         if (closing) {
             throw new IllegalStateException("Preparation contexts closed");
         }
-        var context = new Context(info, evidence, locale);
+        var context = new Context(info, evidence, locale, localOnly);
         try {
             var generated =
                     new PackGeneratedStore(
@@ -125,11 +149,13 @@ final class NativePreparationContexts implements BuildPreparation.Factory {
                                     names,
                                     context.localSource,
                                     grids)
-                            .withSourcePolicies(sourcePolicies)
-                            .withHistory(history)
-                            .withAccounting(accounting)
-                            .withAssessment(ignored -> statusChanged.accept(info))
                             .withLifecycle(() -> context.closeAsync().join());
+            if (localOnly) {
+                work.withSourcePolicy(false, definitions).withPinnedCommunityKeys(pinnedKeys);
+            } else {
+                work.withSourcePolicies(sourcePolicies).withHistory(history).withAccounting(accounting)
+                        .withAssessment(ignored -> statusChanged.accept(info));
+            }
             contexts.add(context);
             return work;
         } catch (Throwable failure) {
@@ -148,15 +174,17 @@ final class NativePreparationContexts implements BuildPreparation.Factory {
         private final BuildInfo info;
         private final BuildTypes.BuildRef ref;
         private final String locale;
+        private final boolean localOnly;
         private final CachingObjectSource source;
         private final CachingObjectSource localSource;
         private final BuildOpener opener;
         private CompletableFuture<Void> inventory = CompletableFuture.completedFuture(null);
         private CompletableFuture<Void> close;
 
-        Context(BuildInfo info, BuildInfo.RegionEvidence evidence, String locale) {
+        Context(BuildInfo info, BuildInfo.RegionEvidence evidence, String locale, boolean localOnly) {
             this.info = info;
             this.locale = locale;
+            this.localOnly = localOnly;
             ref =
                     new BuildTypes.BuildRef(
                             info.product(), info.config(), evidence.cdnConfig(), evidence.region());
@@ -166,10 +194,9 @@ final class NativePreparationContexts implements BuildPreparation.Factory {
                             LibraryCatalog.Scope.BUILD,
                             "workspace-original",
                             LibraryCatalog.Role.ORIGINAL);
-            source =
-                    new CachingObjectSource(
-                            original, original, original, legacy, network, List.of());
             localSource = CachingObjectSource.localOnly(original, original);
+            source = localOnly ? CachingObjectSource.localOnly(original, original) :
+                    new CachingObjectSource(original, original, original, legacy, network, List.of());
             var indexes = library.forOwner(info.identity(), LibraryCatalog.Scope.BUILD,
                     "build-indexes", LibraryCatalog.Role.DERIVED);
             opener = new BuildOpener(source, new BuildOpener.Options(), resolutionCache,
@@ -179,6 +206,20 @@ final class NativePreparationContexts implements BuildPreparation.Factory {
         @Override
         public CompletableFuture<BuildTypes.MetadataOpenResult> metadata(
                 BuildTypes.BuildRef requested, Cancellation token) {
+            if (localOnly) {
+                try {
+                    requireRef(requested);
+                    token.check();
+                    return ownership.expect(info.identity(), LibraryCatalog.Scope.BUILD,
+                                    "encoding", LibraryCatalog.Role.ORIGINAL)
+                            .thenCompose(ignored -> opener.openMetadataBuild(ref, token)).thenApply(result ->
+                            new BuildTypes.MetadataOpenResult(result.build(), result.state(),
+                                    result.opened() == null ? null : result.opened().metadata(),
+                                    result.part(), result.code(), result.message(), result.observedAt()));
+                } catch (RuntimeException failure) {
+                    return CompletableFuture.failedFuture(failure);
+                }
+            }
             return background(
                     () -> {
                         requireRef(requested);

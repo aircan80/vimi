@@ -33,6 +33,7 @@ import javafx.stage.Stage;
 public final class VimiApp extends Application {
     private BuildService service;
     private DataSourcesView dataSourcesView;
+    private CompareView comparisonView;
     private SettingsView settingsView;
     private java.util.concurrent.CompletableFuture<? extends BuildService> startup;
     private boolean closing;
@@ -459,6 +460,7 @@ public final class VimiApp extends Application {
     }
 
     private void showBuilds() {
+        if (comparisonView != null) { leaveComparison(this::showBuilds); return; }
         if (viewedPreparation != null) { closePreparedBuild(viewedPreparation, this::showBuilds); return; }
         viewedPreparation = null;
         if (preparationPane != null) { preparationPane.close(); preparationPane = null; }
@@ -512,9 +514,10 @@ public final class VimiApp extends Application {
 
     private HBox applicationNavigation(String active) {
         Button buildsMenu = button("Builds", this::showBuilds);
+        Button compareMenu = button("Compare", this::showComparison);
         Button sourcesMenu = button("Data Sources", this::showDataSources);
         Button settingsMenu = button("Settings", this::showSettings);
-        for (Button item : List.of(buildsMenu, sourcesMenu, settingsMenu)) {
+        for (Button item : List.of(buildsMenu, compareMenu, sourcesMenu, settingsMenu)) {
             item.getStyleClass().add("area-link");
             if (item.getText().equals(active)) item.getStyleClass().add("area-active");
         }
@@ -524,13 +527,50 @@ public final class VimiApp extends Application {
         divider.setPrefHeight(20);
         divider.setMaxHeight(20);
         HBox.setMargin(divider, new Insets(0, 12, 0, 12));
-        HBox navigation = new HBox(4, buildsMenu, divider, sourcesMenu, settingsMenu);
+        HBox navigation = new HBox(4, buildsMenu, compareMenu, divider, sourcesMenu, settingsMenu);
         navigation.getStyleClass().add("area-navigation");
         navigation.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
         return navigation;
     }
 
+    private void showComparison() {
+        if (viewedPreparation != null) { closePreparedBuild(viewedPreparation, this::showComparison); return; }
+        if (comparisonView != null) return;
+        if (service == null || service.comparisons() == null) {
+            showApplicationArea("Compare", "Local comparison is unavailable", "Open the local library to compare prepared build inventories.");
+            return;
+        }
+        navigationGeneration++;
+        root.setTop(header(null, null));
+        comparisonView = new CompareView(
+                () -> builds.stream().filter(build -> service.settings() == null
+                        || service.settings().enabled(build.product())).toList(),
+                List.of("enUS", "enGB", "deDE", "frFR", "esES", "esMX", "itIT", "ptBR", "ruRU", "koKR", "zhCN", "zhTW"),
+                ComparisonControllers.from(service.comparisons()), this::showBuilds);
+        var page = new BorderPane(comparisonView);
+        page.setTop(applicationNavigation("Compare"));
+        root.setCenter(page);
+        status.setText("Local Files/table inventory findings · Semantic areas are not implemented in this slice.");
+    }
+
+    private void leaveComparison(Runnable afterClose) {
+        var view = comparisonView;
+        comparisonView = null;
+        if (view != null) view.close();
+        root.setDisable(true);
+        var comparisons = service == null ? null : service.comparisons();
+        var drained = comparisons == null ? java.util.concurrent.CompletableFuture.<Void>completedFuture(null)
+                : comparisons.releaseCurrent();
+        drained.whenComplete((ignored, error) -> Platform.runLater(() -> {
+            if (closing) return;
+            root.setDisable(false);
+            afterClose.run();
+            if (error != null) status.setText("Comparison close failed: " + problem(error));
+        }));
+    }
+
     private void showSettings() {
+        if (comparisonView != null) { leaveComparison(this::showSettings); return; }
         if (viewedPreparation != null) { closePreparedBuild(viewedPreparation, this::showSettings); return; }
         if (service == null || service.settings() == null) {
             showApplicationArea("Settings", "Settings are unavailable", "Open the local library to manage products."); return;
@@ -546,6 +586,7 @@ public final class VimiApp extends Application {
     }
 
     private void showDataSources() {
+        if (comparisonView != null) { leaveComparison(this::showDataSources); return; }
         if (viewedPreparation != null) { closePreparedBuild(viewedPreparation, this::showDataSources); return; }
         viewedPreparation = null;
         if (preparationPane != null) { preparationPane.close(); preparationPane = null; }
@@ -986,6 +1027,7 @@ public final class VimiApp extends Application {
         if (sourceRefresh != null) sourceRefresh.close();
         if (sourceRefreshDialog != null) sourceRefreshDialog.close();
         preparationClock.stop();
+        if (comparisonView != null) comparisonView.close();
         if (preparationPane != null) preparationPane.close();
         openingClock.stop();
         preparations.close();
@@ -998,6 +1040,7 @@ public final class VimiApp extends Application {
         if (sourceRefresh != null) sourceRefresh.close();
         if (sourceRefreshDialog != null) sourceRefreshDialog.close();
         preparationClock.stop();
+        if (comparisonView != null) comparisonView.close();
         if (preparationPane != null) preparationPane.close();
         openingClock.stop();
         catalogGeneration++;

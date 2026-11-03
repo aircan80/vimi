@@ -150,8 +150,12 @@ final class CompareView extends BorderPane implements AutoCloseable {
             beforeLocale.getSelectionModel().selectFirst();
             afterLocale.getSelectionModel().selectFirst();
         }
-        if (!choices.isEmpty()) before.getSelectionModel().selectFirst();
-        if (choices.size() > 1) after.getSelectionModel().select(1);
+        if (!choices.isEmpty()) {
+            before.getSelectionModel().selectFirst();
+            var initial = choices.getFirst();
+            after.setValue(choices.stream().filter(candidate -> candidate.product().equals(initial.product())
+                    && !candidate.identity().equals(initial.identity())).findFirst().orElse(initial));
+        }
         var swap = new Button("Swap");
         swap.setAccessibleText("Swap before and after builds and locales");
         swap.setOnAction(

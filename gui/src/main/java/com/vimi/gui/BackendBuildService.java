@@ -29,6 +29,9 @@ public final class BackendBuildService implements BuildService {
     private DataSourcesService dataSources;
     BackendBuildService withDataSources(DataSourcesService value) { dataSources=value; return this; }
     @Override public DataSourcesService dataSources() { return dataSources; }
+    private BuildComparisons comparisons;
+    BackendBuildService withComparisons(BuildComparisons value) { comparisons=value; return this; }
+    @Override public BuildComparisons comparisons() { return comparisons; }
     private BuildDownloads downloads;
     BackendBuildService withDownloads(BuildDownloads value) { downloads=value; return this; }
     @Override public BuildDownloads downloads() { return downloads; }

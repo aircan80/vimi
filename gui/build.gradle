@@ -49,6 +49,7 @@ dependencies {
     implementation project(':concepts-world')
     implementation project(':concepts-dungeons')
     implementation project(':concepts-locations')
+    implementation project(':concepts-comparison')
     implementation project(':concepts-effects')
     testImplementation testFixtures(project(':builds'))
     testImplementation testFixtures(project(':polestar'))
@@ -354,3 +355,23 @@ tasks.register('buildSelectionTest', JavaExec) {
     mainClass = 'com.vimi.gui.BuildSelectionTest'
 }
 check.dependsOn buildSelectionTest
+tasks.register('compareUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.CompareUiTest'
+    systemProperty 'vimi.uiReviewDirectory', layout.buildDirectory.dir('ui-review').get().asFile.absolutePath
+}
+
+tasks.register('comparisonCoordinatorTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.ComparisonCoordinatorTest'
+}
+check.dependsOn comparisonCoordinatorTest
+
+tasks.register('nativeComparisonTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.NativeComparisonTest'
+}
+check.dependsOn nativeComparisonTest

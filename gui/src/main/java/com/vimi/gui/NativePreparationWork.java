@@ -66,6 +66,32 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                 sources == null || sources.policy(DataSourcesService.Id.DEFINITIONS).enabled());
     }
 
+    /** Immutable local comparison key snapshot; never requests a source refresh. */
+    NativePreparationWork withPinnedCommunityKeys(com.vibeminer.files.keys.TactKeys snapshot) {
+        communityKeys = java.util.Objects.requireNonNull(snapshot);
+        communityKeysAllowed = false;
+        sourcePolicies = null;
+        rebuildEffectiveKeys();
+        return this;
+    }
+
+    record CachedTableInventory(String preparationIdentity, String definitionIdentity,
+            TableTypes.PreloadResult result) {}
+
+    /** Restore only the exact existing prepareKnown publication; never prepares missing tables. */
+    CachedTableInventory cachedTableInventory(Cancellation token) {
+        token.check();
+        if (!definitionsAllowed || opened == null || fileHandle == null) return null;
+        String identity = tableCacheIdentity();
+        var result = new com.vibeminer.formats.tables.PreparedTablesCache(generated)
+                .restore(identity, ignored -> {}, token).join();
+        token.check();
+        if (result == null) return null;
+        return new CachedTableInventory(identity,
+                BundledDefinitions.REVISION + ":" + BundledDefinitions.MANIFEST_SHA256
+                        + ":" + BundledDefinitions.SOURCES_SHA256, result);
+    }
+
     NativePreparationWork withAccounting(OverviewAccounting value) {
         if (value != null)
             usageAccounting = new BuildUsageAccounting(value, info, ref, locale, community);
