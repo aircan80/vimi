@@ -219,6 +219,7 @@ consumed with `testImplementation testFixtures(project(':object-store'))`.
 
 - `concepts-items/`: layer 6 item facts, appearances, models, icons and armor material provenance.
 - `concepts-creatures/`: layer 6 creatures, display chains and static appearance evidence.
+- `concepts-talents/`: layer 6 read-only Classic talent trees and prerequisite facts.
 - `concepts-effects/`: layer 6 item effects, reviewed rules, spell names and definition provenance.
 - `concepts-core/`: shared layer 6 query/cursor rules and bounded reverse relation indexes.
 - `formats-tables/`: layer 5 DB2/definitions, generated tables, query/relations and preload.

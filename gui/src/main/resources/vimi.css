@@ -162,3 +162,12 @@
 .combo-box-popup .list-view .list-cell { -fx-background-color: #fffefa; -fx-text-fill: #243e3c; }
 .combo-box-popup .list-view .list-cell:filled:hover { -fx-background-color: #dceee6; -fx-text-fill: #243e3c; }
 .combo-box-popup .list-view .list-cell:filled:selected { -fx-background-color: #137b70; -fx-text-fill: white; }
+
+/* Classic talent reference: real data coordinates and rank capacity, no character allocation. */
+.talent-canvas { -fx-background-color: linear-gradient(to bottom, #22332e, #15221f); -fx-background-radius: 7; -fx-border-color: #647362; -fx-border-radius: 7; }
+.button.talent-node { -fx-background-color: #28352e; -fx-background-insets: 0; -fx-border-color: #92845c; -fx-border-width: 2; -fx-border-radius: 3; -fx-background-radius: 3; -fx-padding: 0; }
+.button.talent-node:hover { -fx-border-color: #d4c48a; }
+.button.talent-node:focused, .button.talent-node.talent-selected { -fx-border-color: #edcf79; -fx-border-width: 3; }
+.talent-placeholder { -fx-text-fill: #b9c0b1; -fx-font-size: 23px; }
+.talent-rank { -fx-background-color: #15221f; -fx-text-fill: #ead993; -fx-font-size: 10px; -fx-padding: 1 4; -fx-background-radius: 2; }
+.talent-class-initial { -fx-text-fill: #175e57; -fx-background-color: #d8e7dd; -fx-background-radius: 4; -fx-padding: 3 7; -fx-font-weight: bold; }

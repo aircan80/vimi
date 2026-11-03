@@ -21,6 +21,7 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
     private final Timeline clock;
     private final Button retry, cancel;
     private final Node overview;
+    private TalentsView talents;
     private boolean closed;
     private long workspaceRevision;
     private String currentArea = "Overview";
@@ -39,7 +40,7 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         this.job = job;
         var navigation = new HBox(4);
         navigation.getStyleClass().add("area-navigation");
-        for (String area : List.of("Overview", "Files", "Tables", "Items", "Creatures")) {
+        for (String area : List.of("Overview", "Files", "Tables", "Items", "Creatures", "Talents")) {
             var button = new Button(area);
             button.getStyleClass().add("area-link");
             button.setOnAction(event -> show(area));
@@ -74,6 +75,8 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
                 && workspaceRevision != work.revision()) {
             workspaceRevision = work.revision();
             browsers.values().forEach(ResearchBrowser::invalidate);
+            if (talents != null) talents.invalidate();
+            if (currentArea.equals("Talents") && talents != null) talents.ensureLoaded();
             var visible = browsers.get(currentArea);
             if (visible != null) visible.ensureLoaded();
         }
@@ -119,6 +122,12 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             setCenter(scroll);
             return;
         }
+        if (area.equals("Talents")) {
+            if (talents == null) talents = new TalentsView(job);
+            setCenter(talents);
+            talents.ensureLoaded();
+            return;
+        }
         var browser =
                 browsers.computeIfAbsent(
                         area, name -> new ResearchBrowser(name, job, this::showSourceTable));
@@ -131,6 +140,7 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         closed = true;
         clock.stop();
         browsers.values().forEach(ResearchBrowser::close);
+        if (talents != null) talents.close();
     }
 
     private void showSourceTable(String table) {

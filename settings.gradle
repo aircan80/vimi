@@ -14,3 +14,5 @@ include 'concepts-effects'
 include 'gui'
 include 'questie'
 include 'accounting'
+
+include 'concepts-talents'

@@ -328,3 +328,12 @@ build. One build downloads at a time; others queue. Pause/resume, retry and
 switching back to On demand retain stored content. Active policies resume when
 the application restarts. See [Download all](../docs/download-all.md) for scope,
 lifecycle and focused validation commands.
+
+## Classic talents
+
+Prepared Classic-style builds expose **Talents** after **Creatures**. A class menu
+opens three trees derived from the selected build's verified client tables. Rank
+badges mean recorded maximum ranks; this is a reference view, not a character
+planner. Missing/protected data and unsupported Retail/Mists layouts are explicit.
+No talent-domain projection or media fetch is added to initial preparation.
+See [Talents](../docs/talents.md) for scope and checks.

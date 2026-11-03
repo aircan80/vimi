@@ -205,7 +205,8 @@ class AssetWorkflowWiringTest(unittest.TestCase):
 
 
 class ConceptWorkflowWiringTest(unittest.TestCase):
-    MODULES = ("concepts-core", "concepts-items", "concepts-creatures", "concepts-effects")
+    PORTED_MODULES = ("concepts-core", "concepts-items", "concepts-creatures", "concepts-effects")
+    MODULES = PORTED_MODULES + ("concepts-talents",)
 
     def test_concepts_run_and_retain_reports_in_every_selected_suite(self):
         root = Path(__file__).resolve().parents[2]
@@ -215,7 +216,8 @@ class ConceptWorkflowWiringTest(unittest.TestCase):
             ("storage-compatibility.yml", "interopTest", "test-results/interopTest/"),
         ]:
             text = (root / ".github/workflows" / workflow).read_text(encoding="utf-8")
-            for module in self.MODULES:
+            modules = self.PORTED_MODULES if task == "interopTest" else self.MODULES
+            for module in modules:
                 with self.subTest(workflow=workflow, module=module):
                     self.assertIn(f":{module}:{task}", text)
                     self.assertIn(f"{module}/build/{report}", text)
@@ -233,7 +235,8 @@ class ConceptWorkflowWiringTest(unittest.TestCase):
                 self.assertIn(f"':{module}:check'", lifecycle)
                 self.assertIn(f"':{module}:assemble'", lifecycle)
                 self.assertIn(f":{module}:test", checks)
-                self.assertIn(f":{module}:interopTest", interop)
+                if module in self.PORTED_MODULES:
+                    self.assertIn(f":{module}:interopTest", interop)
 
     def test_concept_reference_sources_and_release_assembly_are_available(self):
         root = Path(__file__).resolve().parents[2]

@@ -121,9 +121,10 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             BuildItems items,
             BuildCreatures creatures,
             BuildItemEffects effects,
+            com.vibeminer.concepts.talents.BuildTalents talents,
             long revision) {}
 
-    private volatile Workspace published = new Workspace(null, null, null, null, null, 0);
+    private volatile Workspace published = new Workspace(null, null, null, null, null, null, 0);
     private Workspace pending;
     private boolean pendingWarmed;
     private boolean tablePassAttempted;
@@ -219,6 +220,10 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                         com.vibeminer.files.FileTypes.FileRef.id(fileDataId),
                         64,
                         token);
+    }
+
+    public com.vibeminer.concepts.talents.BuildTalents talentsHandle() {
+        return published.talents();
     }
 
     public BuildTables tablesHandle() {
@@ -441,7 +446,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             synchronized (handlesGate) {
                 token.check();
                 if (closed.get()) throw new java.util.concurrent.CancellationException();
-                pending = new Workspace(next, localService, null, null, null, 0);
+                pending = new Workspace(next, localService, null, null, null, new com.vibeminer.concepts.talents.TalentsService(next,info.version()), 0);
                 pendingWarmed = false;
                 staged = true;
             }
@@ -562,6 +567,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                                 nextItems,
                                 nextCreatures,
                                 nextEffects,
+                                staged.talents(),
                                 0);
                 pendingWarmed = true;
                 ownedByPending = true;
@@ -569,7 +575,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             return List.copyOf(issues);
         } catch (Throwable failure) {
             if (!ownedByPending) {
-                var loose = new Workspace(null, null, nextItems, nextCreatures, nextEffects, 0);
+                var loose = new Workspace(null, null, nextItems, nextCreatures, nextEffects, null, 0);
                 try {
                     closeWorkspace(loose);
                 } catch (Throwable cleanupFailure) {
@@ -603,6 +609,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                             pending.items(),
                             pending.creatures(),
                             pending.effects(),
+                            pending.talents(),
                             published.revision() + 1);
             if (published.tables() != null) retired.add(published);
             published = next;
@@ -676,6 +683,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     private static void closeWorkspace(Workspace workspace) {
         if (workspace != null)
             closeResources(
+                    workspace.talents(),
                     workspace.items(),
                     workspace.creatures(),
                     workspace.effects(),
@@ -768,7 +776,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                 owned.add(published);
                 owned.addAll(retired);
                 pending = null;
-                published = new Workspace(null, null, null, null, null, published.revision());
+                published = new Workspace(null, null, null, null, null, null, published.revision());
                 retired.clear();
                 retirementJobs.clear();
             }

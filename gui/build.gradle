@@ -20,6 +20,7 @@ dependencies {
     implementation project(':formats-tables')
     implementation project(':concepts-items')
     implementation project(':concepts-creatures')
+    implementation project(':concepts-talents')
     implementation project(':concepts-effects')
     testImplementation testFixtures(project(':builds'))
     testImplementation testFixtures(project(':files'))
@@ -233,3 +234,9 @@ tasks.register('settingsServiceTest', JavaExec) {
     mainClass = 'com.vimi.gui.SettingsServiceTest'
 }
 check.dependsOn settingsServiceTest
+
+tasks.register('talentsUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.TalentsUiTest'
+}

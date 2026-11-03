@@ -8,6 +8,7 @@ import com.vibeminer.concepts.effects.BuildItemEffects;
 import com.vibeminer.concepts.items.BuildItems;
 import com.vibeminer.formats.tables.BuildTables;
 import com.vibeminer.formats.tables.TablesService;
+
 import java.lang.reflect.Proxy;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -50,6 +51,17 @@ public final class NativeWorkspaceCommitTest {
             BuildItemEffects effects,
             long revision)
             throws Exception {
+        return workspace(tables, items, creatures, effects, null, revision);
+    }
+
+    private static Object workspace(
+            BuildTables tables,
+            BuildItems items,
+            BuildCreatures creatures,
+            BuildItemEffects effects,
+            com.vibeminer.concepts.talents.BuildTalents talents,
+            long revision)
+            throws Exception {
         var type = Class.forName("com.vimi.gui.NativePreparationWork$Workspace");
         var constructor =
                 type.getDeclaredConstructor(
@@ -58,9 +70,10 @@ public final class NativeWorkspaceCommitTest {
                         BuildItems.class,
                         BuildCreatures.class,
                         BuildItemEffects.class,
+                        com.vibeminer.concepts.talents.BuildTalents.class,
                         long.class);
         constructor.setAccessible(true);
-        return constructor.newInstance(tables, null, items, creatures, effects, revision);
+        return constructor.newInstance(tables, null, items, creatures, effects, talents, revision);
     }
 
     private static void set(NativePreparationWork work, String field, Object value)
@@ -112,7 +125,26 @@ public final class NativeWorkspaceCommitTest {
         var nextClosed = new AtomicInteger();
         var oldTable = resource(BuildTables.class, oldClosed);
         var oldItem = resource(BuildItems.class, oldClosed);
-        set(work, "published", workspace(oldTable, oldItem, null, null, 5));
+        var talentsClosed = new AtomicInteger();
+        var oldTalents =
+                (com.vibeminer.concepts.talents.BuildTalents)
+                        Proxy.newProxyInstance(
+                                com.vibeminer.concepts.talents.BuildTalents.class.getClassLoader(),
+                                new Class<?>[] {com.vibeminer.concepts.talents.BuildTalents.class},
+                                (proxy, method, args1) -> {
+                                    if (method.getName().equals("close")) {
+                                        require(
+                                                oldClosed.get() == 0,
+                                                "Talent reads must drain before their borrowed"
+                                                    + " tables close");
+                                        talentsClosed.incrementAndGet();
+                                        return null;
+                                    }
+                                    throw new AssertionError(
+                                            "Talent projection must remain cold during workspace"
+                                                + " publication");
+                                });
+        set(work, "published", workspace(oldTable, oldItem, null, null, oldTalents, 5));
         var abandoned = resource(BuildTables.class, abandonedClosed);
         set(work, "pending", workspace(abandoned, null, null, null, 0));
         set(work, "pendingWarmed", true);
@@ -159,15 +191,19 @@ public final class NativeWorkspaceCommitTest {
                         && work.itemsHandle() == nextItem
                         && work.revision() == 6,
                 "One commit publishes table and concept generation together");
-        require(oldClosed.get() == 0 && nextClosed.get() == 0, "Commit does no resource I/O");
+        require(
+                oldClosed.get() == 0 && nextClosed.get() == 0 && talentsClosed.get() == 0,
+                "Commit does no resource I/O");
         work.retireCommitted();
         work.close();
         require(
                 oldClosed.get() == 2 && nextClosed.get() == 2,
                 "Close waits for retirement and closes the live generation");
+        require(talentsClosed.get() == 1, "The retired talent component closes exactly once");
         metadataListingDoesNotReadPayloads(info, evidence, online, local);
         System.out.println(
-                "Passed atomic workspace commit, cancellation, abort, retirement and metadata-only Files contracts");
+                "Passed atomic workspace commit, cancellation, abort, retirement and metadata-only"
+                        + " Files contracts");
     }
 
     private static void metadataListingDoesNotReadPayloads(
@@ -217,7 +253,8 @@ public final class NativeWorkspaceCommitTest {
                                                                             null)));
                                             default ->
                                                     throw new AssertionError(
-                                                            "Catalog preparation touched payload/CDN path: "
+                                                            "Catalog preparation touched"
+                                                                    + " payload/CDN path: "
                                                                     + method);
                                         });
         Builds loader =
@@ -243,7 +280,8 @@ public final class NativeWorkspaceCommitTest {
                                 (proxy, method, args) -> {
                                     if (method.getName().equals("close")) return null;
                                     throw new AssertionError(
-                                            "Baseline must not read/list payloads, names or presence: "
+                                            "Baseline must not read/list payloads, names or"
+                                                    + " presence: "
                                                     + method);
                                 });
         set(work, "fileHandle", files);
