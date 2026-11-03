@@ -46,6 +46,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
     private final java.util.List<PendingIcon> waitingIcons = new java.util.ArrayList<>();
     private final javafx.animation.PauseTransition iconPulse =
             new javafx.animation.PauseTransition(javafx.util.Duration.millis(20));
+    private final Runnable afterLayout = this::requestVisibleIcons;
     private final ListView<TalentTypes.PlayerClass> classes = new ListView<>();
     private final VBox content = new VBox(18), selection = new VBox(10);
     private final HBox treePanels = new HBox(16);
@@ -78,6 +79,14 @@ final class TalentsView extends BorderPane implements AutoCloseable {
         this.workspaceRevision = revision;
         icons = new AsyncIconRequests(4, 256, fetch);
         iconPulse.setOnFinished(event -> requestVisibleIcons());
+        sceneProperty()
+                .addListener(
+                        (observable, previous, current) -> {
+                            if (previous != null)
+                                previous.removePostLayoutPulseListener(afterLayout);
+                            if (current != null && !closed)
+                                current.addPostLayoutPulseListener(afterLayout);
+                        });
         classes.setAccessibleText("Classes with talent trees in this build");
         classes.getStyleClass().add("product-menu");
         classes.setCellFactory(
@@ -246,13 +255,15 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                                                                 + " to retry.");
                                                 return;
                                             }
-                                            if (result.state() != TalentTypes.State.READY) {
+                                            if (result.state() != TalentTypes.State.READY
+                                                    && result.state()
+                                                            != TalentTypes.State.PARTIAL) {
                                                 status.setText(result.message());
                                                 return;
                                             }
                                             status.setText(
                                                     result.issues().isEmpty()
-                                                            ? "Three trees from this build · select"
+                                                            ? "Trees from this build · select"
                                                                     + " a talent for details"
                                                             : String.join(" · ", result.issues()));
                                             for (var tree : result.trees())
@@ -430,7 +441,9 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                     .add(
                             text(
                                     "Requires "
-                                            + byId.get(edge.talentId()).name()
+                                            + (byId.containsKey(edge.talentId())
+                                                    ? byId.get(edge.talentId()).name()
+                                                    : "unavailable talent #" + edge.talentId())
                                             + " · rank "
                                             + (edge.rankIndex() + 1),
                                     "muted"));
@@ -549,6 +562,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
         generation++;
         token.cancel();
         iconPulse.stop();
+        if (getScene() != null) getScene().removePostLayoutPulseListener(afterLayout);
         waitingIcons.clear();
         icons.close();
     }

@@ -23,6 +23,38 @@ import javax.imageio.ImageIO;
 public final class TalentsUiTest {
     private TalentsUiTest() {}
 
+    private static Long fixtureIconId(long id) {
+        if (id == 1) return 900L;
+        if (id == 2) return 901L;
+        return null;
+    }
+
+    private static com.vibeminer.formats.images.BlpImageTypes.Result authoredIcon() {
+        var image =
+                new com.vibeminer.formats.images.Blp2Types.Image(
+                        1,
+                        1,
+                        4,
+                        new byte[] {0x12, (byte) 0xaa, (byte) 0xbb, (byte) 0xff},
+                        null,
+                        8,
+                        0,
+                        0,
+                        1,
+                        1,
+                        List.of(),
+                        0);
+        return new com.vibeminer.formats.images.BlpImageTypes.Result(
+                com.vibeminer.formats.images.BlpImageTypes.State.READY,
+                image,
+                com.vibeminer.formats.images.BlpImageTypes.Cache.NONE,
+                List.of(),
+                null,
+                null,
+                null,
+                null);
+    }
+
     public static void main(String[] args) throws Exception {
         var ready = new CompletableFuture<Void>();
         Platform.startup(
@@ -35,9 +67,9 @@ public final class TalentsUiTest {
                                             Cancellation token) {
                                         return CompletableFuture.completedFuture(
                                                 new TalentTypes.Catalog(
-                                                        TalentTypes.State.READY,
+                                                        TalentTypes.State.PARTIAL,
                                                         List.of(player),
-                                                        null,
+                                                        "TALENTS_PARTIAL",
                                                         "Authored layout fixture · not a real"
                                                                 + " build"));
                                     }
@@ -79,7 +111,7 @@ public final class TalentsUiTest {
                                                                         prerequisites,
                                                                         "Fixture talent " + id,
                                                                         "Authored spell text",
-                                                                        null));
+                                                                        fixtureIconId(id)));
                                                     }
                                             trees.add(
                                                     new TalentTypes.Tree(
@@ -92,7 +124,7 @@ public final class TalentsUiTest {
                                         }
                                         return CompletableFuture.completedFuture(
                                                 new TalentTypes.ClassTrees(
-                                                        TalentTypes.State.READY,
+                                                        TalentTypes.State.PARTIAL,
                                                         player,
                                                         trees,
                                                         List.of(),
@@ -131,15 +163,21 @@ public final class TalentsUiTest {
                                                 CompletableFuture.failedFuture(
                                                         new AssertionError("No media")));
                         staleView.ensureLoaded();
+                        var requestedIcons =
+                                java.util.concurrent.ConcurrentHashMap.<Long>newKeySet();
                         var view =
                                 new TalentsView(
                                         () -> fixture,
                                         () -> 1,
-                                        (id, token) ->
-                                                CompletableFuture.failedFuture(
-                                                        new AssertionError(
-                                                                "Fixture media must not be"
-                                                                        + " requested")));
+                                        (id, token) -> {
+                                            requestedIcons.add(id);
+                                            if (id == 900)
+                                                return CompletableFuture.completedFuture(
+                                                        authoredIcon());
+                                            return CompletableFuture.failedFuture(
+                                                    new IllegalStateException(
+                                                            "Authored unavailable icon"));
+                                        });
                         var page = new BorderPane(view);
                         var heading =
                                 new Label(
@@ -170,6 +208,53 @@ public final class TalentsUiTest {
                                             throw new AssertionError(
                                                     "Retired catalog populated the new workspace");
                                         staleView.close();
+                                        if (!requestedIcons.equals(java.util.Set.of(900L, 901L)))
+                                            throw new AssertionError(
+                                                    "Visible talent icon references were not"
+                                                            + " requested: "
+                                                            + requestedIcons);
+                                        long rendered =
+                                                scene.getRoot().lookupAll(".talent-node").stream()
+                                                        .map(
+                                                                node ->
+                                                                        ((javafx.scene.control
+                                                                                                .Button)
+                                                                                        node)
+                                                                                .getGraphic())
+                                                        .map(
+                                                                graphic ->
+                                                                        (javafx.scene.layout
+                                                                                        .StackPane)
+                                                                                graphic)
+                                                        .flatMap(
+                                                                graphic ->
+                                                                        graphic
+                                                                                .getChildren()
+                                                                                .stream())
+                                                        .filter(
+                                                                node ->
+                                                                        node
+                                                                                instanceof
+                                                                                javafx.scene.image
+                                                                                        .ImageView)
+                                                        .map(
+                                                                node ->
+                                                                        (javafx.scene.image
+                                                                                        .ImageView)
+                                                                                node)
+                                                        .filter(
+                                                                icon ->
+                                                                        icon.getImage()
+                                                                                        .getPixelReader()
+                                                                                        .getArgb(
+                                                                                                0,
+                                                                                                0)
+                                                                                == 0xff12aabb)
+                                                        .count();
+                                        if (rendered != 1)
+                                            throw new AssertionError(
+                                                    "Decoded RGBA icon did not render; unavailable"
+                                                            + " icons must remain placeholders");
                                         var image = scene.snapshot(null);
                                         var out =
                                                 new BufferedImage(

@@ -8,6 +8,7 @@ public final class TalentTypes {
 
     public enum State {
         READY,
+        PARTIAL,
         UNAVAILABLE,
         UNSUPPORTED,
         INVALID

@@ -42,6 +42,8 @@ public final class TalentsService implements BuildTalents {
     private Data classes, tabs, talents, spellNames, spellDescriptions;
     private final Map<Long, Long> icons = new HashMap<>();
     private final java.util.Set<Long> checkedIcons = new HashSet<>();
+    private final java.util.Set<String> partialTables = new HashSet<>();
+    private final List<String> coreIssues = new ArrayList<>();
     private final List<String> metadataIssues = new ArrayList<>();
     private boolean metadataSchemasLoaded;
 
@@ -76,12 +78,16 @@ public final class TalentsService implements BuildTalents {
                         core(token);
                         var all = playerClasses();
                         return new TalentTypes.Catalog(
-                                TalentTypes.State.READY,
+                                coreIssues.isEmpty()
+                                        ? TalentTypes.State.READY
+                                        : TalentTypes.State.PARTIAL,
                                 all,
-                                null,
-                                all.isEmpty()
-                                        ? "No player-class talent trees are recorded in this build."
-                                        : null);
+                                coreIssues.isEmpty() ? null : "TALENTS_PARTIAL",
+                                !coreIssues.isEmpty()
+                                        ? String.join(" · ", coreIssues)
+                                        : all.isEmpty()
+                                                ? "No player-class talent trees are recorded in this build."
+                                                : null);
                     } catch (Projection failure) {
                         return new TalentTypes.Catalog(
                                 failure.state, List.of(), failure.code, failure.getMessage());
@@ -123,14 +129,16 @@ public final class TalentsService implements BuildTalents {
                                                                 != 0)
                                         .filter(
                                                 row ->
-                                                        talents.rows.stream()
-                                                                .anyMatch(
-                                                                        t ->
-                                                                                talents.number(
-                                                                                                t,
-                                                                                                "TabID")
-                                                                                        == row
-                                                                                                .id()))
+                                                        partialTables.contains("Talent")
+                                                                || talents.rows.stream()
+                                                                        .anyMatch(
+                                                                                t ->
+                                                                                        talents
+                                                                                                        .number(
+                                                                                                                t,
+                                                                                                                "TabID")
+                                                                                                == row
+                                                                                                        .id()))
                                         .sorted(
                                                 java.util.Comparator.comparingLong(
                                                                 (Db2Types.Row r) ->
@@ -138,7 +146,10 @@ public final class TalentsService implements BuildTalents {
                                                                                 r, "OrderIndex"))
                                                         .thenComparingLong(Db2Types.Row::id))
                                         .toList();
-                        if (selected.size() != 3) {
+                        boolean incompleteGraph =
+                                partialTables.contains("Talent")
+                                        || partialTables.contains("TalentTab");
+                        if (selected.size() != 3 && (!incompleteGraph || selected.size() > 3)) {
                             return new TalentTypes.ClassTrees(
                                     TalentTypes.State.UNSUPPORTED,
                                     player.get(),
@@ -149,7 +160,13 @@ public final class TalentsService implements BuildTalents {
                                             + selected.size()
                                             + " recorded talent tabs; no three-tree layout was inferred.");
                         }
-                        var issues = new ArrayList<String>();
+                        var issues = new ArrayList<String>(coreIssues);
+                        if (selected.size() != 3) {
+                            issues.add(
+                                    "Only "
+                                            + selected.size()
+                                            + " talent trees are readable; additional trees may be unavailable in partial tables.");
+                        }
                         var tabIds =
                                 selected.stream()
                                         .map(Db2Types.Row::id)
@@ -250,7 +267,7 @@ public final class TalentsService implements BuildTalents {
                                     throw invalid("Class talent count exceeds the supported bound");
                                 }
                             }
-                            validateEdges(nodes);
+                            validateEdges(nodes, partialTables.contains("Talent"), issues, token);
                             nodes.sort(
                                     java.util.Comparator.comparingInt(TalentTypes.Talent::row)
                                             .thenComparingInt(TalentTypes.Talent::column));
@@ -267,7 +284,14 @@ public final class TalentsService implements BuildTalents {
                                             nodes));
                         }
                         return new TalentTypes.ClassTrees(
-                                TalentTypes.State.READY, player.get(), result, issues, null, null);
+                                partialTables.isEmpty()
+                                        ? TalentTypes.State.READY
+                                        : TalentTypes.State.PARTIAL,
+                                player.get(),
+                                result,
+                                issues,
+                                null,
+                                null);
                     } catch (Projection failure) {
                         return failed(failure.state, failure.code, failure.getMessage());
                     }
@@ -308,7 +332,7 @@ public final class TalentsService implements BuildTalents {
         }
         long playerMask = 0;
         for (var tab : tabs.rows) {
-            if (populatedTabs.contains(tab.id())) {
+            if (partialTables.contains("Talent") || populatedTabs.contains(tab.id())) {
                 playerMask |= mask(tabs.number(tab, "ClassMask"));
             }
         }
@@ -317,7 +341,9 @@ public final class TalentsService implements BuildTalents {
                 continue;
             }
             long bit = 1L << (row.id() - 1);
-            if ((playerMask & bit) == 0) {
+            if ((playerMask & bit) == 0
+                    && !partialTables.contains("Talent")
+                    && !partialTables.contains("TalentTab")) {
                 continue;
             }
             String name = classes.text(row, "Name_lang");
@@ -345,18 +371,19 @@ public final class TalentsService implements BuildTalents {
             Cancellation token, List<String> issues, java.util.Set<Long> wanted) {
         if (!metadataSchemasLoaded) {
             try {
-                spellNames = schema("SpellName", token);
+                spellNames = schema("SpellName", token, metadataIssues);
                 spellNames.textField("Name_lang");
             } catch (Projection failure) {
                 spellNames = null;
-                metadataIssues.add("Localized spell names are unavailable.");
+                metadataIssues.add(
+                        "Localized spell names are unavailable: " + failure.getMessage());
             }
             try {
-                spellDescriptions = schema("Spell", token);
+                spellDescriptions = schema("Spell", token, metadataIssues);
                 spellDescriptions.textField("Description_lang");
             } catch (Projection failure) {
                 spellDescriptions = null;
-                metadataIssues.add("Spell descriptions are unavailable.");
+                metadataIssues.add("Spell descriptions are unavailable: " + failure.getMessage());
             }
             metadataSchemasLoaded = true;
         }
@@ -368,7 +395,7 @@ public final class TalentsService implements BuildTalents {
         }
         var found = new HashMap<Long, Long>();
         try {
-            Data misc = schema("SpellMisc", token);
+            Data misc = schema("SpellMisc", token, issues);
             misc.integerField("SpellID", 1);
             misc.integerField("DifficultyID", 1);
             misc.integerField("SpellIconFileDataID", 1);
@@ -406,10 +433,11 @@ public final class TalentsService implements BuildTalents {
     private String optionalText(
             Data data, long id, String field, Cancellation token, List<String> issues) {
         try {
-            var row = optionalRow(data, id, token);
+            var row = optionalRow(data, id, token, issues);
             return row == null ? null : data.text(row, field);
         } catch (Projection failure) {
-            String issue = "Some optional spell text is unavailable.";
+            String issue =
+                    data.name + ": some optional spell text is unreadable (" + failure.code + ").";
             if (!issues.contains(issue)) {
                 issues.add(issue);
             }
@@ -417,7 +445,7 @@ public final class TalentsService implements BuildTalents {
         }
     }
 
-    private Db2Types.Row optionalRow(Data data, long id, Cancellation token) {
+    private Db2Types.Row optionalRow(Data data, long id, Cancellation token, List<String> issues) {
         if (data == null) {
             return null;
         }
@@ -429,23 +457,49 @@ public final class TalentsService implements BuildTalents {
                                 token)
                         .join();
         if (result.outcome() != TableTypes.RowOutcome.FOUND || result.row() == null) {
+            String issue =
+                    data.name + ": some requested spell records are " + result.outcome() + ".";
+            if (!issues.contains(issue)) {
+                issues.add(issue);
+            }
             return null;
         }
         return result.row().row();
     }
 
     private Data schema(String name, Cancellation token) {
+        return schema(name, token, coreIssues);
+    }
+
+    /** Every readable partial table contributes its available rows and an explicit diagnostic. */
+    private Data schema(String name, Cancellation token, List<String> optionalIssues) {
         token.check();
         var result =
                 tables.schema(TableTypes.Ref.forName(name), TableTypes.Priority.INTERACTIVE, token)
                         .join();
-        if (result.table().state() != TableTypes.State.READY
+        var state = result.table().state();
+        if ((state != TableTypes.State.READY
+                        && (optionalIssues == null || state != TableTypes.State.PARTIAL))
                 || result.columns() == null
                 || result.schema() == null) {
             throw new Projection(
                     TalentTypes.State.UNAVAILABLE,
                     "TALENTS_TABLE_" + result.table().state(),
-                    name + ": " + result.table().state());
+                    name
+                            + ": "
+                            + state
+                            + (result.table().reason() == null
+                                    ? ""
+                                    : " (" + result.table().reason().code() + ")"));
+        }
+        if (state == TableTypes.State.PARTIAL) {
+            partialTables.add(name);
+            String issue =
+                    name
+                            + ": PARTIAL; showing readable records, other records may be protected or unavailable.";
+            if (!optionalIssues.contains(issue)) {
+                optionalIssues.add(issue);
+            }
         }
         return new Data(name, result.columns(), result.schema(), List.of());
     }
@@ -513,7 +567,11 @@ public final class TalentsService implements BuildTalents {
         }
     }
 
-    private static void validateEdges(List<TalentTypes.Talent> nodes) {
+    private void validateEdges(
+            List<TalentTypes.Talent> nodes,
+            boolean partial,
+            List<String> issues,
+            Cancellation token) {
         var byId = new HashMap<Long, TalentTypes.Talent>();
         for (var node : nodes) {
             if (byId.put(node.id(), node) != null) {
@@ -523,6 +581,26 @@ public final class TalentsService implements BuildTalents {
         for (var node : nodes) {
             for (var prerequisite : node.prerequisites()) {
                 var target = byId.get(prerequisite.talentId());
+                if (target == null && partial) {
+                    var missing =
+                            tables.get(
+                                            TableTypes.Ref.forName("Talent"),
+                                            prerequisite.talentId(),
+                                            TableTypes.Priority.INTERACTIVE,
+                                            token)
+                                    .join();
+                    if (missing.outcome() == TableTypes.RowOutcome.FOUND) {
+                        throw invalid("Prerequisite belongs to a different talent tree");
+                    }
+                    String issue =
+                            "Some talent prerequisites are unresolved ("
+                                    + missing.outcome()
+                                    + ") in the partial Talent table; their arrows are omitted.";
+                    if (!issues.contains(issue)) {
+                        issues.add(issue);
+                    }
+                    continue;
+                }
                 if (target == null
                         || target.id() == node.id()
                         || prerequisite.rankIndex() >= target.rankSpells().size()) {
@@ -548,7 +626,10 @@ public final class TalentsService implements BuildTalents {
             throw invalid("Cyclic talent prerequisites");
         }
         for (var edge : node.prerequisites()) {
-            visit(byId.get(edge.talentId()), byId, path, complete);
+            var target = byId.get(edge.talentId());
+            if (target != null) {
+                visit(target, byId, path, complete);
+            }
         }
         path.remove(node.id());
         complete.add(node.id());

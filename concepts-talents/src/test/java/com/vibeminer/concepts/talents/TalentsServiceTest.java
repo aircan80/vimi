@@ -235,6 +235,182 @@ final class TalentsServiceTest {
         }
     }
 
+    private static MemoryTables.FakeTable partial(
+            MemoryTables.FakeTable source,
+            List<Db2Types.Row> rows,
+            Map<Long, String> protectedIds) {
+        var e = source.entry();
+        return new MemoryTables.FakeTable(
+                new TableTypes.Entry(
+                        e.fileDataId(),
+                        e.name(),
+                        TableTypes.State.PARTIAL,
+                        true,
+                        null,
+                        e.counts(),
+                        e.contentKey()),
+                source.columns(),
+                rows,
+                source.schema(),
+                protectedIds,
+                true);
+    }
+
+    @Test
+    void partialOptionalTablesKeepReadableNamesDescriptionsAndIconRelations() {
+        var data = new ArrayList<>(fixture(nodes()));
+        data.set(
+                3,
+                partial(
+                        data.get(3),
+                        List.of(row(1000, "Readable name"), row(1003, "Readable protection")),
+                        Map.of(1001L, "fixture-key")));
+        data.set(
+                4,
+                partial(
+                        data.get(4),
+                        List.of(row(1000, "Readable $s1 text")),
+                        Map.of(1001L, "fixture-key")));
+        // SpellMisc row IDs deliberately differ from related SpellIDs.
+        data.set(
+                5,
+                partial(
+                        data.get(5),
+                        List.of(row(55, "1000", "0", "900"), row(57, "1002", "0", "902")),
+                        Map.of(56L, "fixture-key")));
+        try (var tables = handle(data);
+                var service = new TalentsService(tables, "1.60.1.70000")) {
+            var result = service.trees(1, Cancellation.NONE).join();
+            assertEquals(TalentTypes.State.PARTIAL, result.state());
+            var first = result.trees().getFirst().talents().getFirst();
+            assertEquals("Readable name", first.name());
+            assertEquals("Readable $s1 text", first.description());
+            assertEquals(900L, first.iconFileDataId());
+            var protectedTalent = result.trees().getFirst().talents().get(1);
+            assertEquals("Spell 1001", protectedTalent.name());
+            assertEquals(null, protectedTalent.description());
+            assertEquals(null, protectedTalent.iconFileDataId());
+            var missingName = result.trees().get(1).talents().getFirst();
+            assertEquals("Spell 1002", missingName.name());
+            assertEquals(902L, missingName.iconFileDataId());
+            assertEquals("Readable protection", result.trees().get(2).talents().getFirst().name());
+            for (String table : List.of("SpellName", "Spell", "SpellMisc")) {
+                assertEquals(
+                        true,
+                        result.issues().stream()
+                                .anyMatch(issue -> issue.startsWith(table + ": PARTIAL")));
+            }
+            assertEquals(
+                    true, result.issues().stream().anyMatch(issue -> issue.contains("PROTECTED")));
+            assertEquals(
+                    true, result.issues().stream().anyMatch(issue -> issue.contains("UNKNOWN")));
+            assertFalse(
+                    result.issues().stream()
+                            .anyMatch(
+                                    issue ->
+                                            issue.startsWith(
+                                                    "Localized spell names are unavailable")));
+        }
+    }
+
+    @Test
+    void partialCoreTablesKeepReadableGraphsAndReportIncompleteData() {
+        for (int index : List.of(0, 1, 2)) {
+            var data = new ArrayList<>(fixture(nodes()));
+            var source = data.get(index);
+            data.set(index, partial(source, source.rows(), Map.of()));
+            try (var tables = handle(data);
+                    var service = new TalentsService(tables, "1.60.1.70000")) {
+                var result = service.catalog(Cancellation.NONE).join();
+                assertEquals(TalentTypes.State.PARTIAL, result.state());
+                assertEquals("TALENTS_PARTIAL", result.code());
+                assertEquals(
+                        true,
+                        result.classes().stream()
+                                .anyMatch(player -> player.name().equals("Warrior")));
+                var trees = service.trees(1, Cancellation.NONE).join();
+                assertEquals(TalentTypes.State.PARTIAL, trees.state());
+                assertEquals(3, trees.trees().size());
+                assertEquals(
+                        true, trees.issues().stream().anyMatch(issue -> issue.contains("PARTIAL")));
+            }
+        }
+    }
+
+    @Test
+    void partialGraphKeepsAvailableTreesAndUnresolvedPrerequisites() {
+        var data = new ArrayList<>(fixture(nodes()));
+        var tabs = data.get(1);
+        data.set(
+                1,
+                partial(
+                        tabs,
+                        tabs.rows().stream().filter(row -> row.id() != 12).toList(),
+                        Map.of(12L, "fixture-key")));
+        var talents = data.get(2);
+        data.set(
+                2,
+                partial(
+                        talents,
+                        talents.rows().stream().filter(row -> row.id() != 1).toList(),
+                        Map.of(1L, "fixture-key")));
+        try (var tables = handle(data);
+                var service = new TalentsService(tables, "1.60.1.70000")) {
+            var result = service.trees(1, Cancellation.NONE).join();
+            assertEquals(TalentTypes.State.PARTIAL, result.state());
+            assertEquals(2, result.trees().size());
+            assertEquals(2, result.trees().getFirst().talents().getFirst().id());
+            assertEquals(
+                    1,
+                    result.trees()
+                            .getFirst()
+                            .talents()
+                            .getFirst()
+                            .prerequisites()
+                            .getFirst()
+                            .talentId());
+            assertEquals(
+                    true, result.issues().stream().anyMatch(issue -> issue.contains("unresolved")));
+            assertEquals(
+                    true, result.issues().stream().anyMatch(issue -> issue.contains("Only 2")));
+        }
+    }
+
+    @Test
+    void partialGraphStillRejectsContradictionsAmongReadableTalents() {
+        for (var readable :
+                List.of(
+                        List.of(talent(1, 10, 0, 1, 1000, 0, 0), talent(2, 10, 0, 1, 1001, 0, 0)),
+                        List.of(
+                                talent(1, 10, 0, 1, 1000, 2, 0),
+                                talent(2, 10, 1, 1, 1001, 1, 0)))) {
+            var data = new ArrayList<>(fixture(nodes()));
+            data.set(2, partial(data.get(2), readable, Map.of()));
+            try (var tables = handle(data);
+                    var service = new TalentsService(tables, "1.60.1.70000")) {
+                assertEquals(
+                        TalentTypes.State.INVALID,
+                        service.trees(1, Cancellation.NONE).join().state());
+            }
+        }
+    }
+
+    @Test
+    void partialCoreKeepsKnownClassesEvenWhenTheirTreesAreNotReadable() {
+        var data = new ArrayList<>(fixture(nodes()));
+        data.set(1, partial(data.get(1), List.of(), Map.of(10L, "fixture-key")));
+        data.set(2, partial(data.get(2), List.of(), Map.of(1L, "fixture-key")));
+        try (var tables = handle(data);
+                var service = new TalentsService(tables, "1.60.1.70000")) {
+            var catalog = service.catalog(Cancellation.NONE).join();
+            assertEquals(TalentTypes.State.PARTIAL, catalog.state());
+            assertEquals(3, catalog.classes().size());
+            var trees = service.trees(1, Cancellation.NONE).join();
+            assertEquals(TalentTypes.State.PARTIAL, trees.state());
+            assertEquals(0, trees.trees().size());
+        }
+    }
+
     @Test
     void rejectsRetailAndMistsModelsEvenWhenLegacyTablesExist() {
         try (var tables = handle(fixture(nodes()));

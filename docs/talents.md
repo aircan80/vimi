@@ -1,7 +1,10 @@
 # Talents browser
 
 Open a prepared Classic-style build and select **Talents** after **Creatures**.
-Choose a class on the left; the main area displays its three ordered trees.
+Choose a class on the left; the main area displays its ordered trees. Partial
+client tables show all readable classes, trees and talents with an incomplete
+data warning; protected records do not hide the readable records. A missing
+prerequisite keeps its source ID in details and omits the unresolved connector.
 Select a talent to inspect rank spell IDs, prerequisites and any readable spell
 text. Arrow keys move focus to the nearest node along a row or column.
 
