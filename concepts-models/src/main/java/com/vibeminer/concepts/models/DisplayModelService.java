@@ -239,7 +239,7 @@ public final class DisplayModelService implements BuildDisplayModels {
                 if (counts.get(batch.sectionIndex()) != 1 || !simpleDraw(m, batch, facts)) {
                     TableProjection.note(
                             issues,
-                            "Some surfaces retain neutral shading because their material profile is unsupported.");
+                            "Some sections have unsupported material profiles and no qualified texture binding.");
                     continue;
                 }
                 var texture = m.textures().get(m.textureCombos().get(batch.textureComboIndex()));
@@ -489,7 +489,7 @@ public final class DisplayModelService implements BuildDisplayModels {
         if (appearance.surfaces().size() < appearance.mesh().parts().size()) {
             TableProjection.note(
                     issues,
-                    "Some surfaces retain neutral shading because their material or texture bindings are unsupported.");
+                    "Some sections have no qualified material or texture binding; the preview has partial material coverage.");
         }
         return new DisplayModelTypes.Preview(
                 DisplayModelTypes.State.PARTIAL,

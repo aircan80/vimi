@@ -120,7 +120,7 @@ public final class MountsUiTest {
                                                                 List.of(50L),
                                                                 0L,
                                                                 0L),
-                                                        appearance(),
+                                                        appearance(variant == 2),
                                                         Set.of(0),
                                                         List.of(
                                                                 "Authored geometry and diffuse"
@@ -214,15 +214,17 @@ public final class MountsUiTest {
                                                                     .anyMatch(
                                                                             t ->
                                                                                     t.startsWith(
-                                                                                            "Static"
-                                                                                                + " model"
-                                                                                                + " preview"))
+                                                                                            "Partial material preview"))
                                                             && hasImage(view),
                                             () -> {
                                                 require(
                                                         calls.get() == 2,
                                                         "Explicit variant selection loads only"
                                                                 + " chosen variant");
+                                                require(labels(view).stream().anyMatch(t ->
+                                                        t.contains("1/2 supported sections")
+                                                            && t.contains("All recorded surfaces")),
+                                                        "Partial material coverage explains omitted passes and raw diagnostics");
                                                 try {
                                                     stage.setWidth(1150);
                                                     stage.setHeight(760);
@@ -302,12 +304,15 @@ public final class MountsUiTest {
         }
     }
 
-    private static MeshAppearance appearance() {
+    private static MeshAppearance appearance() { return appearance(false); }
+
+    private static MeshAppearance appearance(boolean partial) {
         var mesh =
                 new PreviewMesh(
                         new float[] {0, 0, 1, -1, -1, -1, 1, -1, -1, 0, 1, -1},
                         new int[] {0, 1, 2, 0, 2, 3, 0, 3, 1, 1, 3, 2},
-                        List.of(new PreviewMesh.Part(0, 0, 12)));
+                        partial ? List.of(new PreviewMesh.Part(0, 0, 6), new PreviewMesh.Part(0, 6, 6))
+                                : List.of(new PreviewMesh.Part(0, 0, 12)));
         return new MeshAppearance(
                 mesh,
                 new float[] {.5f, 0, 0, 1, 1, 1, .5f, .5f},

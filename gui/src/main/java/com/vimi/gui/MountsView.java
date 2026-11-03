@@ -472,10 +472,10 @@ final class MountsView extends BorderPane implements AutoCloseable {
                                             previewStates.put(mountId, PreviewState.READY);
                                             mounts.refresh();
                                             model.setAppearance(
-                                                    result.appearance(), result.visibleParts());
+                                                    result.appearance(), result.visibleParts(), true);
                                             previewStatus.setText(
-                                                    "Static model preview · "
-                                                            + (result.restored()
+                                                    materialCoverage(result.appearance())
+                                                            + " · " + (result.restored()
                                                                     ? "restored from saved"
                                                                             + " derivative"
                                                                     : "prepared from selected build"
@@ -486,6 +486,18 @@ final class MountsView extends BorderPane implements AutoCloseable {
                                                     current.issues(),
                                                     result);
                                         }));
+    }
+
+    private static String materialCoverage(com.vibeminer.rendering.models.MeshAppearance appearance) {
+        long supported = appearance.surfaces().stream()
+                .map(com.vibeminer.rendering.models.MeshAppearance.Surface::sectionIndex)
+                .distinct().count();
+        int total = appearance.mesh().parts().size();
+        return (supported < total ? "Partial material preview · " : "Static model preview · ")
+                + supported + "/" + total + " supported sections"
+                + (supported < total
+                        ? ". Unsupported passes are hidden unless All recorded surfaces is enabled."
+                        : "");
     }
 
     private void showDetails(
