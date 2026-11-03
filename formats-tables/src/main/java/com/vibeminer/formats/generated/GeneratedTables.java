@@ -529,16 +529,23 @@ public final class GeneratedTables implements GeneratedTableStore {
             Cancellation token) {
         return async(
                 () -> {
+                    var released = new java.util.concurrent.atomic.AtomicBoolean();
+                    Runnable release =
+                            () -> {
+                                if (released.compareAndSet(false, true)
+                                        && content.owner() != null) {
+                                    try {
+                                        content.owner().close();
+                                    } catch (Exception e) {
+                                        throw new java.util.concurrent.CompletionException(e);
+                                    }
+                                }
+                            };
                     try {
-                        return withToken(token, t -> storeCore(source, keys, content, token, t));
+                        return withToken(
+                                token, t -> storeCore(source, keys, content, token, t, release));
                     } finally {
-                        if (content.owner() != null) {
-                            try {
-                                content.owner().close();
-                            } catch (Exception e) {
-                                throw new java.util.concurrent.CompletionException(e);
-                            }
-                        }
+                        release.run();
                     }
                 });
     }
@@ -548,7 +555,8 @@ public final class GeneratedTables implements GeneratedTableStore {
             KeyStatus keys,
             GeneratedTableContent content,
             Cancellation token,
-            com.vibeminer.generated.Cancellation lower) {
+            com.vibeminer.generated.Cancellation lower,
+            Runnable release) {
         content.validateSource(source);
         var used = used(content.keysUsed());
         var holes = used(content.holeKeys());
@@ -640,7 +648,18 @@ public final class GeneratedTables implements GeneratedTableStore {
                         lookup.nativePolicy()
                                 ? new NativeNode(NATIVE_NODE, lookup.nativeEcho(), used)
                                 : new Node(NODE, lookup.echo(), used));
-        store.put(List.of(new GeneratedTypes.Put(node, nodeBytes)), lower).join();
+        GeneratedTable verified = null;
+        if (lookup.nativePolicy()) {
+            verified = openFile(lookup, node, used, lower);
+            if (verified == null) {
+                throw new GeneratedStoreException(
+                        GeneratedTypes.CORRUPT,
+                        "Stored native table failed readback before publication");
+            }
+            release.run();
+        } else {
+            store.put(List.of(new GeneratedTypes.Put(node, nodeBytes)), lower).join();
+        }
         if (content.header().layoutHash().matches("[0-9a-fA-F]{8}")) {
             store.put(
                             List.of(
@@ -670,6 +689,34 @@ public final class GeneratedTables implements GeneratedTableStore {
             }
             store.put(List.of(new GeneratedTypes.Put(key, nodeBytes)), lower).join();
             break;
+        }
+        if (lookup.nativePolicy()) {
+            try {
+                store.put(List.of(new GeneratedTypes.Put(node, nodeBytes)), lower).join();
+            } catch (RuntimeException failure) {
+                // A lower store may commit and then lose its acknowledgement. Reconcile only
+                // this exact graph, without cancellation, mutation or removal of another writer.
+                try {
+                    var committed =
+                            readNode(
+                                    node, lookup, com.vibeminer.generated.Cancellation.NONE, false);
+                    if (committed != null
+                            && committed.keys().equals(used)
+                            && openFile(
+                                            lookup,
+                                            node,
+                                            used,
+                                            com.vibeminer.generated.Cancellation.NONE,
+                                            false)
+                                    != null) {
+                        return verified;
+                    }
+                } catch (RuntimeException reconciliation) {
+                    failure.addSuppressed(reconciliation);
+                }
+                throw failure;
+            }
+            return verified;
         }
         var result = openFile(lookup, node, used, lower);
         if (result == null) {

@@ -266,7 +266,11 @@ fixture is independent of the unchanged legacy C# identity/row fixtures.
 
 `GeneratedTable.issueCertificate()` returns verified native evidence, or null for
 UNKNOWN legacy/custom graphs. Publication counts actual emitted rows and validates
-native row shape/IDs/issue locations. Both prepared opening and artifact inventory
+native row shape/IDs/issue locations. Native publication is last, after manifest
+readback, source-owner cleanup and layout/alias preparation. A lost final write
+acknowledgement is reconciled by validating only that exact graph without repair
+or cancellation. Unavailable reconciliation reports an uncertain commit outcome;
+it does not delete a potentially shared graph. Both prepared opening and artifact inventory
 validate certificates against the final graph, actual scoped/unscoped source,
 header columns and saved row count. Inventory does not read row segments.
 

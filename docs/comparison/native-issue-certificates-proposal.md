@@ -173,7 +173,14 @@ No raw key material enters the certificate.
 The store creates this certificate only after successfully enumerating and
 writing the sealed native row stream. It uses the actual emitted count, not
 pre-enumeration `Completion`. Existing metadata completion remains descriptive
-and does not become a completeness proof. A failure publishes no native node.
+and does not become a completeness proof. No native node is published before the
+complete stream, manifest readback, source-owner cleanup and preparatory layout/
+alias writes succeed. The final node write is last. If its acknowledgement fails,
+uncancelable nonrepair validation of that exact committed graph can reconcile
+success. If storage is unavailable, the final commit outcome remains uncertain;
+never delete a potentially shared concurrent graph to manufacture rollback.
+No incomplete-stream certificate is published. This storage-outcome qualification
+was approved by independent architecture and domain reviewers during implementation.
 
 Before publication, each native returned row must have exactly the origin's
 flattened width, a valid unsigned32 ID/copy source, and well-formed issue locations
