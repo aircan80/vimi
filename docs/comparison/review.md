@@ -77,3 +77,22 @@ key fingerprint separately from the effective table preparation identity.
 
 Approvals retain the Foundation scope and all deferred gates above. Other area
 entries are capability placeholders; this does not complete #117.
+
+## Selected raw-table design approval
+
+Independent architecture and WoW/data-contract reviewers both approved exact
+proposal revision `e825f2e31e85fea7f14bc19e2e2edb720ab01546` before raw-table
+implementation. See [the concrete contract](raw-tables-proposal.md).
+
+Approval covers one selected exact-layout/document table pair, a nonrepair
+prepared-local captured reader with BEST_EFFORT_INVALIDATING source lifetime,
+length-prefixed structural fingerprint, explicit issue-channel/cell states,
+bounded ID sorting and one shared memory/disk budget across sorting and core.
+Sealed scratch owns subsequent inputs. Source loss invalidates capture; no
+retention or COMPLETE-membership claim is permitted. Ordinary build-owner read
+bookkeeping is allowed. Required corruption, deletion, cancellation, issue-channel,
+fingerprint and combined-quota fixtures remain implementation acceptance checks.
+
+This gate authorizes that narrow implementation. It excludes acquisition, missing
+table rebuilds, repair/deletion fallback, cross-layout mapping, semantic gameplay
+claims, persistent reports and completion of #117.
