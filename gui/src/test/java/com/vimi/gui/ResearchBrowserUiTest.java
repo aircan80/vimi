@@ -578,6 +578,7 @@ public final class ResearchBrowserUiTest {
                 }
                 fx(() -> browser.get().close());
             }
+            paginationFailures();
             loadingFeedback(output);
             dropdownContrast();
             staleReplies();
@@ -622,6 +623,141 @@ public final class ResearchBrowserUiTest {
         public CompletableFuture<BlpImageTypes.Result> icon(long id, Cancellation token) {
             return iconRequest == null ? super.icon(id, token) : iconRequest;
         }
+    }
+
+    private static void paginationFailures() throws Exception {
+        class Pages extends Fixture {
+            final List<String> requests = new java.util.ArrayList<>();
+            boolean fail, synchronous;
+            CompletableFuture<ResearchPresentation.Page> pending;
+
+            public CompletableFuture<ResearchPresentation.Page> page(
+                    String area, String term, String after, Cancellation token) {
+                requests.add(after);
+                if (synchronous) {
+                    synchronous = false;
+                    throw new IllegalStateException("Authored synchronous failure");
+                }
+                if (fail) {
+                    fail = false;
+                    return CompletableFuture.failedFuture(
+                            new IllegalStateException("Authored page failure"));
+                }
+                if (pending != null) {
+                    var result = pending;
+                    pending = null;
+                    return result;
+                }
+                int index = after == null ? 1 : Integer.parseInt(after);
+                return CompletableFuture.completedFuture(
+                        new ResearchPresentation.Page(
+                                super.page(area, term, after, token).join().rows(),
+                                index == 3 ? null : Integer.toString(index + 1),
+                                "Page " + index));
+            }
+        }
+        var pages = new Pages();
+        var browser = new AtomicReference<ResearchBrowser>();
+        fx(
+                () -> {
+                    var view = new ResearchBrowser("Files", pages, name -> {});
+                    browser.set(view);
+                    new Scene(view, 1200, 850);
+                    view.applyCss();
+                    view.layout();
+                    view.ensureLoaded();
+                });
+        flush();
+        fx(
+                () -> {
+                    pages.fail = true;
+                    button(browser.get(), "Next page").fire();
+                });
+        flush();
+        fx(
+                () -> {
+                    if (!button(browser.get(), "Previous page").isDisabled())
+                        throw new AssertionError("Failed first Next created phantom history");
+                    button(browser.get(), "Next page").fire();
+                });
+        flush();
+        fx(() -> button(browser.get(), "Next page").fire());
+        flush();
+        fx(
+                () -> {
+                    pages.fail = true;
+                    button(browser.get(), "Previous page").fire();
+                });
+        flush();
+        fx(() -> button(browser.get(), "Previous page").fire());
+        flush();
+        if (!pages.requests.equals(java.util.Arrays.asList(null, "2", "2", "3", "2", "2")))
+            throw new AssertionError("Failed Previous retry skipped a page: " + pages.requests);
+        fx(
+                () -> {
+                    pages.synchronous = true;
+                    button(browser.get(), "Previous page").fire();
+                });
+        flush();
+        fx(() -> button(browser.get(), "Previous page").fire());
+        flush();
+        fx(
+                () -> {
+                    if (!button(browser.get(), "Previous page").isDisabled())
+                        throw new AssertionError("Retried Previous did not return to first page");
+                    button(browser.get(), "Next page").fire();
+                });
+        flush();
+        fx(
+                () -> {
+                    pages.fail = true;
+                    button(browser.get(), "Refresh").fire();
+                });
+        flush();
+        fx(
+                () -> {
+                    if (button(browser.get(), "Previous page").isDisabled())
+                        throw new AssertionError(
+                                "Failed same-query refresh discarded committed history");
+                    pages.fail = true;
+                    var search = (TextField) browser.get().lookup(".text-field");
+                    search.setText("new query");
+                    search.fireEvent(new javafx.event.ActionEvent());
+                });
+        flush();
+        fx(
+                () -> {
+                    if (!button(browser.get(), "Previous page").isDisabled()
+                            || !button(browser.get(), "Next page").isDisabled())
+                        throw new AssertionError("Failed search reused an old-query cursor");
+                    button(browser.get(), "Refresh").fire();
+                });
+        flush();
+        fx(
+                () -> {
+                    if (!button(browser.get(), "Previous page").isDisabled())
+                        throw new AssertionError("Successful search reset retained old history");
+                    button(browser.get(), "Next page").fire();
+                });
+        flush();
+        var stale = new CompletableFuture<ResearchPresentation.Page>();
+        fx(
+                () -> {
+                    pages.pending = stale;
+                    button(browser.get(), "Previous page").fire();
+                    button(browser.get(), "Refresh").fire();
+                });
+        flush();
+        stale.complete(new ResearchPresentation.Page(List.of(), null, "STALE PAGE"));
+        flush();
+        fx(
+                () -> {
+                    if (!button(browser.get(), "Previous page").isDisabled()
+                            || labelContains(browser.get(), "STALE PAGE"))
+                        throw new AssertionError(
+                                "Stale Previous overwrote successful reset history");
+                    browser.get().close();
+                });
     }
 
     private static void loadingFeedback(Path output) throws Exception {

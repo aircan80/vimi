@@ -90,6 +90,7 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
     private long pageGeneration, detailGeneration, mediaGeneration;
     private boolean disposed, loaded, invalidated, filtering;
     private String currentCursor, nextCursor;
+    private Object committedQuery;
     private Row selected;
     private Long tableAfter;
     private String tableIdentity;
@@ -207,7 +208,6 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                             updatingRows = false;
                         }
                         if (loaded) {
-                            history.clear();
                             load(null);
                         }
                         return true;
@@ -248,31 +248,33 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
         search.textProperty().addListener((o, b, a) -> debounce.playFromStart());
         debounce.setOnFinished(
                 event -> {
-                    history.clear();
                     load(null);
                 });
         search.setOnAction(
                 event -> {
                     debounce.stop();
-                    history.clear();
                     load(null);
                 });
         refresh.setOnAction(
                 event -> {
                     debounce.stop();
-                    history.clear();
                     load(null);
                 });
         next.setOnAction(
                 event -> {
-                    if (nextCursor != null) {
-                        history.add(currentCursor);
-                        load(nextCursor);
+                    if (!pagingQueryMatches()) {
+                        load(null);
+                    } else if (nextCursor != null) {
+                        var destination = new ArrayList<>(history);
+                        destination.add(currentCursor);
+                        load(nextCursor, destination);
                     }
                 });
         previous.setOnAction(
                 event -> {
-                    if (!history.isEmpty()) load(history.removeLast());
+                    if (!pagingQueryMatches()) load(null);
+                    else if (!history.isEmpty())
+                        load(history.getLast(), history.subList(0, history.size() - 1));
                 });
         var clear = new Button("Clear filters");
         clear.setOnAction(
@@ -288,7 +290,6 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                                                             .Choice(null, "All")));
                     updatingRows = false;
                     search.clear();
-                    history.clear();
                     load(null);
                 });
         HBox title = new HBox(10, text(area, "h1"), spacer(), clear);
@@ -406,7 +407,6 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                         if (subclass != null) subclass.setValue(all);
                         updatingRows = false;
                     }
-                    history.clear();
                     load(null);
                 });
         toolbar.getChildren().add(new VBox(3, text(name, "eyebrow"), box));
@@ -526,7 +526,6 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
 
     public void ensureLoaded() {
         if (!loaded || invalidated) {
-            history.clear();
             load(null);
         }
     }
@@ -556,11 +555,28 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
     public void searchTable(String name) {
         search.setText(name);
         debounce.stop();
-        history.clear();
         load(null);
     }
 
+    private Object queryIdentity() {
+        return area.equals("Items") ? itemQuery(null) : search.getText().strip();
+    }
+
+    private boolean pagingQueryMatches() {
+        try {
+            return java.util.Objects.equals(committedQuery, queryIdentity());
+        } catch (RuntimeException invalidQuery) {
+            return false;
+        }
+    }
+
     private void load(String cursor) {
+        load(cursor, List.of());
+    }
+
+    private void load(String cursor, List<String> destinationHistory) {
+        // The first-page cursor is null, so List.copyOf cannot represent this snapshot.
+        var committedHistory = new ArrayList<>(destinationHistory);
         if (disposed) return;
         loaded = true;
         failedIcons.clear();
@@ -581,7 +597,9 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                     + "… Previous results remain available.");
         }
         CompletableFuture<ResearchPresentation.Page> result;
+        Object requestedQuery;
         try {
+            requestedQuery = queryIdentity();
             result =
                     area.equals("Items")
                             ? source.items(itemQuery(cursor), pageToken)
@@ -604,6 +622,9 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                                         pageFailed(error == null ? new IllegalStateException("No result returned") : error);
                                         return;
                                     }
+                                    committedQuery = requestedQuery;
+                                    history.clear();
+                                    history.addAll(committedHistory);
                                     currentCursor = cursor;
                                     nextCursor = page.next();
                                     filtering = true;
@@ -649,15 +670,18 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
         activity.setVisible(false);
         activity.setManaged(false);
         if (rows.isEmpty()) {
-            loaded = false;
-            nextCursor = null;
+            if (committedQuery == null) {
+                loaded = false;
+                nextCursor = null;
+            }
             grid.setPlaceholder(text("Unable to load " + area + "\n" + errorMessage(failure), "muted"));
             count.setText("Request failed");
         }
         status.setText("Unavailable: " + errorMessage(failure)
                 + (rows.isEmpty() ? "" : " · Previous results are still shown. Refresh to retry."));
-        next.setDisable(nextCursor == null);
-        previous.setDisable(history.isEmpty());
+        boolean changedQuery = !pagingQueryMatches();
+        next.setDisable(changedQuery || nextCursor == null);
+        previous.setDisable(changedQuery || history.isEmpty());
     }
 
     private CompletableFuture<IconPixels> icon(long fileDataId) {
