@@ -1,0 +1,3 @@
+*.sc text eol=lf
+*.json text eol=lf
+*.bin binary

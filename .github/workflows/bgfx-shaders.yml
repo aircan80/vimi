@@ -1,0 +1,44 @@
+name: Verify bgfx shaders
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'rendering-bgfx/src/main/shaders/**'
+      - 'rendering-bgfx/src/main/resources/com/vibeminer/rendering/bgfx/shaders/**'
+      - 'scripts/rendering/**'
+      - '.github/workflows/bgfx-shaders.yml'
+  pull_request:
+    paths:
+      - 'rendering-bgfx/src/main/shaders/**'
+      - 'rendering-bgfx/src/main/resources/com/vibeminer/rendering/bgfx/shaders/**'
+      - 'scripts/rendering/**'
+      - '.github/workflows/bgfx-shaders.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-shaders:
+    name: Compile DX11 shaders
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test build helper
+        shell: bash
+        run: python -m unittest discover -s scripts/rendering -p '*_test.py'
+      - name: Compile with pinned matching native tools and verify all profiles
+        shell: bash
+        run: |
+          python scripts/rendering/compile_bgfx_shaders.py --profile dx11
+          python scripts/rendering/compile_bgfx_shaders.py --verify
+      - name: Retain complete offline shader resources
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bgfx-shaders-with-dx11
+          path: rendering-bgfx/src/main/resources/com/vibeminer/rendering/bgfx/shaders/
+          if-no-files-found: error
+          retention-days: 14

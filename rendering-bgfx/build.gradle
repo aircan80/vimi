@@ -1,0 +1,128 @@
+buildscript {
+    configurations.classpath {
+        resolutionStrategy.activateDependencyLocking()
+    }
+}
+
+plugins {
+    id 'java-library'
+    id 'application'
+    id 'checkstyle'
+    id 'com.diffplug.spotless' version '8.10.4'
+}
+
+group = 'com.vibeminer'
+version = '0.1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+dependencyLocking {
+    lockAllConfigurations()
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+    withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs += ['-Xlint:all', '-Werror']
+}
+
+def lwjglVersion = '3.4.3'
+def supportedPlatforms = [
+    'linux-x64': 'natives-linux',
+    'linux-arm64': 'natives-linux-arm64',
+    'macos-x64': 'natives-macos',
+    'macos-arm64': 'natives-macos-arm64',
+    'windows-x64': 'natives-windows'
+]
+def hostSystem = System.getProperty('os.name').toLowerCase().contains('mac') ? 'macos' :
+        (System.getProperty('os.name').toLowerCase().contains('win') ? 'windows' : 'linux')
+def hostArch = System.getProperty('os.arch') in ['aarch64', 'arm64'] ? 'arm64' : 'x64'
+def targetPlatform = providers.gradleProperty('bgfxPlatform').orElse(hostSystem + '-' + hostArch).get()
+if (!supportedPlatforms.containsKey(targetPlatform)) {
+    throw new GradleException("Unsupported bgfx platform: ${targetPlatform}")
+}
+
+application {
+    mainClass = 'com.vibeminer.rendering.bgfx.GpuViewerMain'
+    applicationName = 'vimi-gpu-viewer'
+    applicationDefaultJvmArgs = ['--enable-native-access=ALL-UNNAMED']
+}
+
+
+dependencies {
+    api project(':rendering-models')
+    ['lwjgl', 'lwjgl-bgfx', 'lwjgl-glfw'].each {
+        implementation "org.lwjgl:${it}:${lwjglVersion}"
+        runtimeOnly "org.lwjgl:${it}:${lwjglVersion}:${supportedPlatforms[targetPlatform]}"
+    }
+    testImplementation platform('org.junit:junit-bom:5.13.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+// Fast unit and in-memory contract tests are the normal development command.
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    maxParallelForks = 1
+    def sqliteLibrary = providers.gradleProperty('sqliteLibrary')
+    if (sqliteLibrary.isPresent()) {
+        systemProperty 'vibeminer.sqlite.library', sqliteLibrary.get()
+        inputs.file(sqliteLibrary).withPropertyName('sqliteLibrary')
+    }
+    testLogging {
+        events 'failed', 'skipped'
+        exceptionFormat = 'full'
+    }
+
+}
+
+spotless {
+    java {
+        target 'src/**/*.java'
+        forbidWildcardImports()
+        googleJavaFormat('1.30.0').aosp()
+        removeUnusedImports()
+        trimTrailingWhitespace()
+        endWithNewline()
+    }
+}
+
+checkstyle {
+    toolVersion = '10.26.1'
+    configFile = rootProject.file('config/checkstyle/checkstyle.xml')
+    maxWarnings = 0
+}
+
+
+
+
+
+// Shader binaries are checked-in resources. Normal builds verify them without downloading tools.
+def shaderHelper = rootProject.layout.projectDirectory.file('scripts/rendering/compile_bgfx_shaders.py')
+def pythonExecutable = providers.gradleProperty('python').orElse('python')
+tasks.register('verifyShaders', Exec) {
+    group = 'verification'
+    description = 'Verifies committed shader sources, manifest and offline bgfx binaries.'
+    workingDir rootProject.layout.projectDirectory
+    commandLine pythonExecutable.get(), shaderHelper.asFile.absolutePath, '--verify'
+    inputs.file(shaderHelper)
+    inputs.dir(layout.projectDirectory.dir('src/main/shaders'))
+    inputs.dir(layout.projectDirectory.dir('src/main/resources/com/vibeminer/rendering/bgfx/shaders'))
+}
+tasks.named('processResources') { dependsOn tasks.named('verifyShaders') }
+tasks.named('check') { dependsOn tasks.named('verifyShaders') }
+
+tasks.register('compileShaders', Exec) {
+    group = 'build'
+    description = 'Explicitly regenerates shader blobs with the pinned matching bgfx compiler.'
+    workingDir rootProject.layout.projectDirectory
+    commandLine pythonExecutable.get(), shaderHelper.asFile.absolutePath
+}

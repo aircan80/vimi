@@ -1,0 +1,70 @@
+# Native bgfx rendering support
+
+LWJGL **3.4.3**, bgfx **API156**, core and GLFW are pinned together. This module
+uses Java25 and depends on the immutable `rendering-models` scene contracts. The
+standalone application entry is `com.vibeminer.rendering.bgfx.GpuViewerMain`.
+
+Supported runtime targets and native classifiers:
+
+| Target | Classifier |
+| --- | --- |
+| Linux x64 | `natives-linux` |
+| Linux ARM64 | `natives-linux-arm64` |
+| macOS Intel | `natives-macos` |
+| macOS Apple Silicon | `natives-macos-arm64` |
+| Windows x64 | `natives-windows` |
+
+Gradle selects the matching host by default. Use `-PbgfxPlatform=linux-arm64`
+(or another table target) to resolve a cross-platform distribution explicitly.
+`gradle.lockfile` pins the common versions; `lwjgl-runtime.json` records all Java
+and native JAR URLs/SHA-256 values. Native JARs remain on the packaged classpath
+for LWJGL's own extraction/loading. No manual game-data or cache transfer is needed.
+Existing jpackage runtime modules include `jdk.unsupported`, required by LWJGL.
+Explicit LWJGL/bgfx/GLFW licenses are bundled in this module's resource JAR.
+
+## Reproducible offline shaders
+
+Shader source uses the reviewed model surface/material contract: position/normal/UV
+(32-byte stride), custom `u_modelToClip`, `u_lightDirection`, `u_material`, and
+`s_diffuse`. The fragment shader keeps the recorded diffuse, alpha-key, two-sided,
+flat/smooth-light and edge-pass rules; it does not invent animated/equipment facts.
+
+The matching official release compiler is **shaderc1.19.156**. Every platform's
+library provenance records bgfx source
+`780f7bf00a29573473b90dcfab9f92a7d8687702`; its `bgfx_shader.sh` is fetched by exact
+commit and SHA-256. Build-only compiler URLs are versioned under
+`https://build.lwjgl.org/release/3.4.3/`, with checksum pins in
+`scripts/rendering/compile_bgfx_shaders.py`. No `stable` or `nightly` assets are used.
+
+The compiler supports GLSL330, SPIR-V, Metal and DX11 shader-model5.0 targets.
+It rejects GLSL150; the OpenGL backend consequently needs at least OpenGL3.3.
+macOS uses Metal. Shader binaries are independent of CPU architecture.
+
+```sh
+# Linux x64/macOS: regenerate GLSL330, SPIR-V and Metal resources.
+python scripts/rendering/compile_bgfx_shaders.py
+# Windows x64: regenerate DX11 using its system D3DCompiler.
+python scripts/rendering/compile_bgfx_shaders.py --profile dx11
+# Normal verification needs no compiler download/network access.
+python scripts/rendering/compile_bgfx_shaders.py --verify
+python -m unittest discover -s scripts/rendering -p '*_test.py'
+```
+
+The optional compiler cache defaults to ignored `.local/toolchains/bgfx-3.4.3`;
+`--tool-directory` selects an explicit build-machine cache. Linux ARM64 has the
+runtime natives but no official matching shaderc executable: consume committed
+shader resources, or regenerate them on Linux x64/macOS/Windows. DX11 generation
+on Linux would need unbundled Wine/D3D4Linux; the retained Windows workflow handles
+that target instead. The workflow uploads `bgfx-shaders-with-dx11`, containing the
+complete resource directory and updated manifest, for review/commit.
+
+The checked-in manifest binds every binary to the exact authored sources,
+upstream include, compiler identity, native API revision and target profile.
+`processResources` and `check` run offline verification and reject missing/stale
+profiles. The explicit `compileShaders` Gradle task regenerates host-supported
+profiles; application launch never downloads or invokes shaderc. Drivers can still
+perform their normal API-level shader/pipeline compilation when creating programs.
+
+Initial generation includes three Linux-built profiles. Before the complete module
+is packaged, obtain the Windows-generated DX11 blobs/manifest from the workflow;
+full verification intentionally rejects the partial initial resource set.

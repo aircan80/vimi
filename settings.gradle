@@ -39,3 +39,5 @@ include 'concepts-dungeons'
 include 'concepts-locations'
 
 include 'concepts-comparison'
+
+include 'rendering-bgfx'
