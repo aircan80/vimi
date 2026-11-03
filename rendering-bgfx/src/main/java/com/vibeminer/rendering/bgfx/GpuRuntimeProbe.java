@@ -56,13 +56,15 @@ public final class GpuRuntimeProbe {
             }
         }
         verifyBackends(System.getProperty("os.name"), backends);
-        verifyShaders();
+        verifyShaders("");
+        verifyShaders("terrain/");
+        verifyShaders("terrain/sky/");
         System.out.println(
                 "Native runtime: LWJGL "
                         + Version.getVersion()
                         + ", bgfx API156; compiled backends="
                         + names
-                        + "; 8 packaged shader hashes verified; GPU initialization was not requested");
+                        + "; 24 packaged shader hashes verified; GPU initialization was not requested");
     }
 
     static void verifyBackends(String osName, List<Integer> backends) {
@@ -85,15 +87,15 @@ public final class GpuRuntimeProbe {
         }
     }
 
-    private static void verifyShaders() throws IOException, NoSuchAlgorithmException {
-        String manifest = new String(resource("manifest.json"), StandardCharsets.UTF_8);
+    private static void verifyShaders(String prefix) throws IOException, NoSuchAlgorithmException {
+        String manifest = new String(resource(prefix + "manifest.json"), StandardCharsets.UTF_8);
         if (!Pattern.compile("\\\"bgfxApi\\\"\\s*:\\s*156\\s*,").matcher(manifest).find()) {
             throw new IllegalStateException("Shader manifest API mismatch");
         }
         for (String profile : List.of("glsl", "spirv", "metal", "dx11")) {
             for (String stage : List.of("vs", "fs")) {
                 String path = profile + "/" + stage + "_model.bin";
-                byte[] binary = resource(path);
+                byte[] binary = resource(prefix + path);
                 String magic = stage.equals("vs") ? "VSH" : "FSH";
                 if (binary.length < 4
                         || !new String(binary, 0, 3, StandardCharsets.US_ASCII).equals(magic)) {

@@ -4,9 +4,9 @@ from pathlib import Path
 import compile_bgfx_shaders as compiler
 
 
-def main():
-    compiler.SOURCES = compiler.ROOT / "rendering-bgfx/src/test/shaders/terrain-spike"
-    output = compiler.ROOT / "rendering-bgfx/src/test/resources/com/vibeminer/rendering/bgfx/terrain-spike"
+def main(source_directory=None, output_directory=None):
+    compiler.SOURCES = source_directory or compiler.ROOT / "rendering-bgfx/src/test/shaders/terrain-spike"
+    output = output_directory or compiler.ROOT / "rendering-bgfx/src/test/resources/com/vibeminer/rendering/bgfx/terrain-spike"
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--verify", action="store_true")
     parser.add_argument("--profile", action="append", choices=tuple(compiler.PROFILES))
@@ -21,7 +21,7 @@ def main():
             target = compiler.host()
             profiles = args.profile or (["dx11"] if target == "windows-x64" else ["glsl", "spirv", "metal"])
             compiler.compile_profiles(args.tool_directory, target, profiles, output / relative)
-    print("Verified authored terrain-spike shaders" if args.verify else "Generated authored terrain-spike shaders")
+    print("Verified terrain and sky shader profiles" if args.verify else "Generated terrain and sky shader profiles")
 
 
 if __name__ == "__main__":

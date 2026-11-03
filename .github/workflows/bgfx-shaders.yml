@@ -59,3 +59,16 @@ jobs:
           path: rendering-bgfx/src/test/resources/com/vibeminer/rendering/bgfx/terrain-spike/
           if-no-files-found: error
           retention-days: 14
+
+      - name: Compile and verify production terrain shaders
+        shell: bash
+        run: |
+          python scripts/rendering/compile_bgfx_terrain.py --profile dx11
+          python scripts/rendering/compile_bgfx_terrain.py --verify
+      - name: Retain production terrain shaders
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bgfx-terrain-shaders
+          path: rendering-bgfx/src/main/resources/com/vibeminer/rendering/bgfx/shaders/terrain/
+          if-no-files-found: error
+          retention-days: 14

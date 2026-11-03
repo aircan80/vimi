@@ -212,3 +212,15 @@ tasks.register('nativeGpuTerrainAcceptance', JavaExec) {
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args layout.buildDirectory.dir('native-terrain-independent').get().asFile.absolutePath
 }
+
+// Production terrain and sky have independent pinned manifests; model shader bounds stay unchanged.
+tasks.register('verifyTerrainShaders', Exec) {
+    group = 'verification'
+    workingDir rootProject.layout.projectDirectory
+    commandLine pythonExecutable.get(), rootProject.file('scripts/rendering/compile_bgfx_terrain.py').absolutePath, '--verify'
+    inputs.files(shaderHelper, rootProject.file('scripts/rendering/compile_bgfx_terrain.py'), rootProject.file('scripts/rendering/compile_bgfx_terrain_spike.py'))
+    inputs.dir(layout.projectDirectory.dir('src/main/shaders/terrain'))
+    inputs.dir(layout.projectDirectory.dir('src/main/resources/com/vibeminer/rendering/bgfx/shaders/terrain'))
+}
+tasks.named('processResources') { dependsOn tasks.named('verifyTerrainShaders') }
+tasks.named('check') { dependsOn tasks.named('verifyTerrainShaders') }

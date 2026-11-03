@@ -349,3 +349,35 @@ backend runtime approval. Run it explicitly after complete shader verification:
 ```sh
 ./gradlew :rendering-bgfx:nativeGpuTerrainAcceptance
 ```
+
+## Production core resource ledger
+
+The production renderer retains the immutable shared-coordinate scene and packs
+one tile at a time into a native 48-byte-per-triangle buffer. It uses a shared
+36-byte three-vertex selector/sky VBO (the earlier selector-only estimate was12
+bytes). It keeps no expanded Java triangle list. The codec streams source bytes
+and retains at most one raw decoded tile alongside its copied immutable tile.
+
+| Logical storage term | Maximum bytes |
+| --- | ---: |
+| Immutable source geometry | 11,086,848 |
+| One raw codec tile during decoding | 1,231,872 |
+| Codec input buffer | 65,536 |
+| One native tile packing buffer | 3,145,728 |
+| Conservatively queued bgfx geometry copies | 28,311,552 |
+| Persistent GPU instances | 28,311,552 |
+| Selector/sky vertex buffer | 36 |
+| 800x500 color and D32F depth attachments | 3,200,000 |
+| Three800x500 GPU readback targets | 4,800,000 |
+| Three800x500 native CPU readback buffers | 4,800,000 |
+| Triple-slot frame-file mapping, headers included | 4,800,256 |
+
+Codec raw-tile lifetime and renderer packing lifetime are separate phases; even
+conservatively adding every listed term gives89,753,380 bytes (about85.6MiB).
+Keep room within128MiB for bounded source metadata, shader resources, context
+bookkeeping and any explicitly retained frame copies. JVM, driver and Prism
+allocation overhead is measured separately and is not represented by this logical
+payload ledger. GUI detached-frame/image copies belong to the parent process and
+must remain independently bounded. Child frame allocation is capped800x500 even
+though pure projection math and the generic frame transport can represent larger
+frames; model preview limits are unchanged.

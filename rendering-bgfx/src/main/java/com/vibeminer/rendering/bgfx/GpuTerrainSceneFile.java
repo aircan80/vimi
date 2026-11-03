@@ -19,6 +19,8 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
 
 /**
  * Private immutable terrain IPC snapshot. File bounds are separate from resident renderer budgets.
@@ -39,7 +41,14 @@ public final class GpuTerrainSceneFile {
     private GpuTerrainSceneFile() {}
 
     public static void write(Path destination, TerrainScene scene) throws IOException {
+        write(destination, scene, () -> false);
+    }
+
+    public static void write(Path destination, TerrainScene scene, BooleanSupplier canceled)
+            throws IOException {
         java.util.Objects.requireNonNull(scene);
+        java.util.Objects.requireNonNull(canceled);
+        check(canceled);
         long bytes =
                 HEADER_BYTES
                         + (long) scene.tiles().size() * TILE_HEADER_BYTES
@@ -68,6 +77,7 @@ public final class GpuTerrainSceneFile {
             output.write(new byte[32]);
             hashing.on(true);
             for (var tile : scene.tiles()) {
+                check(canceled);
                 integer(output, tile.x());
                 integer(output, tile.y());
                 integer(output, tile.vertexCount());
@@ -77,15 +87,24 @@ public final class GpuTerrainSceneFile {
                 number(output, tile.payloadBytes());
             }
             for (var tile : scene.tiles()) {
+                check(canceled);
+                int at = 0;
                 var vertices = tile.vertices();
                 while (vertices.hasRemaining()) {
+                    if ((at++ & 4095) == 0) {
+                        check(canceled);
+                    }
                     integer(output, Float.floatToRawIntBits(vertices.get()));
                 }
                 var indices = tile.indices();
                 while (indices.hasRemaining()) {
+                    if ((at++ & 4095) == 0) {
+                        check(canceled);
+                    }
                     integer(output, indices.get());
                 }
             }
+            check(canceled);
             output.flush();
             if (channel.size() != bytes) {
                 throw new IOException("Terrain snapshot size changed");
@@ -108,6 +127,12 @@ public final class GpuTerrainSceneFile {
     }
 
     public static TerrainScene read(Path source) throws IOException {
+        return read(source, () -> false);
+    }
+
+    public static TerrainScene read(Path source, BooleanSupplier canceled) throws IOException {
+        java.util.Objects.requireNonNull(canceled);
+        check(canceled);
         if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)) {
             throw new IOException("Terrain snapshot must be a regular file");
         }
@@ -146,6 +171,7 @@ public final class GpuTerrainSceneFile {
             long calculated = HEADER_BYTES + (long) count * TILE_HEADER_BYTES;
             boolean[] seen = new boolean[4096];
             for (int at = 0; at < count; at++) {
+                check(canceled);
                 int x = integer(input),
                         y = integer(input),
                         vertices = integer(input),
@@ -180,14 +206,21 @@ public final class GpuTerrainSceneFile {
             }
             var tiles = new ArrayList<TerrainScene.Tile>(count);
             for (var declaration : declarations) {
+                check(canceled);
                 // Only one tile's raw arrays coexist with its defensive copy; no full-file byte
                 // array.
                 float[] vertices = new float[Math.multiplyExact(declaration.vertices, 3)];
                 int[] indices = new int[declaration.indices];
                 for (int at = 0; at < vertices.length; at++) {
+                    if ((at & 4095) == 0) {
+                        check(canceled);
+                    }
                     vertices[at] = Float.intBitsToFloat(integer(input));
                 }
                 for (int at = 0; at < indices.length; at++) {
+                    if ((at & 4095) == 0) {
+                        check(canceled);
+                    }
                     indices[at] = integer(input);
                 }
                 tiles.add(
@@ -201,7 +234,9 @@ public final class GpuTerrainSceneFile {
             if (input.read() != -1 || !MessageDigest.isEqual(expected, sha.digest())) {
                 throw new IOException("Terrain snapshot checksum or EOF differs");
             }
-            return new TerrainScene(tiles);
+            var result = new TerrainScene(tiles);
+            check(canceled);
+            return result;
         } catch (IllegalArgumentException | ArithmeticException invalid) {
             throw new IOException("Invalid terrain snapshot geometry", invalid);
         }
@@ -230,6 +265,12 @@ public final class GpuTerrainSceneFile {
             return MessageDigest.getInstance("SHA-256");
         } catch (NoSuchAlgorithmException impossible) {
             throw new IllegalStateException(impossible);
+        }
+    }
+
+    private static void check(BooleanSupplier canceled) {
+        if (canceled.getAsBoolean()) {
+            throw new CancellationException("Terrain snapshot canceled");
         }
     }
 }

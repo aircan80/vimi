@@ -107,4 +107,19 @@ final class GpuTerrainSceneFileTest {
         assertThrows(IOException.class, () -> GpuTerrainSceneFile.write(file, scene()));
         assertEquals("keep", Files.readString(file));
     }
+
+    @Test
+    void cancellationRemovesOnlyItsPartialOutputAndNeverAltersReadInputs() throws Exception {
+        Path file = scratch.resolve("cancel-write");
+        assertThrows(
+                java.util.concurrent.CancellationException.class,
+                () -> GpuTerrainSceneFile.write(file, scene(), () -> Files.exists(file)));
+        org.junit.jupiter.api.Assertions.assertFalse(Files.exists(file));
+        GpuTerrainSceneFile.write(file, scene());
+        byte[] before = Files.readAllBytes(file);
+        assertThrows(
+                java.util.concurrent.CancellationException.class,
+                () -> GpuTerrainSceneFile.read(file, () -> true));
+        assertArrayEquals(before, Files.readAllBytes(file));
+    }
 }
