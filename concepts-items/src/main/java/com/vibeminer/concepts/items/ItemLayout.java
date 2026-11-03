@@ -14,7 +14,7 @@ record ItemLayout(
         List<Db2Types.Column> sparseColumns,
         int[] sparseFields,
         int name) {
-    static final String ITEM = "Item", SPARSE = "ItemSparse";
+    static final String ITEM = "Item", SPARSE = "ItemSparse", NAME_FIELD = "Display_lang";
 
     static ItemLayout resolve(List<Db2Types.Column> item, List<Db2Types.Column> sparse) {
         var itemFields = fields(item, List.of("ClassID", "SubclassID", "InventoryType"));
@@ -22,7 +22,7 @@ record ItemLayout(
         if (sparse == null) {
             return new ItemLayout(item, itemFields, icon, null, new int[0], -1);
         }
-        int name = column(sparse, "Display_lang", "string");
+        int name = column(sparse, NAME_FIELD, "string");
         if (name < 0) {
             throw new ItemsSourceException(
                     ItemsSourceException.NAME_UNSUPPORTED,
@@ -62,7 +62,11 @@ record ItemLayout(
 
     ItemName nameOf(Db2Types.Row row) {
         String value = cell(row, name);
-        if (issue(row, name)) {
+        return projectedName(value, issue(row, name));
+    }
+
+    static ItemName projectedName(String value, boolean invalid) {
+        if (invalid) {
             return new ItemName(ItemNameState.INVALID, null);
         }
         return value.isEmpty()

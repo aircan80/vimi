@@ -240,7 +240,15 @@ public final class ItemFacts {
         return new ItemFactSet(ItemFactsState.READY, sparseState, facts, null, null);
     }
 
-    private static List<Integer> columns(List<Db2Types.Column> columns, List<String> fields) {
+    static List<String> fieldNames(String key) {
+        return KEYS.stream()
+                .filter(value -> value.key().equals(key))
+                .findFirst()
+                .map(Key::fields)
+                .orElse(List.of());
+    }
+
+    static List<Integer> columns(List<Db2Types.Column> columns, List<String> fields) {
         var indexes = new ArrayList<Integer>();
         for (int i = 0; i < columns.size(); i++) {
             String name = columns.get(i).name();
@@ -257,7 +265,7 @@ public final class ItemFacts {
         var result = new ArrayList<ItemFactValue>();
         for (int index : columns(columns, key.fields())) {
             boolean bad = ItemLayout.issue(row, index);
-            String value = bad ? "" : row.values().get(index);
+            String value = bad ? "" : ItemLayout.cell(row, index);
             result.add(
                     new ItemFactValue(
                             table,

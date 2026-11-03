@@ -90,3 +90,53 @@ uniqueness when other records are protected. Grid and list labels append
 `(partial)` to these known candidates. Missing candidates remain uncertain,
 and multiple readable matches remain ambiguous. The classification policy
 revision invalidates older persisted grid projections.
+
+## Pure prepared-source projection
+
+`PreparedItemProjection` is a pure increment-A comparison capability. Its immutable
+DTOs live in `PreparedItemTypes`; it performs no I/O and accepts no table services,
+SQL, comparison DTOs or asset handles. The caller captures and verifies local
+sources, owns all work/lifetimes, admits the paired dependency scope, and stages
+results separately.
+
+- `compile(SourceSchema)` qualifies one Item or ItemSparse source and returns
+  identity/field admission plus a detached compact SourceProfile. The overload with
+  Selection requires it to match SourceSchema.selection. Metadata must be≤64KiB,
+  with at most64selected bindings. `estimatedRetainedBytes()` is a conservative
+  profile/container/string estimate for the caller's shared metadata reservation.
+  Profiles retain bounded stamps/bindings/signatures, not the source schema,
+  definition document, header or capture handle.
+- `projectSource(profile, row)` retains source-qualified known/empty/unknown/
+  protected/invalid/limited cells independently. Scalar versus array slot, original
+  source row/column and copy metadata remain explicit. A missing joined half needs
+  no synthetic Item row. Unknown issue channels never fabricate empty names;
+  valid numeric facts and unrelated families survive.
+- `combine(id, item, sparse, selection)` verifies same endpoint/locale/ItemID and
+  retains both source vectors with agreement/indeterminate status. It chooses no
+  winner for conflicting values. The name is independently sourced from Sparse.
+- `unobservedSource` creates a typed unavailable half without inventing known
+  cells. MISSING and PROTECTED require explicit absence/protection evidence; the
+  current captured comparison sources do not certify absence.
+
+The default whitelist covers name, quality, class/subclass/inventory type, recorded
+item level/required level and ordered flag words. Raw description is opt-in.
+Unsupported names do not discard numeric facts. Raw/unverified/narrowed candidate
+fields are unassessed rather than promoted to gameplay facts. No effect/spell
+projection, tooltip substitution, stat scaling, eligibility, label-table loading,
+model/icon read, report persistence or comparison completeness is implemented.
+
+The authoritative ID is the decoder's unsigned32 Row.id, including4294967295 even
+when the DBD ID declaration is signed32. Actual ID cells must agree with that ID.
+Other signed values/sentinels (including `-1`) retain their recorded domain and are
+not converted to missing/all-flags/unsigned values. Only verified captured profiles
+qualify; source table identity, locale, decoder, layout/definition/interpretation
+and field-family selection are fingerprinted. Endpoint CKeys/graph identities and
+comments remain separate evidence, so they do not manufacture changed facts.
+
+Shared ItemFacts/ItemLayout helpers supply aliases, source-cell access, canonical
+integer checks and name rules. Existing ordinary item browsing/fact outputs retain
+their behavior, including bundled golden/contract fixtures. Focused authored tests
+cover sparse-only values, disagreements, source domains, signed/max-ID rules,
+unknown/limited channels, local malformed cells, unsupported names/families,
+compact metadata and immutable results. Run `./gradlew :concepts-items:check` for
+unit and Java integration checks; optional C# regeneration is separate.
