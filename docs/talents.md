@@ -16,3 +16,10 @@ surface. Unsupported models (including Retail and Mists) explain that their
 layout is not implemented, instead of showing fabricated Classic trees.
 
 Component contract and checks: [concepts-talents](../concepts-talents/README.md).
+
+## Layout preview
+
+This screenshot uses authored fixture nodes and placeholder icons to review the
+layout. It does not represent a real build's talent data or a character's points.
+
+![Authored three-tree talent layout](images/talents-authored.png)
