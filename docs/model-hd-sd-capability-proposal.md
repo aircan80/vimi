@@ -42,6 +42,16 @@ The pinned [ChrModel definition](https://github.com/wowdev/WoWDBDefs/blob/b9a630
 
 Neither the inspected current CreatureDisplayInfo nor CreatureModelData logical profile exposes a generic SD/HD alternate link. PortraitCreatureDisplayInfoID denotes a portrait reference; CreatureModelMinLod is not SD/HD. The current ConditionalCreatureModelID slot is marked raw/unverified by the table provider. It cannot establish a semantic replacement relation until its exact profile and native use are independently qualified. Multiple MountXDisplay rows likewise establish variants, not their quality meaning.
 
+## Same-FileDataID ROOT-content hypothesis
+
+An alternate hypothesis is that native SD/HD selection chooses different content for the same FileDataID instead of following a DB2 pair. This was checked without payload I/O using the existing immutable `Build.resolve` API, which preserves all `RootTable.find` memberships and their locale/content flags rather than applying the Files handle's selection policy.
+
+For the eight selected race models, each FileDataID has **exactly one ROOT membership and one content key**: Human1011653/1000764, Orc917116/949470, Dwarf878772/950080 and Tauren968705/986648. Each has locale flags0x173f6 and content flags0x120c0000. The five sampled mount models123410/125522/125649/124696/126304 likewise each have one membership with those flags. Therefore an alternate ROOT membership for the same ID is not available to implement the toggle for these sampled assets in this recorded 70755 build. This does not rule out another FileDataID, another content view or a client-native remapping, and does not establish the quality meaning of these content flags.
+
+ChrModel FileDataID3384313 has one membership with flags0x12200000. ChrRaces1305311 has ten memberships with flags0x10200000 and distinct locale masks; only one intersects enUS (mask0x202). Those locale variants do not establish an SD/HD pair. Private diagnostics: `/tmp/vimi-hd-sd-audit/root-variants-70755.log`.
+
+Current `BuildFilesHandle.pick` filters by selected locale and ranks an encoded variant ahead of missing encoded content, preferring entries without content bit128 and then without bit1, keeping the first equal-rank entry. It has no SD/HD preference, account input or quality-qualified content-flag contract. Any future variant selector would need an independently verified flag/profile meaning, explicit cache/source identity and backward-compatible default behavior; changing these rankings based on an HD hypothesis is not approved.
+
 ## Capability by viewer
 
 | Viewer | Verified | Unresolved |
