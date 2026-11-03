@@ -69,3 +69,9 @@ all issue reasons, while exact scope fingerprints remain in evidence/tooltips.
 
 The image uses invented data, including a deliberate pending edit to demonstrate
 that the captured result is not relabeled. It contains no game assets or local data.
+
+Long coverage reports use compact per-side certainty/scope/note counts with a
+collapsed Coverage details disclosure. It retains every reason and exact scope in
+a bounded scrolling area. The findings pane retains at least 180 px; short windows
+scroll the center rather than squeezing results to one row. Authored 58-row tests
+with long explanations on both sides cover wide and narrow windows.
