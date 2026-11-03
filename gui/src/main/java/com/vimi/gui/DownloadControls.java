@@ -102,7 +102,9 @@ final class DownloadControls extends VBox {
         var measurement = snapshot.progress();
         progress.setProgress(
                 measurement == null
-                        ? (snapshot.state() == BuildDownloads.State.OPENING ? -1 : 0)
+                        ? (snapshot.state() == BuildDownloads.State.COMPLETED
+                                ? 1
+                                : snapshot.state() == BuildDownloads.State.OPENING ? -1 : 0)
                         : measurement.totalBytes() == 0
                                 ? 0
                                 : (double) measurement.storedBytes() / measurement.totalBytes());
