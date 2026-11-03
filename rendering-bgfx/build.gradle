@@ -202,3 +202,13 @@ tasks.register('nativeGpuTerrainSpike', JavaExec) {
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args layout.buildDirectory.dir('native-terrain-spike').get().asFile.absolutePath
 }
+
+tasks.register('nativeGpuTerrainAcceptance', JavaExec) {
+    group = 'verification'
+    description = 'Runs independently authored terrain projection, color and depth oracles.'
+    dependsOn testClasses, tasks.named('verifyTerrainSpikeShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.TerrainSpikeAcceptance'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-terrain-independent').get().asFile.absolutePath
+}
