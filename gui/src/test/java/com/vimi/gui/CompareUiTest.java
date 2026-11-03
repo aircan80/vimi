@@ -26,6 +26,7 @@ public final class CompareUiTest {
         final AtomicReference<ComparisonTypes.RunState> state =
                 new AtomicReference<>(ComparisonTypes.RunState.RUNNING);
         final AtomicBoolean failPage = new AtomicBoolean(true);
+        CompletableFuture<Void> closeGate = CompletableFuture.completedFuture(null);
 
         public ComparisonTypes.Descriptor before() {
             return descriptor("authored-before");
@@ -82,7 +83,7 @@ public final class CompareUiTest {
 
         public CompletableFuture<Void> closeAsync() {
             closes.incrementAndGet();
-            return CompletableFuture.completedFuture(null);
+            return closeGate;
         }
     }
 
@@ -339,6 +340,7 @@ public final class CompareUiTest {
             await(() -> stale.closes.get() == 1);
             require(stale.cancels.get() == 1, "Late session canceled and drained after close");
             require(tokenRef.get().isCanceled(), "Opening canceled on close");
+            rawRowsControls(before, after);
             System.out.println(
                     "Comparison UI: captured pair on running/completed edits, distinguishing configs, coverage reasons, page retry/cursors, responsive drawer and stale close passed");
         } finally {
@@ -350,6 +352,151 @@ public final class CompareUiTest {
                     });
             Platform.exit();
         }
+    }
+
+    private static void rawRowsControls(BuildInfo before, BuildInfo after) throws Exception {
+        var requests = new java.util.concurrent.CopyOnWriteArrayList<CompareView.Request>();
+        var inventory = new Fixture();
+        inventory.state.set(ComparisonTypes.RunState.COMPLETED);
+        inventory.failPage.set(false);
+        var raw = new Fixture();
+        raw.failPage.set(false);
+        var reset = new Fixture();
+        reset.state.set(ComparisonTypes.RunState.COMPLETED);
+        reset.failPage.set(false);
+        var sessions = new java.util.ArrayDeque<Fixture>(List.of(inventory, raw, reset));
+        var view =
+                fx(
+                        () ->
+                                new CompareView(
+                                        () -> List.of(before, after),
+                                        List.of("enUS"),
+                                        (request, token) -> {
+                                            requests.add(request);
+                                            return CompletableFuture.completedFuture(
+                                                    sessions.remove());
+                                        },
+                                        () -> {}));
+        var window =
+                fx(
+                        () -> {
+                            var stage = new Stage();
+                            stage.setScene(new Scene(view, 1320, 940));
+                            stage.show();
+                            view.applyCss();
+                            view.layout();
+                            area(view, "Tables");
+                            return stage;
+                        });
+        try {
+            fx(
+                    () -> {
+                        for (var value : List.of("", "0", "-1", "4294967296", "abc")) {
+                            rawId(view).setText(value);
+                            button(view, "Compare readable rows locally").fire();
+                            require(requests.isEmpty(), "Invalid FileDataID cannot start raw work");
+                        }
+                        require(
+                                labels(view).contains("1 to 4294967295"),
+                                "Numeric range explained");
+                        button(view, "Compare local data").fire();
+                        return null;
+                    });
+            await(() -> fxUnchecked(() -> !button(view, "Use selected table ID").isDisabled()));
+            fx(
+                    () -> {
+                        require(
+                                requests.size() == 1 && requests.getFirst().tableId() == null,
+                                "Normal Tables compare remains inventory");
+                        button(view, "Use selected table ID").fire();
+                        require(
+                                rawId(view).getText().equals("910001"),
+                                "Selected inventory finding prefills its FileDataID");
+                        require(
+                                requests.size() == 1,
+                                "Selecting/prefilling does not start decoding or sorting");
+                        inventory.closeGate = new CompletableFuture<>();
+                        rawId(view).setText("4294967295");
+                        button(view, "Compare readable rows locally").fire();
+                        require(
+                                requests.size() == 1
+                                        && button(view, "Compare readable rows locally")
+                                                .isDisabled(),
+                                "Raw start waits for old session drain");
+                        require(
+                                captured(view).contains("Raw table rows · FileDataID 4294967295"),
+                                "Captured mode identifies exact raw table");
+                        return null;
+                    });
+            inventory.closeGate.complete(null);
+            await(() -> requests.size() == 2);
+            fx(
+                    () -> {
+                        require(
+                                requests.get(1).area().equals("Tables")
+                                        && requests.get(1).tableId() == 4294967295L,
+                                "Raw request preserves Tables area and unsigned FileDataID");
+                        require(
+                                labels(view).contains("gameplay meaning is not assessed"),
+                                "Raw findings have scoped semantics warning");
+                        button(view, "Compare local data").fire();
+                        button(view, "Compare readable rows locally").fire();
+                        require(requests.size() == 2, "Running raw session rejects replacement");
+                        var captured = captured(view);
+                        button(view, "Swap").fire();
+                        rawId(view).setText("123");
+                        require(
+                                captured(view).equals(captured)
+                                        && labels(view).contains("Selection changed"),
+                                "Raw mode/table stays captured through selector/input edits");
+                        view.resize(900, 940);
+                        view.layout();
+                        require(
+                                rawId(view).getWidth() >= 100
+                                        && button(view, "Compare readable rows locally").getWidth()
+                                                > 100,
+                                "Narrow raw controls remain usable");
+                        return null;
+                    });
+            raw.state.set(ComparisonTypes.RunState.COMPLETED);
+            await(() -> fxUnchecked(() -> !button(view, "Compare local data").isDisabled()));
+            fx(
+                    () -> {
+                        button(view, "Compare local data").fire();
+                        return null;
+                    });
+            await(() -> requests.size() == 3);
+            fx(
+                    () -> {
+                        require(
+                                requests.get(2).tableId() == null
+                                        && requests.get(2).area().equals("Tables"),
+                                "Normal action resets raw mode to inventory");
+                        require(
+                                captured(view).contains("Tables inventory")
+                                        && !captured(view).contains("Raw table rows"),
+                                "Captured result header resets mode honestly");
+                        require(
+                                inventory.closes.get() == 1 && raw.closes.get() == 1,
+                                "Each replacement drains its previous session exactly once");
+                        return null;
+                    });
+        } finally {
+            fx(
+                    () -> {
+                        view.close();
+                        window.close();
+                        return null;
+                    });
+        }
+    }
+
+    private static javafx.scene.control.TextField rawId(CompareView view) {
+        return (javafx.scene.control.TextField)
+                view.lookupAll(".text-field").stream()
+                        .filter(node -> "Raw table FileDataID".equals(node.getAccessibleText()))
+                        .findFirst()
+                        .orElseThrow();
     }
 
     private static void assertDefaults(

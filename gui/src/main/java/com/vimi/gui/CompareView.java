@@ -29,7 +29,17 @@ final class CompareView extends BorderPane implements AutoCloseable {
             String beforeLocale,
             BuildInfo after,
             String afterLocale,
-            String area) {}
+            String area,
+            Long tableId) {
+        Request(
+                BuildInfo before,
+                String beforeLocale,
+                BuildInfo after,
+                String afterLocale,
+                String area) {
+            this(before, beforeLocale, after, afterLocale, area, null);
+        }
+    }
 
     interface Controller {
         CompletableFuture<Session> start(Request request, Cancellation cancellation);
@@ -71,6 +81,10 @@ final class CompareView extends BorderPane implements AutoCloseable {
     private final ListView<String> areas = new ListView<>();
     private final TextField search = new TextField();
     private final ComboBox<String> filter = new ComboBox<>();
+    private final TextField rawTableId = new TextField();
+    private final Button rawCompare = new Button("Compare readable rows locally");
+    private final Button selectedTable = new Button("Use selected table ID");
+    private final javafx.scene.layout.FlowPane rawControls = new javafx.scene.layout.FlowPane(8, 8);
     private final Label status =
             text("Choose two builds. Browsing this screen does not download data.", "muted");
     private final Label heading = text("Comparison summary", "h2");
@@ -212,6 +226,33 @@ final class CompareView extends BorderPane implements AutoCloseable {
                     }
                 });
         compare.setOnAction(event -> start());
+        rawTableId.setPromptText("FileDataID");
+        rawTableId.setAccessibleText("Raw table FileDataID");
+        rawTableId.setPrefWidth(150);
+        rawTableId.setMinWidth(100);
+        rawTableId.setMaxWidth(200);
+        rawTableId.textProperty().addListener((o, a, b) -> selectionChanged());
+        rawCompare.setOnAction(
+                event -> {
+                    var id = parseTableId(rawTableId.getText());
+                    if (id == null) {
+                        status.setText(
+                                "Enter a table FileDataID from 1 to 4294967295. No comparison was started.");
+                        return;
+                    }
+                    start(id);
+                });
+        selectedTable.setOnAction(
+                event -> {
+                    var row = results.getSelectionModel().getSelectedItem();
+                    if (inventoryTableSelection(row)) {
+                        rawTableId.setText(Long.toString(Long.parseLong(row.key())));
+                    }
+                });
+        selectedTable.setDisable(true);
+        rawControls
+                .getChildren()
+                .setAll(text("Table FileDataID", "muted"), rawTableId, selectedTable, rawCompare);
         before.valueProperty().addListener((o, a, b) -> selectionChanged());
         after.valueProperty().addListener((o, a, b) -> selectionChanged());
         beforeLocale.valueProperty().addListener((o, a, b) -> selectionChanged());
@@ -286,7 +327,13 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                                 : resultLabel(value) + " · " + value.key());
                             }
                         });
-        results.getSelectionModel().selectedItemProperty().addListener((o, a, b) -> inspect(b));
+        results.getSelectionModel()
+                .selectedItemProperty()
+                .addListener(
+                        (o, a, b) -> {
+                            inspect(b);
+                            selectedTable.setDisable(!inventoryTableSelection(b));
+                        });
         VBox.setVgrow(results, Priority.ALWAYS);
         previous.setDisable(true);
         next.setDisable(true);
@@ -327,7 +374,15 @@ final class CompareView extends BorderPane implements AutoCloseable {
         if (!Objects.equals(areas.getSelectionModel().getSelectedItem(), area))
             areas.getSelectionModel().select(area);
         if (!Objects.equals(compactArea.getValue(), area)) compactArea.setValue(area);
-        heading.setText(area.equals("Summary") ? "Comparison summary" : area);
+        var raw =
+                area.equals("Tables")
+                        && area.equals(runArea)
+                        && capturedRequest != null
+                        && capturedRequest.tableId() != null;
+        heading.setText(
+                raw
+                        ? "Raw table rows · FileDataID " + capturedRequest.tableId()
+                        : area.equals("Summary") ? "Comparison summary" : area);
         content.getChildren().setAll(compactArea, new HBox(12, heading, details));
         if (area.equals("Summary")) {
             content.getChildren()
@@ -338,7 +393,11 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                                     + " local data."
                                             : "Session-only "
                                                     + runArea
-                                                    + " inventory findings. Known-equal records are"
+                                                    + (capturedRequest != null
+                                                                    && capturedRequest.tableId()
+                                                                            != null
+                                                            ? " raw table findings. Known-equal rows are"
+                                                            : " inventory findings. Known-equal records are")
                                                     + " omitted; other areas are not assessed.",
                                     "muted"));
             content.getChildren().add(pageStatus);
@@ -346,11 +405,15 @@ final class CompareView extends BorderPane implements AutoCloseable {
             content.getChildren()
                     .add(
                             text(
-                                    "Local "
-                                            + area.toLowerCase(java.util.Locale.ROOT)
-                                            + " inventory only. Readability and source coverage"
-                                            + " remain separate from content changes.",
+                                    raw
+                                            ? "Raw columns for one exact-layout table only. Membership remains scoped/unknown where coverage is incomplete; gameplay meaning is not assessed."
+                                            : "Local "
+                                                    + area.toLowerCase(java.util.Locale.ROOT)
+                                                    + " inventory only. Readability and source coverage remain separate from content changes.",
                                     "muted"));
+            if (area.equals("Tables")) {
+                content.getChildren().add(rawControls);
+            }
             if (area.equals(runArea))
                 content.getChildren()
                         .addAll(
@@ -380,11 +443,19 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                     "muted"));
         compare.setDisable(
                 pending || running() || !(area.equals("Files") || area.equals("Tables")));
+        rawCompare.setDisable(pending || running() || !area.equals("Tables"));
+        selectedTable.setDisable(
+                !inventoryTableSelection(results.getSelectionModel().getSelectedItem()));
         if (!area.equals(runArea)) inspect(null);
         layoutForWidth();
     }
 
     private void start() {
+        start(null);
+    }
+
+    private void start(Long tableId) {
+        if (tableId != null && !selectedArea.equals("Tables")) return;
         if (closed || pending || running() || before.getValue() == null || after.getValue() == null)
             return;
         if (!Objects.equals(before.getValue().product(), after.getValue().product())
@@ -407,6 +478,8 @@ final class CompareView extends BorderPane implements AutoCloseable {
         openingToken = new Cancellation();
         cancel.setDisable(false);
         compare.setDisable(true);
+        rawCompare.setDisable(true);
+        selectedTable.setDisable(true);
         runArea = selectedArea;
         pageRows = List.of();
         pageHistory.clear();
@@ -422,7 +495,8 @@ final class CompareView extends BorderPane implements AutoCloseable {
                             beforeLocale.getValue(),
                             after.getValue(),
                             afterLocale.getValue(),
-                            runArea);
+                            runArea,
+                            tableId);
             capturedRequest = request;
             capturedPair.setText(
                     "Captured Before: "
@@ -432,7 +506,9 @@ final class CompareView extends BorderPane implements AutoCloseable {
                             + " → After: "
                             + buildLabel(request.after())
                             + " · "
-                            + request.afterLocale());
+                            + request.afterLocale()
+                            + " · "
+                            + requestMode(request));
             capturedPair.setTooltip(
                     new javafx.scene.control.Tooltip(
                             "Before identity: "
@@ -444,6 +520,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                     + "\nAfter config: "
                                     + request.after().config()));
             selectionChanged();
+            selectArea(selectedArea);
             var token = openingToken;
             opening =
                     drained.thenCompose(
@@ -491,6 +568,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
         if (progress == null) return;
         var running = progress.state() == ComparisonTypes.RunState.RUNNING;
         cancel.setDisable(!running);
+        rawCompare.setDisable(running || pending || !selectedArea.equals("Tables"));
         compare.setDisable(
                 running
                         || pending
@@ -508,6 +586,35 @@ final class CompareView extends BorderPane implements AutoCloseable {
             renderedState = progress.state();
             loadPage(0);
         }
+    }
+
+    private static Long parseTableId(String text) {
+        var value = safe(text).trim();
+        if (!value.matches("[0-9]{1,10}")) return null;
+        long parsed = Long.parseLong(value);
+        return parsed >= 1 && parsed <= 4294967295L ? parsed : null;
+    }
+
+    private boolean inventoryTableSelection(ComparisonTypes.Result row) {
+        if (pending
+                || running()
+                || !selectedArea.equals("Tables")
+                || !"Tables".equals(runArea)
+                || capturedRequest == null
+                || capturedRequest.tableId() != null
+                || row == null) return false;
+        try {
+            long id = Long.parseLong(row.key());
+            return id >= 1 && id <= 4294967295L;
+        } catch (NumberFormatException ignored) {
+            return false;
+        }
+    }
+
+    private static String requestMode(Request request) {
+        return request.tableId() == null
+                ? request.area() + " inventory"
+                : "Raw table rows · FileDataID " + request.tableId();
     }
 
     private static String coverage(ComparisonTypes.Coverage value) {
@@ -745,7 +852,12 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                 || !Objects.equals(
                                         capturedRequest.beforeLocale(), beforeLocale.getValue())
                                 || !Objects.equals(
-                                        capturedRequest.afterLocale(), afterLocale.getValue()));
+                                        capturedRequest.afterLocale(), afterLocale.getValue())
+                                || (capturedRequest.tableId() != null
+                                        && !capturedRequest
+                                                .tableId()
+                                                .toString()
+                                                .equals(rawTableId.getText().trim())));
         pendingSelection.setText(
                 changed
                         ? "Selection changed. Findings and progress still belong to the captured"
