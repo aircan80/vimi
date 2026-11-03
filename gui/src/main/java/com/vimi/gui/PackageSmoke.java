@@ -8,6 +8,9 @@ import javafx.scene.control.Label;
 import javafx.stage.Stage;
 
 import java.nio.file.Files;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -47,19 +50,16 @@ final class PackageSmoke {
         }
         String executable =
                 System.getProperty("os.name").startsWith("Windows") ? "java.exe" : "java";
-        Path java = Path.of(System.getProperty("java.home"), "bin", executable);
-        var child =
-                new ProcessBuilder(java.toString(), "-version")
-                        .redirectOutput(ProcessBuilder.Redirect.DISCARD)
-                        .redirectError(ProcessBuilder.Redirect.DISCARD)
-                        .start();
-        try {
-            if (!child.waitFor(15, TimeUnit.SECONDS) || child.exitValue() != 0) {
-                throw new IllegalStateException("Packaged child Java runtime is unavailable");
-            }
-        } finally {
-            child.destroyForcibly();
-        }
+        Path javaExecutable = Path.of(System.getProperty("java.home"), "bin", executable);
+        var command = new ArrayList<String>();
+        command.add(javaExecutable.toString());
+        if (System.getProperty("os.name").toLowerCase(java.util.Locale.ROOT).contains("mac"))
+            command.add("-XstartOnFirstThread");
+        command.add("--enable-native-access=ALL-UNNAMED");
+        command.add("-cp");
+        command.add(System.getProperty("java.class.path"));
+        command.add("com.vibeminer.rendering.bgfx.GpuRuntimeProbe");
+        checkNativeProbe(new ProcessBuilder(command).redirectErrorStream(true).start(), Duration.ofSeconds(15));
         if (ui) {
             var ready = new CompletableFuture<Void>();
             Platform.startup(
@@ -103,7 +103,7 @@ final class PackageSmoke {
                         + escape(System.getProperty("os.arch"))
                         + "\",\"ui\":"
                         + ui
-                        + "}";
+                        + ",\"nativeRuntime\":true,\"shaderBlobs\":8}";
         int report = options.indexOf("--smoke-report");
         if (report >= 0) {
             if (report + 1 >= args.length)
@@ -113,6 +113,35 @@ final class PackageSmoke {
             Files.writeString(path, result + "\n");
         }
         System.out.println(result);
+    }
+
+    /** Bounded output and lifetime: a broken native loader must fail packaging, not hang it. */
+    static void checkNativeProbe(Process child, Duration timeout) throws Exception {
+        var output = new CompletableFuture<byte[]>();
+        var reader = Thread.ofVirtual().name("packaged-gpu-probe-output").start(() -> {
+            try {
+                output.complete(child.getInputStream().readNBytes(65_537));
+            } catch (Exception failure) {
+                output.completeExceptionally(failure);
+            }
+        });
+        try {
+            if (!child.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS))
+                throw new IllegalStateException("Packaged GPU runtime probe timed out");
+            byte[] bytes = output.get(2, TimeUnit.SECONDS);
+            if (bytes.length > 65_536)
+                throw new IllegalStateException("Packaged GPU runtime probe exceeded its output limit");
+            String diagnostic = new String(bytes, StandardCharsets.UTF_8);
+            if (child.exitValue() != 0 || !diagnostic.contains("bgfx API156")
+                    || !diagnostic.contains("8 packaged shader hashes verified"))
+                throw new IllegalStateException("Packaged GPU runtime is unavailable: " + diagnostic);
+        } finally {
+            if (child.isAlive()) {
+                child.destroyForcibly();
+                child.waitFor(2, TimeUnit.SECONDS);
+            }
+            reader.join(1_000);
+        }
     }
 
     private static String escape(String value) {
