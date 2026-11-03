@@ -28,7 +28,13 @@ There is no All records or Unchanged listing in this initial slice. Unknown stat
 observed-only membership, field evidence dimensions and per-side completeness
 remain visible. The source inspector exposes the captured descriptor dependencies.
 
-Before/After selectors reject product/locale mismatch locally. Opening the view,
+Before/After selectors reject product/locale mismatch locally. Each choice shows
+a distinguishing config prefix, expanding beyond ten characters when local
+choices share that prefix; full identity/config remain available in tooltips.
+An immutable Captured Before → After header identifies the actual running/result
+pair. Editing or swapping selectors preserves that header and shows a pending
+selection banner until an explicit new comparison captures the new pair.
+Running jobs cannot be replaced accidentally by selector/area changes. Opening the view,
 changing selectors, swapping, selecting areas/results and resizing never start a
 comparison or acquisition. A replacement run cancels and drains its accepted old
 session before opening another. At narrow widths the inspector becomes a Details
@@ -36,7 +42,11 @@ route with Back to results; the area rail becomes a labeled selector. Endpoint
 controls wrap. Closing stops progress polling and is idempotent.
 
 The authored `CompareUiTest` verifies explicit start, unsupported-area labeling,
-locale rejection, typed partial evidence, responsive details and session lifetime.
+locale rejection, distinguishing same-version configs, captured-pair preservation
+on running/completed edits and Swap, partial coverage reasons, failed-page Retry,
+variable-length cursor history, responsive details and stale-opening cleanup.
+Search and status filtering are both visibly current-page scoped. Failed page
+loads preserve current findings and restore navigation while offering Retry.
 It exports `gui/build/ui-review/comparison-authored.png`; all fixtures are invented
 and contain no game assets. GUI Gradle wiring belongs to application composition;
 register a display-required JavaExec task for `com.vimi.gui.CompareUiTest` with the

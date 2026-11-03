@@ -87,6 +87,14 @@ final class CompareView extends BorderPane implements AutoCloseable {
     private final Controller controller;
     private final ListView<ComparisonTypes.Result> results = new ListView<>();
     private final Label pageStatus = text("Not compared", "muted");
+    private final Label capturedPair = text("No captured comparison pair", "muted");
+    private final Label pendingSelection = text("", "muted");
+    private final Label pageError = text("", "muted");
+    private final Button retryPage = new Button("Retry page");
+    private Request capturedRequest;
+    private final java.util.Map<String, String> configLabels = new java.util.HashMap<>();
+    private long retryOffset;
+    private int retryDirection;
     private final Button previous = new Button("Previous"), next = new Button("Next");
     private final Timeline clock;
     private Session session;
@@ -108,21 +116,27 @@ final class CompareView extends BorderPane implements AutoCloseable {
         this.onClose = Objects.requireNonNull(onClose);
         this.controller = Objects.requireNonNull(controller);
         var choices = List.copyOf(Objects.requireNonNull(catalog).get());
+        for (var choice : choices) {
+            var config = safe(choice.config());
+            var length = Math.min(10, config.length());
+            while (length < config.length()) {
+                var prefix = config.substring(0, length);
+                if (choices.stream()
+                        .noneMatch(
+                                other ->
+                                        !Objects.equals(other.config(), config)
+                                                && safe(other.config()).startsWith(prefix))) break;
+                length++;
+            }
+            configLabels.put(config, config.substring(0, length));
+        }
         before.getItems().setAll(choices);
         after.getItems().setAll(choices);
         for (var box : List.of(before, after)) {
             box.setConverter(
                     new javafx.util.StringConverter<>() {
                         public String toString(BuildInfo value) {
-                            return value == null
-                                    ? "Choose build"
-                                    : value.edition()
-                                            + " · "
-                                            + value.product()
-                                            + " · "
-                                            + value.version()
-                                            + " · "
-                                            + value.regions();
+                            return value == null ? "Choose build" : buildLabel(value);
                         }
 
                         public BuildInfo fromString(String ignored) {
@@ -173,11 +187,20 @@ final class CompareView extends BorderPane implements AutoCloseable {
                     }
                 });
         compare.setOnAction(event -> start());
+        before.valueProperty().addListener((o, a, b) -> selectionChanged());
+        after.valueProperty().addListener((o, a, b) -> selectionChanged());
+        beforeLocale.valueProperty().addListener((o, a, b) -> selectionChanged());
+        afterLocale.valueProperty().addListener((o, a, b) -> selectionChanged());
+        retryPage.setVisible(false);
+        retryPage.setManaged(false);
+        retryPage.setOnAction(event -> loadPage(retryOffset, retryDirection));
         selectors
                 .getChildren()
                 .setAll(
                         text("Compare builds", "h2"),
                         endpoints,
+                        capturedPair,
+                        pendingSelection,
                         new HBox(8, compare, cancel, close),
                         status);
         selectors.setPadding(new Insets(14));
@@ -244,13 +267,12 @@ final class CompareView extends BorderPane implements AutoCloseable {
         next.setDisable(true);
         previous.setOnAction(
                 event -> {
-                    if (!pageHistory.isEmpty()) loadPage(pageHistory.pop());
+                    if (!pageHistory.isEmpty()) loadPage(pageHistory.peek(), -1);
                 });
         next.setOnAction(
                 event -> {
                     if (nextOffset != null) {
-                        pageHistory.push(pageOffset);
-                        loadPage(nextOffset);
+                        loadPage(nextOffset, 1);
                     }
                 });
         inspector.setPadding(new Insets(14));
@@ -304,9 +326,14 @@ final class CompareView extends BorderPane implements AutoCloseable {
             if (area.equals(runArea))
                 content.getChildren()
                         .addAll(
+                                text(
+                                        "Search and status filter apply only to the current findings page.",
+                                        "muted"),
                                 new HBox(8, search, filter),
                                 results,
-                                new HBox(8, previous, next, pageStatus));
+                                new HBox(8, previous, next, retryPage),
+                                pageStatus,
+                                pageError);
             else
                 content.getChildren()
                         .add(
@@ -319,13 +346,15 @@ final class CompareView extends BorderPane implements AutoCloseable {
                             text(
                                     "Not implemented. This area has no comparison adapter in the inventory preview; no zero-change conclusion is available.",
                                     "muted"));
-        compare.setDisable(pending || !(area.equals("Files") || area.equals("Tables")));
+        compare.setDisable(
+                pending || running() || !(area.equals("Files") || area.equals("Tables")));
         if (!area.equals(runArea)) inspect(null);
         layoutForWidth();
     }
 
     private void start() {
-        if (closed || pending || before.getValue() == null || after.getValue() == null) return;
+        if (closed || pending || running() || before.getValue() == null || after.getValue() == null)
+            return;
         if (!Objects.equals(before.getValue().product(), after.getValue().product())
                 || !Objects.equals(beforeLocale.getValue(), afterLocale.getValue())
                 || beforeLocale.getValue() == null) {
@@ -361,6 +390,27 @@ final class CompareView extends BorderPane implements AutoCloseable {
                             after.getValue(),
                             afterLocale.getValue(),
                             runArea);
+            capturedRequest = request;
+            capturedPair.setText(
+                    "Captured Before: "
+                            + buildLabel(request.before())
+                            + " · "
+                            + request.beforeLocale()
+                            + " → After: "
+                            + buildLabel(request.after())
+                            + " · "
+                            + request.afterLocale());
+            capturedPair.setTooltip(
+                    new javafx.scene.control.Tooltip(
+                            "Before identity: "
+                                    + request.before().identity()
+                                    + "\nBefore config: "
+                                    + request.before().config()
+                                    + "\nAfter identity: "
+                                    + request.after().identity()
+                                    + "\nAfter config: "
+                                    + request.after().config()));
+            selectionChanged();
             var token = openingToken;
             opening =
                     drained.thenCompose(
@@ -428,15 +478,27 @@ final class CompareView extends BorderPane implements AutoCloseable {
     private static String coverage(ComparisonTypes.Coverage value) {
         return value == null
                 ? "not assessed"
-                : words(value.completeness().toString()) + " · " + value.scope();
+                : words(value.completeness().toString())
+                        + " · "
+                        + value.scope()
+                        + (value.issues().isEmpty()
+                                ? ""
+                                : " · Reasons: " + String.join("; ", value.issues()));
     }
 
     private void loadPage(long offset) {
+        loadPage(offset, 0);
+    }
+
+    private void loadPage(long offset, int direction) {
         if (session == null || closed) return;
         var handle = session;
         var current = generation;
         previous.setDisable(true);
         next.setDisable(true);
+        retryPage.setVisible(false);
+        retryPage.setManaged(false);
+        pageError.setText("");
         handle.page(offset, 100)
                 .whenComplete(
                         (page, failure) ->
@@ -446,10 +508,19 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                                     || current != generation
                                                     || session != handle) return;
                                             if (failure != null || page == null) {
-                                                status.setText(
-                                                        "Result page unavailable. Completed source coverage is not inferred.");
+                                                pageError.setText(
+                                                        "Findings page unavailable. Existing findings remain; retry this page.");
+                                                retryOffset = offset;
+                                                retryDirection = direction;
+                                                retryPage.setVisible(true);
+                                                retryPage.setManaged(true);
+                                                previous.setDisable(pageHistory.isEmpty());
+                                                next.setDisable(nextOffset == null);
                                                 return;
                                             }
+                                            if (direction > 0) pageHistory.push(pageOffset);
+                                            else if (direction < 0 && !pageHistory.isEmpty())
+                                                pageHistory.pop();
                                             pageOffset = page.offset();
                                             nextOffset = page.nextOffset();
                                             pageRows = page.rows();
@@ -611,6 +682,53 @@ final class CompareView extends BorderPane implements AutoCloseable {
 
     private static String safe(String value) {
         return value == null ? "" : value;
+    }
+
+    private boolean running() {
+        return session != null
+                && session.progress() != null
+                && session.progress().state() == ComparisonTypes.RunState.RUNNING;
+    }
+
+    private void selectionChanged() {
+        for (var box : List.of(before, after)) {
+            var value = box.getValue();
+            box.setTooltip(
+                    value == null
+                            ? null
+                            : new javafx.scene.control.Tooltip(
+                                    "Identity: "
+                                            + value.identity()
+                                            + "\nConfig: "
+                                            + value.config()));
+        }
+        var changed =
+                capturedRequest != null
+                        && (!Objects.equals(capturedRequest.before(), before.getValue())
+                                || !Objects.equals(capturedRequest.after(), after.getValue())
+                                || !Objects.equals(
+                                        capturedRequest.beforeLocale(), beforeLocale.getValue())
+                                || !Objects.equals(
+                                        capturedRequest.afterLocale(), afterLocale.getValue()));
+        pendingSelection.setText(
+                changed
+                        ? "Selection changed. Findings and progress still belong to the captured pair above. Compare local data again after this run finishes, or cancel it."
+                        : "");
+        pendingSelection.setVisible(changed);
+        pendingSelection.setManaged(changed);
+    }
+
+    String buildLabel(BuildInfo value) {
+        var config = safe(value.config());
+        return value.edition()
+                + " · "
+                + value.product()
+                + " · "
+                + value.version()
+                + " · "
+                + value.regions()
+                + " · config "
+                + configLabels.getOrDefault(config, config);
     }
 
     private static Label text(String value, String style) {
