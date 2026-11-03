@@ -396,6 +396,7 @@ public final class CompareUiTest {
                         button(view, "Compare local data").fire();
                         require(starts.get() == 1, "Explicit start once");
                         require(activity(view, "Comparing local data…"), "Opening has local animated activity");
+                        screenshot(stage.getScene(), "comparison-loading");
                         return null;
                     });
             var captured = fx(() -> captured(view));
