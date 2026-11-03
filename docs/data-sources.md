@@ -14,14 +14,15 @@ and canonical per-build flavor overrides. Disabling keeps completed downloads an
 prepared data. It cancels active source acquisition and prevents new source jobs.
 Explicitly close and reopen a build to change its captured provider policy.
 
-A listfile update checks the release and prepares the index; its automatic policy
-therefore says **Automatic listfile updates**. Questie automatic checks discover
-releases without downloading or activating them. These providers default to manual;
-TACTKeys defaults to enabled with daily updates. Native build filename enrichment reads the installed local
-listfile; updates are performed by this page or the selected automatic policy,
-so opening a build does not bypass the manual setting. Failed daily
-checks do not spin in an automatic retry loop. Bundled definitions update with the
-application; there is no fabricated runtime definition updater.
+All enabled providers update at startup and from **Refresh sources** in Builds.
+The global action checks revisions, downloads changed data and prepares or reuses
+local data concurrently. Source-page **Additional scheduled updates** controls
+optional checks between global refreshes; older Manual/Startup values remain
+compatible and do not disable startup refresh. TACTKeys additionally defaults to a
+daily check. See [Source refresh](source-refresh.md) for progress, cancellation and
+per-provider scope. Individual check/download/prepare buttons remain available.
+Failed daily attempts do not spin in an automatic retry loop. Bundled definitions
+update with the application; there is no fabricated runtime definition updater.
 
 Open workspaces retain their table-definition policy. Disabled definitions produce
 an explicit issue and a separate preparation identity; an enabled-definition cache
@@ -58,9 +59,10 @@ shows enablement, manual/startup/daily policy, update now, key count, cached byt
 last successful check and the cached revision. It is enabled and daily by default,
 including existing installations that have no preference for this new provider.
 
-Updates run while the app is open; overdue daily updates run after startup. Build
-preparation waits for an applicable shared update so its first table pass can use
-the keys. Disabled/manual policy does not cause implicit network requests. A local
+Enabled TACTKeys participates in startup and global refresh; optional daily updates
+run while the app is open. Build preparation waits for an applicable shared update
+so its first table pass can use the keys. Disabled policy prevents acquisition;
+no extra checks means build opening alone does not bypass the configured schedule. A local
 validated copy remains available offline; invalid or failed updates retain the last
 valid set. Requests are canceled on disable/shutdown and accepted work is drained.
 The original list is attributed to the global TACTKeys provider in the unified store;
@@ -148,5 +150,6 @@ Source page rendered from an isolated live-test library (not the user library):
 ![Questie source management](images/data-sources-live.png)
 
 EG Link uses GitHub-only commit-pinned product/build snapshots with separate download
-and processing controls; see [EG Link workflow](eg-link.md). It defaults to manual
-checks and does not silently substitute beta/older data for a requested build.
+and processing controls; see [EG Link workflow](eg-link.md). Global refresh runs its
+full sync; no extra scheduled checks are enabled by default. It does not silently
+substitute beta/older data for a requested build.

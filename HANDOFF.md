@@ -1,5 +1,21 @@
 # vimi development handoff
 
+## Unified source refresh (#103)
+
+VimiApp starts a nonmodal application-owned source refresh after local history
+loading begins; Builds contains Refresh sources alongside Refresh builds.
+SourceRefresh coalesces concurrent global requests, isolates provider failures,
+shows per-provider progress, and cancels sources independently. Startup success
+can auto-close after a brief untouched result; failures retain retry and Hide.
+DataSourcesService.sync owns full provider check/download/prepare reuse, joins
+narrower source jobs, and prevents canceled continuations restarting acquisition.
+Questie sync processes latest advertised flavor packages and initializes missing
+flavor defaults without replacing explicit user pins. Blizzard participates as a
+catalog refresh, with cancellation that leaves the service usable. This does not
+enable Download all. Optional periodic settings no longer suppress required
+startup/global sync. See docs/source-refresh.md and focused source refresh tests.
+
+
 ## Races browser (#95)
 
 New :concepts-races owns lazy bounded race projections over borrowed BuildTables.

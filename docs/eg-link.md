@@ -1,9 +1,11 @@
 # EG Link data source
 
 EG Link is managed from Data Sources alongside Questie. Enablement and
-manual/startup/daily **snapshot checks** are persisted in the shared source settings.
-The default is enabled/manual. Checking discovers available builds; it does not
-implicitly download or process them. Download and preparation are separate actions.
+additional scheduled updates are persisted in the shared source settings. The
+default is enabled with no extra scheduled checks. Startup and **Refresh sources**
+perform the complete sync: check, download selected revisions, and prepare or reuse
+the local database. The individual Check button remains discovery-only; Download
+and Prepare remain available separately. See [Source refresh](source-refresh.md).
 Disabling retains completed local data and cancels active source work.
 
 The source is [JIVESCORP/eg-link-output-wowf](https://github.com/JIVESCORP/eg-link-output-wowf).

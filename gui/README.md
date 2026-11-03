@@ -85,9 +85,11 @@ Default data lives under `~/Library/Application Support/vimi` on macOS,
 `%LOCALAPPDATA%/vimi` on Windows and `$XDG_DATA_HOME/vimi` (or
 `~/.local/share/vimi`) on Linux. It contains `objects/`, a separate `generated/` derived store and the disposable
 `catalog.sqlite` projection. No existing C# data is imported automatically.
-Startup reads saved history without network requests; **Refresh builds** observes
-published metadata and persists it through the existing backend. This does not
-download game content, establish content availability or measure retention.
+Startup first renders saved history, then starts a parallel enabled-source refresh.
+**Refresh sources** in Builds repeats that check/download/prepare workflow and shows
+nonmodal per-source progress; **Refresh builds** remains a catalog-only action.
+Blizzard catalog refresh does not download every build's content or enable Download
+all. See [Source refresh](../docs/source-refresh.md).
 Refresh issues remain inspectable without discarding readable history.
 An indeterminate activity indicator and a “Refreshing builds…” button label stay
 visible while refresh is running. Loading saved history also shows activity; no
