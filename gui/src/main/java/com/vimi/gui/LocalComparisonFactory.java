@@ -10,6 +10,7 @@ import com.vibeminer.concepts.comparison.inputs.FilesInventoryInput;
 import com.vibeminer.concepts.comparison.inputs.PreparedTableRowsSource;
 import com.vibeminer.concepts.comparison.inputs.TableInventoryInput;
 import com.vibeminer.concepts.comparison.items.ItemsSnapshot;
+import com.vibeminer.concepts.comparison.effects.EffectsSnapshot;
 import com.vibeminer.concepts.comparison.items.ItemsStageCodec;
 import com.vibeminer.concepts.items.PreparedItemTypes;
 import com.vibeminer.files.keys.TactKeys;
@@ -49,7 +50,15 @@ final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
                 sources == null || sources.policy(DataSourcesService.Id.DEFINITIONS).enabled();
         var receipts = contexts.comparisonReceipts();
         boolean items = request.area().equals("Items");
-        var budget = request.tableId() == null && !items ? null : new TempBudget();
+        boolean effects = request.area().equals("Item effects");
+        var budget = request.tableId() == null && !items && !effects ? null : new TempBudget();
+        final TempBudget.Reservation effectsPendingMetadata;
+        try {
+            effectsPendingMetadata = effects ? budget.reserveMemory("effects-pending-metadata", 1L << 20, token) : null;
+        } catch (java.io.IOException failure) {
+            budget.close();
+            throw new java.util.concurrent.CompletionException(failure);
+        }
         final ItemsSnapshot snapshot;
         try {
             snapshot =
@@ -58,11 +67,13 @@ final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
                                     budget, PreparedItemTypes.Selection.defaults(), token)
                             : null;
         } catch (java.io.IOException failure) {
+            if (effectsPendingMetadata != null) effectsPendingMetadata.close();
             budget.close();
             throw new java.util.concurrent.CompletionException(failure);
         }
         return new ComparisonCoordinator.EndpointOpener() {
             private int opened;
+            private EffectsSnapshot effectsSnapshot;
 
             @Override
             public ComparisonCoordinator.Opened open(
@@ -87,7 +98,14 @@ final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
                     ComparisonCoordinator.Opened after,
                     Cancellation cancellation)
                     throws Exception {
-                if (snapshot != null) {
+                if (effects) {
+                    var a = (PreparedEffectsComparisonInput) before.input();
+                    var b = (PreparedEffectsComparisonInput) after.input();
+                    effectsSnapshot = beginEffectsSnapshot(budget, effectsPendingMetadata, a.endpoint(), b.endpoint(), cancellation);
+                    a.capture(effectsSnapshot, EffectsSnapshot.Side.A, cancellation);
+                    b.capture(effectsSnapshot, EffectsSnapshot.Side.B, cancellation);
+                    finishEffectsInputs(effectsSnapshot, a, b);
+                } else if (snapshot != null) {
                     var a = (PreparedItemsComparisonInput) before.input();
                     var b = (PreparedItemsComparisonInput) after.input();
                     a.capture(cancellation);
@@ -133,22 +151,45 @@ final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
 
             @Override
             public ComparisonService.MemoryPlan memoryPlan() {
-                return snapshot == null
+                return snapshot == null && !effects
                         ? ComparisonService.MemoryPlan.standard()
                         : ComparisonService.MemoryPlan.withSnapshotMetadata();
             }
 
             @Override
             public TempBudget.Reservation retainedMetadata() {
-                return snapshot == null ? null : snapshot.metadataReservation();
+                return snapshot != null ? snapshot.metadataReservation()
+                        : effectsSnapshot == null ? null : effectsSnapshot.metadataReservation();
             }
 
             @Override
             public void close() {
                 if (snapshot != null) snapshot.close();
+                if (effectsSnapshot != null) effectsSnapshot.close();
+                if (effectsPendingMetadata != null) effectsPendingMetadata.close();
                 if (budget != null) budget.close();
             }
         };
+    }
+
+    static EffectsSnapshot beginEffectsSnapshot(TempBudget budget, TempBudget.Reservation pending,
+            EffectsSnapshot.Endpoint a, EffectsSnapshot.Endpoint b, Cancellation token) throws java.io.IOException {
+        pending.requireMemory(budget, EffectsSnapshot.METADATA_BYTES);
+        var snapshot = new EffectsSnapshot(budget, a, b, token);
+        pending.close();
+        return snapshot;
+    }
+
+    static void finishEffectsInputs(EffectsSnapshot snapshot, PreparedEffectsComparisonInput a,
+            PreparedEffectsComparisonInput b) throws Exception {
+        var scope = snapshot.sealScope();
+        if (scope.identity() != com.vibeminer.concepts.effects.PreparedItemEffectTypes.IdentityAdmission.ADMITTED
+                || scope.assessed().isEmpty()) {
+            throw new IllegalStateException("No compatible recorded item-effect relation fields are available. "
+                    + String.join("; ", scope.reasons()));
+        }
+        a.finish(snapshot, EffectsSnapshot.Side.A);
+        b.finish(snapshot, EffectsSnapshot.Side.B);
     }
 
     private ComparisonCoordinator.Opened open(
@@ -218,6 +259,22 @@ final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
                                                 temporaryParent,
                                                 budget,
                                                 cancellation));
+            } else if (area.equals("Item effects")) {
+                if (!definitions) {
+                    throw new IllegalStateException("Table definitions are disabled; item effects comparison is unavailable.");
+                }
+                var issues = work.keysPreparedLocal(token);
+                dependencies.put("effects.bootstrap.key-issues", String.join("; ", issues.stream().limit(16)
+                        .map(issue -> issue.substring(0, Math.min(1024, issue.length()))).toList()));
+                dependencies.put("comparison.policy", "item-effects-increment-B-v1");
+                dependencies.put("scope.description", "Recorded item-effect links and individually verified numeric inputs; "
+                        + "membership unknown; spell names, descriptions, formulas and assets unassessed");
+                var endpoint = new EffectsSnapshot.Endpoint(work.filesHandle().build(), locale,
+                        java.util.UUID.randomUUID().toString(), dependencies);
+                input = new PreparedEffectsComparisonInput(descriptor(build, locale, EffectsSnapshot.NAMESPACE,
+                        "item-effects-increment-B-pending", dependencies), endpoint,
+                        (effectsSnapshot, effectsSide, cancellation) -> LocalEffectsComparison.capture(work,
+                                locale, effectsSide, effectsSnapshot, temporaryParent, budget, cancellation));
             } else if (area.equals("Files")) {
                 dependencies.put(
                         "scope.description",

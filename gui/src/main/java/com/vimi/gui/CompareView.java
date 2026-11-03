@@ -68,6 +68,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                     "Files",
                     "Tables",
                     "Items",
+                    "Item effects",
                     "Creatures",
                     "NPCs",
                     "Quests",
@@ -347,8 +348,8 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                         empty || value == null
                                                 ? null
                                                 : resultLabel(value)
-                                                        + " · ID "
-                                                        + displayIdentity(value.key())
+                                                        + " · "
+                                                        + identityTitle(value.key())
                                                         + " · Canonical identity "
                                                         + value.key());
                             }
@@ -430,7 +431,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                     .add(
                             text(
                                     session == null
-                                            ? "Not compared. Choose Files, Tables or Items, then"
+                                            ? "Not compared. Choose Files, Tables, Items or Item effects, then"
                                                     + " Compare local data."
                                             : "Session-only "
                                                     + runArea
@@ -444,7 +445,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                                     + " omitted; other areas are not assessed.",
                                     "muted"));
             content.getChildren().addAll(pageStatus, coverageDetails);
-        } else if (area.equals("Files") || area.equals("Tables") || area.equals("Items")) {
+        } else if (area.equals("Files") || area.equals("Tables") || area.equals("Items") || area.equals("Item effects")) {
             content.getChildren()
                     .add(
                             text(
@@ -452,6 +453,9 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                             ? "Recorded columns from one prepared table. Membership"
                                                     + " is uncertified; gameplay meaning is"
                                                     + " unassessed."
+                                            : area.equals("Item effects")
+                                                    ? "Recorded links and verified numeric inputs. Relation membership is uncertified; "
+                                                            + "spell names, descriptions and gameplay calculations are unassessed."
                                             : area.equals("Items")
                                                     ? "Recorded Item / ItemSparse facts with"
                                                             + " source-qualified conflicts."
@@ -501,7 +505,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                         || running()
                         || !(area.equals("Files")
                                 || area.equals("Tables")
-                                || area.equals("Items")));
+                                || area.equals("Items") || area.equals("Item effects")));
         rawCompare.setDisable(pending || running() || !area.equals("Tables"));
         selectedTable.setDisable(
                 !inventoryTableSelection(results.getSelectionModel().getSelectedItem()));
@@ -638,7 +642,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                         || pending
                         || !(selectedArea.equals("Files")
                                 || selectedArea.equals("Tables")
-                                || selectedArea.equals("Items")));
+                                || selectedArea.equals("Items") || selectedArea.equals("Item effects")));
         var message =
                 progress.state() == ComparisonTypes.RunState.COMPLETED
                         ? conciseProgressMessage(progress.message())
@@ -696,7 +700,8 @@ final class CompareView extends BorderPane implements AutoCloseable {
 
     private static String requestMode(Request request) {
         return request.tableId() == null
-                ? request.area().equals("Items")
+                ? request.area().equals("Item effects") ? "Recorded item effects"
+                        : request.area().equals("Items")
                         ? "Recorded Items facts"
                         : request.area() + " inventory"
                 : "Raw table rows · FileDataID " + request.tableId();
@@ -709,6 +714,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                         ? "Prepared table rows"
                         : "Tables".equals(runArea)
                                 ? "Table inventory"
+                                : "Item effects".equals(runArea) ? "Recorded item effects"
                                 : "Items".equals(runArea)
                                         ? "Recorded Items facts"
                                         : "Selected-locale file inventory";
@@ -765,10 +771,25 @@ final class CompareView extends BorderPane implements AutoCloseable {
     }
 
     private static String displayIdentity(String key) {
+        if (key.matches("[BD][0-9]{40}")) {
+            return "Item " + new java.math.BigInteger(key.substring(1, 21))
+                    + (key.charAt(0) == 'B' ? " · bridge link " : " · effect ")
+                    + new java.math.BigInteger(key.substring(21));
+        }
         return key.matches("[0-9]{20}") ? new java.math.BigInteger(key).toString() : key;
     }
 
+    private static String identityTitle(String key) {
+        return key.matches("[BD][0-9]{40}") ? displayIdentity(key) : "ID " + displayIdentity(key);
+    }
+
     private static String fieldLabel(String key) {
+        if (key.equals("effect.target.availability")) return "Effect row availability";
+        if (key.startsWith("effect.")) {
+            var parts = key.split("\\.", 3);
+            if (parts.length == 3) return (parts[1].equals("BRIDGE") ? "ItemXItemEffect" : "ItemEffect")
+                    + " · " + parts[2];
+        }
         if (key.startsWith("item.")) {
             var parts = key.split("\\.", 5);
             if (parts.length == 5) {
@@ -864,7 +885,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                                             || mode.equals("All findings")
                                                             || label.equals(mode))
                                                     && (query.isEmpty()
-                                                            || (row.key() + " " + row.fields())
+                                                            || (row.key() + " " + row.fields() + ("Item effects".equals(runArea) ? " " + displayIdentity(row.key()) : ""))
                                                                     .toLowerCase(
                                                                             java.util.Locale.ROOT)
                                                                     .contains(query));
@@ -915,10 +936,10 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                     "muted"));
             return;
         }
-        var identity = text("ID " + displayIdentity(row.key()), "h3");
+        var identity = text(identityTitle(row.key()), "h3");
         identity.setTooltip(new javafx.scene.control.Tooltip("Canonical identity: " + row.key()));
         identity.setAccessibleText(
-                "ID " + displayIdentity(row.key()) + " · Canonical identity " + row.key());
+                identityTitle(row.key()) + " · Canonical identity " + row.key());
         inspector
                 .getChildren()
                 .addAll(

@@ -23,6 +23,7 @@ public final class ComparisonCoordinatorTest {
     public static void main(String[] args) throws Exception {
         var directory = Files.createTempDirectory("vimi-comparison-coordinator-");
         try {
+            LocalEffectsComparisonTest.run(directory);
             normalPair(directory);
             cancelOpening(directory);
             cancelReads(directory);

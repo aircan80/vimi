@@ -30,6 +30,7 @@ import java.util.UUID;
 
 /** Session-bound compact effects dictionaries; the owner keeps the lease through result paging. */
 public final class EffectsSnapshot implements AutoCloseable {
+    public static final String NAMESPACE = "item-effects.parent-own-link.v1";
     public static final long METADATA_BYTES = 1L << 20;
     private static final long SOURCE_METADATA_BYTES = 128L << 10;
 
@@ -110,7 +111,8 @@ public final class EffectsSnapshot implements AutoCloseable {
     private final Map<Side, RelationMode> modes = new EnumMap<>(Side.class);
     private final SourceInfo[] sources = new SourceInfo[4];
     private final Map<String, Long> omissions = new LinkedHashMap<>();
-    private long retained = 32768;
+    // Fixed envelope for paired masks/reasons and both final descriptor dictionaries.
+    private long retained = 128L << 10;
     private Scope scope;
     private String fieldScope;
     private boolean closed;
@@ -270,6 +272,20 @@ public final class EffectsSnapshot implements AutoCloseable {
         if (mode == null || mode != modes.get(Side.B)) {
             reasons.add(
                     "Relation profiles unavailable or incompatible; no cross-profile identity mapping.");
+            for (var side : Side.values()) {
+                var notes = new ArrayList<String>();
+                for (var info : sources) {
+                    if (info == null || info.ref().side() != side) {
+                        continue;
+                    }
+                    String code =
+                            info.compilation().omissions().isEmpty()
+                                    ? ""
+                                    : "/" + info.compilation().omissions().getFirst().code();
+                    notes.add(info.stamp().tableName() + "=" + info.state() + code);
+                }
+                reasons.add(side + ": mode=" + modes.get(side) + "; " + String.join(", ", notes));
+            }
             return seal(new Scope(IdentityAdmission.UNKNOWN, null, fields, false, reasons));
         }
         var relation = pair(relationRef(Side.A), relationRef(Side.B), fields, reasons);
@@ -298,7 +314,16 @@ public final class EffectsSnapshot implements AutoCloseable {
             fields.add(new FieldSpec(binding.key(), a.kind(), binding.left(), binding.right()));
         }
         if (!p.omissions().isEmpty()) {
-            reasons.add(a.kind() + ": " + p.omissions().size() + " fields unassessed.");
+            reasons.add(
+                    a.kind()
+                            + ": "
+                            + p.omissions().stream()
+                                    .map(
+                                            o ->
+                                                    Objects.toString(o.field(), "source")
+                                                            + " "
+                                                            + o.code())
+                                    .collect(java.util.stream.Collectors.joining(", ")));
         }
         return p;
     }
@@ -349,6 +374,17 @@ public final class EffectsSnapshot implements AutoCloseable {
         result.put("effects.omissionCounts", omissions.toString());
         result.put("effects.endpointSession", endpoint(side).sessionId());
         result.put("effects.fieldScope", fieldScope == null ? "pending" : fieldScope);
+        if (scope != null) {
+            result.put("effects.scope.identity", scope.identity().name());
+            result.put("effects.scope.mode", String.valueOf(scope.mode()));
+            result.put("effects.scope.targetAssessed", Boolean.toString(scope.targetAssessed()));
+            result.put(
+                    "effects.scope.assessed",
+                    scope.assessed().stream()
+                            .map(FieldSpec::key)
+                            .collect(java.util.stream.Collectors.joining(", ")));
+            result.put("effects.scope.reasons", String.join("; ", scope.reasons()));
+        }
         for (var info : sources) {
             if (info == null || info.ref().side() != side) {
                 continue;
@@ -391,7 +427,7 @@ public final class EffectsSnapshot implements AutoCloseable {
                 hash(session + side + canonical(values)),
                 endpoint(side).build().product(),
                 endpoint(side).locale(),
-                "item-effects." + String.valueOf(scope.mode()) + ".parent-own-link.v1",
+                NAMESPACE,
                 fieldScope,
                 values);
     }
