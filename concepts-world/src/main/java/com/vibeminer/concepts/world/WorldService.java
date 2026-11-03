@@ -45,6 +45,38 @@ public final class WorldService implements BuildWorld {
 
     public record LoadedTile(WorldFormats.Tile tile, WorldFormats.Terrain terrain, String issue) {}
 
+    /** Detached top-left ARGB artwork, bounded to one 256-pixel mip. */
+    public record Minimap(int width, int height, java.nio.IntBuffer pixels, String issue) {
+        public Minimap {
+            if (pixels == null) {
+                if (width != 0 || height != 0 || issue == null) {
+                    throw new IllegalArgumentException("Missing minimap requires an issue");
+                }
+            } else {
+                if (width < 1
+                        || height < 1
+                        || width > 256
+                        || height > 256
+                        || pixels.remaining() != width * height) {
+                    throw new IllegalArgumentException("Minimap dimensions outside bounds");
+                }
+                int[] copy = new int[pixels.remaining()];
+                pixels.duplicate().get(copy);
+                pixels = java.nio.IntBuffer.wrap(copy).asReadOnlyBuffer();
+            }
+        }
+
+        @Override
+        public java.nio.IntBuffer pixels() {
+            return pixels == null ? null : pixels.asReadOnlyBuffer();
+        }
+
+        public static Minimap unavailable(String issue) {
+            return new Minimap(0, 0, null, java.util.Objects.requireNonNull(issue));
+        }
+    }
+
+    private final WorldMinimaps minimaps;
     private final BuildTables tables;
     private final BuildFiles files;
     private final ThreadPoolExecutor worker =
@@ -65,6 +97,7 @@ public final class WorldService implements BuildWorld {
     public WorldService(BuildTables tables, BuildFiles files) {
         this.tables = java.util.Objects.requireNonNull(tables);
         this.files = files;
+        this.minimaps = new WorldMinimaps(files);
     }
 
     public CompletableFuture<Catalog> catalog(Cancellation token) {
@@ -444,6 +477,12 @@ public final class WorldService implements BuildWorld {
         return result.copy();
     }
 
+    @Override
+    public CompletableFuture<Minimap> minimap(WorldFormats.Tile tile, Cancellation token) {
+        return minimaps.image(
+                java.util.Objects.requireNonNull(tile), java.util.Objects.requireNonNull(token));
+    }
+
     public synchronized CompletableFuture<Void> closeAsync() {
         if (closing != null) {
             return closing.copy();
@@ -455,11 +494,13 @@ public final class WorldService implements BuildWorld {
                 areaNavigation == null
                         ? CompletableFuture.<Void>completedFuture(null)
                         : areaNavigation.closeAsync();
+        var minimapsClosed = minimaps.closeAsync();
         Thread.startVirtualThread(
                 () -> {
                     try {
                         while (!worker.awaitTermination(1, TimeUnit.SECONDS)) {}
                         areasClosed.join();
+                        minimapsClosed.join();
                         cache.clear();
                         closing.complete(null);
                     } catch (InterruptedException e) {

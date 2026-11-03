@@ -37,6 +37,7 @@ dependencies {
     api project(':formats-world')
     api project(':formats-tables')
     api project(':files')
+    implementation project(':formats-assets')
 
     testImplementation platform('org.junit:junit-bom:5.13.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'

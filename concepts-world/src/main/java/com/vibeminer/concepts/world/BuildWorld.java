@@ -32,6 +32,15 @@ public interface BuildWorld extends AutoCloseable {
                 new UnsupportedOperationException("Area terrain entry is unavailable"));
     }
 
+    /**
+     * Recorded minimap artwork only; custom providers may explicitly omit this optional feature.
+     */
+    default CompletableFuture<WorldService.Minimap> minimap(
+            WorldFormats.Tile tile, Cancellation token) {
+        return CompletableFuture.completedFuture(
+                WorldService.Minimap.unavailable("Minimap artwork unavailable"));
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override
