@@ -164,7 +164,7 @@ public final class BuildOverviewView {
             VBox retention=new VBox(14,text("Download & storage","h2"),text(downloadControls==null?"Content downloads on demand. Bulk download is unavailable.":"Choose background retention of all published encoded variants.","muted"),
                     downloadControls==null?choices:downloadControls,text(downloadControls==null?"On demand · media loads as you explore":"Bulk downloads continue while you browse other builds and resume after restart.","muted"),
                     liveFact("Stored / published encoded payloads",retainedStored),
-                    liveFact("Derived payloads · measured portion",derivedValue),derivedScope,
+                    liveFact("Derived payloads",derivedValue),derivedScope,
                     liveFact("Whole library · file lengths",libraryValue),libraryScope,
                     liveFact("Selected variants stored at last file assessment",retainedIds),
                     liveFact("Unknown decoded sizes",unknownSizes),text("File presence counts are not encoded byte coverage, installed-game size or reclaimable disk space.","muted"));

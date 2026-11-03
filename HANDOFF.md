@@ -1,5 +1,21 @@
 # vimi development handoff
 
+## Download all — persistent background policy (2026-11-02)
+
+Story #74 wires native Overview policy to the existing DownloadAllJobs engine.
+`BuildDownloads` persists intent and final outcome in versioned `builds_download_*`
+tables and runs one independent owner-bound context at a time; other builds queue.
+Changing/closing research workspaces does not stop downloads. Pause/resume and
+On demand cancel work without deleting stored bytes. Active intent resumes after
+restart; terminal failures require explicit Retry. The app must remain running;
+there is no OS background service. Scope is all distinct published EN variants,
+not decoded files, an installed-game selection or generation of all derived data.
+
+New policy and real offline native-runner harnesses run in `:gui:check`; an opt-in
+JavaFX fixture renders the controls without touching user data. See
+`docs/download-all.md` and its authored screenshot. #64's accounting changes are
+included as ancestry; preserve both features when merging with FF-only/squash.
+
 ## Accounting completion — #64 (2026-11-02)
 
 Shared-library ownership replaces the old asset/provider inventory follow-up's
