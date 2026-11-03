@@ -141,10 +141,20 @@ final class GpuCameraTest {
             camera.modelToClip().position(3);
             assertEquals(0, camera.modelToClip().position());
         }
+        var retina =
+                GpuCamera.create(scene(), 1920, 1440, StaticMeshRenderer.View.initial(), false);
+        assertEquals(1920, retina.width());
+        assertEquals(1440, retina.height());
+        GpuCamera.create(scene(), 8192, 8192, StaticMeshRenderer.View.initial(), false);
         assertThrows(
                 IllegalArgumentException.class,
                 () ->
                         GpuCamera.create(
-                                scene(), 1601, 200, StaticMeshRenderer.View.initial(), false));
+                                scene(), 8193, 1440, StaticMeshRenderer.View.initial(), false));
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        GpuCamera.create(
+                                scene(), 1920, 8193, StaticMeshRenderer.View.initial(), false));
     }
 }

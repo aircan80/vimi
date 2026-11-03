@@ -21,7 +21,7 @@ public final class GpuCamera {
             int height,
             StaticMeshRenderer.View view,
             boolean homogeneousDepth) {
-        if (width < 1 || height < 1 || width > 1600 || height > 1200) {
+        if (width < 1 || height < 1 || width > 8192 || height > 8192) {
             throw new IllegalArgumentException("Preview image exceeds bounds");
         }
         this.width = width;
