@@ -51,9 +51,15 @@ public final class VimiApp extends Application {
             new javafx.animation.KeyFrame(javafx.util.Duration.seconds(1), event -> updateOpeningActivity()));
     private javafx.scene.control.Dialog<Void> realOpeningDialog;
     private final Button openingActivity = new Button();
-    private final Map<String, com.vibeminer.builds.BuildTypes.BuildOpenResult> realOpened = new java.util.LinkedHashMap<>();
+    private record LoadedMetadata(com.vibeminer.builds.BuildTypes.BuildRef build,
+            com.vibeminer.builds.BuildTypes.BuildMetadata metadata) {}
+    private final Map<String, LoadedMetadata> realOpened = new java.util.LinkedHashMap<>();
     private final Map<String, String> closedPreparations = new HashMap<>();
     private final Map<String, String> openingProblems = new HashMap<>();
+    private BuildInfo metadataOverviewBuild;
+    private VBox metadataOverviewMetrics;
+    private BuildLoadSnapshot displayedLoadSnapshot;
+    private String accountingSelection;
     private long catalogGeneration;
     private final Button issuesButton = new Button("Refresh issues");
     private final javafx.scene.control.ProgressIndicator catalogActivity = new javafx.scene.control.ProgressIndicator(-1);
@@ -126,8 +132,8 @@ public final class VimiApp extends Application {
         column("Product", b -> b.edition() + " · " + b.product(), 225);
         column("Version", BuildInfo::version, 170);
         column("Build source", b -> b.source().label(), 110);
-        column("Downloaded", b -> mockMode() ? effectiveBuild(b).downloaded() : "Not measured", 110);
-        column("Preparation", this::preparationSummary, 230);
+        column("Stored", b -> mockMode() ? effectiveBuild(b).downloaded() : loadStored(b), 110);
+        column("Status", this::preparationSummary, 230);
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
         table.setPlaceholder(new Label("No matching builds. Adjust or clear the filters."));
         table.getSelectionModel().selectedItemProperty().addListener((o, before, after) -> {
@@ -357,6 +363,15 @@ public final class VimiApp extends Application {
             return;
         }
         BuildInfo b = selected;
+        if (!mockMode() && service != null && !b.identity().equals(accountingSelection)) {
+            accountingSelection = b.identity();
+            service.refreshLoadSnapshot(b).whenComplete((snapshot, failure) -> Platform.runLater(() -> {
+                if (!closing && selected != null && selected.identity().equals(b.identity())) {
+                    table.refresh();
+                    inspect();
+                }
+            }));
+        }
         inspector.getChildren().addAll(label("SELECTED BUILD", "eyebrow"), label(b.version(), "h2"),
                 label("World of Warcraft · " + b.edition(), "muted"));
         if (!table.getItems().contains(b)) {
@@ -365,8 +380,14 @@ public final class VimiApp extends Application {
         inspector.getChildren().addAll(notice(b.source().label(), b.source().description()),
                 label("IDENTITY", "eyebrow"), fact("Product", b.product()), fact("Build config", b.config()),
                 label("OBSERVATION", "eyebrow"), fact(mockMode() ? "Advertised regions" : "Observed regions", b.regions().isEmpty() ? "Never observed by VibeMiner" : b.regions()),
-                fact("Downloaded", mockMode() ? effectiveBuild(b).downloaded() : "Not measured"));
+                fact("Stored", mockMode() ? effectiveBuild(b).downloaded() : loadStored(b)));
         if (!mockMode()) {
+            var load = service.loadSnapshot(b);
+            if (load != null) {
+                inspector.getChildren().add(fact("Load status", load.status()));
+                if (load.entry() != null && load.entry().errorMessage() != null)
+                    inspector.getChildren().add(notice("Last load", load.entry().errorMessage()));
+            }
             inspector.getChildren().addAll(
                     fact("Catalog identity", b.identity()),
                     fact("First observed", b.firstSeen() == null ? "Unknown" : b.firstSeen().toString()),
@@ -427,8 +448,12 @@ public final class VimiApp extends Application {
                 if (ready != null && ready.build().region().equals(regions.getValue().region()) && ready.build().cdnConfig().equals(regions.getValue().cdnConfig())) showOpenedBuild(b, ready);
                 else startRealOpening(b, regions.getValue());
             });
-            inspector.getChildren().addAll(label("SOURCE REGION", "eyebrow"), regions, label("LOCALE", "eyebrow"), locale, open,
-                    label("Overview opens after metadata. Files and known table data prepare in the background; community names and media do not block readiness.", "muted"));
+            inspector.getChildren().addAll(label("SOURCE REGION", "eyebrow"), regions);
+            if (service.preparation() != null) inspector.getChildren().addAll(label("LOCALE", "eyebrow"), locale);
+            inspector.getChildren().addAll(open,
+                    label(service.preparation() == null
+                            ? "Loading verifies build metadata and indexes object ownership. Tables, items and other research data are not prepared."
+                            : "Overview opens after metadata. Files and known table data prepare in the background; community names and media do not block readiness.", "muted"));
             if (openingProblems.containsKey(b.identity())) inspector.getChildren().add(notice("Opening problem", openingProblems.get(b.identity())));
             return;
         }
@@ -540,7 +565,18 @@ public final class VimiApp extends Application {
     }
 
     private void updatePreparationActivity() {
-        if (closing || service == null || service.preparation() == null) return;
+        if (closing || service == null) return;
+        if (service.preparation() == null) {
+            if (table.getScene() != null) table.refresh();
+            if (metadataOverviewMetrics != null && metadataOverviewMetrics.getScene() != null) {
+                var snapshot = service.loadSnapshot(metadataOverviewBuild);
+                if (snapshot != displayedLoadSnapshot) {
+                    displayedLoadSnapshot = snapshot;
+                    updateBuildMetrics(metadataOverviewMetrics, snapshot);
+                }
+            }
+            return;
+        }
         if (viewedPreparation != null) liveHeaderStatus.setText(readyLabel(viewedPreparation.snapshot().ready()));
         var jobs = service.preparation().jobs();
         var focus = PreparationStatus.activityFocus(jobs,preparationFocus);
@@ -575,6 +611,7 @@ public final class VimiApp extends Application {
         openingActivity.setManaged(true);
         inspect();
         showRealOpening();
+        accountingSelection = null;
         service.opening().open(build, region).whenComplete((result, error) -> Platform.runLater(() -> {
             if (closing) return;
             realOpeningActive = false;
@@ -588,7 +625,7 @@ public final class VimiApp extends Application {
                 openingProblems.put(build.identity(), error instanceof java.util.concurrent.CancellationException
                         || error.getCause() instanceof java.util.concurrent.CancellationException ? "Opening canceled" : problem(error));
             } else if (result.state() == com.vibeminer.builds.BuildTypes.BuildOpenState.OPEN) {
-                realOpened.put(build.identity(), result);
+                realOpened.put(build.identity(), new LoadedMetadata(result.build(), result.opened().metadata()));
                 if (realOpened.size() > 4) realOpened.remove(realOpened.keySet().iterator().next());
             } else {
                 openingProblems.put(build.identity(), result.state() + " · " + result.part() + " · "
@@ -649,19 +686,42 @@ public final class VimiApp extends Application {
         dialog.show();
     }
 
-    private void showOpenedBuild(BuildInfo build, com.vibeminer.builds.BuildTypes.BuildOpenResult result) {
+    private void showOpenedBuild(BuildInfo build, LoadedMetadata result) {
         navigationGeneration++;
-        var metadata = result.opened().metadata();
-        var content = new VBox(16, label("BUILD OPENED", "eyebrow"), label(build.version(), "h1"),
+        var metadata = result.metadata();
+        var metrics = new VBox(8);
+        metadataOverviewBuild = build;
+        metadataOverviewMetrics = metrics;
+        displayedLoadSnapshot = service.loadSnapshot(build);
+        updateBuildMetrics(metrics, service.loadSnapshot(build));
+        service.refreshLoadSnapshot(build).whenComplete((snapshot, failure) -> Platform.runLater(() -> {
+            if (closing || metrics.getScene() == null) return;
+            updateBuildMetrics(metrics, service.loadSnapshot(build));
+        }));
+        var content = new VBox(16, label("BUILD LOADED", "eyebrow"), label(build.version(), "h1"),
                 fact("Product", build.product()), fact("Source region", result.build().region()),
                 fact("Build config", result.build().buildConfig()), fact("CDN config", result.build().cdnConfig()),
                 fact("Metadata build name", metadata.buildName()), fact("Files in ROOT", Integer.toString(metadata.fileCount())),
                 fact("Archives", Integer.toString(metadata.archiveCount())),
                 fact("Available locales", String.join(", ", metadata.locales())),
-                notice("Authenticated metadata is ready", "This is the opened build's metadata. Overview measurements and research screens will be connected separately."),
+                metrics,
+                notice("Authenticated metadata is ready", "Build loading is complete. Size accounting refreshes independently; no tables, items or other research data are prepared."),
                 button("Choose build", this::showBuilds));
         content.setPadding(new Insets(28));
         root.setCenter(scroll(content));
+    }
+
+    private void updateBuildMetrics(VBox target, BuildLoadSnapshot snapshot) {
+        target.getChildren().setAll(fact("Stored object data", snapshot == null ? "Not measured" : snapshot.stored()),
+                fact("Published CDN data", snapshot == null ? "Unknown" : snapshot.expected()));
+        if (snapshot != null && snapshot.usage() != null) {
+            var usage = snapshot.usage();
+            target.getChildren().addAll(fact("Unique original data", BuildLoadSnapshot.size(usage.original().uniqueToBuildBytes())),
+                    fact("Shared original data", BuildLoadSnapshot.size(usage.original().sharedWithBuildBytes())),
+                    fact("Derived object data", BuildLoadSnapshot.size(usage.derived().storedBytes())));
+            if (!usage.original().sharingComplete()) target.getChildren().add(label("Sharing is provisional while retained build inventories are incomplete.", "muted"));
+        }
+        if (snapshot != null && snapshot.problem() != null) target.getChildren().add(notice("Accounting unavailable", snapshot.problem()));
     }
 
     @Override
@@ -694,13 +754,22 @@ public final class VimiApp extends Application {
         return preparedResults.getOrDefault(build.config(), build);
     }
 
+    private String loadStored(BuildInfo build) {
+        BuildLoadSnapshot snapshot = service == null ? null : service.loadSnapshot(build);
+        return snapshot == null ? "Not measured" : snapshot.stored();
+    }
+
     private String preparationSummary(BuildInfo build) {
         if (!mockMode() && service != null && service.preparation() != null) {
             var jobs = service.preparation().jobs();
             return jobs.stream().filter(job -> job.build().identity().equals(build.identity())).reduce((before,after) -> after)
                     .map(job -> PreparationPane.describe(job.snapshot()) + " · " + job.locale()).orElseGet(() -> priorPreparationSummary(build));
         }
-        if (!mockMode()) { return realOpeningActive && realOpeningBuild.identity().equals(build.identity()) ? "Opening…" : realOpened.containsKey(build.identity()) ? "Opened" : "Not opened"; }
+        if (!mockMode()) {
+            BuildLoadSnapshot snapshot = service == null ? null : service.loadSnapshot(build);
+            if (snapshot != null) return snapshot.status();
+            return realOpeningActive && realOpeningBuild.identity().equals(build.identity()) ? "Loading…" : "Not loaded";
+        }
         var job = preparations.latest(build);
         return job == null ? (build.prepared() ? "Prepared" : "Not prepared") : job.summary();
     }

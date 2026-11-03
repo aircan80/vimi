@@ -44,46 +44,42 @@ flowchart TB
 | **6 — Game concepts** | `concepts-core`, `concepts-items`, `concepts-creatures`, `concepts-effects` | Join game tables into meaningful entities, attributes and relationships. Own item calculations and indexed grid queries. |
 | **7 — Application/UI** | `gui` | Compose services, manage preparation/activity, present pages and request details/media asynchronously. |
 
-## Accounting is an application service
+## Unified pack library and accounting
 
-`accounting` exposes a JavaFX-free reporting interface and a rebuildable SQLite
-reference projection. The application composes adapters from Builds, Files, Formats
-and Concepts; those lower components do not depend on accounting. Canonical retained
-build membership persists separately from live GUI contexts. Original/derived
-payload attribution, provider/global scope, coverage and whole-library file lengths
-remain distinct. Accounting never gates readiness or authorizes deletion. See
-[accounting/README.md](accounting/README.md).
-
-## Unified library services
-
-The new SQLite backend and ownership catalog share one library database through
-separate components. `storage_*` tables belong to the object backend and `catalog_*`
-tables belong to ownership accounting. The generated-store facade borrows that
-same backend. These are naming conventions inside SQLite, not database schemas.
+Object payloads live in packfiles. One SQLite index/catalog records physical
+location, integrity, canonical BUILD/GLOBAL ownership, expected references and
+persisted build-list status. The generated-store facade borrows the same engine.
+Existing pack-index tables remain compatible with the reused engine, while new
+metadata follows `storage_*`, `catalog_*` and `builds_*` ownership conventions.
+SQLite has no named schemas inside one file; these prefixes document boundaries.
 See [the service guide](docs/unified-storage-services.md).
 
-Domain components retain their own query APIs and table ownership. The GUI calls
-item search/paging services rather than accessing SQLite directly. Existing item
-and build query projections remain separate until deliberately integrated. Their
-relational bytes are excluded from the new per-object build-size accounting.
+Each operation captures an immutable owner capability. Payload fsync precedes the
+FULL transaction publishing index and ownership together. Accounting joins expected
+references directly to physical presence; there is no second presence index to
+refresh. Unknown inventories remain provisional, and relational table bytes stay
+outside per-build object totals. Original/derived is an accounting category, not a
+retention rule. The old `accounting.UsageIndex` remains for legacy compatibility and
+read-only intent import, not the new native app's authoritative presence source.
 
-The desktop application still uses its existing stores while preservation and
-activation work proceeds; new services do not silently migrate or discard data.
-[The rollout plan](docs/unified-storage-rollout.md) records the remaining gates.
+Domain components retain their own query APIs and table ownership. Future item or
+Questie relational projections may share the database, but the GUI calls search/
+paging services rather than arbitrary SQL. Existing query projections remain
+separate until deliberately integrated in phase two.
 
-## Preparation and persistence
+## Builds-only phase
 
-Opening a build acquires metadata and opens Overview. Background preparation then
-restores or builds the file catalog, bootstraps table keys, prepares known tables
-and initializes research lookups. Community filename enrichment runs separately.
-Media content is requested on demand.
+The native app currently discovers and loads authenticated configuration, ROOT and
+ENCODING metadata, exposing the expected object ledger for build-size accounting.
+It skips archive indexes, file-catalog preparation, tables, items and research jobs.
+Statuses come from `BuildRegistry` tables and survive restart. LOADED describes
+metadata opening, not a complete download or research readiness. Inventory indexing
+and size refresh run independently of navigation and metadata load completion.
 
-Original CDN objects and generated data have separate storage roles. Prepared file
-catalogs, decoded tables and item-grid indexes persist across runs; reopening checks
-whether their identities still match. The matching completed table inventory is
-restored without opening every table; each requested table retains its normal
-validation and repair path. A saved historical readiness label does not
-by itself make a newly opened workspace ready.
+Existing history, saved receipts and canonical owner intent are preserved before
+activation. Old stores stay intact and can supply cached CDN bytes read-only.
+New metadata contexts keep ownership fixed even when switching builds. See
+[the rollout record](docs/unified-storage-rollout.md) for migration and recovery.
 
 ## Questie stays independent
 

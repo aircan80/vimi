@@ -13,6 +13,12 @@ public interface BuildService {
         return listBuilds();
     }
 
+    default BuildLoadSnapshot loadSnapshot(BuildInfo build) { return null; }
+
+    default CompletableFuture<BuildLoadSnapshot> refreshLoadSnapshot(BuildInfo build) {
+        return CompletableFuture.completedFuture(loadSnapshot(build));
+    }
+
     default String historicalPreparation(BuildInfo build) { return null; }
 
     default BuildPreparation preparation() { return null; }

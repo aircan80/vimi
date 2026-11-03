@@ -1,5 +1,51 @@
 # vimi development handoff
 
+## Current milestone — pack library and builds-only loading (2026-11-02)
+
+This section supersedes all all-SQLite payload plans below. The user selected the
+existing pack engine for bytes with one unified SQLite index/catalog, and asked to
+stop at build loading with persisted list status and build-size accounting. No
+archive indexes, file catalogs, tables, items or research preparation are started
+by the native app in this phase. Provider relational projections are phase two.
+
+- `ObjectStore.openLibrary(folder)` uses mixed kind 2, one `objects.sqlite3`, a live
+  `storage_objects` view and canonical owner-bound capabilities. Pack fsync precedes
+  FULL index+ownership publication. Raw unowned writes are refused; cache hits and
+  duplicate puts attach owners before completion. Original/derived remains descriptive.
+- Unified index recovery never deletes authoritative catalog/build tables. Uncommitted
+  tails truncate to indexed boundaries. Legacy kinds 0/1 retain their C# format path;
+  the new mixed library is not opened by old C# tools.
+- `BuildRegistry` persists DISCOVERED/LOADING/LOADED/FAILED/INTERRUPTED in `builds_*`.
+  LOADING becomes INTERRUPTED on restart. LOADED means authenticated metadata, not
+  a complete download or table readiness. Catalog discovery remains a separate,
+  disposable projection; all authoritative status/ownership is in the library DB.
+- `BuildOpener.openMetadataBuild` authenticates configs/ROOT/ENCODING without indexes.
+  `BuildObjectInventory` publishes EN refs in bounded, bulk-inserted pages. Size
+  reporting joins physical presence directly, excluding relational DB bytes.
+  Native list/overview uses cached async status/figures; unknown sizes are not zero.
+- `PackGeneratedStore` is a non-owning reader/writer over the same pack library.
+  Existing generated record encoding remains unchanged. No table/item facade is
+  constructed by current `BuildApplication`.
+- First startup preserves old history, saved receipts and retained canonical owners,
+  keeping source stores intact. Legacy CDN payloads can be reused lazily read-only.
+  `PackLibraryMigration` holds the old writer lease while borrowing the source;
+  close the old running application before starting the updated native one.
+  Migration failure leaves no completed receipt; retries preserve existing targets.
+- Per-build contexts capture immutable ownership and close after inventory work,
+  including cancellation/reporting failure/duplicates. UI caches only lightweight
+  metadata after contexts close, avoiding retention of entire ROOT/EN graphs.
+- Linux checks: 699 JUnit cases passed, one existing explicit-library probe skipped;
+  all GUI harnesses passed. Original object/generated Java-C# interop passed.
+  New fixture tests metadata-only load, status/accounting, cancellation and restart.
+  Final GUI rerun includes cancellation/reporting-failure and duplicate context
+  cleanup regressions; hosted platform CI follows PR.
+- Current running installed GUI was NOT replaced/restarted and live user data was
+  NOT used for fixtures. Local Linux ARM64 Gradle GUI checks require the existing
+  external JavaFX SDK init override described below.
+- Tracked milestone #70; #68/#69 reflect historical candidate/service work. Service
+  guide: docs/unified-storage-services.md. Existing experiment classes remain opt-in;
+  they are not the native application's chosen payload backend.
+
 ## Active service buildout — unified SQLite storage (2026-11-02)
 
 The user approved a team production buildout and expects app/accounting performance

@@ -4,7 +4,6 @@ import com.vibeminer.access.CachingObjectSource;
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.access.ObjectSource;
 import com.vibeminer.access.ObservationAdapters;
-import com.vibeminer.builds.BuildOpener;
 import com.vibeminer.builds.Catalog;
 import com.vibeminer.builds.Products;
 import com.vibeminer.network.NetworkClients;
@@ -53,186 +52,154 @@ public final class BuildApplication {
         var result = new CompletableFuture<BackendBuildService>();
         var token = new Cancellation();
         result.whenComplete(
-                (value, error) -> {
+                (value, failure) -> {
                     if (result.isCancelled()) token.cancel();
                 });
-        try {
-            Thread.startVirtualThread(
-                    () -> {
-                        ObjectStore objects = null;
-                        NetworkClients network = null;
-                        CachingObjectSource source = null;
-                        CachingObjectSource localSource = null;
-                        Catalog catalog = null;
-                        BuildOpener opener = null;
-                        BuildOpening opening = null;
-                        BuildPreparation preparation = null;
-                        com.vibeminer.generated.DiskGeneratedStore generated = null;
-                        OverviewAccounting accounting = null;
-                        BackendBuildService service = null;
-                        try {
-                            token.check();
-                            objects = ObjectStore.open(directory.resolve("objects")).join();
-                            token.check();
-                            network = new NetworkClients();
-                            source =
-                                    new CachingObjectSource(
-                                            objects,
-                                            objects,
-                                            objects,
-                                            null,
-                                            network,
-                                            List.of(
-                                                    ObservationAdapters.versions(network),
-                                                    ObservationAdapters.listfile(network),
-                                                    ObservationAdapters.definitions(network)));
-                            localSource = CachingObjectSource.localOnly(objects, objects);
-                            catalog =
-                                    Catalog.open(
-                                                    source,
-                                                    directory.resolve("catalog.sqlite"),
-                                                    new Catalog.Options(),
-                                                    token)
-                                            .join();
-                            token.check();
-                            opener = new BuildOpener(source);
-                            opening = new BuildOpening(opener);
-                            generated =
-                                    com.vibeminer.generated.DiskGeneratedStore.open(
-                                                    directory.resolve("generated"))
-                                            .join();
-                            var ownedGenerated = generated;
-                            var preparationHistory = new PreparationHistory(generated);
-                            preparationHistory.load();
-                            accounting =
-                                    OverviewAccounting.open(
-                                            directory,
-                                            objects,
-                                            ownedGenerated,
-                                            (com.vibeminer.access.StoreCommits) source);
-                            if (accounting != null) {
+        Thread.startVirtualThread(
+                () -> {
+                    var cleanup = new ArrayList<Supplier<CompletableFuture<Void>>>();
+                    try {
+                        token.check();
+                        var library = ObjectStore.openLibrary(directory.resolve("library")).join();
+                        cleanup.add(library::closeAsync);
+                        var ownership =
+                                com.vibeminer.store.LibraryCatalog.open(library.databasePath())
+                                        .join();
+                        cleanup.addFirst(ownership::closeAsync);
+                        var migration =
+                                PackLibraryMigration.open(directory, library, ownership).join();
+                        cleanup.addFirst(
+                                () -> {
+                                    migration.close();
+                                    return CompletableFuture.completedFuture(null);
+                                });
+                        var registry =
+                                com.vibeminer.builds.BuildRegistry.open(library.databasePath())
+                                        .join();
+                        cleanup.addFirst(registry::closeAsync);
+                        var saved =
+                                new PreparationHistory(
+                                        new com.vibeminer.generated.PackGeneratedStore(
+                                                library,
+                                                library.forOwner(
+                                                        "library:saved-builds",
+                                                        com.vibeminer.store.LibraryCatalog.Scope
+                                                                .GLOBAL,
+                                                        "receipts",
+                                                        com.vibeminer.store.LibraryCatalog.Role
+                                                                .DERIVED)));
+                        saved.load();
+                        for (var receipt : saved.retainedReceipts()) {
+                            ownership
+                                    .retainOwner(
+                                            receipt.identity(),
+                                            com.vibeminer.store.LibraryCatalog.Scope.BUILD)
+                                    .join();
+                            if (registry.get(
+                                                            receipt.identity(),
+                                                            com.vibeminer.store.Cancellation.NONE)
+                                                    .join()
+                                            == null
+                                    && receipt.cdnConfig() != null
+                                    && receipt.region() != null) {
+                                com.vibeminer.builds.BuildTypes.BuildRef savedRef;
                                 try {
-                                    for (String retained :
-                                            preparationHistory.retainedIdentities()) {
-                                        accounting
-                                                .index
-                                                .retain(
-                                                        retained,
-                                                        false,
-                                                        "encoding",
-                                                        com.vibeminer.accounting.UsageIndex.Role
-                                                                .BLIZZARD_ENCODED)
-                                                .join();
-                                    }
-                                } catch (RuntimeException unavailable) {
+                                    savedRef =
+                                            new com.vibeminer.builds.BuildTypes.BuildRef(
+                                                    receipt.product(),
+                                                    receipt.config(),
+                                                    receipt.cdnConfig(),
+                                                    receipt.region());
+                                } catch (IllegalArgumentException invalidRoute) {
                                     System.getLogger(BuildApplication.class.getName())
                                             .log(
                                                     System.Logger.Level.WARNING,
-                                                    "Prior accounting membership could not be"
-                                                        + " loaded");
+                                                    "A saved build has no usable metadata route;"
+                                                        + " its original receipt and ownership were"
+                                                        + " retained");
+                                    continue;
                                 }
+                                registry.observe(
+                                                receipt.identity(),
+                                                savedRef,
+                                                "Saved build",
+                                                receipt.locale(),
+                                                com.vibeminer.store.Cancellation.NONE)
+                                        .join();
                             }
-                            var ownedAccounting = accounting;
-
-                            var workspaceOpener = opener;
-                            var workspaceSource = source;
-                            var workspaceLocalSource = localSource;
-                            var community =
-                                    new com.vibeminer.files.names.CommunityFileNames(
-                                            source,
-                                            generated,
-                                            cancellation -> {
-                                                cancellation.check();
-                                                return CompletableFuture.completedFuture(true);
-                                            });
-                            preparation =
-                                    new BuildPreparation(
-                                            (build, region, locale) ->
-                                                    new NativePreparationWork(
-                                                                    build,
-                                                                    region,
-                                                                    locale,
-                                                                    workspaceOpener,
-                                                                    workspaceSource,
-                                                                    ownedGenerated,
-                                                                    community,
-                                                                    workspaceLocalSource,
-                                                                    directory
-                                                                            .resolve("derived")
-                                                                            .resolve("grids"))
-                                                            .withHistory(preparationHistory)
-                                                            .withAccounting(ownedAccounting));
-                            var ownedPreparation = preparation;
-                            var ownedOpener = opener;
-                            var ownedOpening = opening;
-                            var ownedObjects = objects;
-                            var ownedNetwork = network;
-                            var ownedSource = source;
-                            var ownedCatalog = catalog;
-                            service =
-                                    new BackendBuildService(
-                                                    catalog,
-                                                    cancellation ->
-                                                            discoverProducts(
-                                                                    ownedSource, cancellation),
-                                                    () ->
-                                                            closeAll(
-                                                                    List.of(
-                                                                            ownedPreparation
-                                                                                    ::closeAsync,
-                                                                            ownedOpening
-                                                                                    ::closeAsync,
-                                                                            () ->
-                                                                                    ownedAccounting
-                                                                                                    == null
-                                                                                            ? CompletableFuture
-                                                                                                    .completedFuture(
-                                                                                                            null)
-                                                                                            : ownedAccounting
-                                                                                                    .closeAsync(),
-                                                                            ownedOpener::closeAsync,
-                                                                            ownedCatalog
-                                                                                    ::closeAsync,
-                                                                            ownedSource::closeAsync,
-                                                                            workspaceLocalSource
-                                                                                    ::closeAsync,
-                                                                            ownedNetwork
-                                                                                    ::closeAsync,
-                                                                            ownedGenerated
-                                                                                    ::closeAsync,
-                                                                            ownedObjects
-                                                                                    ::closeAsync)))
-                                            .withOpening(opening)
-                                            .withPreparation(preparation)
-                                            .withHistory(preparationHistory);
-                            if (!result.complete(service)) service.closeAsync().join();
-                        } catch (Throwable failure) {
-                            try {
-                                if (service != null) service.closeAsync().join();
-                                else {
-                                    List<Supplier<CompletableFuture<Void>>> close =
-                                            new ArrayList<>();
-                                    if (preparation != null) close.add(preparation::closeAsync);
-                                    if (accounting != null) close.add(accounting::closeAsync);
-                                    if (opening != null) close.add(opening::closeAsync);
-                                    if (opener != null) close.add(opener::closeAsync);
-                                    if (catalog != null) close.add(catalog::closeAsync);
-                                    if (source != null) close.add(source::closeAsync);
-                                    if (localSource != null) close.add(localSource::closeAsync);
-                                    if (network != null) close.add(network::closeAsync);
-                                    if (generated != null) close.add(generated::closeAsync);
-                                    if (objects != null) close.add(objects::closeAsync);
-                                    closeAll(close).join();
-                                }
-                            } catch (Throwable closeFailure) {
-                                failure.addSuppressed(closeFailure);
-                            }
-                            result.completeExceptionally(failure);
                         }
-                    });
-        } catch (Throwable failure) {
-            result.completeExceptionally(failure);
-        }
+                        var network = new NetworkClients();
+                        cleanup.addFirst(network::closeAsync);
+                        var discovery =
+                                library.forOwner(
+                                        "library:discovery",
+                                        com.vibeminer.store.LibraryCatalog.Scope.GLOBAL,
+                                        "discovery",
+                                        com.vibeminer.store.LibraryCatalog.Role.ORIGINAL);
+                        var source =
+                                new CachingObjectSource(
+                                        discovery,
+                                        discovery,
+                                        discovery,
+                                        migration.legacyObjects(),
+                                        network,
+                                        List.of(
+                                                ObservationAdapters.versions(network),
+                                                ObservationAdapters.listfile(network),
+                                                ObservationAdapters.definitions(network)));
+                        cleanup.addFirst(source::closeAsync);
+                        var catalog =
+                                Catalog.open(
+                                                source,
+                                                directory.resolve("catalog.sqlite"),
+                                                new Catalog.Options(),
+                                                token)
+                                        .join();
+                        cleanup.addFirst(catalog::closeAsync);
+                        var contexts =
+                                new BuildMetadataContexts(
+                                        library, ownership, network, migration.legacyObjects());
+                        cleanup.addFirst(contexts::closeAsync);
+                        var indexToken = new com.vibeminer.store.Cancellation();
+                        var state =
+                                new BuildLoadState(
+                                        registry,
+                                        (info, opened) ->
+                                                com.vibeminer.builds.BuildObjectInventory.index(
+                                                        ownership,
+                                                        info.identity(),
+                                                        opened,
+                                                        indexToken),
+                                        owner -> ownership.figures(owner, indexToken),
+                                        contexts::release);
+                        cleanup.addFirst(state::closeAsync);
+                        cleanup.addFirst(
+                                () -> {
+                                    indexToken.cancel();
+                                    return CompletableFuture.completedFuture(null);
+                                });
+                        var opening = new BuildOpening(contexts::open, state);
+                        cleanup.addFirst(opening::closeAsync);
+                        token.check();
+                        var service =
+                                new BackendBuildService(
+                                                catalog,
+                                                cancellation ->
+                                                        discoverProducts(source, cancellation),
+                                                () -> closeAll(cleanup))
+                                        .withOpening(opening)
+                                        .withLoadState(state)
+                                        .withHistory(saved);
+                        if (!result.complete(service)) service.closeAsync().join();
+                    } catch (Throwable failure) {
+                        try {
+                            closeAll(cleanup).join();
+                        } catch (Throwable closeFailure) {
+                            failure.addSuppressed(closeFailure);
+                        }
+                        result.completeExceptionally(failure);
+                    }
+                });
         return result;
     }
 

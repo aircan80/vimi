@@ -18,6 +18,7 @@ final class PendingWrites {
     final long start;
     final long started;
     final List<Entry> entries = new ArrayList<>();
+    final List<LibraryOwnership.Attachment> claims = new ArrayList<>();
     final Map<ObjectKey, Boolean> keys = new HashMap<>();
     final CompletableFuture<Void> committed = new CompletableFuture<>();
     long end;

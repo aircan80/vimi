@@ -25,6 +25,37 @@ import org.junit.jupiter.api.Timeout;
 @Timeout(20)
 final class EarlyMetadataTest {
     @Test
+    void metadataBuildExposesInventoryWithoutFetchingArchiveOrFileIndexes() {
+        var fixture = new SyntheticBuild();
+        fixture.failures.put(
+                fixture.archiveIndexKey,
+                new SourceTypes.ObjectResult(
+                        fixture.archiveIndexKey,
+                        SourceTypes.ObjectState.NOT_FOUND,
+                        null,
+                        null,
+                        null,
+                        null,
+                        "UNEXPECTED_INDEX",
+                        "Index must not be requested",
+                        null));
+        var opener = new BuildOpener(fixture);
+        try {
+            var result = opener.openMetadataBuild(fixture.ref, Cancellation.NONE).join();
+            assertEquals(BuildOpenState.OPEN, result.state());
+            assertNotNull(result.opened());
+            assertFalse(result.opened().encodedContentPage(0, 1024).isEmpty());
+            assertEquals(2, result.opened().metadata().fileCount());
+            // The full opening path still requests indexes and preserves its normal failure.
+            assertEquals(
+                    BuildOpenState.MISSING,
+                    opener.open(fixture.ref, Cancellation.NONE).join().state());
+        } finally {
+            opener.closeAsync().join();
+        }
+    }
+
+    @Test
     void earlyMetadataNeverAcquiresIndexesAndFullOpeningReusesAuthenticatedContext() {
         var fixture = new SyntheticBuild();
         var keys = ConcurrentHashMap.<ObjectKey>newKeySet();

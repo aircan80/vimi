@@ -13,11 +13,25 @@ public final class DerivedSqliteConnection implements AutoCloseable {
     }
 
     private final NativeSqlite db;
+    private final boolean readOnly;
     private final Thread owner = Thread.currentThread();
     private boolean closed;
 
     public DerivedSqliteConnection(Path path) {
-        db = new NativeSqlite(path, false);
+        this(path, false);
+    }
+
+    /** Read-only domain access; opening does not set journal or synchronization pragmas. */
+    public static DerivedSqliteConnection openReadOnly(Path path) {
+        return new DerivedSqliteConnection(path, true);
+    }
+
+    private DerivedSqliteConnection(Path path, boolean readOnly) {
+        this.readOnly = readOnly;
+        db = new NativeSqlite(path, readOnly);
+        if (readOnly) {
+            return;
+        }
         try {
             db.exec("PRAGMA journal_mode=WAL");
             db.exec("PRAGMA synchronous=NORMAL");
@@ -72,6 +86,14 @@ public final class DerivedSqliteConnection implements AutoCloseable {
                     () -> {
                         if (!transaction) {
                             return work.apply(scope);
+                        }
+                        if (readOnly) {
+                            db.exec("BEGIN");
+                            try {
+                                return work.apply(scope);
+                            } finally {
+                                db.uncancelled(() -> db.exec("ROLLBACK"));
+                            }
                         }
                         var result = new java.util.concurrent.atomic.AtomicReference<T>();
                         db.transaction(false, () -> result.set(work.apply(scope)));

@@ -80,7 +80,7 @@ final class Format {
         ByteBuffer b = le(bytes);
         if (b.getShort(4) != 1
                 || b.getShort(6) != 64
-                || Integer.toUnsignedLong(b.getInt(12)) > 1
+                || Integer.toUnsignedLong(b.getInt(12)) > (expected == Kind.LIBRARY ? 2 : 1)
                 || !zero(bytes, 40, 60)) {
             throw newer();
         }
@@ -163,7 +163,9 @@ final class Format {
     }
 
     static boolean known(int type, Kind kind) {
-        return kind == Kind.CDN ? type >= 1 && type <= 6 : type == 7;
+        return kind == Kind.LIBRARY
+                ? type >= 1 && type <= 7
+                : kind == Kind.CDN ? type >= 1 && type <= 6 : type == 7;
     }
 
     static boolean zero(byte[] b, int from, int to) {

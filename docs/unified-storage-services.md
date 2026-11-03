@@ -1,137 +1,128 @@
-# Unified SQLite storage services
+# Unified pack library and build loading
 
-The library services are available separately from the legacy pack engine. The
-current desktop application still opens its existing stores; this change does not
-activate a migration or discard caches. The prototype measurements are in
-[the experiment notes](sqlite-blob-prototype.md), and remaining application adoption
-work is in [the rollout plan](unified-storage-rollout.md).
+The desktop now uses packfile payloads with one SQLite index/catalog under the
+application data directory's `library/` folder. The all-SQLite BLOB candidate was
+not selected: its measured payload performance was mixed. Existing `objects/` and
+`generated/` stores remain intact as migration/rollback sources.
 
-## Component boundaries
+## Storage boundary and tables
 
-`SqliteObjectStore` implements `ObjectReader`, `ObjectWriter` and `HistoryLog`.
-`SqliteGeneratedStore` implements `GeneratedStore` as a non-owning view over the
-same library, preserving generated record-file serialization. `LibraryCatalog`
-owns canonical build/global membership and inventory generations in that database.
-The application owns their lifecycle and closes the catalog before the shared
-object store after consumers have drained. Closing a generated facade must never
-close the library for other consumers; this facade has no independent close method.
+`ObjectStore.openLibrary(folder)` opens the shared original/generated pack engine.
+Its `databasePath()` is `folder/objects.sqlite3`. The database contains the pack
+index, live ownership, inventory generations and persisted build-list status.
+The proven index tables retain their existing names; `storage_objects` is a live
+view over the physical object index, not a copied presence projection. New storage
+metadata uses `storage_*`, ownership uses `catalog_*`, build status uses `builds_*`.
+These prefixes are conventions, not SQLite namespaces.
+
+Open `LibraryCatalog` on that same database, then create immutable owner capabilities:
 
 ```java
-Path database = directory.resolve("library.sqlite");
-SqliteObjectStore objects = SqliteObjectStore.open(database).join();
-try (LibraryCatalog catalog = LibraryCatalog.open(database).join()) {
-    GeneratedStore generated = new SqliteGeneratedStore(objects);
-    // Supply objects through ObjectReader/ObjectWriter/HistoryLog interfaces.
-    // Supply generated through GeneratedStore. Do not expose SQL sessions to UI controls.
-} finally {
-    objects.closeAsync().join();
-}
+ObjectStore library = ObjectStore.openLibrary(folder).join();
+LibraryCatalog catalog = LibraryCatalog.open(library.databasePath()).join();
+PackLibraryOwner owner = library.forOwner(canonicalBuildIdentity,
+        LibraryCatalog.Scope.BUILD, "metadata", LibraryCatalog.Role.ORIGINAL);
 ```
 
-This is a lifecycle example for a worker thread, not permission to block the GUI
-thread with `join`. Open, payload operations and catalog operations return futures.
+This example belongs on a worker, not the FX thread. Supply the owner capability
+through `ObjectReader`, `ObjectWriter` and `HistoryLog`; do not change a global
+current-owner variable. Concurrent build operations keep their captured identity.
+Raw library reads support diagnostics; publishing without an owner is rejected.
+`PackGeneratedStore` borrows the library and an owner capability through the
+`GeneratedStore` interface. It never closes the shared library or changes record
+serialization. Its compact operation compacts shared packs without deleting live
+objects of either classification.
 
-## Table ownership
+Pack bytes are safely written before the FULL SQLite index transaction publishes
+location/integrity and owner membership. An existing object gains a second owner
+before the owned operation completes. Runtime publication sources are separate
+from the immutable expected ENCODING inventory. Expected membership can precede a
+download; querying it against the physical index immediately reflects committed
+presence. Original/derived is descriptive accounting metadata, not a deletion or
+retention rule. Global/provider owners cover data without a WoW build.
 
-SQLite has no named namespaces within one database file. Prefixes document table
-ownership and component interfaces enforce it:
+## Durable metadata and recovery
 
-| Prefix | Owner | Contents |
-|---|---|---|
-| `storage_*` | Object backend | Physical presence, payloads, integrity, staging and observation history |
-| `catalog_*` | Ownership catalog | Canonical owners, expected sources and active/incomplete/retired inventory generations |
-| Future domain prefixes, e.g. `items_*` | Corresponding domain component | Queryable projections, if a later change deliberately colocates them |
+The new mixed library has pack kind/application identity **2** and versioned
+metadata. Legacy CDN/generated kinds **0/1** and their C# compatibility path remain
+unchanged. Original C# tools do not open the new mixed-kind library; the old stores
+are preserved for rollback. SQLite 3.35+ is required for catalog queries.
 
-`storage_payloads` contains only `id INTEGER PRIMARY KEY` and `data BLOB`. Chunks,
-identity, lengths, classification and ownership remain metadata. Identity is the
-full 18-byte typed/namespaced object key. CDN and generated objects coexist; their
-validation follows the typed identity. Original/derived classification is descriptive
-accounting metadata, never a retention or deletion rule. Relational table sizes
-are excluded from object/build payload totals.
+Unlike a disposable legacy index, the unified database contains authoritative owner
+and status intent. A damaged or missing established unified index is refused rather
+than silently deleted and rebuilt. An uncommitted tail after payload fsync is
+truncated to the durable indexed boundary; it is not replayed as an ownerless
+object. Process-termination tests cover both sides of publication. This does not
+simulate physical power loss.
 
-Existing build and item query databases remain separate. Their owners continue
-exposing domain methods such as item paging/search; sharing a database later would
-not authorize arbitrary SQL access from the GUI or across component tables.
+## Builds-only milestone
 
-## Durability and staging
+The native composition opens authenticated build/CDN configurations, ROOT and
+ENCODING. It does not fetch archive/file indexes or initialize file catalogs,
+tables, item grids, names or research preparation. `BuildOpener.openMetadataBuild`
+exposes metadata and the ENCODING object ledger; the existing full opening API is
+retained for later layers.
 
-The database has an application identity and versioned storage metadata. Unrelated
-formats are rejected before schema initialization. A writer lock excludes a second
-object backend for the same database; the catalog has its own owner lock and
-connection. SQLite serializes their short write transactions. Reads use independent
-read-only snapshot connections. Original pack formats and C# compatibility remain
-available through the existing backend and its tests.
+`BuildRegistry` owns `builds_registry*` tables. Canonical statuses are DISCOVERED,
+LOADING, LOADED, FAILED and INTERRUPTED. LOADED means successful metadata opening,
+not full build download or table readiness. Restart recovers abandoned LOADING
+attempts as INTERRUPTED; stale completions cannot overwrite a newer attempt.
+The build list reads these persisted facts. Previous preparation receipts import
+as retained/discovered facts, never fabricated fresh readiness.
 
-Writes use WAL and FULL synchronization. Admission and worker queues are bounded.
-The backend publishes immutable chunks and their proofs atomically, and checks
-intersecting block CRCs before returning range bytes. History documents/records
-remain available for build discovery and history records are protected from deletion.
+`BuildObjectInventory` publishes the ENCODING reference inventory in bounded pages,
+without reading object payloads or resolving file tables. Publication switches the
+completed generation atomically. Unknown/incomplete inventories make sharing
+provisional. The UI keeps status and accounting separate: successful metadata loading
+does not wait for the entire inventory import. Until accounting completes, sizes
+are explicitly unmeasured rather than zero. Selected build size cards refresh
+asynchronously; cached list figures update when available. Undiscovered/unselected
+rows do not each trigger an expensive full inventory calculation.
 
-Verified ready objects up to 1 MiB publish in one FULL transaction. Encoded-object
-staging permits appends of at most 1 MiB. Arbitrarily small input fragments fill
-fixed-size rows rather than creating a row per network read. Acquire input outside a
-transaction, append/commit a bounded chunk, then allow another request to run.
-Complete stages are verified outside the writer before publication; large objects
-remain chunked, avoiding a whole-file publication copy. Closing preserves committed
-progress for resume. Explicit abandonment/deletion marks chunks for bounded cleanup.
-No implicit full-database VACUUM is performed. SQLite can reuse freed pages without
-shrinking the file. The generated facade's all-zero compaction report means no
-pack work occurred; it does not claim the database is empty or space was reclaimed.
+Original and derived payload bytes, unique/shared build bytes and global overlap
+come from the catalog. Relational table/database bytes are excluded from per-build
+object totals. Whole-library physical overhead can be measured separately.
 
-## Accounting
+## Preservation and lifecycle
 
-Declare retained canonical owners and every expected inventory source using
-`retainOwner`/`expect`. `replace` consumes pages of at most 1024 references outside
-write transactions and atomically switches the completed generation. Failed,
-canceled or stalled replacements do not expose partial references. Old generations
-are reclaimed in bounded pages without deleting object payloads.
+On first activation `PackLibraryMigration` borrows old stores read-only, imports
+observation history, saved preparation receipts and canonical retained owner intent,
+then writes a completed migration receipt. Failure leaves that receipt incomplete
+and the source data intact. Existing destination values are retained on retries.
+A legacy writer lease prevents simultaneously running the old application against
+borrowed source stores. SQLite can create reader WAL/SHM coordination sidecars;
+original index and pack byte hashes remain unchanged in tests.
 
-`figures` joins active references directly to `storage_objects`: a committed download
-or deletion immediately affects the next query, without copying presence into a
-second accounting database. Source references can exist before their objects are
-stored. Cross-source references are deduplicated by full object key, and sharing
-counts canonical BUILD owners. Global/provider overlap is reported separately;
-it overlaps, rather than adds to, the unique/shared-build partition. Unknown or
-incomplete inventories make sharing provisional. Retaining/forgetting an owner
-changes membership, not payload retention policy.
+Old CDN payloads can be reused lazily through the read-only shared source rather
+than copying the complete cache at startup. Resources close in dependency order:
+stop opening, cancel/drain inventory work, release metadata contexts, close discovery
+services, registry and legacy readers/leases, then ownership and the pack library.
+No default-data directory is opened by tests or benchmarks.
 
-## Explicit imports
+## Phase two
 
-`LibraryImporter` accepts up to 4096 explicitly selected keys and reports copied,
-already present, absent, unreadable and refused entries. It does not enumerate or
-delete the old store, overwrite existing destination values, import owner intent,
-or activate a new library. Large encoded objects stream in bounded ranges through
-resumable staging. Cancellation is exceptional and preserves previously committed
-work; retry the keys to continue. Source/destination lifetimes belong to the caller.
-
-Use a read-only source to avoid legacy read-day bookkeeping. SQLite may still
-create reader WAL/SHM coordination sidecars on a writable source filesystem; the
-importer does not modify source payload/index contents. Preserve preparation receipts
-and canonical retained owner membership before any application cutover. Existing
-source stores remain intact for rollback. No automatic cache reset is introduced.
+Selected derived relational projections may later use indexed component-owned
+SQLite tables, such as `items_*` or `questie_*`. The GUI calls domain query methods,
+not arbitrary SQL. Existing query databases stay separate in this milestone.
+Providers may retain their own downloaded source archives; derived binary artifacts
+can use pack objects owned by a provider/version. Relational bytes remain outside
+object attribution totals.
 
 ## Checks
 
-Use a full Java 25 JDK and SQLite 3.35 or newer with the repository's normal
-native library configuration:
+Use a full Java 25 JDK and the repository's native SQLite setup:
 
 ```sh
-./gradlew :object-store:integrationTest --tests '*SqliteObjectStoreTest' --tests '*LibraryCatalogTest' --tests '*LibraryImporterTest' --tests '*UnifiedLibraryCompositionTest'
-./gradlew :generated-store:integrationTest --tests '*SqliteGeneratedStoreTest'
-./gradlew :object-access:integrationTest --tests '*SqliteObjectSourceTest'
-./gradlew :object-store:productionStorageComparison
-./gradlew :object-store:libraryAccountingBenchmark
+./gradlew :object-store:check :generated-store:check :builds:check :accounting:check
+./gradlew :gui:buildLoadingTest :gui:migrationTest :gui:loadStateTest
 ```
 
-These cover payload integrity and lifecycle, staged resume, ownership generations,
-source preservation, shared presence joins, existing generated/source consumer
-contracts and record-file reopen. They use synthetic data, not live CDN credentials
-or user library contents. Full-inventory scale, production acquisition composition,
-application preservation/activation and platform rollout remain explicit gates.
-The accounting benchmark defaults to 2,209,282 references per synthetic build;
-`-PaccountingBenchmarkObjects=10000` selects a smaller smoke fixture. It seeds only
-presence/reference metadata, not payload chunks. Its size-query results must not
-be presented as content-integrity or ingest-throughput evidence. Performance must
-be measured on the actual service implementation, not inferred from the earlier
-prototype. See [measured results and limitations](unified-storage-performance.md)
-and the rollout's scale requirements before changing application defaults.
+The first command checks affected storage/build components. GUI tasks use synthetic,
+offline native fixtures, including metadata-only load, status/size persistence,
+legacy preservation and restart. The local Linux ARM64 JavaFX override described
+in HANDOFF.md is needed only where the pinned classifier is unavailable.
+
+Historical BLOB measurements are in [the performance report](unified-storage-performance.md).
+Do not interpret those as a speed claim for the selected pack library. Actual app
+performance remains a measured criterion; full inventory accounting is a background
+refresh and must not block navigation or interactive work.

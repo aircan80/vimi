@@ -163,6 +163,59 @@ public final class BuildOpener implements Builds {
                         });
     }
 
+    /**
+     * Authenticates ROOT/ENCODING and exposes the object ledger without acquiring archive indexes.
+     */
+    public CompletableFuture<BuildOpenResult> openMetadataBuild(
+            BuildRef build, Cancellation token) {
+        return metadata(build, token)
+                .thenCompose(
+                        result -> {
+                            if (result.state() != BuildOpenState.OPEN) {
+                                return CompletableFuture.completedFuture(
+                                        new BuildOpenResult(
+                                                build,
+                                                result.state(),
+                                                null,
+                                                result.part(),
+                                                result.code(),
+                                                result.message(),
+                                                result.observedAt()));
+                            }
+                            return metadataCache
+                                    .open(
+                                            build,
+                                            cancellation -> readMetadata(build, cancellation),
+                                            token)
+                                    .thenApply(
+                                            context -> {
+                                                token.check();
+                                                ArchiveLocations empty =
+                                                        ArchiveLocations.build(
+                                                                List.of(),
+                                                                null,
+                                                                new ArchiveLocations.Limits(),
+                                                                token::check);
+                                                Build opened =
+                                                        new OpenedBuild(
+                                                                build,
+                                                                context.metadata(),
+                                                                context.cdn(),
+                                                                context.encoding(),
+                                                                context.root(),
+                                                                empty);
+                                                return new BuildOpenResult(
+                                                        build,
+                                                        BuildOpenState.OPEN,
+                                                        opened,
+                                                        null,
+                                                        null,
+                                                        null,
+                                                        null);
+                                            });
+                        });
+    }
+
     private record MetadataContext(
             CdnContext cdn,
             ConfigFiles.CdnConfig config,

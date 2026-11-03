@@ -22,6 +22,7 @@ final class Staging implements ObjectStaging {
     final Origin origin;
     final Path path;
     ObjectCheck check;
+    LibraryOwnership.Claim owner;
     volatile long length;
     boolean closed, broken;
 
@@ -42,7 +43,7 @@ final class Staging implements ObjectStaging {
             Origin origin,
             Cancellation cancellation)
             throws IOException {
-        if (store.kind() != Kind.CDN
+        if (store.kind() == Kind.GENERATED
                 || key.type() != ObjectKey.ENCODED
                 || key.namespace() != 0
                 || declared < 1
@@ -164,9 +165,10 @@ final class Staging implements ObjectStaging {
                             return new PutResult(key, PutOutcome.REFUSED, refusal.code());
                         }
                         if (store.index.find(key) != null) {
+                            store.claimExisting(owner, key, declared).join();
                             return new PutResult(key, PutOutcome.ALREADY_PRESENT, null);
                         }
-                        store.append(key, declared, origin, false, null, path, null);
+                        store.appendOwned(key, declared, origin, path, owner);
                         return new PutResult(key, PutOutcome.STORED, null);
                     } catch (IOException e) {
                         failure = e;

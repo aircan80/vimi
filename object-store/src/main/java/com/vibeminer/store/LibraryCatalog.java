@@ -223,6 +223,7 @@ public final class LibraryCatalog implements AutoCloseable {
         requireSqliteVersion((String) header.query("SELECT sqlite_version()").getFirst()[0]);
         try {
             if (header.scalar("PRAGMA application_id") != 0x56494d49
+                            && header.scalar("PRAGMA application_id") != 2
                     || header.scalar("SELECT count(*) FROM storage_metadata") != 1
                     || header.scalar("SELECT version FROM storage_metadata") != 1) {
                 throw new IllegalStateException("Unsupported object database identity/version");
@@ -291,6 +292,9 @@ public final class LibraryCatalog implements AutoCloseable {
     public CompletableFuture<Void> expect(String owner, Scope scope, String source, Role role) {
         text(owner);
         text(source);
+        if (source.startsWith("storage:")) {
+            throw new IllegalArgumentException("Publication inventories are owned by storage");
+        }
         Objects.requireNonNull(scope);
         Objects.requireNonNull(role);
         return write(
@@ -340,6 +344,9 @@ public final class LibraryCatalog implements AutoCloseable {
             String owner, String source, String version, Inventory inventory, Cancellation token) {
         text(owner);
         text(source);
+        if (source.startsWith("storage:")) {
+            throw new IllegalArgumentException("Publication inventories are owned by storage");
+        }
         text(version);
         Objects.requireNonNull(inventory);
         Objects.requireNonNull(token);
@@ -494,22 +501,33 @@ public final class LibraryCatalog implements AutoCloseable {
             throw new IllegalStateException("Inventory is no longer pending");
         }
         String role = (String) rows.getFirst()[0];
-        for (Reference reference : page) {
-            List<Object[]> previous =
-                    database.query(
-                            "SELECT declared FROM catalog_refs WHERE generation=? AND k=?",
-                            generation,
-                            reference.key().indexBytes());
-            if (!previous.isEmpty()
-                    && number(previous.getFirst()[0]) != reference.declaredLength()) {
-                throw new IllegalArgumentException("Conflicting lengths for the same object");
+        for (int offset = 0; offset < page.size(); offset += 128) {
+            List<Reference> part = page.subList(offset, Math.min(offset + 128, page.size()));
+            var sql = new StringBuilder("INSERT INTO catalog_refs VALUES");
+            var parameters = new java.util.ArrayList<Object>();
+            for (Reference reference : part) {
+                if (!parameters.isEmpty()) {
+                    sql.append(',');
+                }
+                sql.append("(?,?,?,?)");
+                parameters.add(generation);
+                parameters.add(reference.key().indexBytes());
+                parameters.add(role);
+                parameters.add(reference.declaredLength());
             }
-            database.exec(
-                    "INSERT OR IGNORE INTO catalog_refs VALUES(?,?,?,?)",
-                    generation,
-                    reference.key().indexBytes(),
-                    role,
-                    reference.declaredLength());
+            sql.append(
+                    " ON CONFLICT(generation,k) DO UPDATE SET declared=CASE WHEN"
+                            + " catalog_refs.declared=excluded.declared THEN catalog_refs.declared ELSE"
+                            + " -1 END");
+            try {
+                database.exec(sql.toString(), parameters.toArray());
+            } catch (NativeSqlite.Failure failure) {
+                if ((failure.result & 255) == 19) {
+                    throw new IllegalArgumentException(
+                            "Conflicting lengths for the same object", failure);
+                }
+                throw failure;
+            }
         }
     }
 
@@ -641,7 +659,7 @@ public final class LibraryCatalog implements AutoCloseable {
                         && role == Role.ORIGINAL
                         && connection.scalar(
                                         "SELECT count(*) FROM catalog_expected WHERE owner=? AND"
-                                                + " role=?",
+                                                + " role=? AND source NOT GLOB 'storage:*'",
                                         owner,
                                         role.name())
                                 == 0;
@@ -651,7 +669,7 @@ public final class LibraryCatalog implements AutoCloseable {
                                 SELECT count(*) FROM catalog_owners o WHERE retained=1 AND (
                                     EXISTS(SELECT 1 FROM catalog_expected e WHERE e.owner=o.id AND e.role=? AND e.active IS NULL)
                                     OR (o.scope='BUILD' AND ?='ORIGINAL' AND NOT EXISTS(
-                                        SELECT 1 FROM catalog_expected e WHERE e.owner=o.id AND e.role='ORIGINAL')))
+                                        SELECT 1 FROM catalog_expected e WHERE e.owner=o.id AND e.role='ORIGINAL' AND e.source NOT GLOB 'storage:*')))
                                 """,
                                 role.name(),
                                 role.name())

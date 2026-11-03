@@ -1,5 +1,11 @@
 # Storage accounting
 
+The current native builds-only app uses the shared pack index and `LibraryCatalog`
+for authoritative ownership/presence. This module retains the legacy `UsageIndex`
+contracts and `LegacyCatalogOwners` intent importer. The projection described below
+is not refreshed as a second presence index by the new app. See
+[the unified service guide](../docs/unified-storage-services.md).
+
 A JavaFX-free application service with a `StorageAccounting` interface and SQLite
 `UsageIndex` implementation. It reports resource attribution; it never authorizes
 deletion, compaction or garbage collection. Application adapters supply inventories

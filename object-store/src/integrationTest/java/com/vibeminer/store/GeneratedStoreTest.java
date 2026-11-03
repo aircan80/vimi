@@ -108,7 +108,7 @@ final class GeneratedStoreTest {
 
     @Test
     void wrongKindOpenDoesNotChangePackOrIndex() throws Exception {
-        for (Kind kind : Kind.values()) {
+        for (Kind kind : List.of(Kind.CDN, Kind.GENERATED)) {
             Path directory = folder.resolve(kind.name());
             Options options = new Options(kind, 300, Clock.systemUTC());
             ObjectStore store = ObjectStore.open(directory, options).join();

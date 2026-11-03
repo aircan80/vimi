@@ -1,6 +1,12 @@
-# Unified SQLite storage rollout
+# Unified storage rollout record
 
-This is the integration and rollout plan for the all-SQLite backend. It records
+The selected architecture is now packfile payloads with one SQLite index/catalog.
+The builds-only composition, preservation steps and persisted statuses are
+implemented; see [the current service guide](unified-storage-services.md).
+The all-BLOB plan below is retained as historical research and is superseded where
+it describes payload placement or a deferred builds-only activation.
+
+This was the integration and rollout plan for the all-SQLite backend. It records
 existing integration constraints; it does not certify a completed application
 migration. Keep the legacy pack backend and its compatibility tests while the new
 backend is introduced. Never open a live application store as benchmark data.

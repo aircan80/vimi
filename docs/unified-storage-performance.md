@@ -1,9 +1,15 @@
-# Unified storage performance measurements
+# Historical SQLite-payload candidate measurements
 
-These are local Linux/Btrfs measurements of the new services, not an end-to-end
+The selected native architecture now uses packfile payloads with a unified SQLite
+catalog; these all-BLOB measurements explain why the candidate was not selected.
+They are retained for reproducibility and are not speed claims for the new pack
+library. See [the current service guide](unified-storage-services.md).
+
+These are local Linux/Btrfs measurements of the candidate services, not an end-to-end
 application speed claim. Fixtures contain synthetic data and run in ignored,
 isolated directories. Existing application data was never opened by the harnesses.
-The application still uses its existing stores pending preservation and adoption.
+The current builds-only app uses the pack-library preservation and activation path;
+the historical candidate was never its default.
 
 ## Accounting at build scale
 

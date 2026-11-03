@@ -10,7 +10,8 @@ public final class StoreTypes {
 
     public enum Kind {
         CDN,
-        GENERATED
+        GENERATED,
+        LIBRARY
     }
 
     public enum Origin {

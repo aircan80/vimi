@@ -7,10 +7,11 @@ Mermaid diagram, including the independent Questie backend.
 Download, preparation and local query commands are documented in the
 [Questie backend guide](questie/README.md).
 
-The new [unified SQLite library services](docs/unified-storage-services.md) provide
-shared original/generated payload storage and canonical ownership accounting through
-component interfaces. They are available separately; the desktop application still
-uses its existing stores pending the [preserving rollout](docs/unified-storage-rollout.md).
+The [unified pack library](docs/unified-storage-services.md) stores object bytes in
+packfiles with one SQLite index, ownership catalog and build-status registry.
+The native app currently loads build metadata and reports persisted status/sizes;
+table and item preparation are deferred. Existing stores are preserved during the
+transition. Historical all-SQLite payload measurements are retained for reference.
 
 ## Setup
 

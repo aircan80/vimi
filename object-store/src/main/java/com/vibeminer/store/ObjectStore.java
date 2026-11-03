@@ -209,7 +209,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             database.uncancelled(
                     () ->
                             database.transaction(
-                                    false,
+                                    kind() == Kind.LIBRARY,
                                     () -> {
                                         for (var entry : batch.entries) {
                                             applyEntry(
@@ -217,6 +217,13 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                                                     entry.offset(),
                                                     entry.header(),
                                                     entry.history());
+                                        }
+                                        for (var claim : batch.claims) {
+                                            LibraryOwnership.attach(
+                                                    database,
+                                                    claim.owner(),
+                                                    claim.key(),
+                                                    claim.length());
                                         }
                                         index.save();
                                         updateReadDays(readKeys);
@@ -280,7 +287,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             } else {
                 Object[] pack =
                         database.query(
-                                        "SELECT state,committed_length,live_bytes FROM packs WHERE seq=?",
+                                        "SELECT state,committed_length,live_bytes FROM packs WHERE"
+                                                + " seq=?",
                                         previous.pack())
                                 .getFirst();
                 index.pack(
@@ -325,11 +333,32 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         packs = folder.resolve("packs");
         staging = folder.resolve("staging");
         indexPath = folder.resolve("objects.sqlite3");
-        verifier = options.kind() == Kind.CDN ? Verification.CDN : Verification.GENERATED;
+        verifier =
+                options.kind() == Kind.LIBRARY
+                        ? Verification.LIBRARY
+                        : options.kind() == Kind.CDN ? Verification.CDN : Verification.GENERATED;
         // Default FileChannel sharing permits concurrent writers/deletion on supported JDKs.
         packReaders =
                 new PackReaders<>(
                         options.packHandles(), number -> FileChannel.open(packPath(number), READ));
+    }
+
+    public static CompletableFuture<ObjectStore> openLibrary(Path folder) {
+        return open(
+                folder.toAbsolutePath().normalize(),
+                new Options(Kind.LIBRARY, 2L << 30, java.time.Clock.systemUTC()));
+    }
+
+    public Path databasePath() {
+        return indexPath;
+    }
+
+    public PackLibraryOwner forOwner(
+            String owner, LibraryCatalog.Scope scope, String source, LibraryCatalog.Role role) {
+        if (kind() != Kind.LIBRARY) {
+            throw new IllegalStateException("Owner views require a unified pack library");
+        }
+        return new PackLibraryOwner(this, new LibraryOwnership.Claim(owner, scope, source, role));
     }
 
     public static CompletableFuture<ObjectStore> open(Path folder) {
@@ -457,7 +486,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 }
                 if (version == 1 || damaged) {
                     long kind = check.scalar("PRAGMA application_id");
-                    if (kind > 1) {
+                    if (kind > (options.kind() == Kind.LIBRARY ? 2 : 1)) {
                         throw Format.newer();
                     }
                     if (kind != options.kind().ordinal()) {
@@ -472,7 +501,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                                     nextPack,
                                     Math.toIntExact(
                                                     check.scalar(
-                                                            "SELECT coalesce(max(seq),0) FROM packs"))
+                                                            "SELECT coalesce(max(seq),0) FROM"
+                                                                    + " packs"))
                                             + 1);
                 }
                 if (immutable && candidate.clean != 1) {
@@ -493,6 +523,12 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         }
         boolean rebuilt = !valid;
         List<String> problems = new ArrayList<>();
+        if (!valid && kind() == Kind.LIBRARY && (Files.exists(indexPath) || !files.isEmpty())) {
+            throw new StoreException(
+                    "OBJECT_STORE_INDEX_UNREADABLE",
+                    "Unified library index requires repair; ownership and build metadata were"
+                            + " preserved");
+        }
         if (!valid) {
             Maintenance.preflight(
                     this, files); // Refuse newer entries before deleting/replacing any bytes.
@@ -537,6 +573,9 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         database.exec("PRAGMA synchronous=NORMAL");
         index = new StoreIndex(database);
         index.load();
+        if (kind() == Kind.LIBRARY) {
+            LibraryOwnership.initialize(database);
+        }
         nextPack =
                 Math.max(
                         nextPack,
@@ -546,11 +585,20 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         for (Object[] row :
                 database.query("SELECT seq,committed_length FROM packs WHERE state=0")) {
             Path path = packPath(Math.toIntExact((long) row[0]));
+            if (kind() == Kind.LIBRARY && Files.exists(path)) {
+                try (FileChannel file = FileChannel.open(path, READ, WRITE)) {
+                    long committedLength = (long) row[1];
+                    if (file.size() > committedLength) {
+                        io.truncate(file, path, committedLength);
+                        io.sync(file, path);
+                    }
+                }
+            }
             if (Files.exists(path)) {
                 Maintenance.preflightTail(this, path, (long) row[1]);
             }
         }
-        if (options.kind() == Kind.CDN) {
+        if (options.kind() != Kind.GENERATED) {
             Files.createDirectories(staging);
         }
         deleteRebuild();
@@ -593,7 +641,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
         }
         for (var item : diskPacks().entrySet()) {
             if (!listed.get(item.getKey())) {
-                if (Files.size(item.getValue()) <= 64) {
+                if (kind() == Kind.LIBRARY || Files.size(item.getValue()) <= 64) {
                     io.delete(item.getValue());
                     io.syncDirectory(packs);
                 } else {
@@ -1006,6 +1054,19 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     @Override
     public CompletableFuture<List<PutResult>> put(
             List<PutObject> batch, boolean commitNow, Cancellation cancellation) {
+        if (kind() == Kind.LIBRARY) {
+            return CompletableFuture.failedFuture(
+                    new StoreException(
+                            "OBJECT_STORE_OWNER_REQUIRED", "Use an owner-bound library view"));
+        }
+        return putOwned(null, batch, commitNow, cancellation);
+    }
+
+    CompletableFuture<List<PutResult>> putOwned(
+            LibraryOwnership.Claim owner,
+            List<PutObject> batch,
+            boolean commitNow,
+            Cancellation cancellation) {
         List<PutObject> owned = List.copyOf(batch);
         long bytes = 0;
         for (PutObject p : owned) {
@@ -1016,7 +1077,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                     new StoreException(
                             "OBJECT_STORE_LIMIT", "Put batch exceeds 4096 objects or 256 MiB"));
         }
-        return enqueuePut(bytes, () -> owned, commitNow, cancellation);
+        return enqueuePut(bytes, () -> owned, commitNow, cancellation, owner);
     }
 
     private CompletableFuture<List<PutResult>> enqueuePut(
@@ -1024,6 +1085,15 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             java.util.function.Supplier<List<PutObject>> inputs,
             boolean commitNow,
             Cancellation cancellation) {
+        return enqueuePut(bytes, inputs, commitNow, cancellation, null);
+    }
+
+    private CompletableFuture<List<PutResult>> enqueuePut(
+            long bytes,
+            java.util.function.Supplier<List<PutObject>> inputs,
+            boolean commitNow,
+            Cancellation cancellation,
+            LibraryOwnership.Claim owner) {
         CompletableFuture<List<PreparedPut>> prepared = new CompletableFuture<>();
         Runnable preparation =
                 () ->
@@ -1044,7 +1114,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                                                         || actualBytes > 256L << 20) {
                                                     throw new StoreException(
                                                             "OBJECT_STORE_LIMIT",
-                                                            "Put batch exceeds 4096 objects or 256 MiB");
+                                                            "Put batch exceeds 4096 objects or 256"
+                                                                    + " MiB");
                                                 }
                                                 List<PreparedPut> result = new ArrayList<>();
                                                 for (PutObject item : owned) {
@@ -1089,7 +1160,16 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                                     results.add(new PutResult(p.key(), PutOutcome.CANCELED, null));
                                     continue;
                                 }
+                                if (owner != null
+                                        && pending != null
+                                        && pending.claims.size() >= PendingWrites.MAX_OBJECTS) {
+                                    commitPending();
+                                }
                                 if (present(p.key())) {
+                                    if (owner != null) {
+                                        commits.add(
+                                                claimExisting(owner, p.key(), p.declaredLength()));
+                                    }
                                     results.add(
                                             new PutResult(
                                                     p.key(), PutOutcome.ALREADY_PRESENT, null));
@@ -1113,7 +1193,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                                                 p.data(),
                                                 null,
                                                 history,
-                                                proof));
+                                                proof,
+                                                owner));
                                 results.add(new PutResult(p.key(), PutOutcome.STORED, null));
                             }
                             return new Committed<>(
@@ -1135,7 +1216,43 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             Path source,
             History.Entry history)
             throws IOException {
-        return append(key, length, origin, tombstone, bytes, source, history, null);
+        return append(key, length, origin, tombstone, bytes, source, history, null, null);
+    }
+
+    CompletableFuture<Void> appendOwned(
+            ObjectKey key, long length, Origin origin, Path source, LibraryOwnership.Claim owner)
+            throws IOException {
+        return append(key, length, origin, false, null, source, null, null, owner);
+    }
+
+    CompletableFuture<Void> claim(
+            LibraryOwnership.Claim owner, ObjectKey key, long length, Cancellation token) {
+        return finish(
+                write(
+                        0,
+                        token,
+                        true,
+                        true,
+                        () -> new Committed<>((Void) null, claimExisting(owner, key, length))));
+    }
+
+    CompletableFuture<Void> claimExisting(
+            LibraryOwnership.Claim owner, ObjectKey key, long length) {
+        if (owner == null) {
+            return CompletableFuture.completedFuture(null);
+        }
+        if (pending != null && Boolean.TRUE.equals(pending.keys.get(key))) {
+            LibraryOwnership.Attachment attachment =
+                    new LibraryOwnership.Attachment(owner, key, length);
+            if (!pending.claims.contains(attachment)) {
+                pending.claims.add(attachment);
+            }
+            return pending.committed;
+        }
+        if (!LibraryOwnership.owned(database, owner, key)) {
+            database.transaction(true, () -> LibraryOwnership.attach(database, owner, key, length));
+        }
+        return CompletableFuture.completedFuture(null);
     }
 
     private CompletableFuture<Void> append(
@@ -1146,7 +1263,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             byte[] bytes,
             Path source,
             History.Entry history,
-            PreparedPut prepared)
+            PreparedPut prepared,
+            LibraryOwnership.Claim owner)
             throws IOException {
         long size = Format.entrySize(length);
         int number = activePack(size);
@@ -1247,6 +1365,13 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                     }
                     PendingWrites batch = pending;
                     pending.add(entry, history);
+                    if (owner != null && !tombstone) {
+                        LibraryOwnership.Attachment attachment =
+                                new LibraryOwnership.Attachment(owner, key, length);
+                        if (!pending.claims.contains(attachment)) {
+                            pending.claims.add(attachment);
+                        }
+                    }
                     handedOff = true;
                     if (!tombstone && pending.full()) {
                         commitPending();
@@ -1257,9 +1382,12 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 atWrite(WritePoint.PACK_SYNCED, key);
                 Format.Entry committed = entry;
                 database.transaction(
-                        false,
+                        kind() == Kind.LIBRARY,
                         () -> {
                             applyEntry(number, start, committed, history);
+                            if (owner != null && !tombstone) {
+                                LibraryOwnership.attach(database, owner, key, length);
+                            }
                             index.save();
                             atWrite(WritePoint.INDEX_UPDATED, key);
                         });
@@ -1399,6 +1527,11 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     @Override
     public CompletableFuture<List<PutResult>> appendHistory(
             History.Observation observation, Cancellation cancellation) {
+        if (kind() == Kind.LIBRARY) {
+            return CompletableFuture.failedFuture(
+                    new StoreException(
+                            "OBJECT_STORE_OWNER_REQUIRED", "Use an owner-bound library view"));
+        }
         History.validateObservation(observation);
         // Reserve both retained observation bytes and the generated owned PutObject copy.
         long retained = 2L * observation.replyLength() + 1136;
@@ -1488,7 +1621,9 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                         Object[] p =
                                 idx.db
                                         .query(
-                                                "SELECT count(*),coalesce(sum(committed_length),0),coalesce(sum(live_bytes),0) FROM packs WHERE state<2")
+                                                "SELECT"
+                                                        + " count(*),coalesce(sum(committed_length),0),coalesce(sum(live_bytes),0)"
+                                                        + " FROM packs WHERE state<2")
                                         .getFirst();
                         return new Stats(
                                 (long) p[0],
@@ -1506,12 +1641,28 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     @Override
     public CompletableFuture<ObjectStaging> stage(
             ObjectKey key, long declaredLength, Origin origin, Cancellation cancellation) {
+        if (kind() == Kind.LIBRARY) {
+            return CompletableFuture.failedFuture(
+                    new StoreException(
+                            "OBJECT_STORE_OWNER_REQUIRED", "Use an owner-bound library view"));
+        }
+        return stageOwned(null, key, declaredLength, origin, cancellation);
+    }
+
+    CompletableFuture<ObjectStaging> stageOwned(
+            LibraryOwnership.Claim owner,
+            ObjectKey key,
+            long declaredLength,
+            Origin origin,
+            Cancellation cancellation) {
         return write(
                 0,
                 cancellation,
                 () -> {
                     cancellation.check();
-                    return Staging.open(this, key, declaredLength, origin, cancellation);
+                    Staging result = Staging.open(this, key, declaredLength, origin, cancellation);
+                    result.owner = owner;
+                    return result;
                 });
     }
 

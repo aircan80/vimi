@@ -162,3 +162,24 @@ tasks.register('overviewAccountingUiTest', JavaExec) {
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.OverviewAccountingUiTest'
 }
+
+tasks.register('loadStateTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.BuildLoadStateTest'
+}
+check.dependsOn loadStateTest
+
+tasks.register('migrationTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.PackLibraryMigrationTest'
+}
+check.dependsOn migrationTest
+
+tasks.register('buildLoadingTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.BuildLoadingIntegrationTest'
+}
+check.dependsOn buildLoadingTest

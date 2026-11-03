@@ -25,6 +25,7 @@ public final class BuildApplicationIntegrationTest {
             String identity;
             var service = BuildApplication.open(directory).join();
             try {
+                require(service.preparation() == null, "Build loading must not construct table/item preparation");
                 var builds = service.listBuilds().get(20, java.util.concurrent.TimeUnit.SECONDS);
                 require(builds.size() == 1, "Offline discovery must find persisted future products");
                 var build = builds.getFirst();
@@ -34,11 +35,17 @@ public final class BuildApplicationIntegrationTest {
                 require(build.observations().size() == 1 && build.firstSeen() != null,
                         "Carry persisted regional evidence");
                 require(service.problems().isEmpty(), "Authored offline history has no problems");
+                require(service.loadSnapshot(build) != null
+                                && service.loadSnapshot(build).entry().status() == com.vibeminer.builds.BuildRegistry.Status.DISCOVERED,
+                        "Build list status comes from persisted registry table");
                 identity = build.identity();
             } finally { service.closeAsync().get(20, java.util.concurrent.TimeUnit.SECONDS); }
             var reopened = BuildApplication.open(directory).join();
             try {
-                require(reopened.listBuilds().join().getFirst().identity().equals(identity),
+                var restored = reopened.listBuilds().join().getFirst();
+                require(reopened.loadSnapshot(restored).entry().status() == com.vibeminer.builds.BuildRegistry.Status.DISCOVERED,
+                        "Discovery remains distinct from successful metadata loading across restart");
+                require(restored.identity().equals(identity),
                         "Reopen must retain exact catalog identity without network");
             } finally { reopened.closeAsync().join(); }
             System.out.println("Passed native GUI catalog startup, persisted discovery, close and reopen");

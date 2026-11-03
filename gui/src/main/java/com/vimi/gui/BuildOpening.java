@@ -9,7 +9,24 @@ import java.util.concurrent.CompletableFuture;
 
 /** One app-owned metadata opening. Observer cancellation cannot release admission or bypass drain. */
 public final class BuildOpening {
-    private final Builds builds;
+    @FunctionalInterface
+    public interface Opener {
+        CompletableFuture<BuildTypes.BuildOpenResult> open(BuildInfo info, BuildTypes.BuildRef ref,
+                Cancellation token);
+    }
+
+    private final Opener builds;
+    private final Observer observer;
+
+    public interface Observer {
+        default CompletableFuture<Void> started(BuildInfo info, BuildTypes.BuildRef ref) {
+            return CompletableFuture.completedFuture(null);
+        }
+        default CompletableFuture<Void> finished(BuildInfo info, BuildTypes.BuildOpenResult result,
+                Throwable failure) {
+            return CompletableFuture.completedFuture(null);
+        }
+    }
     private final Object gate = new Object();
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
     private Operation operation;
@@ -17,17 +34,28 @@ public final class BuildOpening {
 
     private static final class Operation {
         final BuildTypes.BuildRef build;
+        final BuildInfo info;
         final Cancellation cancellation = new Cancellation();
         final CompletableFuture<BuildTypes.BuildOpenResult> result = new CompletableFuture<>();
         volatile Throwable cancellationFailure;
-        Operation(BuildTypes.BuildRef build) { this.build = build; }
+        Operation(BuildInfo info, BuildTypes.BuildRef build) { this.info = info; this.build = build; }
         void cancel() {
             try { cancellation.cancel(); }
             catch (Throwable failure) { cancellationFailure = failure; }
         }
     }
 
-    public BuildOpening(Builds builds) { this.builds = Objects.requireNonNull(builds); }
+    public BuildOpening(Builds builds) { this(builds, new Observer() {}); }
+
+    public BuildOpening(Builds builds, Observer observer) {
+        this((info, ref, token) -> builds.open(ref, token), observer);
+        Objects.requireNonNull(builds);
+    }
+
+    public BuildOpening(Opener builds, Observer observer) {
+        this.builds = Objects.requireNonNull(builds);
+        this.observer = Objects.requireNonNull(observer);
+    }
 
     /** Prefer the unique current CDN evidence, otherwise require one unambiguous saved CDN config. */
     public CompletableFuture<BuildTypes.BuildOpenResult> open(BuildInfo build, String region) {
@@ -56,7 +84,7 @@ public final class BuildOpening {
         synchronized (gate) {
             if (closed) return CompletableFuture.failedFuture(new IllegalStateException("Build opening closed"));
             if (operation != null) return CompletableFuture.failedFuture(new IllegalStateException("BUILD_OPEN_ACTIVE"));
-            accepted = new Operation(requested);
+            accepted = new Operation(build, requested);
             operation = accepted;
         }
         try { Thread.startVirtualThread(() -> execute(accepted)); }
@@ -69,11 +97,19 @@ public final class BuildOpening {
         Throwable failure = null;
         try {
             accepted.cancellation.check();
-            result = Objects.requireNonNull(builds.open(accepted.build,accepted.cancellation),
+            observer.started(accepted.info, accepted.build).join();
+            accepted.cancellation.check();
+            result = Objects.requireNonNull(builds.open(accepted.info,accepted.build,accepted.cancellation),
                     "Build opener returned no future").join();
             accepted.cancellation.check();
             validate(accepted.build,result);
         } catch (Throwable error) { failure = unwrap(error); }
+        try {
+            observer.finished(accepted.info, result, failure).join();
+        } catch (Throwable reporting) {
+            if (failure == null) failure = unwrap(reporting);
+            else failure.addSuppressed(unwrap(reporting));
+        }
         finish(accepted,result,failure);
     }
 

@@ -13,6 +13,7 @@ import java.util.Objects;
 public final class Verification implements ObjectVerifier {
     public static final Verification CDN = new Verification(Kind.CDN);
     public static final Verification GENERATED = new Verification(Kind.GENERATED);
+    public static final Verification LIBRARY = new Verification(Kind.LIBRARY);
     private final Kind kind;
 
     private Verification(Kind kind) {

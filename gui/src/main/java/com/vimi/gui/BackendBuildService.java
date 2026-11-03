@@ -17,6 +17,12 @@ import java.util.function.Supplier;
 /** Catalog-only GUI adapter. All lower calls run on a bounded serial virtual worker. */
 public final class BackendBuildService implements BuildService {
     private final BuildCatalog catalog;
+    private BuildLoadState loadState;
+    public BackendBuildService withLoadState(BuildLoadState value) { loadState = Objects.requireNonNull(value); return this; }
+    @Override public BuildLoadSnapshot loadSnapshot(BuildInfo build) { return loadState == null ? null : loadState.snapshot(build); }
+    @Override public CompletableFuture<BuildLoadSnapshot> refreshLoadSnapshot(BuildInfo build) {
+        return loadState == null ? CompletableFuture.completedFuture(null) : loadState.refresh(build);
+    }
     private BuildOpening opening;
     private PreparationHistory history;
     BackendBuildService withHistory(PreparationHistory value) {history=value;return this;}
@@ -174,7 +180,8 @@ public final class BackendBuildService implements BuildService {
             for (var build : list.builds()) result.add(project(build));
         }
         token.check();
-        if (lastGood.isEmpty()) throw new CatalogFailure(warnings);
+        if (loadState != null) result = new ArrayList<>(loadState.observe(result, token::check));
+        if (lastGood.isEmpty() && result.isEmpty()) throw new CatalogFailure(warnings);
         diagnostics = List.copyOf(warnings);
         status = (refresh ? "Refresh complete" : "Local catalog · No network requests")
                 + (warnings.isEmpty() ? "" : " · " + warnings.size() + " issues");
