@@ -85,6 +85,29 @@ public final class PolestarRepository implements AutoCloseable {
                     if (!revision.matches("[0-9a-f]{40}")) {
                         throw new IOException("Expected immutable Polestar commit");
                     }
+                    Path cachedPath = root.resolve("catalog.json");
+                    if (Files.exists(cachedPath, LinkOption.NOFOLLOW_LINKS)) {
+                        try {
+                            byte[] cachedBytes = read(cachedPath, 3 << 20);
+                            var cached = catalog(cachedBytes);
+                            if (revision.equals(cached.revision())) {
+                                var metadata = Json.object(Json.parse(cachedBytes, 3 << 20));
+                                var indexBytes = decode(metadata, "indexBytes");
+                                var packageBytes = decode(metadata, "packageBytes");
+                                var reused =
+                                        Manifest.parse(
+                                                revision,
+                                                head.observedAt(),
+                                                indexBytes,
+                                                packageBytes);
+                                token.check();
+                                atomic(cachedPath, envelope(reused, indexBytes, packageBytes));
+                                return reused;
+                            }
+                        } catch (IOException | IllegalArgumentException invalid) {
+                            // A damaged local metadata copy is repaired from GitHub.
+                        }
+                    }
                     var index = client.fetchPolestarFile(revision, "index.json", token).join();
                     var pack = client.fetchPolestarFile(revision, "datapackage.json", token).join();
                     var value =
@@ -237,8 +260,85 @@ public final class PolestarRepository implements AutoCloseable {
     public CompletableFuture<Snapshot> sync(Consumer<Progress> progress, Cancellation token) {
         progress.accept(new Progress("Checking Polestar GitHub publication", 0, 0));
         return check(token)
-                .thenCompose(value -> download(value, progress, token))
+                .thenCompose(
+                        value ->
+                                reusable(value, token)
+                                        .thenCompose(
+                                                existing -> {
+                                                    if (existing.isPresent()) {
+                                                        progress.accept(
+                                                                new Progress(
+                                                                        "Reused verified Polestar publication "
+                                                                                + existing.get()
+                                                                                        .catalog()
+                                                                                        .version(),
+                                                                        1,
+                                                                        1));
+                                                        return CompletableFuture.completedFuture(
+                                                                existing.get());
+                                                    }
+                                                    return download(value, progress, token);
+                                                }))
                 .thenCompose(value -> prepare(value.id(), progress, token));
+    }
+
+    private CompletableFuture<Optional<Snapshot>> reusable(Catalog latest, Cancellation token) {
+        return call(
+                token,
+                () -> {
+                    var expected =
+                            Json.object(
+                                    Json.parse(
+                                            read(root.resolve("catalog.json"), 3 << 20), 3 << 20));
+                    try (var entries = Files.list(root.resolve("sources"))) {
+                        var paths =
+                                entries.filter(
+                                                path ->
+                                                        path.getFileName()
+                                                                .toString()
+                                                                .matches("[0-9a-f]{40}"))
+                                        .sorted()
+                                        .limit(129)
+                                        .toList();
+                        if (paths.size() > 128) {
+                            throw new IOException("Too many retained versions");
+                        }
+                        for (var path : paths) {
+                            token.check();
+                            try {
+                                var metadata =
+                                        Json.object(
+                                                Json.parse(
+                                                        read(
+                                                                path.resolve("snapshot.json"),
+                                                                3 << 20),
+                                                        3 << 20));
+                                var publication = Json.object(metadata.get("catalog"));
+                                if (!sameMetadata(publication, expected)) {
+                                    continue;
+                                }
+                                var stored = snapshot(path);
+                                verifyOriginals(path, latest, token);
+                                return Optional.of(stored);
+                            } catch (IOException | IllegalArgumentException invalid) {
+                                // An invalid retained copy is not evidence that the current
+                                // publication is available.
+                            }
+                        }
+                    }
+                    return Optional.empty();
+                });
+    }
+
+    private static boolean sameMetadata(Map<String, Object> left, Map<String, Object> right) {
+        return Json.parse(decode(left, "indexBytes"), 1 << 20)
+                        .equals(Json.parse(decode(right, "indexBytes"), 1 << 20))
+                && Json.parse(decode(left, "packageBytes"), 1 << 20)
+                        .equals(Json.parse(decode(right, "packageBytes"), 1 << 20));
+    }
+
+    private static byte[] decode(Map<String, Object> metadata, String name) {
+        return java.util.Base64.getDecoder().decode(Json.string(metadata.get(name)));
     }
 
     public CompletableFuture<List<Snapshot>> snapshots(Cancellation token) {

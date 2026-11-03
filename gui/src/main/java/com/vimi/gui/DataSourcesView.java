@@ -33,6 +33,7 @@ final class DataSourcesView extends BorderPane {
     private Source selectedSource;
     private String selectedDatabase;
     private String selectedPolestar;
+    private String selectedEgBuild, selectedEgSource;
     private final Label activityLabel = text("", "muted");
     private final javafx.scene.control.ProgressBar progress =
             new javafx.scene.control.ProgressBar(-1);

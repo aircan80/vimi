@@ -23,7 +23,11 @@ on Linux, Windows and macOS. Tests use authored fixtures, never live services.
 `catalog` and `snapshots` read only local state; `check` fetches GitHub metadata;
 `download` verifies and retains the selected checked publication; `prepare` creates
 its query database. `sync` composes these stages and reuses checksum-valid originals
-and valid prepared databases. Transport is injected through `PolestarClient`.
+and valid prepared databases. An unchanged GitHub head reuses its cached metadata
+with one small reference request. A new repository commit with identical published
+index/package content reuses the verified older snapshot and database, preserving
+its original pinned provenance rather than relabeling it as newly downloaded.
+Transport is injected through `PolestarClient`.
 
 `lookup(sourceId, table, key, token)` returns up to 500 records for that published
 key; relationship tables may have multiple records with the same target ID.
