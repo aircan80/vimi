@@ -46,12 +46,47 @@ public final class StaticMeshRenderer {
 
     public static Frame render(
             PreviewMesh mesh, int width, int height, View view, BooleanSupplier cancel) {
-        return render(mesh, null, width, height, view, cancel);
+        return render(mesh, null, width, height, view, cancel, false, false);
     }
 
     public static Frame render(
             MeshAppearance appearance, int width, int height, View view, BooleanSupplier cancel) {
-        return render(appearance.mesh(), appearance, width, height, view, cancel);
+        return render(appearance, width, height, view, cancel, false);
+    }
+
+    /**
+     * Restricts a partial material preview to section ordinals with an admitted texture binding.
+     * Native geoset IDs remain an independent visibility filter. Pass false for raw surface
+     * diagnostics; existing overloads retain their neutral unbound-surface behavior.
+     */
+    public static Frame render(
+            MeshAppearance appearance,
+            int width,
+            int height,
+            View view,
+            BooleanSupplier cancel,
+            boolean qualifiedMaterialsOnly) {
+        return render(appearance, width, height, view, cancel, qualifiedMaterialsOnly, true);
+    }
+
+    /** Material qualification remains in effect when diffuse texture display is disabled. */
+    public static Frame render(
+            MeshAppearance appearance,
+            int width,
+            int height,
+            View view,
+            BooleanSupplier cancel,
+            boolean qualifiedMaterialsOnly,
+            boolean texturesEnabled) {
+        return render(
+                appearance.mesh(),
+                appearance,
+                width,
+                height,
+                view,
+                cancel,
+                qualifiedMaterialsOnly,
+                texturesEnabled);
     }
 
     private static Frame render(
@@ -60,7 +95,9 @@ public final class StaticMeshRenderer {
             int width,
             int height,
             View view,
-            BooleanSupplier cancel) {
+            BooleanSupplier cancel,
+            boolean qualifiedMaterialsOnly,
+            boolean texturesEnabled) {
         if (width < 1 || height < 1 || width > 1600 || height > 1200) {
             throw new IllegalArgumentException("Preview image exceeds bounds");
         }
@@ -93,7 +130,7 @@ public final class StaticMeshRenderer {
                 py = new double[px.length],
                 pz = new double[px.length];
         double[] lighting =
-                appearance != null && appearance.normals.length > 0
+                appearance != null && texturesEnabled && appearance.normals.length > 0
                         ? new double[mesh.vertexCount()]
                         : null;
         for (int i = 0; i < px.length; i++) {
@@ -128,6 +165,12 @@ public final class StaticMeshRenderer {
             section++;
             MeshAppearance.Surface surface =
                     appearance == null ? null : appearance.surfaces.get(section);
+            if (qualifiedMaterialsOnly && surface == null) {
+                continue;
+            }
+            if (!texturesEnabled) {
+                surface = null;
+            }
             if (!view.parts().isEmpty() && !view.parts().contains(part.id())) {
                 continue;
             }
