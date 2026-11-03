@@ -41,6 +41,169 @@ final class ComparisonCodec {
         }
     }
 
+    /** Parses frame structure only: no decoded strings, records, maps or FieldDelta graph. */
+    static long classifiedBytes(byte[] frame, long limit) throws IOException {
+        if (frame.length > ComparisonService.RECORD_BYTES) {
+            throw new ComparisonLimit("Result frame exceeds policy");
+        }
+        var scan = new FrameScan(frame);
+        long records = scan.record() + scan.record();
+        if (scan.position != frame.length || scan.records == 0) {
+            throw new IOException("Invalid pair frame structure");
+        }
+        // Includes union TreeSet nodes, immutable result/list copies and one FieldDelta per
+        // possible union key. Counting both records' keys overestimates shared-key unions.
+        long estimate = Math.addExact(records, Math.addExact(1024L, 256L * scan.fields));
+        estimate = Math.max(estimate, 8L * frame.length);
+        if (estimate > limit) {
+            throw new ComparisonLimit("Decoded/classified candidate exceeds memory plan");
+        }
+        return estimate;
+    }
+
+    private static final class FrameScan {
+        private static final int KINDS = ValueKind.values().length,
+                STATES = ValueState.values().length,
+                ASPECTS = Aspect.values().length;
+        private final byte[] bytes;
+        private int position, records, fields;
+        private boolean nullString;
+
+        FrameScan(byte[] bytes) {
+            this.bytes = bytes;
+        }
+
+        long record() throws IOException {
+            int present = octet();
+            if (present == 0) {
+                return 0;
+            }
+            if (present != 1) {
+                throw new IOException("Invalid record presence flag");
+            }
+            records++;
+            long size = 768L + string(false);
+            int count = count(4096);
+            fields = Math.addExact(fields, count);
+            size = Math.addExact(size, 128L + 64L * count);
+            for (int i = 0; i < count; i++) {
+                long field = 320L + string(false) + string(false);
+                ordinal(KINDS);
+                int state = ordinal(STATES);
+                field = Math.addExact(field, string(true));
+                if ((state == ValueState.VALUE.ordinal()) == nullString) {
+                    throw new IOException("Invalid field value state");
+                }
+                ordinal(ASPECTS);
+                size = Math.addExact(size, Math.addExact(field, evidence()));
+            }
+            return Math.addExact(size, evidence());
+        }
+
+        long evidence() throws IOException {
+            int count = count(65536);
+            long size = 64L + 16L * count;
+            for (int i = 0; i < count; i++) {
+                size =
+                        Math.addExact(
+                                size,
+                                128L + string(false) + string(false) + string(true) + string(true));
+            }
+            return size;
+        }
+
+        int count(int maximum) throws IOException {
+            int value = integer();
+            if (value < 0 || value > maximum) {
+                throw new IOException("Invalid frame count");
+            }
+            return value;
+        }
+
+        int ordinal(int maximum) throws IOException {
+            int value = integer();
+            if (value < 0 || value >= maximum) {
+                throw new IOException("Invalid frame enum");
+            }
+            return value;
+        }
+
+        long string(boolean nullable) throws IOException {
+            int length = integer();
+            nullString = length == -1;
+            if (nullString) {
+                if (!nullable) {
+                    throw new IOException("Missing required frame text");
+                }
+                return 0;
+            }
+            if (length < 0
+                    || length > ComparisonService.RECORD_BYTES
+                    || length > bytes.length - position) {
+                throw new IOException("Invalid frame text length");
+            }
+            int end = position + length;
+            // Validate UTF-8 without allocating a replacement-decoded String.
+            while (position < end) {
+                int a = octet();
+                if (a < 128) {
+                    continue;
+                }
+                int extra, lower = 128, upper = 191;
+                if (a >= 194 && a <= 223) {
+                    extra = 1;
+                } else {
+                    if (a >= 224 && a <= 239) {
+                        extra = 2;
+                        if (a == 224) {
+                            lower = 160;
+                        }
+                        if (a == 237) {
+                            upper = 159;
+                        }
+                    } else {
+                        if (a >= 240 && a <= 244) {
+                            extra = 3;
+                            if (a == 240) {
+                                lower = 144;
+                            }
+                            if (a == 244) {
+                                upper = 143;
+                            }
+                        } else {
+                            throw new IOException("Invalid frame UTF-8");
+                        }
+                    }
+                }
+                if (extra > end - position) {
+                    throw new IOException("Truncated frame UTF-8");
+                }
+                int b = octet();
+                if (b < lower || b > upper) {
+                    throw new IOException("Invalid frame UTF-8 continuation");
+                }
+                for (int i = 1; i < extra; i++) {
+                    b = octet();
+                    if (b < 128 || b > 191) {
+                        throw new IOException("Invalid frame UTF-8 continuation");
+                    }
+                }
+            }
+            return 64L + 4L * length;
+        }
+
+        int integer() throws IOException {
+            return (octet() << 24) | (octet() << 16) | (octet() << 8) | octet();
+        }
+
+        int octet() throws IOException {
+            if (position >= bytes.length) {
+                throw new IOException("Truncated result frame");
+            }
+            return bytes[position++] & 255;
+        }
+    }
+
     static Record bounded(Record record, int maxBytes) throws IOException {
         if (record == null) {
             return null;
