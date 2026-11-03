@@ -159,6 +159,14 @@ Strings are fixed known IDs or canonical hashes; the certificate is bounded to
 4 KiB encoded / 8 KiB retained. `graphIdentity` is the actual final key-chain node,
 not an alias node. The selected native source identity and effective-key chain
 therefore bind locale, CKey, block, options, reader, encoding and key fingerprints.
+`sourceIdentitySha256` hashes the actual selected native identity serialization:
+use the unscoped identity tuple for an unscoped graph, and the scoped tuple with
+its actual `encodingIn` for a scoped graph. Never hash the preferred request's
+non-null `source.encodingScope()` merely because the requesting build supplies
+one. The stored identity's scoped/unscoped mode and value are authoritative.
+Unencrypted graphs shared across builds with identical source/definition/options
+must validate in the unscoped domain without accidentally binding a build-specific
+encoding scope. The receipt still records its actual requesting build separately.
 No raw key material enters the certificate.
 
 The store creates this certificate only after successfully enumerating and
@@ -216,9 +224,15 @@ An explicit nonempty issue list remains explicit. The capture issue budget is
 currently 65,536 retained bytes per row; truncating it retains the bounded prefix
 and emits existing `CellIssue(ordinal, -1, LIMITED,
 "CAPTURE_ISSUE_CHANNEL_LIMIT")`. This **overrides** any receipt-level native
-certificate for that row. Consumers must treat unaccounted cells as LIMITED,
-never infer valid text from an empty truncated prefix. Null must stay null when
-such an override prevents normalization.
+certificate for that row. The effective row issue channel is LIMITED, matching the existing
+`RawTableSchema` / `PreparedItemProjection` contract. A typed per-cell LIMITED
+state applies only to a column actually bounded/truncated. An unaccounted TEXT
+binding or relationship-dependent binding remains UNKNOWN when its issue channel
+is incomplete; do not infer valid text or a valid NONINLINE relation placeholder
+from an empty truncated prefix. Ordinary numeric bindings that do not depend on
+that relationship/issue channel may retain independently verified VALUE facts.
+This is not a blanket limitation of all cells. Null stays null when such an
+override prevents normalization.
 
 A value truncated at a particular column receives its own LIMITED override;
 other valid cells survive. A broken row shape or invalid issue location is a
@@ -243,8 +257,13 @@ header record count participates. Names are encoded strictly as UTF-8.
 The captured source identity/evidence digest includes the issue policy/version
 and whether the original graph was certified. The raw table input descriptor and
 Items source metadata expose this once per dependency as interpretation/evidence
-scope. Item projection receives the effective explicit row issue channel plus
-LIMITED overrides; it does not invent a new meaning for null itself.
+scope. Certificate UNKNOWN/VERIFIED_NATIVE state, policy/producer IDs and certificate
+digest belong to source/evidence identity only. They are excluded from the raw
+semantic schema/column-admission fingerprint and the Items identity/field-mask
+admission fingerprint. Otherwise, pairing an old graph with a new graph would
+incorrectly exclude the entire dependency instead of comparing its valid facts.
+Item projection receives the effective explicit row issue channel plus LIMITED
+overrides; it does not invent a new meaning for null itself.
 
 A policy transition is an interpretation/evidence-availability change, not a
 Blizzard gameplay change. Known name versus old unknown name must remain
@@ -324,11 +343,19 @@ rows stamped with expected labels:
    before mutation. Legacy explicit empty remains explicit empty.
 4. Crossed graph/CKey/locale/block/options/columns/producer/policy certificates,
    wrong emitted counts and invalid issue locations cannot promote a channel.
+   The same unencrypted native graph validates for two build endpoints with
+   different requested encoding scopes, using the actual unscoped identity.
+   A scoped graph validates only against its actual stored scope/key-chain node;
+   exchanging scoped and unscoped source-identity digests fails.
 5. Old v2 graph capture performs no write, repair, source-byte decode or network
    request; it stays readable UNKNOWN. Native absence permits exact legacy
    lookup, while native corruption is surfaced rather than hidden by fallback.
 6. Evidence at the 65,536-byte limit, over it, and an oversized cell preserve
-   valid siblings and typed LIMITED overrides, including an empty kept prefix.
+   valid siblings, including an empty kept issue prefix. Assert row channel
+   LIMITED, affected bounded column LIMITED, unaccounted TEXT and NONINLINE
+   relation bindings UNKNOWN, and independently safe ordinary numeric VALUE.
+   Explicit retained invalid issues still classify their own cells; a native
+   receipt certificate cannot override any row/cell limitation.
 7. PARTIAL/protected-section tables remain NOT_CERTIFIED for membership, while
    their independently valid returned text is assessable.
 8. Store cancellation/failure does not publish a certified node and always drains
@@ -338,8 +365,12 @@ rows stamped with expected labels:
    remain byte-for-byte unchanged. Add new native identity/certificate fixtures
    instead of replacing legacy expectations.
 10. Actual comparison assembly with charged compact evidence metadata stays
-    within the reviewed 32 MiB / 512 MiB plan and classifies newly available names
-    as evidence availability, not fabricated gameplay differences.
+    within the reviewed 32 MiB / 512 MiB plan. Pair a legacy UNKNOWN graph with
+    a certified native graph under the same semantic schema: a known numeric
+    change is still CHANGED, while unknown-to-known name availability is
+    INDETERMINATE. Do not globally exclude that dependency/field mask merely
+    because issue provenance differs. Classify certificate changes as evidence
+    availability, not fabricated gameplay differences.
 
 Native source proof against a real selected build may follow in a separate
 read-only or isolated-store probe after implementation approval. It must not
