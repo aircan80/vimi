@@ -19,6 +19,10 @@ final class GpuViewRequestTest {
         assertEquals(Set.of(Integer.MIN_VALUE), view.camera(Set.of()).parts());
         var all = GpuViewRequest.parse("VIEW 10 640 480 0 0 1 4");
         assertFalse(all.textures());
+        assertFalse(all.qualifiedMaterialsOnly());
+        assertTrue(GpuViewRequest.parse("VIEW 11 640 480 0 0 1 10").qualifiedMaterialsOnly());
+        assertTrue(GpuViewRequest.parse("VIEW 12 640 480 0 0 1 8").qualifiedMaterialsOnly());
+        assertFalse(GpuViewRequest.parse("VIEW 13 640 480 0 0 1 14").qualifiedMaterialsOnly());
         assertEquals(Set.of(), all.camera(Set.of(7)).parts());
     }
 
@@ -29,7 +33,7 @@ final class GpuViewRequestTest {
                     "VIEW 0 640 480 0 0 1 2", "VIEW 1 1281 480 0 0 1 2",
                     "VIEW 1 640 961 0 0 1 2", "VIEW 1 640 480 NaN 0 1 2",
                     "VIEW 1 640 480 0 Infinity 1 2", "VIEW 1 640 480 0 0 4 2",
-                    "VIEW 1 640 480 0 0 1 8", "VIEW 1 640 480 0 0 1 2 extra",
+                    "VIEW 1 640 480 0 0 1 16", "VIEW 1 640 480 0 0 1 2 extra",
                     "CLOSE", "VIEW " + "0".repeat(256)
                 }) {
             assertThrows(

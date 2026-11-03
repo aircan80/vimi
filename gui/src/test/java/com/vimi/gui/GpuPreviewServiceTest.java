@@ -33,6 +33,16 @@ public final class GpuPreviewServiceTest {
     public static void main(String[] args) throws Exception {
         Path root = Files.createTempDirectory("vimi-gpu-service-test-");
         try {
+            require(
+                    new GpuPreviewService.ViewRequest(1, 640, 480, 0, 0, 1, 10)
+                            .command()
+                            .endsWith(" 10\n"),
+                    "Qualified material flag crosses bounded control protocol");
+            try {
+                new GpuPreviewService.ViewRequest(1, 640, 480, 0, 0, 1, 16);
+                throw new AssertionError("Unknown control flags must be rejected");
+            } catch (IllegalArgumentException expected) {
+            }
             latestFrameHandoffNeverRepublishesOlderWork();
             inlineFramesAndCoalescedControls(root);
             normalExitAndOwnerIsolation(root);

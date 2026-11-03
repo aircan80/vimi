@@ -30,6 +30,10 @@ public final class GpuModelScene {
             return textureIndex >= 0;
         }
 
+        public boolean visible(Set<Integer> selectedParts, boolean qualifiedMaterialsOnly) {
+            return visible(selectedParts) && (!qualifiedMaterialsOnly || textured());
+        }
+
         public boolean visible(Set<Integer> selectedParts) {
             return selectedParts.isEmpty() || selectedParts.contains(partId);
         }

@@ -66,6 +66,27 @@ final class GpuModelSceneTest {
     }
 
     @Test
+    void materialQualificationUsesSectionOrdinalDespiteDuplicateRecordedPartIds() {
+        var mesh =
+                new PreviewMesh(
+                        new float[] {0, -1, -1, 0, 1, -1, 0, 0, 1},
+                        new int[] {0, 1, 2},
+                        List.of(new PreviewMesh.Part(0, 0, 3), new PreviewMesh.Part(0, 0, 3)));
+        var appearance =
+                new MeshAppearance(
+                        mesh,
+                        new float[] {0, 0, 1, 0, .5f, 1},
+                        List.of(new MeshAppearance.Surface(1, 0, false, false, true)),
+                        List.of(new MeshAppearance.Texture(1, 1, new int[] {0xffffffff})));
+        var scene = GpuModelScene.create(mesh, appearance);
+        assertFalse(scene.draws().getFirst().visible(Set.of(0), true));
+        assertTrue(scene.draws().getLast().visible(Set.of(0), true));
+        assertTrue(scene.draws().getFirst().visible(Set.of(0), false));
+        assertTrue(scene.draws().getLast().visible(Set.of(0), false));
+        assertFalse(scene.draws().getLast().visible(Set.of(7), true));
+    }
+
+    @Test
     void storageIsImmutableAndBufferPositionsDoNotLeakBetweenUploadObservers() {
         var scene = GpuModelScene.create(mesh(), null);
         assertFalse(scene.hasNormals());

@@ -19,7 +19,7 @@ record GpuViewRequest(
                 || pitch > 1.1
                 || zoom < .4
                 || zoom > 3
-                || (flags & ~7) != 0) {
+                || (flags & ~15) != 0) {
             throw new IllegalArgumentException("Invalid inline GPU view bounds");
         }
     }
@@ -48,6 +48,10 @@ record GpuViewRequest(
                         ? Set.of()
                         : qualified.isEmpty() ? Set.of(Integer.MIN_VALUE) : qualified;
         return new StaticMeshRenderer.View(yaw, pitch, zoom, (flags & 1) != 0, visible);
+    }
+
+    boolean qualifiedMaterialsOnly() {
+        return (flags & 8) != 0 && (flags & 4) == 0;
     }
 
     boolean textures() {

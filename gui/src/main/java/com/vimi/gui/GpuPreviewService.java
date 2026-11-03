@@ -77,7 +77,7 @@ final class GpuPreviewService {
                     || zoom < .4
                     || zoom > 3
                     || flags < 0
-                    || flags > 7) throw new IllegalArgumentException("Invalid inline view");
+                    || flags > 15) throw new IllegalArgumentException("Invalid inline view");
         }
 
         String command() {

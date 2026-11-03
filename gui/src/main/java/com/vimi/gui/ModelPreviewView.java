@@ -29,6 +29,8 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
             long generation,
             PreviewMesh mesh,
             MeshAppearance appearance,
+            boolean textured,
+            boolean qualifiedMaterialsOnly,
             int width,
             int height,
             StaticMeshRenderer.View view) {}
@@ -116,6 +118,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
     private boolean gpuRequested;
     private PreviewMesh mesh;
     private MeshAppearance appearance;
+    private boolean qualifiedMaterials;
     private Set<Integer> visible = Set.of();
     private double yaw = -0.3, pitch, zoom = 1.15, mouseX, mouseY;
     private volatile boolean closed;
@@ -260,6 +263,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
         gpuFailed = false;
         gpuButton.setDisable(false);
         appearance = null;
+        qualifiedMaterials = false;
         textures.setDisable(true);
         visible = Set.copyOf(visibleParts);
         yaw = -0.3;
@@ -270,11 +274,20 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
     }
 
     void setAppearance(MeshAppearance value, Set<Integer> visibleParts) {
+        setAppearance(value, visibleParts, false);
+    }
+
+    void setAppearance(MeshAppearance value, Set<Integer> visibleParts, boolean qualifiedOnly) {
         if (closed) return;
         var parts = Set.copyOf(visibleParts);
-        boolean newScene = mesh != value.mesh() || appearance != value || !visible.equals(parts);
+        boolean newScene =
+                mesh != value.mesh()
+                        || appearance != value
+                        || !visible.equals(parts)
+                        || qualifiedMaterials != qualifiedOnly;
         if (newScene) gpuFailed = false;
         appearance = value;
+        qualifiedMaterials = qualifiedOnly;
         mesh = value.mesh();
         visible = parts;
         gpuButton.setDisable(false);
@@ -328,7 +341,9 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                 new Work(
                         request,
                         mesh,
-                        textures.isSelected() ? appearance : null,
+                        appearance,
+                        textures.isSelected(),
+                        qualifiedMaterials && !all.isSelected(),
                         width,
                         height,
                         new StaticMeshRenderer.View(
@@ -376,7 +391,9 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                                                         work.width(),
                                                         work.height(),
                                                         work.view(),
-                                                        canceled);
+                                                        canceled,
+                                                        work.qualifiedMaterialsOnly(),
+                                                        work.textured());
                                 Platform.runLater(
                                         () -> {
                                             if (closed
@@ -503,7 +520,8 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
         int flags =
                 (wireframe.isSelected() ? 1 : 0)
                         | (textures.isSelected() ? 2 : 0)
-                        | (all.isSelected() ? 4 : 0);
+                        | (all.isSelected() ? 4 : 0)
+                        | (qualifiedMaterials && !all.isSelected() ? 8 : 0);
         if (width != gpuWidth || height != gpuHeight || flags != gpuFlags) {
             gpuBarrier = revision;
             gpuWidth = width;

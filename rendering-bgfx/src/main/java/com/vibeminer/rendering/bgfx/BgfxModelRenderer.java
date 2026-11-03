@@ -167,6 +167,15 @@ final class BgfxModelRenderer implements AutoCloseable {
     }
 
     void draw(int width, int height, StaticMeshRenderer.View view, boolean textured) {
+        draw(width, height, view, textured, false);
+    }
+
+    void draw(
+            int width,
+            int height,
+            StaticMeshRenderer.View view,
+            boolean textured,
+            boolean qualifiedMaterialsOnly) {
         if (closed) {
             throw new IllegalStateException("GPU model renderer is closed");
         }
@@ -179,14 +188,15 @@ final class BgfxModelRenderer implements AutoCloseable {
             var light = stack.mallocFloat(4).put(camera.lightDirection()).flip();
             var material = stack.mallocFloat(4);
             for (var draw : scene.draws()) {
-                if (!draw.visible(view.parts()) || draw.indexCount() == 0) {
+                if (!draw.visible(view.parts(), qualifiedMaterialsOnly) || draw.indexCount() == 0) {
                     continue;
                 }
                 submit(draw, matrix, light, material, textured, false);
             }
             if (view.wireframe()) {
                 for (var draw : scene.draws()) {
-                    if (draw.visible(view.parts()) && draw.indexCount() != 0) {
+                    if (draw.visible(view.parts(), qualifiedMaterialsOnly)
+                            && draw.indexCount() != 0) {
                         submit(draw, matrix, light, material, textured, true);
                     }
                 }

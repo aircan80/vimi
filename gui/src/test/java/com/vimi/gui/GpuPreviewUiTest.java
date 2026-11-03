@@ -122,6 +122,7 @@ public final class GpuPreviewUiTest {
             inlineFramesAndVisibility(temporary, selected);
             terminalFailureRejectsQueuedFrame(temporary, ownerStage);
             appearanceOnlyControlsAndRetry(temporary, ownerStage);
+            qualifiedMaterialControls(temporary, ownerStage);
         } finally {
             release.countDown();
             service.closeAsync().get(3, TimeUnit.SECONDS);
@@ -415,6 +416,111 @@ public final class GpuPreviewUiTest {
                                         .toLowerCase(java.util.Locale.ROOT)
                                         .contains("software")));
         return software.get();
+    }
+
+    private static void qualifiedMaterialControls(Path temporary, Stage stage) throws Exception {
+        var child = new GpuPreviewServiceTest.FakeProcess(true);
+        var starts = new java.util.concurrent.atomic.AtomicInteger();
+        var service =
+                new GpuPreviewService(
+                        temporary,
+                        (file, mesh, appearance, parts) -> Files.writeString(file, "authored"),
+                        (scene, mapping) -> {
+                            starts.incrementAndGet();
+                            return child;
+                        },
+                        file ->
+                                new GpuPreviewService.Frames() {
+                                    public GpuPreviewService.Frame readLatest(long after) {
+                                        return null;
+                                    }
+
+                                    public void close() {}
+                                },
+                        Duration.ofSeconds(3),
+                        Duration.ofMillis(20));
+        var mesh =
+                new PreviewMesh(
+                        new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0},
+                        new int[] {0, 1, 2},
+                        List.of(new PreviewMesh.Part(0, 0, 3), new PreviewMesh.Part(0, 0, 3)));
+        var appearance =
+                new MeshAppearance(
+                        mesh,
+                        new float[] {0, 0, 1, 0, 0, 1},
+                        List.of(new MeshAppearance.Surface(1, 0, false, false, true)),
+                        List.of(new MeshAppearance.Texture(1, 1, new int[] {0xffffffff})));
+        var view = new java.util.concurrent.atomic.AtomicReference<ModelPreviewView>();
+        try {
+            fx(
+                    () -> {
+                        var panel = new ModelPreviewView(service);
+                        stage.setScene(new Scene(panel, 640, 560));
+                        panel.applyCss();
+                        panel.layout();
+                        panel.setAppearance(appearance, Set.of(0), true);
+                        view.set(panel);
+                    });
+            require(child.started.await(3, TimeUnit.SECONDS), "Qualified mode starts renderer");
+            child.send("VIMI_GPU HELLO Vulkan\nVIMI_GPU READY Vulkan\n");
+            var initial = latestView(child, 0);
+            require(
+                    Integer.parseInt(initial[7]) == 10,
+                    "Mount default requests textured qualified section ordinals");
+            // Find by existing user-facing controls, without changing production IDs.
+            fx(
+                    () ->
+                            view.get().lookupAll(".check-box").stream()
+                                    .filter(CheckBox.class::isInstance)
+                                    .map(CheckBox.class::cast)
+                                    .filter(box -> box.getText().equals("Textures"))
+                                    .findFirst()
+                                    .orElseThrow()
+                                    .fire());
+            var untextured = latestView(child, Long.parseLong(initial[1]));
+            require(
+                    Integer.parseInt(untextured[7]) == 8,
+                    "Textures off retains qualified-section policy");
+            fx(() -> ((CheckBox) view.get().lookup("#model-all-surfaces")).fire());
+            var all = latestView(child, Long.parseLong(untextured[1]));
+            require(
+                    Integer.parseInt(all[7]) == 4,
+                    "Explicit all-recorded bypasses material qualification");
+            fx(
+                    () -> {
+                        ((CheckBox) view.get().lookup("#model-all-surfaces")).fire();
+                        view.get().setAppearance(appearance, Set.of(0));
+                    });
+            var legacy = latestViewWithFlags(child, Long.parseLong(all[1]), 0);
+            require(
+                    Integer.parseInt(legacy[7]) == 0,
+                    "Existing appearance API keeps unqualified default");
+            require(starts.get() == 1, "Material controls reuse renderer and immutable scene");
+        } finally {
+            fx(
+                    () -> {
+                        if (view.get() != null) view.get().close();
+                    });
+            service.closeAsync().get(3, TimeUnit.SECONDS);
+        }
+    }
+
+    private static String[] latestViewWithFlags(
+            GpuPreviewServiceTest.FakeProcess child, long after, int flags) throws Exception {
+        var result = new java.util.concurrent.atomic.AtomicReference<String[]>();
+        waitFor(
+                () -> {
+                    for (var line : child.controls.toString().split("\n")) {
+                        var fields = line.split(" ");
+                        if (fields.length == 8
+                                && fields[0].equals("VIEW")
+                                && Long.parseLong(fields[1]) > after
+                                && Integer.parseInt(fields[7]) == flags) result.set(fields);
+                    }
+                    return result.get() != null;
+                },
+                "Latest material policy reaches renderer");
+        return result.get();
     }
 
     private static String[] latestView(GpuPreviewServiceTest.FakeProcess child, long after)
