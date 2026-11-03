@@ -1,54 +1,54 @@
 # GUI loading and FX-thread audit
 
-Reviewed 2026-11-03, through `949164e`, with the inline GPU renderer integration
-still undergoing its final native/GUI checks. This is a source and authored-fixture
-audit, not a latency profile. A returned future does not prove its caller or
-completion callback is cheap. No blocking I/O or `join()` on the FX thread was
-confirmed in the reviewed paths; that is not a guarantee that the UI never stalls.
+The November 3 audit and its follow-up address the identified loading-feedback
+gaps below. This is a source review backed by authored delayed/error/retirement
+fixtures, not a latency profile or a guarantee that the UI can never stall.
+Only real known totals produce determinate counts.
 
-## Implemented during this review
+## Implemented feedback and background work
 
-| Area and source symbols | Implemented behavior and evidence |
+| Area | Behavior |
 | --- | --- |
-| [ResearchBrowser](../gui/src/main/java/com/vimi/gui/ResearchBrowser.java): `load`, `select`, `showTableRows`, `loadMedia`, `icon` | Files, Tables, Items and Creatures show centered initial loading, retain rows with inline updating feedback, and show local detail/table/media activity. Icons distinguish pending/unavailable; bounded background conversion precedes bulk FX upload. Authored delayed/error/close checks: [ResearchBrowserUiTest](../gui/src/test/java/com/vimi/gui/ResearchBrowserUiTest.java). Integrated in `7ae21bf`. |
-| [ProviderBrowser](../gui/src/main/java/com/vimi/gui/ProviderBrowser.java): `beginLoad`, search and load completion | NPC/Quest initial loading is local; refresh retains rows. Catalog and large-search work use bounded workers; stale generations retire. [ProviderBrowserUiTest](../gui/src/test/java/com/vimi/gui/ProviderBrowserUiTest.java) exercises delayed loads, stale results, close and large search. Integrated in `7ae21bf`. |
-| [RacesView](../gui/src/main/java/com/vimi/gui/RacesView.java): `ensureLoaded`, `select`, `loadIcon`; [RaceModelPanel](../gui/src/main/java/com/vimi/gui/RaceModelPanel.java): constructor, `load`, `loadAppearance` | Catalog/list, overview and racial rail show local activity; errors clear pending states. Variant and mesh acquisition call the preview's central loading helper; appearance has inline activity. Icons expose pending/unavailable states and convert on a bounded worker. [RacesUiTest](../gui/src/test/java/com/vimi/gui/RacesUiTest.java) gates catalog, variants, mesh failure and appearance completion. Integrated in `924f53f`. |
-| [ResearchBrowser](../gui/src/main/java/com/vimi/gui/ResearchBrowser.java): `load`, `pagingQueryMatches` | Page history commits only after current-generation success. Failed Next/Previous and same-query refresh preserve history; failed query resets cannot reuse old cursors. Three-page async/synchronous failure and stale-reset checks in `ResearchBrowserUiTest.paginationFailures`. Integrated in `d9d2938`. |
-| [ModelPreviewView](../gui/src/main/java/com/vimi/gui/ModelPreviewView.java): `loading`, `request`, `deliverGpu`; [GpuPreviewService](../gui/src/main/java/com/vimi/gui/GpuPreviewService.java) | Shared preview has central asset/render activity and generation/lifetime handling. Automatic **inline** GPU presentation is the selected design; its renderer/process bridge is a separate integration and needs its own first-frame, stale-frame and cleanup evidence. Race acquisition feedback above does not establish native backend readiness. |
+| Files, Tables, Items, Creatures | Initial loading, retained rows during updates, local detail/table/media activity, pending/unavailable icons and bounded background pixel conversion. Failed paging preserves committed history. |
+| NPCs, Quests | Initial loading and retained rows during updates; bounded catalog and large-search workers with generation guards. |
+| Races and model previews | Local catalog/overview/racial activity, model/variant/appearance activity, pending/unavailable racial icons, background pixel conversion. Inline GPU model rendering has separate first-frame, stale-frame and cleanup evidence in [GPU review](gpu-preview-review.md). |
+| Talents | Catalog, tree and description activity; pending/unavailable icons; bounded background RGBA conversion followed by bulk FX upload. |
+| Professions | Catalog, abilities and detail activity; pending/unavailable recipe icons; optional item-name activity retains numeric IDs on failure. Appending recipes preserves pending work for the selected recipe. |
+| Mounts | Catalog and detail activity; the shared preview shows activity throughout model asset acquisition before rendering. |
+| Dungeons | Catalog and detail activity; encounter icons distinguish pending/unavailable and use bounded cached background conversion before bulk upload. |
+| World explorer | Local catalog/inventory/initial tile/nearby streaming and first-frame activity. Terrain bounds scans and scene-array preparation run on bounded background workers. Terrain rendering remains CPU rendering; this change does not add GPU terrain rendering. |
+| Location maps | Local observation/artwork activity, real completed/total tile counts, retained markers/readable tiles, bounded background BGRA conversion and sequential tile delivery. |
+| Race voices | Separate catalog, decode and output-preparation activity. Playing begins after the audio-line start callback. One admitted playback and one owned asynchronous close bound audio work; stop/close does not wait on FX. |
+| Compare | Opening/scanning activity and page-local activity; existing findings survive a failed page with retry. |
+| Build/comparison close | A visible sibling overlay remains active while the underlying controls are disabled and asynchronous resources drain. |
+| Size accounting | Selected-build and loaded-build refresh activity; generations prevent stale selected-build completions from affecting newer activity. |
+| Settings and Questie mapping | Local saving activity outside disabled controls; failures clear pending state and show an error. |
 
-The browser/race authored FX harnesses and `:gui:check` passed during these changes.
-Those checks use synthetic data, not a live build or every renderer/driver. They do
-not cover all outstanding areas below.
+## Lifetime and retirement
 
-## Remaining work found by the audit
+Talents, Professions, World/maps, Mounts, Dungeons and Races retire pending
+activity and obsolete actions when current-generation work discovers an external
+workspace change. Provider browsers clear activity and ask for Reload while
+retaining previous rows. Older generations and selections cannot clear newer
+activity. Close cancels owned requests and retires callbacks. Readable partial
+data and unknown/unavailable wording remain explicit. Worker queues and image
+limits bound conversion/preparation; no arbitrary overall percentage is shown.
 
-“Text only” means a loading message exists but no animated local activity indicator.
-“FX CPU” identifies work visible in the FX completion path; no stall duration has
-been measured. Preserve readable content and accurate unknown/unavailable wording
-when adding feedback; use determinate progress only when a real total exists.
+## Validation and practical limits
 
-| Area and source symbols | Remaining feedback or responsiveness issue |
-| --- | --- |
-| [TalentsView](../gui/src/main/java/com/vimi/gui/TalentsView.java): `ensureLoaded`, `loadClass`, `select`, `loadImage` | Catalog/tree/description loads are text only. Icon placeholders do not distinguish pending from failed. **FX CPU:** RGBA conversion loops in `loadImage` completion. |
-| [MountsView](../gui/src/main/java/com/vimi/gui/MountsView.java): `ensureLoaded`, `select`, `preview` | Catalog/details/model asset acquisition remains text only (`model.clear` during acquisition). Shared preview rendering activity does not cover this preceding decode/load interval. |
-| [ProfessionsView](../gui/src/main/java/com/vimi/gui/ProfessionsView.java): `ensureLoaded`, `loadAbilities`, `loadDetail`, `render`, `itemLabel` | Catalog/abilities/details are text only. Icons can remain blank; optional item-name resolution silently replaces an item-ID label. **FX CPU:** per-pixel icon conversion in `render` completion. |
-| [DungeonsView](../gui/src/main/java/com/vimi/gui/DungeonsView.java): `ensureLoaded`, `select`, `encounterCell` | Catalog/details are text only; encounter icons lack pending/failure distinction. **FX CPU:** icon pixel conversion in encounter-cell completion. |
-| [WorldView](../gui/src/main/java/com/vimi/gui/WorldView.java): `ensureLoaded`, `selectMap`, `loadTile`, `loadNext`, `rebuildScene`, `requestFrame` | Catalog/inventory/initial tile use text only. Nearby streaming relies on `loadingTile`; first-frame rendering lacks activity. **FX CPU:** initial tile bounds scan vertices twice; `rebuildScene` constructs [TerrainRenderer.Scene](../rendering-world/src/main/java/com/vibeminer/rendering/world/TerrainRenderer.java), which clones vertex/index arrays for up to nine tiles. Move preparation off FX before judging runtime improvement. |
-| [LocationMapView](../gui/src/main/java/com/vimi/gui/LocationMapView.java): `select`, `loadArtwork`, `loadTile` | Artwork metadata is text only; the art description replaces loading text before sequential tiles finish. Preserve markers while showing tile activity; a known tile total can support `n/N` feedback. **FX CPU:** RGBA/BGRA conversion in tile completion. |
-| [RaceVoicePanel](../gui/src/main/java/com/vimi/gui/RaceVoicePanel.java): `selection`, `play` | Voice catalog/decode is text only. “Playing” appears before the native audio line actually starts; distinguish preparation from playback. |
-| [CompareView](../gui/src/main/java/com/vimi/gui/CompareView.java): `start`, `refreshProgress`, `loadPage` | Opening/scanning has textual counts without animated activity. Findings paging disables controls without a page-local busy state. |
-| [VimiApp](../gui/src/main/java/com/vimi/gui/VimiApp.java): `leaveComparison`, `closePreparedBuild`, `inspect`, `showOpenedBuild` | Comparison/build drains disable the root without visible activity. Selected-build accounting and loaded-build metrics refresh silently. These are feedback gaps, not confirmed synchronous drains. |
-| [SettingsView](../gui/src/main/java/com/vimi/gui/SettingsView.java): `command`; [QuestieMappingControls](../gui/src/main/java/com/vimi/gui/QuestieMappingControls.java): flavor action handler | Settings says saving without animation. Per-build mapping disables its combo without a saving label. |
+Authored JavaFX harnesses cover delayed catalog/detail/icon/name/terrain/map/voice
+phases, errors, cancellation, source retirement, stale ordering and close. The
+audio fixture uses fake lines to gate actual start and stalled close, verify
+bounded admission, and ensure device cleanup never runs on the caller thread.
+Talents fixtures wait for actual rendered conditions instead of fixed delays.
+Compare covers delayed opening, page failure and retry.
 
-## Existing feedback retained
+Application close/accounting and settings/mapping indicators have source review
+and component checks; they do not have new dedicated delayed JavaFX fixtures.
+Synthetic UI evidence does not qualify a live build, every audio device or driver.
+Real-build latency profiling and native-device acceptance remain follow-up work.
+FX still constructs controls, performs final bulk image uploads and draws the UI.
 
-Build catalog/history/opening already have progress in
-[VimiApp](../gui/src/main/java/com/vimi/gui/VimiApp.java) (`showCatalogActivity`,
-`loadBuilds`, opening activity), and preparation/overview have progress in
-[PreparationPane](../gui/src/main/java/com/vimi/gui/PreparationPane.java) (`update`)
-and [BuildOverviewView](../gui/src/main/java/com/vimi/gui/BuildOverviewView.java)
-(`update`). [DataSourcesView](../gui/src/main/java/com/vimi/gui/DataSourcesView.java)
-(`command`, `tick`) and
-[SourceRefreshDialog](../gui/src/main/java/com/vimi/gui/SourceRefreshDialog.java)
-(`render`) also expose operation progress. Existing feedback does not establish
-that every sub-operation or completion callback is responsive.
+Existing build catalog/history/opening, preparation, Overview, Data Sources and
+source-refresh activity is retained. The separate [GPU review](gpu-preview-review.md)
+records actual Linux model-rendering evidence and its platform limitations.

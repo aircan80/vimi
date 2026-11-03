@@ -1,5 +1,25 @@
 # vimi development handoff
 
+## GUI activity continuation — 2026-11-03
+
+The user asked to continue the roadmap with different agents. The current slice
+finishes the identified loading/FX-preparation audit, on
+`feature/gui-activity-feedback` in the main Linux checkout. Three isolated agents
+own World/maps, Talents/Professions, and Mounts/Dungeons/voices; root owns Compare,
+saving and build/comparison close/accounting feedback. Independent scoped reviews and full integrated local checks pass through
+`8c3ed4c`; see [activity review](docs/gui-activity-review.md). Hosted checks
+remain the integration gate; all five packaged checks gate alpha.12 publication.
+
+The World explorer is **still CPU rendered**. The user asked explicitly; GPU
+rendering currently applies to model previews. This slice moves terrain preparation
+off FX and adds activity, without claiming GPU terrain rendering.
+
+Alpha.11 is verified published, explicit prerelease with 18 assets and successful
+packaging run `41672443272`. Preserve unpublished alpha.10's existing tag.
+Alpha.12 notes are committed with the next feature before any tag is created;
+verify exact candidate/main ancestry, notes presence, tag absence and all required
+checks first. Do not replace tags or overwrite running frozen distributions.
+
 ## Current Linux / inline GPU checkpoint — 2026-11-03
 
 The user remains on Linux and explicitly chose **automatic inline GPU previews**.
@@ -37,13 +57,12 @@ The default native runtime probe loads core/bgfx, enumerates native backends,
 constructs native init parameters and checks eight packaged shader hashes without
 opening a GPU. This proves library/resource availability, not driver readiness.
 See [rendering-bgfx/README.md](rendering-bgfx/README.md) for the path and checks,
-and [docs/gui-loading-audit.md](docs/gui-loading-audit.md) for implemented browser/
-race activity feedback and the remaining audited UI gaps. No blanket FX-thread
+and [docs/gui-loading-audit.md](docs/gui-loading-audit.md) for the implemented activity feedback and remaining profiling/device
+qualification limits. No blanket FX-thread
 responsiveness claim is made.
 
-Next: finish alpha.11 packaging and verify the explicit prerelease and all 18
-assets. Alpha.10 was tagged before notes were committed, its run canceled and
-no release published; preserve that tag. The new fixed Linux launcher is
+Alpha.11 packaging completed with all 18 assets. Alpha.10 was tagged before
+notes were committed, its run canceled and no release published; preserve that tag. The new fixed Linux launcher is
 `.local/apps/gpu-c311203/bin/vimi-gui-prototype`. Continue using isolated distributions when an app
 is running; do not replace its JARs with a development build. The older Mac and
 certificate recovery notes below are historical, not instructions to resume an
