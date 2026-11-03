@@ -43,6 +43,7 @@ dependencies {
     implementation project(':concepts-talents')
     implementation project(':concepts-races')
     implementation project(':concepts-mounts')
+    implementation project(':concepts-professions')
     implementation project(':rendering-models')
     implementation project(':rendering-world')
     implementation project(':concepts-world')
@@ -318,5 +319,13 @@ tasks.register('mountsUiTest', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.MountsUiTest'
+    systemProperty 'vimi.uiReviewDirectory', layout.buildDirectory.dir('ui-review').get().asFile.absolutePath
+}
+
+// Authored-only profession layout and stale-result checks; requires a display.
+tasks.register('professionsUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.ProfessionsUiTest'
     systemProperty 'vimi.uiReviewDirectory', layout.buildDirectory.dir('ui-review').get().asFile.absolutePath
 }
