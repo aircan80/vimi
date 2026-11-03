@@ -53,8 +53,12 @@ selected display's first three texture variations. No guessed filename joins.
 
 Animation, particles, runtime equipment/customization, full game lighting and
 other shaders are not evaluated. Unsupported bindings retain neutral surfaces.
-Nontrivial geoset visibility is explicitly unresolved and all recorded surfaces
-are shown; player-race default-selection rules are not applied to creatures.
+Nontrivial geoset visibility remains explicitly unresolved; player-race
+default-selection rules are not applied to creatures. The default mount view
+shows only section ordinals with qualified material/texture bindings, independently
+of native geoset IDs. The status reports supported/total material sections.
+**All recorded surfaces** exposes unresolved sections as raw diagnostic geometry;
+this does not claim their game appearance is reproduced.
 The browser keeps these limitations and source references in the details panel.
 
 Metadata requests and model preparation have separate bounded workers. Changing
@@ -101,3 +105,28 @@ The build workspace now opens Mounts after Races. Its cold handle is published
 with the table generation and drained before borrowed tables close. Workspace
 revision changes invalidate catalogue/model selection; browsing other areas keeps
 asset acquisition lazy.
+
+## Legacy cutout correction and current material limits
+
+The narrowly reviewed M2 version272 profile accepts the second raw batch field
+as a matching section reference, retaining the existing zero-field profile.
+Modern version274 projection-related bits remain outside that admission. The
+material-policy revision changes generated identities so old neutral derivatives
+do not suppress corrected textures. Strict asset-reader/C# contracts are unchanged.
+
+Read-only Forever 1.60.1.70755 evidence:
+
+| Mount | Recorded chain | Qualified material coverage |
+| --- | --- | --- |
+| Skeletal Horse #28 | link23 → display5228 → model491 → M2 file126304 | Corrected 3/3 sections, 2 textures, 2 cutouts; a fresh component restores the corrected derivative. |
+| Black War Raptor #79 | link74 → display14388 → model1916 → M2 file125649 | 3/5; reflective ENV armor and an additive billboard card remain unsupported. |
+| Great Brown Kodo #103 | link174 → display14578 → model1914 → M2 file124696 | Corrected textured body sections; small unlit/additive passes remain outside current support. |
+
+CPU and actual Vulkan previews agree on the same private payloads, including
+qualified/raw and textured/neutral modes. Game payloads and screenshots remain
+outside Git. Downloads and generated writes for these proofs used scratch stores;
+the application library stayed read-only. These are static partial previews.
+
+The next rendering work adds reviewed reflective two-texture materials, unlit/
+additive blending and camera-facing billboards. It must preserve CPU/GPU parity
+and explicit fallback for profiles that remain unknown.

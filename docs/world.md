@@ -4,8 +4,15 @@ Open a prepared build and choose **World**. The sidebar starts with continent
 records (`Map.InstanceType=0`); include other maps to inspect instances/internal
 records too. Search uses recorded map names and IDs. Select a map, inspect its
 readable areas, choose a tile in its 64×64 terrain inventory, then Open explorer.
-The highlighted tile is a starting location, not a claim about a selected zone's
-center. Zone-map artwork and spawn/pickup markers are tracked separately in #116.
+The zone list is reference information; selecting an area changes its description
+and does not filter or navigate the full-map terrain inventory. The highlighted
+tile is a starting location, not a claim about a selected zone's center.
+
+The screen grid uses filename-coordinate Y horizontally and X vertically. Drawing,
+highlighting and hit testing share that mapping. WDT tuple/file identities and
+3D terrain coordinates are retained. A correction fixes the transposed continent
+outline: a read-only Eastern Kingdoms inventory spans42rows by23columns.
+An authored asymmetric-grid test verifies orientation and exact clicked fileID. Zone-map artwork and spawn/pickup markers are tracked separately in #116.
 
 Click the viewport to focus it. WASD moves horizontally, Q/E changes altitude,
 mouse drag or arrow keys changes view direction, Shift increases movement speed,

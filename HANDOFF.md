@@ -1,5 +1,33 @@
 # vimi development handoff
 
+## Mount materials and World grid — current continuation
+
+The user reported Mount 79 (Black War Raptor), then Mount 103 (Great Brown Kodo,
+display 14578 / link 174) as partially textured. The open build is actually
+wowf 1.60.1.70755, enUS. Private read-only/scratch proofs are under
+`/tmp/vimi-live-mount79-proof`. Root branch `fix/mount-display-visibility` corrects
+legacy version272 cutout admission, adds Mounts-only material qualification with
+raw diagnostics, repairs GPU controls, and transposes only the World grid and
+hit testing. File IDs and 3D terrain coordinates are unchanged. See the
+[fix review](docs/mount-world-fix-review.md). Hosted checks gate merge.
+Never overwrite a running snapshot; the user currently uses
+`.local/apps/activity-59a8dd5` (PID3966371 during the proof).
+
+The user explicitly asked to add full rendering features, then requested the
+roadmap and continued work. NEXT ACTIVE WORK: reflective two-texture ENV
+materials, unlit/additive blending and camera-facing billboards for mounts 79/103.
+Obtain a reviewed concrete design before implementation. Architecture owns API
+and native design, domain owns primary math/admission, and acceptance owns actual
+asset/bone facts. Root ships current fixes while design proceeds. Qualified
+filtering does not establish full appearance support. After materials: GPU
+terrain, verified zone-to-terrain navigation, native platform acceptance, broader
+comparison, and race animation/equipment.
+
+Alpha.12 packaging run `41699368086` passed four targets; the macOS ARM runner was
+canceled before starting any steps. No release was published. A failed-job rerun
+was requested; verify completion and all18assets before claiming publication.
+Alpha.11 remains the verified published prerelease.
+
 ## GUI activity continuation — 2026-11-03
 
 The user asked to continue the roadmap with different agents. The current slice
