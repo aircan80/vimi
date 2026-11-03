@@ -113,6 +113,7 @@ public final class SortedComparisonInput implements ComparisonInput {
     private DataInputStream reader;
     private long nextOrdinal;
     private boolean exhausted;
+    private final java.util.Set<ReadDelivery> readDeliveries = new java.util.HashSet<>();
     private Integer pendingFrameLength;
 
     private SortedComparisonInput(Source source, Path parent, TempBudget budget)
@@ -224,8 +225,10 @@ public final class SortedComparisonInput implements ComparisonInput {
                                                                                     .completeExceptionally(
                                                                                             canceled);
                                                                         });
-                                                    } else if (!result.complete(input)) {
-                                                        input.closeAsync();
+                                                    } else {
+                                                        if (!result.complete(input)) {
+                                                            input.closeAsync();
+                                                        }
                                                     }
                                                 });
                                     } catch (Throwable rejected) {
@@ -376,9 +379,11 @@ public final class SortedComparisonInput implements ComparisonInput {
         if (previous != null) {
             if (previous.completeness() == Completeness.UNKNOWN || state == Completeness.UNKNOWN) {
                 state = Completeness.UNKNOWN;
-            } else if (previous.completeness() == Completeness.PARTIAL
-                    || state == Completeness.PARTIAL) {
-                state = Completeness.PARTIAL;
+            } else {
+                if (previous.completeness() == Completeness.PARTIAL
+                        || state == Completeness.PARTIAL) {
+                    state = Completeness.PARTIAL;
+                }
             }
         }
         var issues = new java.util.LinkedHashSet<String>();
@@ -527,6 +532,12 @@ public final class SortedComparisonInput implements ComparisonInput {
      */
     @Override
     public CompletableFuture<InputPage> read(String cursor, int limit, Cancellation token) {
+        return readStandalone(cursor, limit, token, Runnable::run);
+    }
+
+    // Deterministic delivery boundary for ownership fixtures, without changing public APIs.
+    CompletableFuture<InputPage> readStandalone(
+            String cursor, int limit, Cancellation token, java.util.concurrent.Executor delivery) {
         if (limit < 1 || limit > PAGE_ROWS) {
             return CompletableFuture.failedFuture(
                     new IllegalArgumentException("Invalid sorted page size"));
@@ -534,7 +545,7 @@ public final class SortedComparisonInput implements ComparisonInput {
         try {
             var allowance =
                     budget.reserveMemory("sort-standalone-read", READ_ALLOWANCE_BYTES, token);
-            return readPlanned(cursor, limit, token, allowance, true);
+            return readPlanned(cursor, limit, token, allowance, true, delivery);
         } catch (Throwable failure) {
             return CompletableFuture.failedFuture(failure);
         }
@@ -547,7 +558,7 @@ public final class SortedComparisonInput implements ComparisonInput {
     @Override
     public CompletableFuture<InputPage> read(
             String cursor, int limit, Cancellation token, TempBudget.Reservation allowance) {
-        return readPlanned(cursor, limit, token, allowance, false);
+        return readPlanned(cursor, limit, token, allowance, false, Runnable::run);
     }
 
     private CompletableFuture<InputPage> readPlanned(
@@ -555,9 +566,11 @@ public final class SortedComparisonInput implements ComparisonInput {
             int limit,
             Cancellation token,
             TempBudget.Reservation allowance,
-            boolean owned) {
+            boolean owned,
+            java.util.concurrent.Executor deliveryExecutor) {
         try {
             Objects.requireNonNull(token);
+            Objects.requireNonNull(deliveryExecutor);
             Objects.requireNonNull(allowance).requireMemory(budget, READ_ALLOWANCE_BYTES);
         } catch (Throwable failure) {
             if (owned && allowance != null) {
@@ -578,7 +591,7 @@ public final class SortedComparisonInput implements ComparisonInput {
             }
             return CompletableFuture.failedFuture(new IllegalStateException("Sorted input closed"));
         }
-        var result = new CompletableFuture<InputPage>();
+        var delivery = new ReadDelivery(allowance, owned, Objects.requireNonNull(deliveryExecutor));
         try {
             synchronized (worker) {
                 if (closing.get()) {
@@ -588,6 +601,17 @@ public final class SortedComparisonInput implements ComparisonInput {
                     return CompletableFuture.failedFuture(
                             new IllegalStateException("Sorted input closed"));
                 }
+                if (readDeliveries.size() >= 16
+                        || readDeliveries.stream()
+                                .anyMatch(active -> active.allowance == allowance)) {
+                    if (owned) {
+                        allowance.close();
+                    }
+                    return CompletableFuture.failedFuture(
+                            new IllegalStateException(
+                                    "Sorted read allowance already in use or command limit reached"));
+                }
+                readDeliveries.add(delivery);
                 worker.execute(
                         () -> {
                             try {
@@ -653,24 +677,143 @@ public final class SortedComparisonInput implements ComparisonInput {
                                                 rows,
                                                 exhausted ? null : Long.toString(nextOrdinal),
                                                 pageCoverage);
-                                CompletableFuture.runAsync(() -> result.complete(page));
+                                delivery.store(page);
+                                page = null;
                             } catch (Throwable caught) {
-                                CompletableFuture.runAsync(
-                                        () -> result.completeExceptionally(caught));
+                                delivery.storeFailure(caught);
                             } finally {
-                                if (owned) {
-                                    allowance.close();
-                                }
+                                delivery.workerFinished();
                             }
                         });
             }
         } catch (Throwable rejected) {
-            if (owned) {
-                allowance.close();
-            }
-            result.completeExceptionally(rejected);
+            delivery.storeFailure(rejected);
+            delivery.workerFinished();
         }
-        return result;
+        return delivery.result;
+    }
+
+    /** Owns a privately produced page until actual delivery or post-worker abandonment. */
+    private final class ReadDelivery {
+        final TempBudget.Reservation allowance;
+        final boolean owned;
+        final java.util.concurrent.Executor executor;
+        final CompletableFuture<InputPage> result = new CompletableFuture<>();
+        final CompletableFuture<Void> drained = new CompletableFuture<>();
+        InputPage page;
+        Throwable failure;
+        boolean finished, abandoned, claimed;
+
+        ReadDelivery(
+                TempBudget.Reservation allowance,
+                boolean owned,
+                java.util.concurrent.Executor executor) {
+            this.allowance = allowance;
+            this.owned = owned;
+            this.executor = executor;
+            result.whenComplete(
+                    (value, error) -> {
+                        if (result.isCancelled()) {
+                            abandon(new java.util.concurrent.CancellationException());
+                        }
+                    });
+        }
+
+        synchronized void store(InputPage value) {
+            page = value;
+        }
+
+        synchronized void storeFailure(Throwable value) {
+            failure = value;
+        }
+
+        void workerFinished() {
+            boolean discard;
+            synchronized (this) {
+                finished = true;
+                discard = abandoned || failure != null || result.isDone();
+            }
+            if (discard) {
+                discard();
+            } else {
+                CompletableFuture.runAsync(
+                        () -> {
+                            try {
+                                executor.execute(this::deliver);
+                            } catch (Throwable rejected) {
+                                abandon(rejected);
+                            }
+                        });
+            }
+        }
+
+        void abandon(Throwable reason) {
+            boolean discard;
+            synchronized (this) {
+                if (claimed) {
+                    return;
+                }
+                abandoned = true;
+                if (failure == null) {
+                    failure = reason;
+                }
+                discard = finished;
+            }
+            if (discard) {
+                discard();
+            }
+        }
+
+        private void discard() {
+            Throwable reason;
+            synchronized (this) {
+                if (claimed || !finished) {
+                    return;
+                }
+                claimed = true;
+                page = null;
+                reason =
+                        failure == null
+                                ? new java.util.concurrent.CancellationException()
+                                : failure;
+            }
+            release();
+            CompletableFuture.runAsync(() -> result.completeExceptionally(reason));
+        }
+
+        private void deliver() {
+            InputPage value;
+            synchronized (this) {
+                if (claimed) {
+                    return;
+                }
+                if (abandoned || result.isDone()) {
+                    value = null;
+                } else {
+                    claimed = true;
+                    value = page;
+                    page = null;
+                }
+            }
+            if (value == null) {
+                discard();
+                return;
+            }
+            // No consumer callback runs while this adapter owns its allowance. The private
+            // page remains charged through the queued delivery and transitions directly here.
+            release();
+            result.complete(value);
+        }
+
+        private void release() {
+            synchronized (worker) {
+                if (owned) {
+                    allowance.close();
+                }
+                drained.complete(null);
+                readDeliveries.remove(this);
+            }
+        }
     }
 
     private void check(Cancellation token) {
@@ -751,6 +894,15 @@ public final class SortedComparisonInput implements ComparisonInput {
                 return closed;
             }
             lifetime.cancel();
+            var deliveryDrain =
+                    CompletableFuture.allOf(
+                            readDeliveries.stream()
+                                    .map(delivery -> delivery.drained)
+                                    .toArray(CompletableFuture[]::new));
+            for (var delivery : List.copyOf(readDeliveries)) {
+                delivery.abandon(
+                        new java.util.concurrent.CancellationException("Sorted input closing"));
+            }
             // Accepted queued reads now only fail their lifetime check; drain them without
             // leaving a full command queue that could reject the cleanup operation.
             Runnable queued;
@@ -767,14 +919,16 @@ public final class SortedComparisonInput implements ComparisonInput {
                         }
                         worker.shutdown();
                         var terminal = failure;
-                        CompletableFuture.runAsync(
-                                () -> {
-                                    if (terminal == null) {
-                                        closed.complete(null);
-                                    } else {
-                                        closed.completeExceptionally(terminal);
-                                    }
-                                });
+                        deliveryDrain.whenComplete(
+                                (ignored, drainFailure) ->
+                                        CompletableFuture.runAsync(
+                                                () -> {
+                                                    if (terminal == null) {
+                                                        closed.complete(null);
+                                                    } else {
+                                                        closed.completeExceptionally(terminal);
+                                                    }
+                                                }));
                     });
             return closed;
         }

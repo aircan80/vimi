@@ -673,6 +673,118 @@ final class SortedComparisonInputTest {
         }
     }
 
+    @Test
+    void standaloneAllowanceStaysChargedAcrossHeldDeliveryAndCancellationDropsIt()
+            throws Exception {
+        try (var budget = new TempBudget()) {
+            var input =
+                    SortedComparisonInput.capture(
+                                    new Fixture(List.of(row(1, "held page"))),
+                                    temporary,
+                                    budget,
+                                    Cancellation.NONE)
+                            .join();
+            var delivery = new java.util.concurrent.ArrayBlockingQueue<Runnable>(1);
+            var read = input.readStandalone(null, 256, Cancellation.NONE, delivery::add);
+            var deliver = delivery.poll(3, java.util.concurrent.TimeUnit.SECONDS);
+            assertTrue(deliver != null);
+            var workerDone = new CompletableFuture<Void>();
+            worker(input).execute(() -> workerDone.complete(null));
+            workerDone.get(3, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(
+                    SortedComparisonInput.READ_ALLOWANCE_BYTES,
+                    budget.snapshot().memory(),
+                    "Produced page remains privately owned and charged after worker exits");
+            assertTrue(read.cancel(false));
+            assertEquals(
+                    0,
+                    budget.snapshot().memory(),
+                    "Canceled delivery drops page and releases allowance after private worker completion");
+            input.closeAsync().join();
+            assertDrained(budget);
+            deliver.run();
+            assertDrained(budget);
+        }
+    }
+
+    @Test
+    void inputCloseDrainsHeldDeliveryWithoutWaitingForDeliveryExecutor() throws Exception {
+        try (var budget = new TempBudget()) {
+            var input =
+                    SortedComparisonInput.capture(
+                                    new Fixture(List.of(row(1, "held page"))),
+                                    temporary,
+                                    budget,
+                                    Cancellation.NONE)
+                            .join();
+            var delivery = new java.util.concurrent.ArrayBlockingQueue<Runnable>(1);
+            var read = input.readStandalone(null, 256, Cancellation.NONE, delivery::add);
+            var deliver = delivery.poll(3, java.util.concurrent.TimeUnit.SECONDS);
+            assertTrue(deliver != null);
+            input.closeAsync().get(3, java.util.concurrent.TimeUnit.SECONDS);
+            assertThrows(java.util.concurrent.CancellationException.class, read::join);
+            assertDrained(budget);
+            deliver.run();
+            assertDrained(budget);
+        }
+    }
+
+    @Test
+    void successfulHandoffReleasesOwnedAllowanceBeforeConsumerCloseCallback() throws Exception {
+        try (var budget = new TempBudget()) {
+            var input =
+                    SortedComparisonInput.capture(
+                                    new Fixture(List.of(row(1, "handoff"))),
+                                    temporary,
+                                    budget,
+                                    Cancellation.NONE)
+                            .join();
+            var delivery = new java.util.concurrent.ArrayBlockingQueue<Runnable>(1);
+            var read = input.readStandalone(null, 256, Cancellation.NONE, delivery::add);
+            var consumer =
+                    read.thenApply(
+                            page -> {
+                                assertEquals(
+                                        0,
+                                        budget.snapshot().memory(),
+                                        "Reservation ownership ends immediately before public handoff");
+                                input.closeAsync().join();
+                                return page.rows().getFirst().key();
+                            });
+            var deliver = delivery.poll(3, java.util.concurrent.TimeUnit.SECONDS);
+            assertTrue(deliver != null);
+            CompletableFuture.runAsync(deliver).get(3, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(key(1), consumer.get(3, java.util.concurrent.TimeUnit.SECONDS));
+            assertDrained(budget);
+        }
+    }
+
+    @Test
+    void rejectedStandaloneDeliveryDropsPageAndReleasesItsAllowance() throws Exception {
+        try (var budget = new TempBudget()) {
+            var input =
+                    SortedComparisonInput.capture(
+                                    new Fixture(List.of(row(1, "rejected"))),
+                                    temporary,
+                                    budget,
+                                    Cancellation.NONE)
+                            .join();
+            var read =
+                    input.readStandalone(
+                            null,
+                            256,
+                            Cancellation.NONE,
+                            task -> {
+                                throw new java.util.concurrent.RejectedExecutionException(
+                                        "authored read delivery rejection");
+                            });
+            assertThrows(CompletionException.class, read::join);
+            assertEquals(0, budget.snapshot().memory());
+            input.closeAsync().join();
+            assertDrained(budget);
+        }
+    }
+
     private static java.util.concurrent.ThreadPoolExecutor worker(SortedComparisonInput input)
             throws Exception {
         // Hold the private operation deterministically without adding test hooks to the public API.
