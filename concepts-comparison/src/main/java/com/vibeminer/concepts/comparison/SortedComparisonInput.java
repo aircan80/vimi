@@ -34,6 +34,58 @@ public final class SortedComparisonInput implements ComparisonInput {
     public static final long READ_ALLOWANCE_BYTES = 14L << 20;
     private static final int MAX_RUNS = 1024;
 
+    /** Explicit reviewed lexical formats; routing partition0 carries private non-ID sort tokens. */
+    public enum KeyPolicy {
+        UNSIGNED_ID,
+        EFFECT_ROUTE,
+        EFFECT_LINK;
+
+        private boolean admits(String value) {
+            return switch (this) {
+                case UNSIGNED_ID -> value.length() == 20 && part(value, 0, ZERO, U32);
+                case EFFECT_LINK ->
+                        value.length() == 41
+                                && (value.charAt(0) == 'B' || value.charAt(0) == 'D')
+                                && part(value, 1, ONE, SIGNED)
+                                && part(value, 21, ZERO, U32);
+                case EFFECT_ROUTE ->
+                        value.length() == 62
+                                && (value.charAt(0) == '0' || value.charAt(0) == '1')
+                                && part(
+                                        value,
+                                        1,
+                                        value.charAt(0) == '1' ? ONE : ZERO,
+                                        value.charAt(0) == '1' ? SIGNED : BIASED)
+                                && value.charAt(21) == 'B'
+                                && part(value, 22, ONE, SIGNED)
+                                && part(value, 42, ZERO, U32);
+            };
+        }
+
+        private static final String ZERO = "00000000000000000000",
+                ONE = "00000000000000000001",
+                U32 = "00000000004294967295",
+                SIGNED = "00000000002147483647",
+                BIASED = "00000000002147483648";
+
+        private static boolean part(String value, int start, String min, String max) {
+            int lower = 0, upper = 0;
+            for (int i = 0; i < 20; i++) {
+                char c = value.charAt(start + i);
+                if (c < '0' || c > '9') {
+                    return false;
+                }
+                if (lower == 0) {
+                    lower = Character.compare(c, min.charAt(i));
+                }
+                if (upper == 0) {
+                    upper = Character.compare(c, max.charAt(i));
+                }
+            }
+            return lower >= 0 && upper <= 0;
+        }
+    }
+
     /**
      * Unsorted canonical pages from one pinned source. Before read, the sorter reserves
      * maxRetainedBytes for the returned page. Implementations must honor that bound before
@@ -89,6 +141,8 @@ public final class SortedComparisonInput implements ComparisonInput {
 
     private Source source;
     private final Descriptor descriptor;
+    private final KeyPolicy keyPolicy;
+    private String previousReadKey;
     private final TempBudget budget;
     private final Path directory;
     private final Cancellation lifetime = new Cancellation();
@@ -116,10 +170,21 @@ public final class SortedComparisonInput implements ComparisonInput {
     private final java.util.Set<ReadDelivery> readDeliveries = new java.util.HashSet<>();
     private Integer pendingFrameLength;
 
-    private SortedComparisonInput(Source source, Path parent, TempBudget budget)
-            throws IOException {
+    private SortedComparisonInput(
+            Source source, Path parent, TempBudget budget, KeyPolicy keyPolicy) throws IOException {
         this.source = Objects.requireNonNull(source);
         descriptor = Objects.requireNonNull(source.descriptor());
+        this.keyPolicy = Objects.requireNonNull(keyPolicy);
+        String declaredPolicy = descriptor.dependencies().get("comparison.keyPolicy");
+        if (declaredPolicy != null && !declaredPolicy.equals(keyPolicy.name())
+                || keyPolicy != KeyPolicy.UNSIGNED_ID && !keyPolicy.name().equals(declaredPolicy)
+                || keyPolicy == KeyPolicy.EFFECT_ROUTE
+                        && !descriptor.namespace().equals("effects-private-route-v1")
+                || keyPolicy == KeyPolicy.EFFECT_LINK
+                        && !descriptor.namespace().equals("effects-private-link-v1")) {
+            throw new IllegalArgumentException(
+                    "Explicit sort key policy differs from descriptor binding");
+        }
         this.budget = Objects.requireNonNull(budget);
         directory = Files.createTempDirectory(parent, "comparison-sort-");
         coverage =
@@ -138,6 +203,12 @@ public final class SortedComparisonInput implements ComparisonInput {
         return capture(source, parent, budget, token, Runnable::run);
     }
 
+    /** Explicit effects policies require matching namespace and comparison.keyPolicy dependency. */
+    public static CompletableFuture<SortedComparisonInput> capture(
+            Source source, Path parent, TempBudget budget, Cancellation token, KeyPolicy policy) {
+        return capture(source, parent, budget, token, policy, Runnable::run);
+    }
+
     // Inject delivery only for deterministic ownership-race fixtures; delivery is dispatched
     // from the common pool, never from the sort worker that closeAsync must drain.
     static CompletableFuture<SortedComparisonInput> capture(
@@ -146,11 +217,21 @@ public final class SortedComparisonInput implements ComparisonInput {
             TempBudget budget,
             Cancellation token,
             java.util.concurrent.Executor delivery) {
+        return capture(source, parent, budget, token, KeyPolicy.UNSIGNED_ID, delivery);
+    }
+
+    private static CompletableFuture<SortedComparisonInput> capture(
+            Source source,
+            Path parent,
+            TempBudget budget,
+            Cancellation token,
+            KeyPolicy policy,
+            java.util.concurrent.Executor delivery) {
         Objects.requireNonNull(token);
         Objects.requireNonNull(delivery);
         SortedComparisonInput input;
         try {
-            input = new SortedComparisonInput(source, parent, budget);
+            input = new SortedComparisonInput(source, parent, budget, policy);
         } catch (Throwable failure) {
             return source.closeAsync()
                     .handle(
@@ -434,12 +515,19 @@ public final class SortedComparisonInput implements ComparisonInput {
             var output = createFile(token);
             var x = readRecord(left);
             var y = readRecord(right);
+            String previous = null;
             while (x != null || y != null) {
                 check(token);
                 int order = x == null ? 1 : y == null ? -1 : x.key().compareTo(y.key());
                 if (order == 0) {
                     throw failure(Reason.INVALID_SOURCE, "Duplicate identity across sort runs");
                 }
+                var chosen = order < 0 ? x : y;
+                if (previous != null && previous.compareTo(chosen.key()) >= 0) {
+                    throw failure(Reason.INVALID_SOURCE, "Sort run keys are not strictly ordered");
+                }
+                previous = chosen.key();
+                chosen = null;
                 if (order < 0) {
                     append(output, x, token);
                     x = null;
@@ -461,8 +549,8 @@ public final class SortedComparisonInput implements ComparisonInput {
         return file;
     }
 
-    private static void append(BudgetedTempFile file, Record row, Cancellation token)
-            throws IOException {
+    private void append(BudgetedTempFile file, Record row, Cancellation token) throws IOException {
+        validateKey(row.key());
         // Canonical adapters must bound fields before capture. Do not silently mutate their facts.
         var bytes = ComparisonCodec.pair(row, null);
         if (bytes.length > RECORD_BYTES) {
@@ -471,7 +559,7 @@ public final class SortedComparisonInput implements ComparisonInput {
         file.appendFrame(bytes, token);
     }
 
-    private static Record readRecord(DataInputStream input) throws IOException {
+    private Record readRecord(DataInputStream input) throws IOException {
         var length = readLength(input);
         if (length == null) {
             return null;
@@ -495,7 +583,7 @@ public final class SortedComparisonInput implements ComparisonInput {
         return length;
     }
 
-    private static Record readBody(DataInputStream input, int length) throws IOException {
+    private Record readBody(DataInputStream input, int length) throws IOException {
         var bytes = input.readNBytes(length);
         if (bytes.length != length) {
             throw new EOFException("Truncated sorted frame");
@@ -504,6 +592,7 @@ public final class SortedComparisonInput implements ComparisonInput {
         if (pair[0] == null || pair[1] != null) {
             throw new IOException("Invalid sorted record framing");
         }
+        validateKey(pair[0].key());
         return pair[0];
     }
 
@@ -513,11 +602,12 @@ public final class SortedComparisonInput implements ComparisonInput {
     }
 
     private void validateKey(String key) throws CaptureFailure {
-        // Framework canonical fixed-width unsigned decimal keys, including zero.
-        if (key.length() != 20
-                || !key.chars().allMatch(c -> c >= '0' && c <= '9')
-                || key.compareTo("00000000004294967295") > 0) {
-            throw failure(Reason.INVALID_SOURCE, "Expected canonical 20-digit identity");
+        if (!keyPolicy.admits(key)) {
+            throw failure(
+                    Reason.INVALID_SOURCE,
+                    keyPolicy == KeyPolicy.UNSIGNED_ID
+                            ? "Expected canonical 20-digit identity"
+                            : "Expected canonical " + keyPolicy + " identity");
         }
     }
 
@@ -653,6 +743,13 @@ public final class SortedComparisonInput implements ComparisonInput {
                                     allowance.requireMemory(budget, READ_ALLOWANCE_BYTES);
                                     var row = readBody(reader, pendingFrameLength);
                                     pendingFrameLength = null;
+                                    if (previousReadKey != null
+                                            && previousReadKey.compareTo(row.key()) >= 0) {
+                                        throw failure(
+                                                Reason.INVALID_SOURCE,
+                                                "Sorted read keys are not strictly ordered");
+                                    }
+                                    previousReadKey = row.key();
                                     var actual = retainedBytes(row);
                                     if (actual + retained > READ_PAGE_BYTES) {
                                         throw new ComparisonLimit(
