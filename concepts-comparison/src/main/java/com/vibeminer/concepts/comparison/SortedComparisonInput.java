@@ -197,6 +197,7 @@ public final class SortedComparisonInput implements ComparisonInput {
             var chunk = new ArrayList<Record>();
             long count = 0;
             String cursor = null;
+            boolean firstPage = true;
             while (true) {
                 check(token);
                 try (var pageMemory =
@@ -212,13 +213,26 @@ public final class SortedComparisonInput implements ComparisonInput {
                     if (page.rows().size() > PAGE_ROWS) {
                         throw failure(Reason.INVALID_SOURCE, "Unsorted page exceeds row limit");
                     }
-                    long pageBytes = 4096;
+                    long pageBytes =
+                            4096L
+                                    + 4L
+                                            * (page.identity().length()
+                                                    + page.coverage().scope().length()
+                                                    + (page.nextCursor() == null
+                                                            ? 0
+                                                            : page.nextCursor().length()));
+                    for (var issue : page.coverage().issues()) {
+                        pageBytes = Math.addExact(pageBytes, 64L + 4L * issue.length());
+                    }
+                    if (pageBytes > SOURCE_PAGE_BYTES) {
+                        throw failure(
+                                Reason.LIMITED, "Unsorted page metadata exceeds reserved buffer");
+                    }
                     for (var row : page.rows()) {
                         if (row == null) {
                             throw failure(Reason.INVALID_SOURCE, "Null unsorted record");
                         }
-                        pageBytes =
-                                Math.addExact(pageBytes, ComparisonCodec.retainedBytes(row) + 64);
+                        pageBytes = Math.addExact(pageBytes, retainedBytes(row));
                         if (pageBytes > SOURCE_PAGE_BYTES) {
                             throw failure(Reason.LIMITED, "Unsorted page exceeds reserved buffer");
                         }
@@ -229,7 +243,7 @@ public final class SortedComparisonInput implements ComparisonInput {
                             throw failure(Reason.LIMITED, "Unsorted identity limit reached");
                         }
                         validateKey(row.key());
-                        long bytes = ComparisonCodec.retainedBytes(row) + 64;
+                        long bytes = retainedBytes(row);
                         if (bytes > CHUNK_BYTES) {
                             throw failure(Reason.LIMITED, "Record exceeds sort chunk policy");
                         }
@@ -242,7 +256,8 @@ public final class SortedComparisonInput implements ComparisonInput {
                         chunkMemory.grow(bytes, token);
                         chunk.add(row);
                     }
-                    coverage = page.coverage();
+                    coverage = mergeCoverage(firstPage ? null : coverage, page.coverage());
+                    firstPage = false;
                     var next = page.nextCursor();
                     if (next == null) {
                         break;
@@ -282,6 +297,31 @@ public final class SortedComparisonInput implements ComparisonInput {
             files.removeIf(file -> file != sorted);
             ((ArrayList<BudgetedTempFile>) files).trimToSize();
         }
+    }
+
+    private Coverage mergeCoverage(Coverage previous, Coverage next) throws CaptureFailure {
+        if (next.issues().size() > 64
+                || next.issues().stream().mapToLong(String::length).sum() > 16384) {
+            throw failure(Reason.LIMITED, "Unsorted coverage diagnostics exceed metadata policy");
+        }
+        var state = next.completeness();
+        if (previous != null) {
+            if (previous.completeness() == Completeness.UNKNOWN || state == Completeness.UNKNOWN) {
+                state = Completeness.UNKNOWN;
+            } else if (previous.completeness() == Completeness.PARTIAL
+                    || state == Completeness.PARTIAL) {
+                state = Completeness.PARTIAL;
+            }
+        }
+        var issues = new java.util.LinkedHashSet<String>();
+        if (previous != null) {
+            issues.addAll(previous.issues());
+        }
+        issues.addAll(next.issues());
+        if (issues.size() > 64 || issues.stream().mapToLong(String::length).sum() > 16384) {
+            throw failure(Reason.LIMITED, "Captured coverage diagnostics exceed metadata policy");
+        }
+        return new Coverage(state, descriptor.scope(), List.copyOf(issues));
     }
 
     @SuppressWarnings("try") // Charge sorting/encoding scratch before allocation.
@@ -394,6 +434,11 @@ public final class SortedComparisonInput implements ComparisonInput {
         return pair[0];
     }
 
+    /** Conservative canonical-record/object accounting shared with bounded source adapters. */
+    public static long retainedBytes(Record record) {
+        return ComparisonCodec.retainedBytes(Objects.requireNonNull(record)) + 64;
+    }
+
     private void validateKey(String key) throws CaptureFailure {
         // Framework canonical fixed-width unsigned decimal keys, including zero.
         if (key.length() != 20
@@ -464,7 +509,7 @@ public final class SortedComparisonInput implements ComparisonInput {
                                     }
                                     var row = readBody(reader, pendingFrameLength);
                                     pendingFrameLength = null;
-                                    var actual = ComparisonCodec.retainedBytes(row) + 64;
+                                    var actual = retainedBytes(row);
                                     if (actual + retained > READ_PAGE_BYTES) {
                                         throw new ComparisonLimit(
                                                 "Sorted page record exceeds retained budget");

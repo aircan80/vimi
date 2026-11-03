@@ -221,6 +221,55 @@ final class SortedComparisonInputTest {
     }
 
     @Test
+    void laterCompletePageCannotUpgradeEarlierUnknownCoverageOrLoseItsIssue() throws Exception {
+        var rows = new ArrayList<Record>();
+        for (int i = 0; i < 257; i++) {
+            rows.add(row(i, "a"));
+        }
+        var original = new Fixture(rows);
+        SortedComparisonInput.Source source =
+                new SortedComparisonInput.Source() {
+                    public Descriptor descriptor() {
+                        return original.descriptor();
+                    }
+
+                    public CompletableFuture<SortedComparisonInput.UnsortedPage> read(
+                            String cursor, int maxRows, long maxBytes, Cancellation token) {
+                        return original.read(cursor, maxRows, maxBytes, token)
+                                .thenApply(
+                                        page ->
+                                                new SortedComparisonInput.UnsortedPage(
+                                                        page.identity(),
+                                                        page.rows(),
+                                                        page.nextCursor(),
+                                                        new Coverage(
+                                                                cursor == null
+                                                                        ? Completeness.UNKNOWN
+                                                                        : Completeness.COMPLETE,
+                                                                "held readable rows",
+                                                                cursor == null
+                                                                        ? List.of(
+                                                                                "Earlier unknown section")
+                                                                        : List.of())));
+                    }
+
+                    public CompletableFuture<Void> closeAsync() {
+                        return original.closeAsync();
+                    }
+                };
+        try (var budget = new TempBudget()) {
+            var input =
+                    SortedComparisonInput.capture(source, temporary, budget, Cancellation.NONE)
+                            .join();
+            var page = input.read(null, 256, Cancellation.NONE).join();
+            assertEquals(Completeness.UNKNOWN, page.coverage().completeness());
+            assertEquals(List.of("Earlier unknown section"), page.coverage().issues());
+            input.closeAsync().join();
+            assertDrained(budget);
+        }
+    }
+
+    @Test
     void serializedRecordLimitIsTypedBeforeWritingAnOversizeFrame() throws Exception {
         assertFailure(
                 new Fixture(List.of(row(1, "界".repeat(400000)))),
