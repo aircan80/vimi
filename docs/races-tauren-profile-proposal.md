@@ -1,7 +1,8 @@
 # Narrow Tauren static appearance proposal (#104)
 
-This is an isolated prototype awaiting independent domain review. It does not admit
-other races, model fallbacks, character animation or held equipment. No client assets
+Independent architecture and domain reviewers approved revision
+`b25fd1dd2df6eda5aa35bf13eca2ece75101b778` for these exact static profiles.
+This does not admit other races, fallback traversal, animation or held equipment. No client assets
 or actual-data screenshots are included in the repository.
 
 ## Exact selected-build facts
@@ -104,18 +105,17 @@ Nonzero, differently shaped or unreadable slots are unsupported; no fallback is
 followed or interpreted.
 
 Primary naming corroboration is
-[TrinityCore ChrModelEntry at34fd0ebd83247ef0f5f72ffe537789c9e4c78928](https://github.com/TrinityCore/TrinityCore/blob/34fd0ebd83247ef0f5f72ffe537789c9e4c78928/src/server/game/DataStores/DB2Structure.h).
+[TrinityCore ChrModelEntry at 34fd0ebd83247ef0f5f72ffe537789c9e4c78928](https://github.com/TrinityCore/TrinityCore/blob/34fd0ebd83247ef0f5f72ffe537789c9e4c78928/src/server/game/DataStores/DB2Structure.h).
 That is modern-source scope and cannot establish the Classic layout by field name
 alone. The independent Classic physical audit above is required. The exact pinned
 [WoWDBDefs ChrModel definition](https://github.com/wowdev/WoWDBDefs/blob/b9a63096cdd99b26967f17f9515377ae62cadfd7/definitions/ChrModel.dbd)
-and actual decoded row tuples establish this narrow compatibility gate, subject to
-independent domain review.
+and actual decoded row tuples establish this narrow compatibility gate, under the independently reviewed narrow literal-zero policy.
 
 ## Cache and validation
 
 The isolated policy revision is `human-orc-tauren-clothing-geosets-v4`. Existing
 source, skin, recipe, locale and renderer identity bindings remain intact.
-Real PackGeneratedStore derivatives were restored on repeat (35–60ms in this probe),
+Real PackGeneratedStore derivatives were restored on repeat (35–60 ms in this probe),
 then restored again after closing and constructing a new RacesService on the same
 pack store, for all four race/class/sex combinations. These timings do not describe
 full app startup. Restored previews retain all partial/neutral/attachment warnings.
@@ -123,12 +123,27 @@ full app startup. Restored previews retain all partial/neutral/attachment warnin
 Deterministic authored regressions cover exact pair admission, fur/accessory canvas
 sizes and sex qualification, wrong sex/layout/nonzero compatibility and altered logical/physical interpretation rejection,
 no global admission of fallback names, and robe/body/horn preservation without
-inventing feet or sleeves. Component check currently passes29 tests.
+inventing feet or sleeves. Component check currently passes 29 tests.
 
 Local research-only artifacts (not committed assets) are
 `/tmp/tauren-profile-outfit-proof.txt`, `/tmp/tauren-physical-profile-proof.txt`,
 `/tmp/tauren-static-model-proof.txt`, and `/tmp/tauren-production-pack-proof.txt`.
 Prototype runners are `/tmp/TaurenAppearanceProbe.java` and
 `/tmp/DirectTaurenTables.java`; their authored table interface wraps actual same-build
-Db2Reader rows, not fixture game data. Review approval is required before this
-prototype becomes public profile support.
+Db2Reader rows, not fixture game data. Both reviewers inspected the proof; domain review also inspected all four real
+compositions and confirmed the stated limits. Architecture independently ran
+`:concepts-races:check`. Actual assets and screenshots remain outside the repo.
+
+
+## Approval limits
+
+The literal-zero checks are exact-layout compatibility predicates. They do not
+establish general meanings for unverified field names or authorize traversing
+those associations. The generic field allowlist remains unchanged. The modern
+TrinityCore header corroborates names; the selected Classic byte/layout audit is
+separate evidence.
+
+Approval retains lowest recorded eligible samples, static geometry and partial
+diffuse bindings. Neutral/unbound surfaces, absent attachments and cache-restored
+warnings remain explicit. Boots/hoof rules, invented sleeves, client defaults,
+account eligibility and animation are outside this profile.
