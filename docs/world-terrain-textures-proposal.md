@@ -54,7 +54,7 @@ fields; coordinate against that API rather than creating a competing Tile shape.
 | 778150 | 1069109 | 8 | 2:29,3:32,4:195 | 678 | 678×0x300 |
 
 Every base layer flags0. Every decoded overlay has exactly4096 bytes, consumes
-its entire declared MCAL interval and has no trailing bytes. For all2074 masks,
+its entire declared MCAL interval and has no trailing bytes. For all2024 masks,
 per-pixel overlay sums never exceed255. Nonzero effectIDs describe omitted ground
 effects, not texture identifiers or permission to render foliage.
 
@@ -140,6 +140,14 @@ normalizes it. This differs from sequential source-over: red base, green mask128
 and blue mask64 must yield byteRGB(63,128,64), not approximately(95,96,64).
 Small/nibble alpha, edge-fix variants, compression outside this exact RLE, MTEX
 names, positive MHID and MTXP height material parameters are separate profiles.
+
+This recipe is **BASIC_COVERAGE_PREVIEW**, not the client final blend. The
+recorded WDT0x3ca includes0x80: the pinned wow.export ADTExporter selects its
+nonlinear height-weight sharpening path for that bit even when MHID entries
+are0 and no MTXP occurs (default height scale0/offset1). Those absences therefore
+do not prove that client sharpening is disabled. The first preview deliberately
+uses the decoded direct coverage above; reproducing client nonlinear sharpening
+is a separate reviewed recipe, never a silent change to this cache identity.
 
 Atlas pixel centers define sampling. At chunk pixel(px,py) in0..31, local
 normalized coordinates are `((px+.5)/32,(py+.5)/32)`; diffuse repeats eight times,
