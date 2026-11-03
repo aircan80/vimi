@@ -9,11 +9,51 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.AbstractList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.CancellationException;
 import org.junit.jupiter.api.Test;
 
 class WorldTextureFormatsTest {
+    @Test
+    void publicMetadataChecksBoundsBeforeCopyingAndRejectsImpossibleResults() {
+        var oversized =
+                new AbstractList<WorldTextureFormats.Layer>() {
+                    @Override
+                    public int size() {
+                        return 9;
+                    }
+
+                    @Override
+                    public WorldTextureFormats.Layer get(int index) {
+                        throw new AssertionError("Oversized list must not be copied");
+                    }
+                };
+        var none = WorldTextureFormats.ChunkIssue.NONE;
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new WorldTextureFormats.ChunkTexture(0, oversized, none));
+        for (int ordinal : new int[] {-1, 256}) {
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> new WorldTextureFormats.ChunkTexture(ordinal, List.of(), none));
+        }
+        for (int count : new int[] {-1, 8}) {
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> new WorldTextureFormats.AlphaResult(count, none));
+        }
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new WorldTextureFormats.AlphaResult(
+                                1, WorldTextureFormats.ChunkIssue.MASK_SUM));
+        assertThrows(
+                NullPointerException.class, () -> new WorldTextureFormats.AlphaResult(0, null));
+        assertEquals(7, new WorldTextureFormats.AlphaResult(7, none).maskCount());
+    }
+
     private static byte[] ints(int... values) {
         var b = ByteBuffer.allocate(values.length * 4).order(ByteOrder.LITTLE_ENDIAN);
         for (int v : values) {

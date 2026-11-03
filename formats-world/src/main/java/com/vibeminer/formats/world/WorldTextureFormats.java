@@ -45,12 +45,23 @@ public final class WorldTextureFormats {
 
     public record ChunkTexture(int ordinal, List<Layer> layers, ChunkIssue issue) {
         public ChunkTexture {
-            layers = List.copyOf(layers);
+            Objects.requireNonNull(layers);
             Objects.requireNonNull(issue);
+            if (ordinal < 0 || ordinal >= 256 || layers.size() > 8) {
+                throw new IllegalArgumentException("Invalid texture chunk bounds");
+            }
+            layers = List.copyOf(layers);
         }
     }
 
     public record AlphaResult(int maskCount, ChunkIssue issue) {
+        public AlphaResult {
+            Objects.requireNonNull(issue);
+            if (maskCount < 0 || maskCount > 7 || (issue != ChunkIssue.NONE && maskCount != 0)) {
+                throw new IllegalArgumentException("Invalid alpha result count");
+            }
+        }
+
         public boolean admitted() {
             return issue == ChunkIssue.NONE;
         }

@@ -9,11 +9,29 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.ReadOnlyBufferException;
+import java.util.AbstractList;
 import java.util.Arrays;
 import java.util.concurrent.CancellationException;
 import org.junit.jupiter.api.Test;
 
 class TerrainGridTest {
+    @Test
+    void rejectsOversizedPublicListBeforeAccessingElements() {
+        var oversized =
+                new AbstractList<TerrainGrid.Chunk>() {
+                    @Override
+                    public int size() {
+                        return 257;
+                    }
+
+                    @Override
+                    public TerrainGrid.Chunk get(int index) {
+                        throw new AssertionError("Oversized list must not be copied");
+                    }
+                };
+        assertThrows(IllegalArgumentException.class, () -> new TerrainGrid(oversized));
+    }
+
     private static byte[] colors(byte[] source, byte[] colors) {
         byte[] result = Arrays.copyOf(source, source.length + 8 + colors.length);
         var b = ByteBuffer.wrap(result).order(ByteOrder.LITTLE_ENDIAN);

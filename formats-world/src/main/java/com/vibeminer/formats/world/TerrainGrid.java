@@ -165,14 +165,15 @@ public final class TerrainGrid {
     private final long retainedBytes;
 
     public TerrainGrid(List<Chunk> chunks) {
-        this.chunks = List.copyOf(chunks);
+        Objects.requireNonNull(chunks);
         if (chunks.isEmpty() || chunks.size() > 256) {
             throw new IllegalArgumentException("Invalid grid count");
         }
+        this.chunks = List.copyOf(chunks);
         boolean[] seen = new boolean[256];
         long bytes = 2048;
-        for (int i = 0; i < chunks.size(); i++) {
-            var c = chunks.get(i);
+        for (int i = 0; i < this.chunks.size(); i++) {
+            var c = this.chunks.get(i);
             int key = c.y() * 16 + c.x();
             if (c.ordinal() != i || seen[key]) {
                 throw new IllegalArgumentException("Duplicate or unordered source grid");
