@@ -1,0 +1,33 @@
+# Pure native LOD error math checkpoint
+
+Status: production **math/API only**, pending independent implementation review. No source service, planner graph, scene encoding, renderer, UI distance mode, seam approximation or shipping budget/tolerance is integrated.
+
+## API and ownership
+
+`CheckedLeafPlan.create(TerrainGrid.Chunk,row,column,size,splitMask)` performs only bounded structural checks and constructs at most eight original source-index perimeter references. Size is1/2/4/8, aligned and within the source8×8 cell grid. Split bits TOP/RIGHT/BOTTOM/LEFT insert the existing midpoint on the specified final edge; size1 forbids extra splits. The plan retains its immutable source chunk reference, scalar cell bounds, center and perimeter indices. It does **not** retain145XYZ samples, normalize positions or create an independently trusted source receipt.
+
+`TerrainLodError.evaluate(plan,ErrorWork,canceled)` performs all charged hole/native-topology validation and coordinate extraction. ErrorWork is a caller-owned, single-worker shared allowance and reusable scratch owner. It contains435floats,145indices,32interval doubles and56plane doubles: **3024bytes of primitive payload**, plus bounded object/array headers. Its constructor validates explicit arithmetic/plane limits before scratch allocation. The API hard bounds are100million charged arithmetic/validation groups and1million plane events; these are ceilings, not proposed per-frame/per-scene defaults. Counters accumulate across evaluations, with no implicit reset.
+
+Validation/copy groups charge before each source cell/sample; arithmetic helpers charge before each primitive interval operation; coefficient/residual plane events have their own allowance. Cancellation is checked at each charge. Budget exhaustion returns UNRESOLVED with no usable bound; cancellation propagates. Only one bounded scratch set is needed for successive candidates. The future planner must separately bound retained plan count and source/cache/mesh ownership, not build a per-node object graph under this math API.
+
+Results have private construction and expose EXACT_GEOMETRY, EMPTY_SOURCE, BOUNDED or UNRESOLVED plus reason/upper bound. Coarse nodes containing any source hole are unresolved. A one-cell hole is EMPTY_SOURCE and **does not certify a surface**. An unholed one-cell leaf reproduces the exact original four fan triangles and returns EXACT_GEOMETRY after validation. `certifies(0)` accepts only that exact nonempty geometry; BOUNDED requires a positive finite tolerance and upperBound≤tolerance. NaN/infinite/negative tolerances are rejected. Caller coverage code must handle empty explicitly rather than fill it with zero height.
+
+## Native geometry and conservative interval math
+
+Scratch positions reproduce `TerrainGrid.Chunk.position` float arithmetic exactly, including stored XY quantization and float height addition. Authored tests compare all raw position bits for a multi-cell leaf. No coordinate welding, native-to-normalized affine assumption or invented height is used.
+
+Every fine-cell center must lie strictly within its native axis-aligned source rectangle, and rectangle corner coordinates must agree along each axis. Given this source grid and dyadic alignment, original fine fans partition the leaf; candidate corners/midpoints lie on the same boundary and the source center lies inside. Thus the final candidate fan partitions the same leaf without filling holes. Neighbor split compatibility is not inferred here: the future planner must supply the final split mask and re-evaluate after any fan change.
+
+Each candidate triangle defines a height plane. For every original fine vertex, evaluate its residual against **every** candidate plane, including extrapolated planes. On any fine/candidate intersection the true height difference is affine, and its absolute maximum is bounded by values at the whole fine triangle's vertices. Taking all candidate planes therefore cannot omit the one used at a point. Extrapolation may overestimate strongly, causing refinement/limited farther coverage; it never justifies relaxing the bound.
+
+Gradient coefficients use interval differences/products/divisions around actual native float constants. Each endpoint operation rounds outward with `Math.nextDown/nextUp`; division requires a denominator interval strictly excluding zero. Every stored interval is checked finite and ordered. Zero-containing determinants and nonfinite arithmetic fail closed. The maximum absolute residual endpoint is already an upper bound; no epsilon is subtracted and no approximate equality grants acceptance. No runtime BigInteger, per-vertex interval objects, polygon clipping or all-pairs matrix is used.
+
+Java floating arithmetic is strict; float constants convert exactly to double. Even subtraction is enclosed, since widely separated float exponents need not subtract exactly as doubles. The interval endpoint extrema rules conservatively include each rounded product/quotient. Signed zeros and subnormal outward steps are retained, rather than rounded back to zero. Source-grid validation makes degenerate candidate planes structurally impossible for ordinary admitted samples, but the coefficient routine still explicitly refuses zero determinants/nonfinite intervals; authored defensive tests exercise those guards.
+
+## Evidence and limits
+
+`:rendering-world:check` passes with six new tests. Thirty-six seeded/peak/flat combinations across native origins0/10000/1million and split masks0/5/15 compare the production upper bound against the independently implemented exact rational native-XY clipping reference. A larger stitched leaf also compares against exact clipping. Tests cover exact old float position bits, full145-sample/eight-plane work, scratch reuse, holes/empty/exact distinctions, shared exhausted budgets, cancellation, invalid alignment/ranges and determinant/nonfinite refusal.
+
+The full8×8 flat-source example charges eight coefficient planes plus8×145 residual events; this is an authored count, not a latency claim. Work refusal is honest even if more arithmetic could have succeeded. No actual-source acceptance rate, 7×7 coverage or preparation speed has been measured, and no numeric consumer budget or0/1/4/16 ring policy is approved by these tests.
+
+Remaining gates: independently review interval implementation; benchmark bounded full source grids/refinement; choose work/fidelity policy; integrate source-index topology without retained-node growth; distinguish existing cross-chunk float gaps from new LOD cracks; preflight unchanged geometry/batch/IPC limits; preserve smooth scene replacement; then prove real CPU/native frames. Current scene rendering remains unchanged.
