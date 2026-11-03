@@ -77,13 +77,14 @@ public final class BackendBuildServiceTest {
         refreshDiscoveryAndPartialFailure();
         coalescedListAndQueuedRefresh();
         coalescedRefreshAndProtectedClose();
+        cancelRefreshKeepsServiceUsable();
         discoveryFailureStillListsReviewedProducts();
         boundedPagedHistoryDiscovery();
         callbackCanSynchronouslyAwaitClose();
         failedProductRetainsLastGoodRows();
         totalInitialFailureRejectsSnapshot();
         readableSummaryRefreshesOnlyVersionedWowProducts();
-        System.out.println("BackendBuildService: 10 deterministic contracts passed");
+        System.out.println("BackendBuildService: 11 deterministic contracts passed");
     }
     private static void offlineProjectionAndWarnings() throws Exception {
         var fake=new Fake();var clean=new AtomicInteger();
@@ -144,6 +145,20 @@ public final class BackendBuildServiceTest {
         require(fake.refreshes.get()==0 && fake.summaries.get()==1,"No overlapping refresh work");
         require(service.listBuilds().isCompletedExceptionally(),"Reject after close");
     }
+    private static void cancelRefreshKeepsServiceUsable() throws Exception {
+        var fake = new Fake(); fake.summaryGate = new CompletableFuture<>();
+        var service = new BackendBuildService(fake);
+        var refresh = service.refreshBuilds();
+        require(fake.entered.await(5, TimeUnit.SECONDS), "Refresh entered before explicit cancellation");
+        service.cancelCatalogRefresh();
+        fake.summaryGate.complete(null);
+        try { await(refresh); throw new AssertionError("Canceled catalog refresh completed normally"); }
+        catch (java.util.concurrent.CancellationException | java.util.concurrent.ExecutionException expected) { /* expected */ }
+        require(await(service.listBuilds()).stream().anyMatch(build -> build.product().equals("wow")), "Cancel refresh preserves local catalog service");
+        require(await(service.refreshBuilds()).size() == 2, "A later refresh receives a fresh cancellation token");
+        await(service.closeAsync());
+    }
+
     private static void discoveryFailureStillListsReviewedProducts() throws Exception {
         var fake=new Fake();fake.failSummary=true;
         var service=new BackendBuildService(fake,token->CompletableFuture.failedFuture(new IllegalStateException("history failure")),

@@ -35,6 +35,150 @@ class QuestiePersistenceTest {
     @TempDir Path directory;
 
     @Test
+    void fullSyncChecksDownloadsPreparesAndReusesUnchangedLatestWithoutNetworkArchives()
+            throws Exception {
+        var fixture = fixture("sync", false);
+        var bytes = new ByteArrayOutputStream();
+        try (var input = new java.util.zip.ZipInputStream(Files.newInputStream(fixture.archive()));
+                var output = new ZipOutputStream(bytes)) {
+            for (var current = input.getNextEntry();
+                    current != null;
+                    current = input.getNextEntry()) {
+                output.putNextEntry(new ZipEntry(current.getName()));
+                input.transferTo(output);
+                output.closeEntry();
+            }
+            entry(output, "QuestieDB/LICENSE.md", "Authored fixture notice");
+            entry(output, "QuestieDB/gpl-3.0.md", "Authored GPL fixture notice");
+        }
+        byte[] archive = bytes.toByteArray();
+        var downloads = new java.util.concurrent.atomic.AtomicInteger();
+        var server =
+                com.sun.net.httpserver.HttpServer.create(
+                        new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        var base = java.net.URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/");
+        byte[] release =
+                com.vibeminer.questie.internal.Json.bytes(
+                        Map.of(
+                                "tag_name",
+                                "v1",
+                                "published_at",
+                                "2026-01-01T00:00:00Z",
+                                "draft",
+                                false,
+                                "prerelease",
+                                false,
+                                "assets",
+                                List.of(
+                                        Map.of(
+                                                "name",
+                                                "release.json",
+                                                "browser_download_url",
+                                                base.resolve("release.json").toString(),
+                                                "size",
+                                                100),
+                                        Map.of(
+                                                "name",
+                                                "QuestieDB-Forever.zip",
+                                                "browser_download_url",
+                                                base.resolve("QuestieDB-Forever.zip").toString(),
+                                                "size",
+                                                archive.length))));
+        byte[] manifest =
+                com.vibeminer.questie.internal.Json.bytes(
+                        Map.of(
+                                "questiedb",
+                                Map.of(
+                                        "repository",
+                                        "https://github.com/Questie/QuestieDB",
+                                        "producerCommit",
+                                        "a".repeat(40),
+                                        "version",
+                                        "v1",
+                                        "artifacts",
+                                        List.of(
+                                                Map.of(
+                                                        "flavor",
+                                                        "Forever",
+                                                        "file",
+                                                        "QuestieDB-Forever.zip",
+                                                        "sha256",
+                                                        HexFormat.of()
+                                                                .formatHex(
+                                                                        BakedArchive.sha256()
+                                                                                .digest(archive)),
+                                                        "bytes",
+                                                        archive.length)))));
+        server.createContext(
+                "/",
+                exchange -> {
+                    String path = exchange.getRequestURI().getPath();
+                    if (path.startsWith("/releases/")
+                            && "\"sync\""
+                                    .equals(
+                                            exchange.getRequestHeaders()
+                                                    .getFirst("If-None-Match"))) {
+                        exchange.sendResponseHeaders(304, -1);
+                        exchange.close();
+                        return;
+                    }
+                    byte[] body =
+                            path.startsWith("/releases/")
+                                    ? release
+                                    : path.equals("/release.json") ? manifest : archive;
+                    if (body == archive) {
+                        downloads.incrementAndGet();
+                    }
+                    exchange.getResponseHeaders().set("ETag", "\"sync\"");
+                    exchange.sendResponseHeaders(200, body.length);
+                    try (var output = exchange.getResponseBody()) {
+                        output.write(body);
+                    }
+                });
+        server.start();
+        try {
+            var factory =
+                    com.vibeminer.questie.sources.QuestieSourceRepository.class.getDeclaredMethod(
+                            "open",
+                            Path.class,
+                            java.net.URI.class,
+                            boolean.class,
+                            Cancellation.class);
+            factory.setAccessible(true);
+            var opened =
+                    (java.util.concurrent.CompletableFuture<?>)
+                            factory.invoke(
+                                    null,
+                                    directory.resolve("sync-originals"),
+                                    base,
+                                    true,
+                                    Cancellation.NONE);
+            var original = (com.vibeminer.questie.sources.QuestieSourceRepository) opened.join();
+            var constructor =
+                    com.vibeminer.questie.QuestieRepository.class.getDeclaredConstructor(
+                            com.vibeminer.questie.sources.QuestieSourceRepository.class,
+                            QuestieDataRepository.class);
+            constructor.setAccessible(true);
+            try (var repository =
+                    constructor.newInstance(
+                            original,
+                            new QuestieDataRepository(directory.resolve("sync-derived")))) {
+                var first = repository.sync(progress -> {}, Cancellation.NONE).join();
+                assertTrue(first.issues().isEmpty());
+                assertEquals(1, first.versions().size());
+                assertEquals(5, first.versions().getFirst().entityCount());
+                assertEquals(1, downloads.get());
+                var same = repository.sync(progress -> {}, Cancellation.NONE).join();
+                assertEquals(first.versions().getFirst().id(), same.versions().getFirst().id());
+                assertEquals(1, downloads.get());
+                assertEquals(1, repository.versions(Cancellation.NONE).join().size());
+            }
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void persistsVersionsLocalesAndTypedItemRelationshipsAcrossReopen() throws Exception {
         var source = fixture("first", false);
         String id;

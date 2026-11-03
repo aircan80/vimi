@@ -13,6 +13,8 @@ public interface BuildService {
         return listBuilds();
     }
 
+    default void cancelCatalogRefresh() {}
+
     default BuildLoadSnapshot loadSnapshot(BuildInfo build) { return null; }
 
     default CompletableFuture<BuildLoadSnapshot> refreshLoadSnapshot(BuildInfo build) {

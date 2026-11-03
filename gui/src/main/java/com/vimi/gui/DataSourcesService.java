@@ -99,6 +99,8 @@ public final class DataSourcesService {
             java.util.concurrent.Executors.newSingleThreadScheduledExecutor(
                     Thread.ofPlatform().daemon().name("vimi-source-checks").factory());
     private final Map<Id, CompletableFuture<Void>> jobs = new java.util.EnumMap<>(Id.class);
+    private final Map<Id, CompletableFuture<Void>> fullSyncs = new java.util.EnumMap<>(Id.class);
+    private final Map<Id, Long> cancelEpoch = new java.util.EnumMap<>(Id.class);
     private final Map<Id, com.vibeminer.generated.Cancellation> tokens =
             new java.util.EnumMap<>(Id.class);
     private final Map<Id, com.vibeminer.access.Cancellation> accessTokens =
@@ -457,6 +459,79 @@ public final class DataSourcesService {
                 version.id().equals(preferences.get("default." + version.flavor().upstream(), "")));
     }
 
+    /** Full provider update boundary used by startup, the global action and periodic checks. */
+    public synchronized CompletableFuture<Void> sync(Id id) {
+        if (closing || !policy(id).enabled()) return CompletableFuture.failedFuture(new IllegalStateException("Enable this source first"));
+        var current = fullSyncs.get(id);
+        if (current != null) return current.copy();
+        var done = new CompletableFuture<Void>();
+        fullSyncs.put(id, done);
+        long epoch = cancelEpoch.getOrDefault(id, 0L);
+        var prior = jobs.get(id);
+        var ready = prior == null ? CompletableFuture.<Void>completedFuture(null) : prior.handle((value, error) -> null);
+        ready.thenCompose(ignored -> {
+            synchronized (this) {
+                if (closing || cancelEpoch.getOrDefault(id, 0L) != epoch || !policy(id).enabled())
+                    return CompletableFuture.<Void>failedFuture(new java.util.concurrent.CancellationException());
+                startupChecked.add(id);
+                return startSync(id, epoch);
+            }
+        }).whenComplete((value, error) -> {
+            synchronized (this) { fullSyncs.remove(id, done); }
+            if (error == null) done.complete(null); else done.completeExceptionally(error);
+        });
+        return done.copy();
+    }
+
+    private CompletableFuture<Void> startSync(Id id, long epoch) {
+        return submit(() -> preferences.put("attempt." + id, Instant.now().toString())).thenCompose(ignored -> {
+            synchronized (this) {
+                if (closing || cancelEpoch.getOrDefault(id, 0L) != epoch || !policy(id).enabled())
+                    return CompletableFuture.<Void>failedFuture(new java.util.concurrent.CancellationException());
+                var active = jobs.get(id);
+                if (active != null) return active.handle((value, error) -> null).thenCompose(done -> startSync(id, epoch));
+                return launchSync(id);
+            }
+        });
+    }
+
+    private CompletableFuture<Void> launchSync(Id id) {
+        return switch (id) {
+            case QUESTIE -> syncQuestie();
+            case LISTFILE -> updateListfile();
+            case TACT_KEYS -> updateTactKeys();
+            case EG_LINK -> syncEgLink();
+            case POLESTAR -> syncPolestar();
+            case DEFINITIONS -> job(id, (token, progress) -> {
+                progress.accept(new QuestieTypes.Progress(QuestieTypes.Stage.VERIFYING, 0, null, "provider", "Checking bundled definitions…"));
+                var bundled = BundledDefinitions.open(com.vibeminer.access.Cancellation.NONE).join();
+                token.check();
+                submit(() -> {
+                    definitions = new DefinitionsState(BundledDefinitions.REVISION, bundled.tables().size(), bundled.info().license(), bundled.info().sourceUrl());
+                    preferences.put("checked." + id, Instant.now().toString());
+                    revision.incrementAndGet();
+                }).join();
+            });
+        };
+    }
+
+    private CompletableFuture<Void> syncQuestie() {
+        return job(Id.QUESTIE, (token, progress) -> {
+            var result = questie.sync(progress, token).join();
+            submit(() -> {
+                token.check();
+                preferences.put("latest.QUESTIE", result.release());
+                preferences.put("checked.QUESTIE", Instant.now().toString());
+                for (var version : result.versions()) {
+                    String key = "default." + version.flavor().upstream();
+                    if (preferences.get(key, "").isEmpty()) preferences.put(key, version.id());
+                }
+                loadQuestie(); revision.incrementAndGet();
+            }).join();
+            if (!result.issues().isEmpty()) throw new IllegalStateException(String.join("; ", result.issues()));
+        });
+    }
+
     public CompletableFuture<Void> checkQuestie() {
         return job(
                 Id.QUESTIE,
@@ -556,6 +631,17 @@ public final class DataSourcesService {
             var before = egLinkState;
             egLinkState = new EgLinkState(before.catalog(), before.snapshots(), "EG Link local inventory unavailable: " + message(failure));
         }
+    }
+
+    public CompletableFuture<Void> syncEgLink() {
+        return egLinkJob((token, progress) -> {
+            var result = egLink.sync(progress, token).join();
+            submit(() -> {
+                preferences.put("checked.EG_LINK", Instant.now().toString());
+                loadEgLink(); revision.incrementAndGet();
+            }).join();
+            if (!result.issues().isEmpty()) throw new IllegalStateException(String.join("; ", result.issues()));
+        });
     }
 
     public CompletableFuture<Void> checkEgLink() {
@@ -699,7 +785,7 @@ public final class DataSourcesService {
         CompletableFuture<Void> pending;
         synchronized (this) {
             if (!policy(Id.TACT_KEYS).enabled()) return com.vibeminer.files.keys.TactKeys.EMPTY;
-            pending = jobs.get(Id.TACT_KEYS);
+            pending = fullSyncs.getOrDefault(Id.TACT_KEYS, jobs.get(Id.TACT_KEYS));
             if (pending == null && tactClient != null && !closing) {
                 var checks = policy(Id.TACT_KEYS).checks();
                 boolean due = checks == Checks.STARTUP && startupChecked.add(Id.TACT_KEYS)
@@ -787,6 +873,7 @@ public final class DataSourcesService {
     }
 
     public synchronized void cancel(Id id) {
+        cancelEpoch.merge(id, 1L, Long::sum);
         if (id == Id.LISTFILE) for (var acquisition : nameAcquisitions) acquisition.cancel();
         var network = networkTokens.get(id);
         if (network != null) network.cancel();
@@ -867,7 +954,7 @@ public final class DataSourcesService {
                 // The same reservation path serves startup and build preparation.
                 synchronized (this) {
                     var value = policy(id);
-                    if (!closing && tactClient != null && value.enabled() && !jobs.containsKey(id)
+                    if (!closing && tactClient != null && value.enabled() && !jobs.containsKey(id) && !fullSyncs.containsKey(id)
                             && (value.checks() == Checks.DAILY && dailyDue(id)
                                 || value.checks() == Checks.STARTUP && startupChecked.add(id))) updateTactKeys();
                 }
@@ -889,11 +976,7 @@ public final class DataSourcesService {
             submit(() -> preferences.put("attempt." + id, Instant.now().toString()))
                     .thenRun(
                             () -> {
-                                if (id == Id.QUESTIE) checkQuestie();
-                                else if (id == Id.LISTFILE) updateListfile();
-                                else if (id == Id.TACT_KEYS) updateTactKeys();
-                                else if (id == Id.EG_LINK) checkEgLink();
-                                else checkPolestar();
+                                sync(id);
                             });
         }
     }
@@ -941,7 +1024,7 @@ public final class DataSourcesService {
         for (var access : accessTokens.values()) access.cancel();
         for (var network : networkTokens.values()) network.cancel();
         for (var acquisition : nameAcquisitions) acquisition.cancel();
-        var accepted = jobs.values().toArray(CompletableFuture[]::new);
+        var accepted = java.util.stream.Stream.concat(jobs.values().stream(), fullSyncs.values().stream()).toArray(CompletableFuture[]::new);
         worker.shutdown();
         Thread.startVirtualThread(
                 () -> {

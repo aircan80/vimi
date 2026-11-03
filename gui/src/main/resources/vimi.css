@@ -182,3 +182,6 @@
 .race-ability-icon { -fx-background-color: #17231f; -fx-border-color: #9b8e64; -fx-border-width: 1; -fx-background-radius: 3; -fx-border-radius: 3; }
 
 .race-description { -fx-font-size: 13px; -fx-text-fill: #384c46; -fx-font-weight: normal; -fx-line-spacing: 3; }
+
+.source-refresh-row { -fx-padding: 12; -fx-background-color: #f8faf7; -fx-border-color: #d4dfd9; -fx-border-radius: 5; -fx-background-radius: 5; }
+.source-refresh-name { -fx-font-size: 14px; -fx-font-weight: bold; -fx-text-fill: #213c37; }

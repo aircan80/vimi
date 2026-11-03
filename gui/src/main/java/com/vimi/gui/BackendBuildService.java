@@ -48,6 +48,7 @@ public final class BackendBuildService implements BuildService {
     private final java.util.Map<String, CatalogTypes.BuildList> lastGood = new java.util.HashMap<>();
     private final TreeSet<String> products = new TreeSet<>(Products.NATURAL_ORDER);
     private CompletableFuture<List<BuildInfo>> listing, refreshing;
+    private Cancellation refreshToken;
     private boolean active, closed, cleaning;
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
     private volatile List<String> diagnostics = List.of();
@@ -66,6 +67,10 @@ public final class BackendBuildService implements BuildService {
         this.cleanup = Objects.requireNonNull(cleanup);
     }
 
+    @Override public void cancelCatalogRefresh() {
+        synchronized (gate) { if (refreshToken != null) refreshToken.cancel(); }
+    }
+
     @Override public boolean mockMode() { return false; }
     @Override public String status() { return status; }
     @Override public List<String> problems() { return diagnostics; }
@@ -79,7 +84,7 @@ public final class BackendBuildService implements BuildService {
             if (refreshing != null) return refreshing.copy();
             if (!refresh && listing != null) return listing.copy();
             result = new CompletableFuture<>();
-            if (refresh) refreshing = result;
+            if (refresh) { refreshing = result; refreshToken = new Cancellation(); }
             else listing = result;
             if (active) return result.copy(); // At most one explicit refresh queued behind listing.
             active = true;
@@ -88,12 +93,15 @@ public final class BackendBuildService implements BuildService {
         return result.copy();
     }
 
+    @SuppressWarnings("try")
     private void start(boolean refresh, CompletableFuture<List<BuildInfo>> result) {
+        final Cancellation request;
+        synchronized (gate) { request = refresh ? refreshToken : new Cancellation(); }
         try {
             Thread.startVirtualThread(() -> {
                 List<BuildInfo> value = null;
                 Throwable failure = null;
-                try { value = load(refresh); token.check(); }
+                try (var registration = token.onCancel(request::cancel)) { value = load(refresh, request); request.check(); }
                 catch (Throwable error) { failure = unwrap(error); }
                 finish(refresh, result, value, failure);
             });
@@ -113,7 +121,7 @@ public final class BackendBuildService implements BuildService {
             }
         }
         synchronized (gate) {
-            if (refresh) refreshing = null;
+            if (refresh) { refreshing = null; refreshToken = null; }
             else listing = null;
             next = refreshing;
             active = next != null;
@@ -135,15 +143,15 @@ public final class BackendBuildService implements BuildService {
         }
     }
 
-    private List<BuildInfo> load(boolean refresh) {
-        token.check();
+    private List<BuildInfo> load(boolean refresh, Cancellation request) {
+        request.check();
         List<String> warnings = new ArrayList<>();
-        try { remember(discovered.apply(token).join()); }
+        try { remember(discovered.apply(request).join()); }
         catch (Throwable error) { warning(warnings, "Local product discovery", error); }
         java.util.Set<String> eligible = null;
         if (refresh) {
             try {
-                var summary = catalog.refreshSummary(token).join();
+                var summary = catalog.refreshSummary(request).join();
                 remember(summary.newProducts());
                 remember(summary.listed());
                 observation(warnings, "Summary", summary.summary());
@@ -175,20 +183,20 @@ public final class BackendBuildService implements BuildService {
         int enabledCount = 0;
         int readableCount = 0;
         for (var product : listed) {
-            token.check();
+            request.check();
             if (settings != null && !settings.enabled(product.id())) continue;
             enabledCount++;
             CatalogTypes.BuildList list = null;
             if (refresh && (eligible == null || eligible.contains(product.id()))) {
                 try {
-                    var updated = catalog.refresh(product.id(), token).join();
+                    var updated = catalog.refresh(product.id(), request).join();
                     observation(warnings, product.id() + " versions", updated.versions());
                     observation(warnings, product.id() + " cdns", updated.cdns());
                     list = updated.list();
                 } catch (Throwable error) { warning(warnings, product.id() + " refresh", error); }
             }
             if (list == null) {
-                try { list = catalog.listBuilds(product.id(), token).join(); }
+                try { list = catalog.listBuilds(product.id(), request).join(); }
                 catch (Throwable error) {
                     warning(warnings, product.id() + " catalog", error);
                     list = lastGood.get(product.id());
@@ -201,8 +209,8 @@ public final class BackendBuildService implements BuildService {
             problems(warnings, product.id(), list.problems());
             for (var build : list.builds()) result.add(project(build));
         }
-        token.check();
-        if (loadState != null) result = new ArrayList<>(loadState.observe(result, token::check));
+        request.check();
+        if (loadState != null) result = new ArrayList<>(loadState.observe(result, request::check));
         if (enabledCount > 0 && readableCount == 0) throw new CatalogFailure(warnings);
         diagnostics = List.copyOf(warnings);
         status = (enabledCount == 0 ? "No products enabled · Choose products in Settings"

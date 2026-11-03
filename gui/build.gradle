@@ -252,3 +252,17 @@ tasks.register('racesUiTest', JavaExec) {
     mainClass = 'com.vimi.gui.RacesUiTest'
     systemProperty 'vimi.uiReviewDirectory', layout.buildDirectory.dir('ui-review').get().asFile.absolutePath
 }
+
+tasks.register('sourceRefreshTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.SourceRefreshTest'
+}
+check.dependsOn sourceRefreshTest
+
+tasks.register('sourceRefreshUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.SourceRefreshUiTest'
+    systemProperty 'vimi.uiReviewDirectory', layout.buildDirectory.dir('ui-review').get().asFile.absolutePath
+}

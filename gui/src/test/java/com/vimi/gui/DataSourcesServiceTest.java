@@ -92,8 +92,15 @@ public final class DataSourcesServiceTest {
             var names = new CommunityFileNames(access, generated, token -> java.util.concurrent.CompletableFuture.completedFuture(true));
             var calls = new java.util.concurrent.atomic.AtomicInteger();
             var body = new java.util.concurrent.atomic.AtomicReference<>("FFFFFFFFFFFFFFFF 00112233445566778899AABBCCDDEEFF\n");
+            var blocked = new java.util.concurrent.atomic.AtomicReference<java.util.concurrent.CompletableFuture<com.vibeminer.network.NetworkTypes.TactKeyReply>>();
+            var entered = new java.util.concurrent.atomic.AtomicReference<java.util.concurrent.CountDownLatch>();
             com.vibeminer.network.TactKeyClient client = token -> {
                 calls.incrementAndGet(); token.check();
+                var waiting = blocked.get();
+                if (waiting != null) {
+                    entered.get().countDown();
+                    return waiting.thenApply(reply -> { token.check(); return reply; });
+                }
                 return java.util.concurrent.CompletableFuture.completedFuture(new com.vibeminer.network.NetworkTypes.TactKeyReply(
                         com.vibeminer.network.SourceUrls.TACT_KEYS, java.time.Instant.now(), body.get().getBytes(java.nio.charset.StandardCharsets.US_ASCII)));
             };
@@ -112,6 +119,22 @@ public final class DataSourcesServiceTest {
                 body.set("FFFFFFFFFFFFFFFF 00112233445566778899AABBCCDDEEFF\n0000000000000001 11112222333344445555666677778888\n");
                 service.updateTactKeys().join();
                 require(service.tactKeys().count() == 2 && !fingerprint.equals(service.tactState().fingerprint()), "New keys change effective fingerprint");
+                blocked.set(new java.util.concurrent.CompletableFuture<>());
+                entered.set(new java.util.concurrent.CountDownLatch(1));
+                var individual = service.updateTactKeys();
+                require(entered.get().await(2, java.util.concurrent.TimeUnit.SECONDS), "Individual source job entered");
+                int atStart = calls.get();
+                var full = service.sync(DataSourcesService.Id.TACT_KEYS);
+                var joined = service.sync(DataSourcesService.Id.TACT_KEYS);
+                service.cancel(DataSourcesService.Id.TACT_KEYS);
+                blocked.get().complete(new com.vibeminer.network.NetworkTypes.TactKeyReply(com.vibeminer.network.SourceUrls.TACT_KEYS,
+                        java.time.Instant.now(), body.get().getBytes(java.nio.charset.StandardCharsets.US_ASCII)));
+                expectFailure(individual::join); expectFailure(full::join); expectFailure(joined::join);
+                require(calls.get() == atStart, "Canceled queued full sync must not start another acquisition");
+                blocked.set(null);
+                service.sync(DataSourcesService.Id.TACT_KEYS).join();
+                require(calls.get() == atStart + 1, "Full sync can run after a canceled request");
+
                 service.setEnabled(DataSourcesService.Id.TACT_KEYS, false).join();
                 require(service.tactKeys().count() == 0 && service.tactState().keys() == 2, "Disabled source retains cached inventory without supplying keys");
                 service.setChecks(DataSourcesService.Id.TACT_KEYS, DataSourcesService.Checks.MANUAL).join();

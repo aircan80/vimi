@@ -252,8 +252,8 @@ final class DataSourcesView extends BorderPane {
         }
         if (id != DataSourcesService.Id.DEFINITIONS) {
             var checks = new ComboBox<DataSourcesService.Checks>();
-            checks.getItems().setAll(DataSourcesService.Checks.values());
-            checks.setValue(policy.checks());
+            checks.getItems().setAll(DataSourcesService.Checks.MANUAL, DataSourcesService.Checks.DAILY);
+            checks.setValue(policy.checks() == DataSourcesService.Checks.STARTUP ? DataSourcesService.Checks.MANUAL : policy.checks());
             checks.getStyleClass().add("build-choice");
             checks.setConverter(
                     new javafx.util.StringConverter<>() {
@@ -261,8 +261,8 @@ final class DataSourcesView extends BorderPane {
                             return value == null
                                     ? ""
                                     : switch (value) {
-                                        case MANUAL -> "Manually";
-                                        case STARTUP -> "When the app opens";
+                                        case MANUAL -> "No extra checks";
+                                        case STARTUP -> "No extra checks";
                                         case DAILY -> "Daily";
                                     };
                         }
@@ -275,11 +275,9 @@ final class DataSourcesView extends BorderPane {
             page.getChildren()
                     .add(
                             settings(
-                                    id == DataSourcesService.Id.LISTFILE
-                                            ? "Automatic listfile updates"
-                                            : id == DataSourcesService.Id.TACT_KEYS ? "Automatic key updates" : id == DataSourcesService.Id.POLESTAR ? "Published data checks" : id == DataSourcesService.Id.EG_LINK ? "GitHub snapshot checks" : "Release checks",
+                                    "Additional scheduled updates",
                                     checks,
-                                    "Last successful check: " + checkedDate(id)));
+                                    "Enabled sources update at startup and from Refresh sources. Last successful check: " + checkedDate(id)));
         }
         var provenance =
                 new TitledPane(

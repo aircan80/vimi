@@ -166,6 +166,87 @@ public final class QuestieRepository implements AutoCloseable {
                                 .thenCompose(source -> data.prepare(source, progress, token)));
     }
 
+    public record Sync(String release, List<PreparedVersion> versions, List<String> issues) {
+        public Sync {
+            versions = List.copyOf(versions);
+            issues = List.copyOf(issues);
+        }
+    }
+
+    /** Check the latest release once, then acquire and prepare its advertised flavor packages. */
+    public CompletableFuture<Sync> sync(Consumer<Progress> progress, Cancellation token) {
+        return call(
+                () -> {
+                    var result = new CompletableFuture<Sync>();
+                    Thread.startVirtualThread(
+                            () -> {
+                                try {
+                                    progress.accept(
+                                            new Progress(
+                                                    QuestieTypes.Stage.DISCOVERING,
+                                                    0,
+                                                    null,
+                                                    "release",
+                                                    "Checking Questie releases…"));
+                                    var check = sources.refresh(token).join();
+                                    if (check.offline() || check.latest() == null) {
+                                        throw new IllegalStateException(
+                                                "Questie release check failed: " + check.message());
+                                    }
+                                    var release = check.latest();
+                                    var versions = new ArrayList<PreparedVersion>();
+                                    var issues = new ArrayList<String>();
+                                    for (Flavor flavor : Flavor.values()) {
+                                        token.check();
+                                        String asset = "QuestieDB-" + flavor.upstream() + ".zip";
+                                        if (release.assets().stream()
+                                                .noneMatch(value -> value.name().equals(asset))) {
+                                            continue;
+                                        }
+                                        Consumer<Progress> labeled =
+                                                value ->
+                                                        progress.accept(
+                                                                new Progress(
+                                                                        value.stage(),
+                                                                        value.done(),
+                                                                        value.total(),
+                                                                        value.unit(),
+                                                                        flavor.upstream()
+                                                                                + " · "
+                                                                                + value.detail()));
+                                        try {
+                                            var source =
+                                                    sources.acquire(release, flavor, labeled, token)
+                                                            .join();
+                                            versions.add(
+                                                    data.prepare(source, labeled, token).join());
+                                        } catch (RuntimeException failure) {
+                                            token.check();
+                                            Throwable cause = failure;
+                                            while (cause
+                                                            instanceof
+                                                            java.util.concurrent.CompletionException
+                                                    && cause.getCause() != null) {
+                                                cause = cause.getCause();
+                                            }
+                                            issues.add(
+                                                    flavor.upstream() + ": " + cause.getMessage());
+                                        }
+                                    }
+                                    if (versions.isEmpty() && issues.isEmpty()) {
+                                        throw new IllegalStateException(
+                                                "Latest Questie release has no supported flavor packages");
+                                    }
+                                    token.check();
+                                    result.complete(new Sync(release.tag(), versions, issues));
+                                } catch (Throwable failure) {
+                                    result.completeExceptionally(failure);
+                                }
+                            });
+                    return result;
+                });
+    }
+
     private CompletableFuture<Release> latest(Cancellation token) {
         return sources.refresh(token)
                 .thenApply(

@@ -70,6 +70,9 @@ public final class VimiApp extends Application {
     private final Button issuesButton = new Button("Refresh issues");
     private final javafx.scene.control.ProgressIndicator catalogActivity = new javafx.scene.control.ProgressIndicator(-1);
     private final Button refreshButton = new Button("↻  Refresh builds");
+    private final Button refreshSourcesButton = new Button("↻  Refresh sources");
+    private SourceRefresh sourceRefresh;
+    private SourceRefreshDialog sourceRefreshDialog;
     private final BorderPane root = new BorderPane();
     private final javafx.scene.layout.StackPane surface = new javafx.scene.layout.StackPane(root);
     private final MockPreparationService preparations = new MockPreparationService(true);
@@ -257,6 +260,8 @@ public final class VimiApp extends Application {
         showCatalogActivity("Loading history…");
         refreshButton.setOnAction(event -> loadBuilds(true));
         refreshButton.setDisable(true);
+        refreshSourcesButton.setDisable(true);
+        refreshSourcesButton.setOnAction(event -> refreshSources());
         stage.setOnCloseRequest(event -> {
             event.consume();
             shutdown();
@@ -278,8 +283,51 @@ public final class VimiApp extends Application {
             preparationClock.setCycleCount(javafx.animation.Animation.INDEFINITE);
             preparationClock.play();
             loadBuilds(false);
+            refreshSourcesButton.setDisable(false);
+            if (!service.mockMode()) refreshSources(true);
         }));
         stage.show();
+    }
+
+    private void refreshSources() { refreshSources(false); }
+
+    private void refreshSources(boolean startupRefresh) {
+        if (service == null || closing) return;
+        if (sourceRefresh == null) {
+            var providers = new java.util.ArrayList<SourceRefresh.Provider>();
+            providers.add(new SourceRefresh.Provider("BLIZZARD", "Blizzard build catalog", () -> true,
+                    () -> service.refreshBuilds().thenAccept(ignored -> {}),
+                    () -> new SourceRefresh.Progress("Checking published builds for enabled products…", -1),
+                    service::cancelCatalogRefresh));
+            var sources = service.dataSources();
+            if (sources != null) for (var id : DataSourcesService.Id.values()) {
+                String name = switch (id) {
+                    case QUESTIE -> "QuestieDB"; case LISTFILE -> "Community listfile";
+                    case DEFINITIONS -> "WoWDBDefs (bundled)"; case TACT_KEYS -> "TACTKeys"; case EG_LINK -> "EG Link"; case POLESTAR -> "Polestar";
+                };
+                providers.add(new SourceRefresh.Provider(id.name(), name, () -> sources.policy(id).enabled(),
+                        () -> sources.sync(id), () -> {
+                            var value = sources.activity(id);
+                            return value == null || !value.busy() ? new SourceRefresh.Progress("Checking for updates…", -1)
+                                    : new SourceRefresh.Progress(value.message(), value.fraction());
+                        }, () -> sources.cancel(id)));
+            }
+            sourceRefresh = new SourceRefresh(providers);
+        }
+        var run = sourceRefresh.start();
+        if (sourceRefreshDialog != null && sourceRefreshDialog.isShowing()) {
+            if (sourceRefreshDialog.run() == run) {
+                sourceRefreshDialog.getDialogPane().getScene().getWindow().requestFocus();
+                return;
+            }
+            sourceRefreshDialog.close();
+        }
+        sourceRefreshDialog = new SourceRefreshDialog(root.getScene().getWindow(), run, startupRefresh, this::refreshSources);
+        sourceRefreshDialog.getDialogPane().getStylesheets().add(getClass().getResource("/vimi.css").toExternalForm());
+        sourceRefreshDialog.show();
+        run.completion().whenComplete((value, error) -> Platform.runLater(() -> {
+            if (!closing) loadBuilds(false);
+        }));
     }
 
     private void column(String title, java.util.function.Function<BuildInfo, String> value, int width) {
@@ -418,7 +466,7 @@ public final class VimiApp extends Application {
         refresh.getStyleClass().add("refresh-button");
         buildsHeading.getStyleClass().setAll("h2");
         buildCount.getStyleClass().setAll("muted");
-        HBox titleRow = new HBox(12, buildsHeading, buildCount, spacer(), catalogActivity, refresh);
+        HBox titleRow = new HBox(12, buildsHeading, buildCount, spacer(), catalogActivity, refreshSourcesButton, refresh);
         titleRow.getStyleClass().addAll("toolbar", "builds-product-heading");
         HBox filters = new HBox(12, search, scope, button("Clear filters", () -> {
             search.clear();
@@ -922,6 +970,8 @@ public final class VimiApp extends Application {
 
     @Override
     public void stop() {
+        if (sourceRefresh != null) sourceRefresh.close();
+        if (sourceRefreshDialog != null) sourceRefreshDialog.close();
         preparationClock.stop();
         if (preparationPane != null) preparationPane.close();
         openingClock.stop();
@@ -932,6 +982,8 @@ public final class VimiApp extends Application {
     private void shutdown() {
         if (closing) { return; }
         closing = true;
+        if (sourceRefresh != null) sourceRefresh.close();
+        if (sourceRefreshDialog != null) sourceRefreshDialog.close();
         preparationClock.stop();
         if (preparationPane != null) preparationPane.close();
         openingClock.stop();
