@@ -200,6 +200,14 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
         if (gpuRequested) openGpu();
     }
 
+    void loading(String message) {
+        if (closed) return;
+        clear(message);
+        renderingActivity.setAccessibleText(message);
+        renderingActivity.setVisible(true);
+        renderingActivity.setManaged(true);
+    }
+
     void clear(String message) {
         closeGpu();
         gpuButton.setDisable(true);
