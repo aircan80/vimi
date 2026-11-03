@@ -1,6 +1,7 @@
 # Verified area-to-terrain navigation
 
-Status: concrete first-slice design for independent review, before implementation.
+Status: independently reviewed design, implemented; delivery evidence is recorded
+in [review](world-area-navigation-review.md).
 This is a separate roadmap/release boundary from GPU terrain.
 
 ## Source and UX contract
@@ -109,5 +110,6 @@ No automatic retries or background whole-continent scans.
   prerelease follows successful packaged checks.
 
 Review: acceptance approved e42a347 with explicit implementation gates above.
-Domain required deriving entry height from MCVT rather than raw originZ and
-respecting holes; corrected here before implementation. Await final approval.
+Domain approved corrected4381d16 after requiring MCVT-derived, hole-aware entry
+references. Acceptance approved bounded discovery and ownership; root independently
+reviewed GUI generation and cancellation changes.

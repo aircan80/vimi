@@ -9,6 +9,26 @@ GPU terrain feasibility and independent acceptance, plus a parallel item-effects
 comparison design. Root owns packaging/integration and verified zone-navigation
 scoping. Do not wait for one track to finish before progressing another.
 
+## Area navigation and parallel feature continuation
+
+Exact-area navigation is implemented on `feature/world-area-navigation`, worktree
+`/tmp/vimi-world-area-navigation`, integrated production checkpoint2a7eba2.
+Full local check/assemble/installDist pass; integrated FX and hosted checks gate
+merge and separate alpha.14 release. Notes are committed before tagging.
+See [review](docs/world-area-navigation-review.md). Never overwrite running frozen
+app JARs; existing material launcher remains `.local/apps/materials-4167c4c/bin/vimi-gui-prototype`.
+
+Parallel GPU terrain: all16 offline feasibility shaders and27 independent Vulkan
+frames pass at5681a40. Production APIa46c7f6 is in isolated
+`/tmp/vimi-gpu-terrain-core`, branch `feature/gpu-terrain-core`; renderer and typed
+child protocol are next. Root/acceptance review production independently. GL
+homogeneous depth remains unqualified; do not substitute imprecise standard depth.
+
+Parallel comparison: pure item-effect projector3e1ff98 has independent architecture
+approval after inline join evidence correction. Worktree `/tmp/vimi-item-effects-design`.
+Next is charged snapshot/capture/staging/many-to-one join using explicit30MiB
+transient peak and shared512MiB disk. No comparison GUI/feature release yet.
+
 ## Static mount materials — current Linux continuation
 
 PR #141 is FF-merged at `f10febd`: legacy cutout qualification, mount controls and
@@ -19,8 +39,8 @@ Full static materials are FF-merged through PR #142 at `405ed5e` after all hoste
 Linux/Windows/macOS unit/integration, shader and compatibility checks passed.
 Production revision `4167c4c` has independent scoped approvals and full local
 checks; see [material review](docs/model-materials-review.md). Alpha.13 is tagged
-at `405ed5e` with committed notes. Packaging run `41711301691` is queued/running;
-verify all five targets and 18 assets before claiming publication. Preserve tags.
+at `405ed5e` with committed notes. Packaging run `41711301691` succeeded; alpha.13 is verified published as an
+explicit prerelease with all18assets. Preserve tags.
 
 Read-only Forever 1.60.1.70755 proofs qualify Mount79 Black War Raptor 5/5 sections
 and Mount103 Great Brown Kodo 4/4, with reflective armor, unlit detail and additive
