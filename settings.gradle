@@ -35,3 +35,5 @@ include 'concepts-mounts'
 
 include 'concepts-professions'
 include 'concepts-dungeons'
+
+include 'concepts-locations'
