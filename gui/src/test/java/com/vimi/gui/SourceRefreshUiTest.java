@@ -72,7 +72,7 @@ public final class SourceRefreshUiTest {
                                         new VBox(
                                                 new Label(
                                                         "Authored source refresh fixture · no game"
-                                                            + " data or network")),
+                                                                + " data or network")),
                                         900,
                                         730);
                         scene.getStylesheets()
@@ -182,8 +182,8 @@ public final class SourceRefreshUiTest {
                                                         require(
                                                                 !automatic.isShowing(),
                                                                 "Untouched successful startup"
-                                                                    + " refresh closes"
-                                                                    + " automatically");
+                                                                        + " refresh closes"
+                                                                        + " automatically");
                                                         ready.close();
                                                         var failed =
                                                                 new SourceRefresh(
@@ -273,7 +273,7 @@ public final class SourceRefreshUiTest {
             done.get(20, TimeUnit.SECONDS);
             System.out.println(
                     "Source refresh UI: progress, nonmodal use, hide/reopen and cancellation"
-                        + " passed");
+                            + " passed");
         } finally {
             Platform.exit();
         }

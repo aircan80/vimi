@@ -51,7 +51,7 @@ final class SourceRefreshDialog extends Dialog<Void> {
         var explanation =
                 new Label(
                         "Enabled sources check for changes, download new data and prepare it"
-                            + " locally. You can keep using the app.");
+                                + " locally. You can keep using the app.");
         explanation.setWrapText(true);
         explanation.getStyleClass().add("muted");
         body.getChildren().addAll(explanation, summary);

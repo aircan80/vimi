@@ -170,6 +170,9 @@ class QuestiePersistenceTest {
                 assertEquals(1, downloads.get());
                 var same = repository.sync(progress -> {}, Cancellation.NONE).join();
                 assertEquals(first.versions().getFirst().id(), same.versions().getFirst().id());
+                assertEquals(
+                        first.versions().getFirst().preparedAt(),
+                        same.versions().getFirst().preparedAt());
                 assertEquals(1, downloads.get());
                 assertEquals(1, repository.versions(Cancellation.NONE).join().size());
             }

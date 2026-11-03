@@ -84,6 +84,21 @@ final class SourcePreferences {
         return values.getOrDefault(key, fallback);
     }
 
+    void followLatestDefault(String flavor, String version) throws Exception {
+        String key = "default." + flavor;
+        String current = get(key, "");
+        if (current.isEmpty() || current.equals(get("default-auto." + flavor, ""))) {
+            put(key, version);
+            put("default-auto." + flavor, version);
+        }
+    }
+
+    void pinDefault(String flavor, String version) throws Exception {
+        // Clear automatic following first; an interrupted manual selection stays conservative.
+        put("default-auto." + flavor, "");
+        put("default." + flavor, version);
+    }
+
     void put(String key, String value) throws Exception {
         if (key == null || key.length() > 1200 || value == null || value.length() > 4096)
             throw new IllegalArgumentException("Invalid source preference");

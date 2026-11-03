@@ -106,6 +106,16 @@ public final class DataSourcesServiceTest {
             };
             DataSourcesService service = DataSourcesService.open(library.databasePath(), directory.resolve("questie"), names, catalog, client, owner, owner);
             try {
+                var defaults = new SourcePreferences(library.databasePath());
+                defaults.followLatestDefault("Forever", "first");
+                defaults.followLatestDefault("Forever", "second");
+                require(defaults.get("default.Forever", "").equals("second"), "Auto-created defaults follow later prepared releases");
+                defaults.pinDefault("Forever", "first");
+                defaults.followLatestDefault("Forever", "third");
+                require(defaults.get("default.Forever", "").equals("first"), "Explicit default selection stays pinned");
+                defaults.put("default.TBC", "legacy-selected");
+                defaults.followLatestDefault("TBC", "new-release");
+                require(defaults.get("default.TBC", "").equals("legacy-selected"), "Legacy explicit defaults stay pinned");
                 require(service.policy(DataSourcesService.Id.TACT_KEYS).enabled(), "Public keys default ON");
                 require(service.policy(DataSourcesService.Id.TACT_KEYS).checks() == DataSourcesService.Checks.DAILY, "Public keys default daily");
                 require(service.tactKeysForBuild(com.vibeminer.access.Cancellation.NONE).count() == 1, "First build waits for due public keys");
@@ -119,6 +129,16 @@ public final class DataSourcesServiceTest {
                 body.set("FFFFFFFFFFFFFFFF 00112233445566778899AABBCCDDEEFF\n0000000000000001 11112222333344445555666677778888\n");
                 service.updateTactKeys().join();
                 require(service.tactKeys().count() == 2 && !fingerprint.equals(service.tactState().fingerprint()), "New keys change effective fingerprint");
+                blocked.set(new java.util.concurrent.CompletableFuture<>());
+                entered.set(new java.util.concurrent.CountDownLatch(1));
+                var existingUpdate = service.updateTactKeys();
+                require(entered.get().await(2, java.util.concurrent.TimeUnit.SECONDS), "Existing full key update entered");
+                int beforeJoin = calls.get();
+                var joinedUpdate = service.sync(DataSourcesService.Id.TACT_KEYS);
+                blocked.get().complete(new com.vibeminer.network.NetworkTypes.TactKeyReply(com.vibeminer.network.SourceUrls.TACT_KEYS,
+                        java.time.Instant.now(), body.get().getBytes(java.nio.charset.StandardCharsets.US_ASCII)));
+                existingUpdate.join(); joinedUpdate.join();
+                require(calls.get() == beforeJoin, "Global refresh joins an existing complete key update without another download");
                 blocked.set(new java.util.concurrent.CompletableFuture<>());
                 entered.set(new java.util.concurrent.CountDownLatch(1));
                 var individual = service.updateTactKeys();
@@ -182,7 +202,7 @@ public final class DataSourcesServiceTest {
             };
             var service = DataSourcesService.open(library.databasePath(), directory.resolve("questie"), names, catalog, null, owner, owner, client);
             try {
-                require(service.policy(DataSourcesService.Id.EG_LINK).checks() == DataSourcesService.Checks.MANUAL, "EG Link defaults to explicit snapshot acquisition");
+                require(service.policy(DataSourcesService.Id.EG_LINK).checks() == DataSourcesService.Checks.MANUAL, "EG Link defaults to no additional scheduled checks");
                 require(requests.get() == 0 && service.egLink().snapshots().isEmpty(), "Local source opening performs no EG Link requests");
                 service.checkEgLink().join();
                 require(service.egLink().catalog().builds().size() == 1, "GitHub snapshot inventory is cached");
@@ -191,9 +211,14 @@ public final class DataSourcesServiceTest {
                 require(snapshot.indexedRecords() == null, "Download and processing are separate actions");
                 service.prepareEgLink(snapshot.id()).join();
                 require(service.egLink().snapshots().getFirst().indexedRecords() == 1, "Prepared inventory shows actual local records");
+                int checked = requests.get();
+                service.sync(DataSourcesService.Id.EG_LINK).join();
+                require(requests.get() == checked + 1 && service.egLink().snapshots().getFirst().indexedRecords() == 1,
+                        "Full sync reuses unchanged prepared EG Link data after one head check");
                 service.setEnabled(DataSourcesService.Id.EG_LINK, false).join();
                 var current = service;
                 expectFailure(() -> current.checkEgLink().join());
+                expectFailure(() -> current.sync(DataSourcesService.Id.EG_LINK).join());
             } finally { service.closeAsync().join(); }
             int previous = requests.get();
             service = DataSourcesService.open(library.databasePath(), directory.resolve("questie"), names, catalog, null, owner, owner, client);
@@ -253,6 +278,9 @@ public final class DataSourcesServiceTest {
                     require(
                             sources.definitions().tables() > 1000,
                             "Actual bundled definitions are measured");
+                    sources.sync(DataSourcesService.Id.DEFINITIONS).join();
+                    require(!sources.checkedAt(DataSourcesService.Id.DEFINITIONS).equals("Never checked"),
+                            "Bundled definition validation participates in a full sync without downloads");
                     require(
                             "Forever".equals(sources.mapping(build).flavor()),
                             "Reviewed product maps directly");

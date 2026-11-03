@@ -14,8 +14,9 @@ the full sync. A failed provider does not stop the other providers.
   Download all or acquire every CDN object in a build.
 - Questie checks the latest stable release and processes its advertised supported
   flavor packages. It does not acquire historical releases. Existing archives and
-  valid prepared databases are reused; explicit user-selected defaults stay pinned.
-  A missing flavor default is initialized after successful preparation.
+  valid prepared databases are reused. Missing defaults initialize after preparation
+  and follow later prepared releases; explicit user-selected and legacy defaults
+  stay pinned.
 - The community listfile checks and prepares its name index.
 - TACTKeys validates and retains the public list.
 - WoWDBDefs validates the bundled provider; new definition releases arrive with app

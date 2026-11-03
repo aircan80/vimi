@@ -296,7 +296,12 @@ public final class VimiApp extends Application {
         if (sourceRefresh == null) {
             var providers = new java.util.ArrayList<SourceRefresh.Provider>();
             providers.add(new SourceRefresh.Provider("BLIZZARD", "Blizzard build catalog", () -> true,
-                    () -> service.refreshBuilds().thenAccept(ignored -> {}),
+                    () -> service.refreshBuilds().thenAccept(ignored -> Platform.runLater(() -> {
+                        if (!closing) loadBuilds(false);
+                    })).thenRun(() -> {
+                        if (!service.problems().isEmpty()) throw new IllegalStateException(
+                                String.join("; ", service.problems().stream().limit(3).toList()));
+                    }),
                     () -> new SourceRefresh.Progress("Checking published builds for enabled products…", -1),
                     service::cancelCatalogRefresh));
             var sources = service.dataSources();
@@ -325,9 +330,6 @@ public final class VimiApp extends Application {
         sourceRefreshDialog = new SourceRefreshDialog(root.getScene().getWindow(), run, startupRefresh, this::refreshSources);
         sourceRefreshDialog.getDialogPane().getStylesheets().add(getClass().getResource("/vimi.css").toExternalForm());
         sourceRefreshDialog.show();
-        run.completion().whenComplete((value, error) -> Platform.runLater(() -> {
-            if (!closing) loadBuilds(false);
-        }));
     }
 
     private void column(String title, java.util.function.Function<BuildInfo, String> value, int width) {

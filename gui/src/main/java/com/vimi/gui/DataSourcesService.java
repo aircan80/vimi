@@ -260,7 +260,7 @@ public final class DataSourcesService {
                         if (!handle.version().flavor().equals(kind))
                             throw new IllegalArgumentException("Prepared flavor mismatch");
                     }
-                    preferences.put("default." + kind.upstream(), versionId);
+                    preferences.pinDefault(kind.upstream(), versionId);
                     loadQuestie();
                     revision.incrementAndGet();
                 });
@@ -474,6 +474,10 @@ public final class DataSourcesService {
                 if (closing || cancelEpoch.getOrDefault(id, 0L) != epoch || !policy(id).enabled())
                     return CompletableFuture.<Void>failedFuture(new java.util.concurrent.CancellationException());
                 startupChecked.add(id);
+                if (prior != null && (id == Id.TACT_KEYS || id == Id.LISTFILE || id == Id.DEFINITIONS)) {
+                    // These individual operations already include every preparation phase.
+                    return submit(() -> preferences.put("attempt." + id, Instant.now().toString())).thenCompose(doneAt -> prior);
+                }
                 return startSync(id, epoch);
             }
         }).whenComplete((value, error) -> {
@@ -523,8 +527,7 @@ public final class DataSourcesService {
                 preferences.put("latest.QUESTIE", result.release());
                 preferences.put("checked.QUESTIE", Instant.now().toString());
                 for (var version : result.versions()) {
-                    String key = "default." + version.flavor().upstream();
-                    if (preferences.get(key, "").isEmpty()) preferences.put(key, version.id());
+                    preferences.followLatestDefault(version.flavor().upstream(), version.id());
                 }
                 loadQuestie(); revision.incrementAndGet();
             }).join();
@@ -592,12 +595,16 @@ public final class DataSourcesService {
                         if (token.isCanceled()) access.cancel();
                     }
                     try {
+                        progress.accept(new QuestieTypes.Progress(QuestieTypes.Stage.DISCOVERING, 0, null, "source", "Checking listfile and preparing changed names…"));
                         var result = names.update(true, access).join();
-                        if (result.state() != NamesTypes.FileNamesState.READY)
+                        if (result.state() != NamesTypes.FileNamesState.READY || result.code() != null) {
+                            submit(() -> { listfile = result; revision.incrementAndGet(); }).join();
                             throw new IllegalStateException(
                                     result.message() == null
                                             ? "Listfile is not ready"
                                             : result.message());
+                        }
+                        progress.accept(new QuestieTypes.Progress(QuestieTypes.Stage.READY, result.count(), (long) result.count(), "names", "Listfile names are ready"));
                         submit(
                                         () -> {
                                             listfile = result;
@@ -824,9 +831,11 @@ public final class DataSourcesService {
                 if (token.isCanceled()) network.cancel();
             }
             try {
+                progress.accept(new QuestieTypes.Progress(QuestieTypes.Stage.DISCOVERING, 0, null, "source", "Checking public TACT keys…"));
                 var reply = tactClient.fetchTactKeys(network).join();
                 token.check();
                 byte[] bytes = reply.bytes();
+                progress.accept(new QuestieTypes.Progress(QuestieTypes.Stage.VERIFYING, bytes.length, (long) bytes.length, "bytes", "Validating public TACT keys…"));
                 var parsed = com.vibeminer.files.keys.TactKeys.parse(bytes);
                 var key = new com.vibeminer.store.ObjectKey(com.vibeminer.store.ObjectKey.HISTORY_DOCUMENT,
                         java.security.MessageDigest.getInstance("MD5").digest(bytes));

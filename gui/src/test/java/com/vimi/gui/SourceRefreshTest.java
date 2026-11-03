@@ -60,6 +60,8 @@ public final class SourceRefreshTest {
                     calls.get() == 2,
                     "All enabled providers start without waiting for earlier futures");
             require(disabledCalls.get() == 0, "Disabled provider is never called");
+            run.completion().complete(null);
+            require(run.busy(), "A completion observer cannot forge the private run state");
             require(
                     coordinator.start() == run && calls.get() == 2,
                     "Startup/manual refresh coalesces");
@@ -133,7 +135,7 @@ public final class SourceRefreshTest {
         }
         System.out.println(
                 "Source refresh: parallelism, coalescing, progress, disabled sources, failures and"
-                    + " cancellation passed");
+                        + " cancellation passed");
     }
 
     private static void require(boolean value, String message) {
