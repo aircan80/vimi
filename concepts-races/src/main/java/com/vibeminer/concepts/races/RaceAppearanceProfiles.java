@@ -2,6 +2,7 @@ package com.vibeminer.concepts.races;
 
 import com.vibeminer.formats.models.M2Appearance;
 import com.vibeminer.formats.models.M2Types;
+import com.vibeminer.rendering.models.MeshAppearance;
 
 /** Contextual character draw policies; no global M2 shader admission. */
 final class RaceAppearanceProfiles {
@@ -19,7 +20,7 @@ final class RaceAppearanceProfiles {
             M2Types.Batch batch,
             M2Appearance.ModelFacts facts,
             int sectionBatches) {
-        if (profile == Profile.LEGACY
+        if ((profile != Profile.DWARF_MALE && profile != Profile.DWARF_FEMALE)
                 || model.version() != 272
                 || sectionBatches != 1
                 || facts == null
@@ -60,6 +61,19 @@ final class RaceAppearanceProfiles {
                 && (profile == Profile.DWARF_MALE
                         ? batch.shaderId() == 16 && material.blendMode() == 1
                         : batch.shaderId() == 0 && material.blendMode() == 0);
+    }
+
+    static MeshAppearance.Surface surface(
+            M2Types.Batch batch,
+            M2Types.Material material,
+            M2Types.Texture texture,
+            int mappedTexture) {
+        return new MeshAppearance.Surface(
+                batch.sectionIndex(),
+                mappedTexture,
+                (texture.flags() & 1) != 0,
+                (texture.flags() & 2) != 0,
+                material.blendMode() == 1);
     }
 
     private static boolean index(int value, int size) {

@@ -1,5 +1,6 @@
 package com.vibeminer.concepts.races;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -8,8 +9,13 @@ import com.vibeminer.formats.AssetSource;
 import com.vibeminer.formats.models.M2Appearance;
 import com.vibeminer.formats.models.M2ModelReader;
 import com.vibeminer.formats.models.M2Types;
+import com.vibeminer.rendering.models.MeshAppearance;
+import com.vibeminer.rendering.models.PreviewMesh;
+import com.vibeminer.rendering.models.StaticMeshRenderer;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 final class RaceAppearanceProfilesTest {
@@ -77,6 +83,57 @@ final class RaceAppearanceProfilesTest {
         assertTrue(admit(female, hair, 0));
         assertFalse(admit(male, hair, 0));
         assertFalse(admit(RaceAppearanceProfiles.Profile.LEGACY, beard, 16));
+        assertFalse(admit(null, beard, 16));
+    }
+
+    @Test
+    void admittedMaleHairCutoutDiscards127WithoutDepthAndAccepts128BeforeBody() throws Exception {
+        var hair = fixture(true, false, 272, 4, 1, 3, 65535, false);
+        var body = fixture(false, false, 272, 0, 0, 0, 65535, false);
+        assertTrue(admit(RaceAppearanceProfiles.Profile.DWARF_MALE, hair, 16));
+        assertTrue(admit(RaceAppearanceProfiles.Profile.DWARF_MALE, body, 0));
+        var hairSurface =
+                RaceAppearanceProfiles.surface(
+                        batch(16),
+                        hair.model().materials().getFirst(),
+                        hair.model().textures().getFirst(),
+                        0);
+        var bodyBatch = new M2Types.Batch(16, 0, 0, 1, 0, -1, 0, 0, 1, 0, 65535, 0, 0);
+        var bodySurface =
+                RaceAppearanceProfiles.surface(
+                        bodyBatch,
+                        body.model().materials().getFirst(),
+                        body.model().textures().getFirst(),
+                        1);
+        var geometry =
+                new PreviewMesh(
+                        new float[] {
+                            .2f, -1, -1, .2f, 1, -1, .2f, 0, 1, -.2f, -1, -1, -.2f, 1, -1, -.2f, 0,
+                            1
+                        },
+                        new int[] {0, 1, 2, 3, 4, 5},
+                        List.of(new PreviewMesh.Part(0, 0, 3), new PreviewMesh.Part(0, 3, 3)));
+        for (int alpha : new int[] {127, 128}) {
+            var appearance =
+                    new MeshAppearance(
+                            geometry,
+                            new float[12],
+                            List.of(hairSurface, bodySurface),
+                            List.of(
+                                    new MeshAppearance.Texture(
+                                            1, 1, new int[] {alpha << 24 | 0x00ff00}),
+                                    new MeshAppearance.Texture(1, 1, new int[] {0xffff0000})));
+            int pixel =
+                    StaticMeshRenderer.render(
+                                    appearance,
+                                    200,
+                                    200,
+                                    new StaticMeshRenderer.View(0, 0, 1, false, Set.of(0)),
+                                    () -> false)
+                            .argb()[100 * 200 + 100];
+            assertTrue(((pixel >>> (alpha == 127 ? 16 : 8)) & 255) > 100);
+            assertEquals(0, pixel & (alpha == 127 ? 0x00ffff : 0xff00ff));
+        }
     }
 
     @Test

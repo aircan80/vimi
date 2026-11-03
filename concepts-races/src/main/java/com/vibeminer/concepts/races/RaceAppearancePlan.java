@@ -40,6 +40,7 @@ final class RaceAppearancePlan {
             canvases = List.copyOf(canvases);
             layers = List.copyOf(layers);
             items = List.copyOf(items);
+            java.util.Objects.requireNonNull(profile, "profile");
         }
     }
 
