@@ -94,7 +94,7 @@ jobs:
       - name: Run component integration and quality checks
         env:
           SQLITE_LIBRARY: ${{ steps.sqlite.outputs.library }}
-        run: ./gradlew :object-store:integrationTest :generated-store:check :network-clients:check :object-access:check :builds:check :files:check :formats-assets:check :formats-tables:check :concepts-core:check :concepts-items:check :concepts-creatures:check :concepts-talents:check :concepts-races:check :rendering-models:check :formats-audio:check :concepts-effects:check :questie:check :polestar:check :eg-link:check :accounting:check :questie:installDist :gui:check :gui:installDist "-PsqliteLibrary=$SQLITE_LIBRARY" --no-daemon --console=plain
+        run: ./gradlew :object-store:integrationTest :generated-store:check :network-clients:check :object-access:check :builds:check :files:check :formats-assets:check :formats-tables:check :concepts-core:check :concepts-items:check :concepts-creatures:check :concepts-npcs:check :concepts-quests:check :concepts-talents:check :concepts-races:check :rendering-models:check :formats-audio:check :concepts-effects:check :questie:check :polestar:check :eg-link:check :accounting:check :questie:installDist :gui:check :gui:installDist "-PsqliteLibrary=$SQLITE_LIBRARY" --no-daemon --console=plain
       - name: Retain integration test reports
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -127,6 +127,10 @@ jobs:
             concepts-talents/build/test-results/
             formats-audio/build/reports/
             formats-audio/build/test-results/
+            concepts-npcs/build/reports/
+            concepts-npcs/build/test-results/
+            concepts-quests/build/reports/
+            concepts-quests/build/test-results/
             rendering-models/build/reports/
             rendering-models/build/test-results/
             concepts-races/build/reports/

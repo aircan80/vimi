@@ -1,5 +1,20 @@
 # vimi development handoff
 
+## NPCs, Quests and upcoming browser areas
+
+NPCs (#109) and Quests (#110) have separate concept libraries and a shared JavaFX
+provider browser. Field precedence is Blizzard → Questie → Polestar → EG Link;
+all observations remain in details. Prepared snapshots only, enabled-source and
+Questie mapping policy, readable partial rows, unknown versus empty, bounded
+search/paging and workspace/source revision invalidation are preserved. See
+docs/npcs-quests.md for exact snapshot selection and focused checks.
+Dungeons is queued as #108. Mounts (#111) and Professions/Recipes (#112) have
+WoW-data/UI-reviewed designs and authored SVG mockups in
+docs/mounts-professions-design.md; production implementation has not started.
+
+Static race models and recorded voices (#105/#107) are merged; textured class
+appearance remains active separately under #104.
+
 ## Unified source refresh (#103)
 
 VimiApp starts a nonmodal application-owned source refresh after local history

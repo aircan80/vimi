@@ -23,6 +23,9 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
     private final Node overview;
     private TalentsView talents;
     private RacesView races;
+    private NpcsView npcs;
+    private QuestsView quests;
+    private final DataSourcesService sources;
     private boolean closed;
     private long workspaceRevision;
     private String currentArea = "Overview";
@@ -39,9 +42,10 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
     public PreparationPane(BuildPreparation.Job job, Runnable choose, Runnable release, Runnable enrich,
             BuildDownloads downloads, DataSourcesService sources) {
         this.job = job;
+        this.sources = sources;
         var navigation = new HBox(4);
         navigation.getStyleClass().add("area-navigation");
-        for (String area : List.of("Overview", "Files", "Tables", "Items", "Creatures", "Talents", "Races")) {
+        for (String area : List.of("Overview", "Files", "Tables", "Items", "Creatures", "NPCs", "Quests", "Talents", "Races")) {
             var button = new Button(area);
             button.getStyleClass().add("area-link");
             button.setOnAction(event -> show(area));
@@ -78,11 +82,15 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             browsers.values().forEach(ResearchBrowser::invalidate);
             if (talents != null) talents.invalidate();
             if (races != null) races.invalidate();
+            if (npcs != null) npcs.invalidate();
+            if (quests != null) quests.invalidate();
             if (currentArea.equals("Races") && races != null) races.ensureLoaded();
             if (currentArea.equals("Talents") && talents != null) talents.ensureLoaded();
             var visible = browsers.get(currentArea);
             if (visible != null) visible.ensureLoaded();
         }
+        if (currentArea.equals("NPCs") && npcs != null) npcs.ensureLoaded();
+        if (currentArea.equals("Quests") && quests != null) quests.ensureLoaded();
         liveOverview.update(snapshot, job.enrichingNames(), job.namesProblem());
         cancel.setDisable(!snapshot.busy() && !job.enrichingNames());
         retry.setDisable(snapshot.busy() || job.enrichingNames());
@@ -125,6 +133,14 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             setCenter(scroll);
             return;
         }
+        if (area.equals("Quests")) {
+            if (quests == null) quests = new QuestsView(job, sources);
+            setCenter(quests); quests.ensureLoaded(); return;
+        }
+        if (area.equals("NPCs")) {
+            if (npcs == null) npcs = new NpcsView(job, sources);
+            setCenter(npcs); npcs.ensureLoaded(); return;
+        }
         if (area.equals("Talents")) {
             if (talents == null) talents = new TalentsView(job);
             setCenter(talents);
@@ -151,6 +167,8 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         browsers.values().forEach(ResearchBrowser::close);
         if (talents != null) talents.close();
         if (races != null) races.close();
+        if (npcs != null) npcs.close();
+        if (quests != null) quests.close();
     }
 
     private void showSourceTable(String table) {

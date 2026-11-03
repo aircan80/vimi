@@ -22,6 +22,8 @@ dependencies {
     implementation project(':formats-tables')
     implementation project(':concepts-items')
     implementation project(':concepts-creatures')
+    implementation project(':concepts-npcs')
+    implementation project(':concepts-quests')
     implementation project(':concepts-talents')
     implementation project(':concepts-races')
     implementation project(':rendering-models')
@@ -266,4 +268,12 @@ tasks.register('sourceRefreshUiTest', JavaExec) {
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.SourceRefreshUiTest'
     systemProperty 'vimi.uiReviewDirectory', layout.buildDirectory.dir('ui-review').get().asFile.absolutePath
+}
+
+tasks.register('providerBrowserUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.ProviderBrowserUiTest'
+    def screenshots = providers.gradleProperty('providerScreenshots')
+    if (screenshots.isPresent()) systemProperty 'vimi.provider.screenshots', screenshots.get()
 }

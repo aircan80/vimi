@@ -222,6 +222,54 @@ public final class DataSourcesService {
         return preferences.get("checked." + id, fallback);
     }
 
+    /** Local prepared snapshots only, frozen for one NPC catalogue load. */
+    public List<com.vibeminer.concepts.npcs.NpcCatalog.Input> npcInputs(BuildInfo build, String locale) {
+        var result = new java.util.ArrayList<com.vibeminer.concepts.npcs.NpcCatalog.Input>();
+        var mapping = mapping(build);
+        if (mapping.versionId() != null) result.add(com.vibeminer.concepts.npcs.NpcSources.questie(questie, mapping.versionId(), build.product(), build.version(), locale));
+        if (policy(Id.POLESTAR).enabled() && "Forever".equals(automaticFlavor(build.product(),build.version()))) {
+            polestarState.snapshots().stream().filter(v -> v.preparedAt()!=null && compatibleNpcBuild(v.catalog().clientBuild(),build.version()))
+                .max(java.util.Comparator.comparing(v -> v.catalog().clientBuild(), DataSourcesService::compareNpcBuild))
+                .ifPresent(v -> result.add(com.vibeminer.concepts.npcs.NpcSources.polestar(polestar,v,locale)));
+        }
+        if (egLink != null && policy(Id.EG_LINK).enabled()) {
+            egLinkState.snapshots().stream().filter(v -> v.indexedRecords()!=null && v.problem()==null && v.build().product().equals(build.product()) && compatibleNpcBuild(v.build().version(),build.version())
+                && v.build().datasets().stream().anyMatch(d -> d.name().equals("creature_details."+locale) || d.name().equals("npcs")))
+                .max(java.util.Comparator.comparing(v -> v.build().version(), DataSourcesService::compareNpcBuild))
+                .ifPresent(v -> result.add(com.vibeminer.concepts.npcs.NpcSources.egLink(egLink,v,locale)));
+        }
+        return List.copyOf(result);
+    }
+
+    public List<com.vibeminer.concepts.quests.QuestCatalog.Input> questInputs(BuildInfo build, String locale) {
+        var result = new java.util.ArrayList<com.vibeminer.concepts.quests.QuestCatalog.Input>();
+        var mapping = mapping(build);
+        if (mapping.versionId() != null) result.add(com.vibeminer.concepts.quests.QuestSources.questie(questie, mapping.versionId(), build.product(), build.version(), locale));
+        if (policy(Id.POLESTAR).enabled() && "Forever".equals(automaticFlavor(build.product(),build.version()))) {
+            polestarState.snapshots().stream().filter(v -> v.preparedAt()!=null && compatibleNpcBuild(v.catalog().clientBuild(),build.version()))
+                .max(java.util.Comparator.comparing(v -> v.catalog().clientBuild(), DataSourcesService::compareNpcBuild))
+                .ifPresent(v -> result.add(com.vibeminer.concepts.quests.QuestSources.polestar(polestar,v,locale)));
+        }
+        if (egLink != null && policy(Id.EG_LINK).enabled()) {
+            egLinkState.snapshots().stream().filter(v -> v.indexedRecords()!=null && v.problem()==null && v.build().product().equals(build.product()) && compatibleNpcBuild(v.build().version(),build.version())
+                && v.build().datasets().stream().anyMatch(d -> d.name().equals("quests."+locale)))
+                .max(java.util.Comparator.comparing(v -> v.build().version(), DataSourcesService::compareNpcBuild))
+                .ifPresent(v -> result.add(com.vibeminer.concepts.quests.QuestSources.egLink(egLink,v,locale)));
+        }
+        return List.copyOf(result);
+    }
+
+    static boolean compatibleNpcBuild(String source, String target) {
+        if (source == null || target == null || !source.matches("\\d+\\.\\d+\\.\\d+\\.\\d+") || !target.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) return false;
+        try {
+            return source.substring(0,source.lastIndexOf('.')).equals(target.substring(0,target.lastIndexOf('.'))) && compareNpcBuild(source,target)<=0;
+        } catch (NumberFormatException invalid) { return false; }
+    }
+
+    static int compareNpcBuild(String left,String right) {
+        return Long.compare(Long.parseLong(left.substring(left.lastIndexOf('.')+1)),Long.parseLong(right.substring(right.lastIndexOf('.')+1)));
+    }
+
     public CompletableFuture<Void> setEnabled(Id id, boolean enabled) {
         return submit(
                 () -> {

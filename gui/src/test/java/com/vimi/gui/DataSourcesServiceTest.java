@@ -27,6 +27,10 @@ public final class DataSourcesServiceTest {
             persistenceAndLocalInventory(directory.resolve("local"));
             futureSchemaIsReadOnly(directory.resolve("future"));
             mappingRules();
+            require(DataSourcesService.compatibleNpcBuild("1.60.1.70532","1.60.1.70707"),"Older same-patch source is eligible");
+            require(!DataSourcesService.compatibleNpcBuild("1.60.1.70707","1.60.1.70532"),"Newer sources do not leak backwards");
+            require(!DataSourcesService.compatibleNpcBuild("1.15.1.70532","1.60.1.70707"),"Different branches are not compatible");
+            require(!DataSourcesService.compatibleNpcBuild("invalid","1.60.1.70707"),"Invalid source build is rejected");
             communityKeys(directory.resolve("keys"));
             polestar(directory.resolve("polestar"));
             egLink(directory.resolve("eg-link"));
@@ -71,11 +75,19 @@ public final class DataSourcesServiceTest {
                 require(service.polestar().snapshots().size()==1 && service.polestar().snapshots().getFirst().preparedAt()==null,"Download and preparation are distinct states");
                 service.preparePolestar(service.polestar().snapshots().getFirst().id()).join();
                 require(service.polestar().snapshots().getFirst().records()==15,"Preparation publishes indexed local records");
+                var selectedBuild = new BuildInfo("wowf","Forever","1.60.1.70707","us","config",BuildInfo.BuildSource.CURRENT,false,null,0);
+                var npcInputs = service.npcInputs(selectedBuild,"enUS");
+                var npcResult = com.vibeminer.concepts.npcs.NpcCatalog.load(npcInputs,com.vibeminer.access.Cancellation.NONE);
+                require(npcResult.npcs().size()==1 && "Authored record".equals(npcResult.npcs().getFirst().name()),"NPC adapter reads prepared Polestar data");
+                require(npcResult.npcs().getFirst().evidence().getFirst().source().build().equals("1.60.1.70532"),"Older source build provenance retained");
+                var questResult=com.vibeminer.concepts.quests.QuestCatalog.load(service.questInputs(selectedBuild,"enUS"),com.vibeminer.access.Cancellation.NONE);
+                require(questResult.quests().size()==1 && questResult.quests().getFirst().title()==null,"Quest adapter retains ID without inventing title from unsupported name field");
                 int beforeSync = calls.get();
                 service.sync(DataSourcesService.Id.POLESTAR).join();
                 require(calls.get() == beforeSync + 1 && service.polestar().snapshots().getFirst().records() == 15,
                         "Global Polestar sync checks one head and reuses prepared records");
                 service.setEnabled(DataSourcesService.Id.POLESTAR,false).join();
+                require(service.npcInputs(selectedBuild,"enUS").isEmpty() && service.questInputs(selectedBuild,"enUS").isEmpty(),"Disabled source excluded from both catalogues");
                 expectFailure(() -> service.syncPolestar().join());
                 require(service.polestar().snapshots().size()==1,"Disabling retains completed source data");
             } finally { service.closeAsync().join(); }
@@ -215,6 +227,11 @@ public final class DataSourcesServiceTest {
                 require(snapshot.indexedRecords() == null, "Download and processing are separate actions");
                 service.prepareEgLink(snapshot.id()).join();
                 require(service.egLink().snapshots().getFirst().indexedRecords() == 1, "Prepared inventory shows actual local records");
+                var selectedBuild = new BuildInfo("wowf","Forever","1.60.1.70707","us","config",BuildInfo.BuildSource.CURRENT,false,null,0);
+                int beforeBrowse=requests.get();
+                var npcs=com.vibeminer.concepts.npcs.NpcCatalog.load(service.npcInputs(selectedBuild,"enUS"),com.vibeminer.access.Cancellation.NONE);
+                require(npcs.npcs().size()==1 && npcs.npcs().getFirst().id()==197 && "Authored NPC".equals(npcs.npcs().getFirst().name()),"EG adapter reads creature NPC collection only");
+                require(requests.get()==beforeBrowse,"Browsing performs no source network requests");
                 int checked = requests.get();
                 service.sync(DataSourcesService.Id.EG_LINK).join();
                 require(requests.get() == checked + 1 && service.egLink().snapshots().getFirst().indexedRecords() == 1,

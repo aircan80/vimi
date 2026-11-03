@@ -221,6 +221,8 @@ consumed with `testImplementation testFixtures(project(':object-store'))`.
 - `concepts-items/`: layer 6 item facts, appearances, models, icons and armor material provenance.
 - `concepts-creatures/`: layer 6 creatures, display chains and static appearance evidence.
 - `concepts-talents/`: layer 6 read-only Classic talent trees and prerequisite facts.
+- `concepts-npcs/`: merged NPC identities, names, titles, levels and provider evidence.
+- `concepts-quests/`: merged quest identities, titles, levels and provider evidence.
 - `concepts-races/`: layer 6 race metadata, recorded class combinations, racial cards and static model projections.
 - `formats-audio/`: bounded isolated Vorbis-to-PCM voice decoding and persisted PCM codec.
 - `rendering-models/`: bounded CPU static-mesh rendering and versioned geometry derivatives, independent of JavaFX/GPU support.
@@ -497,3 +499,6 @@ design with `--args='--mock'`.
 
 Default startup is offline. Refresh persists observations in the application data
 directory, documented in the GUI README; it does not download game content.
+
+NPC and quest source precedence, snapshot policy and checks: [catalogue guide](docs/npcs-quests.md).
+Mount and profession screen proposals: [reviewed design](docs/mounts-professions-design.md).
