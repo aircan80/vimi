@@ -86,6 +86,138 @@ class WorldPlacementSourceTest {
     }
 
     @Test
+    void worldCloseWaitsEveryHelperThenReportsCancellationCallbackFailure() throws Exception {
+        var placementEntered = new CompletableFuture<Void>();
+        var placementCanceled = new CompletableFuture<Void>();
+        var minimapClosing = new CompletableFuture<Void>();
+        var releaseMinimap = new CompletableFuture<Void>();
+        var minimapClosed = new AtomicInteger();
+        var source =
+                new Source() {
+                    @SuppressWarnings("try")
+                    @Override
+                    FileTypes.FileStat stat(long id, Cancellation token) {
+                        if (id == 91) {
+                            try (var registration =
+                                    token.onCancel(
+                                            () -> {
+                                                placementCanceled.complete(null);
+                                                throw new IllegalStateException(
+                                                        "Authored cancellation callback failure");
+                                            })) {
+                                placementEntered.complete(null);
+                                placementCanceled.join();
+                                token.check();
+                            }
+                        }
+                        return super.stat(id, token);
+                    }
+                };
+        var base = source.files();
+        var files =
+                (BuildFiles)
+                        Proxy.newProxyInstance(
+                                BuildFiles.class.getClassLoader(),
+                                new Class<?>[] {BuildFiles.class},
+                                (proxy, method, args) -> {
+                                    if (method.getName().equals("openRead")
+                                            && ((FileTypes.FileRef) args[0]).fileDataId() == 92) {
+                                        return CompletableFuture.completedFuture(
+                                                new FileTypes.FileOpen(
+                                                        FileTypes.FileReadState.COMPLETE,
+                                                        new FileReadStream() {
+                                                            int position;
+
+                                                            public long length() {
+                                                                return 148;
+                                                            }
+
+                                                            public long position() {
+                                                                return position;
+                                                            }
+
+                                                            public void seek(long value) {
+                                                                position = (int) value;
+                                                            }
+
+                                                            public List<FileTypes.FileHole>
+                                                                    holes() {
+                                                                return List.of();
+                                                            }
+
+                                                            public CompletableFuture<Integer> read(
+                                                                    ByteBuffer target,
+                                                                    Cancellation token) {
+                                                                int count =
+                                                                        Math.min(
+                                                                                target.remaining(),
+                                                                                148 - position);
+                                                                target.put(new byte[count]);
+                                                                position += count;
+                                                                return CompletableFuture
+                                                                        .completedFuture(count);
+                                                            }
+
+                                                            public void close() {
+                                                                minimapClosing.complete(null);
+                                                                releaseMinimap.join();
+                                                                minimapClosed.incrementAndGet();
+                                                            }
+                                                        },
+                                                        null,
+                                                        null,
+                                                        null));
+                                    }
+                                    try {
+                                        return method.invoke(base, args);
+                                    } catch (java.lang.reflect.InvocationTargetException failure) {
+                                        throw failure.getCause();
+                                    }
+                                });
+        var tables =
+                (com.vibeminer.formats.tables.BuildTables)
+                        Proxy.newProxyInstance(
+                                com.vibeminer.formats.tables.BuildTables.class.getClassLoader(),
+                                new Class<?>[] {com.vibeminer.formats.tables.BuildTables.class},
+                                (proxy, method, args) -> {
+                                    throw new AssertionError("Borrowed tables remain open");
+                                });
+        var world = new WorldService(tables, files);
+        try {
+            world.minimap(new WorldFormats.Tile(1, 2, 0, 0, 92), Cancellation.NONE);
+            minimapClosing.get(5, TimeUnit.SECONDS);
+            world.placements(MAP, tile(91, 1), Cancellation.NONE);
+            placementEntered.get(5, TimeUnit.SECONDS);
+            var close = world.closeAsync();
+            var field = WorldService.class.getDeclaredField("placements");
+            field.setAccessible(true);
+            var helper = (WorldPlacementSource) field.get(world);
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> helper.closeAsync().get(5, TimeUnit.SECONDS));
+            assertFalse(
+                    close.isDone(),
+                    "failed placement helper must not skip outstanding minimap drain");
+            assertEquals(0, minimapClosed.get());
+            releaseMinimap.complete(null);
+            var failure =
+                    assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () -> close.get(5, TimeUnit.SECONDS));
+            assertTrue(failure.toString().contains("Authored cancellation callback failure"));
+            assertEquals(1, minimapClosed.get());
+            assertTrue(world.closeAsync().isCompletedExceptionally());
+        } finally {
+            releaseMinimap.complete(null);
+            try {
+                world.closeAsync().get(5, TimeUnit.SECONDS);
+            } catch (java.util.concurrent.ExecutionException expected) {
+                /* authored cancellation failure */
+            }
+        }
+    }
+
+    @Test
     void cacheChecksIdentityAndAttachesFreshRequestNamespace() throws Exception {
         var source = new Source();
         var reader = new WorldPlacementSource(source.files());

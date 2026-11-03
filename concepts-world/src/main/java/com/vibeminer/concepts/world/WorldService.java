@@ -517,10 +517,12 @@ public final class WorldService implements BuildWorld {
                 () -> {
                     try {
                         while (!worker.awaitTermination(1, TimeUnit.SECONDS)) {}
-                        areasClosed.join();
-                        minimapsClosed.join();
-                        placementsClosed.join();
-                        cache.clear();
+                        try {
+                            CompletableFuture.allOf(areasClosed, minimapsClosed, placementsClosed)
+                                    .join();
+                        } finally {
+                            cache.clear();
+                        }
                         closing.complete(null);
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
