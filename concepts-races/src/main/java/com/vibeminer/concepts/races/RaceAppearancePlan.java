@@ -10,7 +10,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Exact current Human sample/starting-clothing texture recipe; no guessed texture variants. */
+/** Reviewed Human/Orc sample/starting-clothing texture recipe; no guessed texture variants. */
 final class RaceAppearancePlan {
     record Canvas(int type, int width, int height) {}
 
@@ -56,10 +56,11 @@ final class RaceAppearancePlan {
             RaceMediaTypes.Variant variant,
             Cancellation token,
             List<String> issues) {
-        if (raceId != 1 || variant.chrModelId() < 1 || variant.chrModelId() > 2) {
+        if (!(raceId == 1 && variant.chrModelId() >= 1 && variant.chrModelId() <= 2)
+                && !(raceId == 2 && variant.chrModelId() >= 3 && variant.chrModelId() <= 4)) {
             throw new RacesService.Projection(
                     RaceTypes.State.UNSUPPORTED,
-                    "Static character textures are first reviewed for Human models1/2.");
+                    "Static character textures are reviewed for Human models1/2 and Orc models3/4.");
         }
         var models = schema("ChrModel", token, issues, "CharComponentTextureLayoutID");
         var model = get(models, variant.chrModelId(), token);
@@ -67,6 +68,12 @@ final class RaceAppearancePlan {
             throw models.unsupported("Recorded model row is unavailable");
         }
         long layout = models.number(model, "CharComponentTextureLayoutID");
+        if (raceId == 2
+                && (layout != variant.chrModelId() + 102
+                        || variant.sex() != variant.chrModelId() - 3)) {
+            throw models.unsupported(
+                    "Orc model/layout/sex differs from the reviewed static profile");
+        }
         var materials = media.data("ChrModelMaterial", 2048, token, issues);
         fields(
                 materials,

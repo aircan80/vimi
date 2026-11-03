@@ -59,11 +59,12 @@ The sample is not a claim about an account's eligibility or the client's default
 choice. All recorded surfaces can be inspected explicitly, including mutually
 exclusive alternatives.
 
-## Human diffuse textures and starting clothing
+## Reviewed diffuse textures and starting clothing
 
-The first reviewed character-composition profile supports the current Human male
-and female models. Other races/layouts retain the available static surface and
-report that their texture profile is unsupported. The GUI shows geometry first,
+The reviewed character-composition profiles support current Human male/female
+models 1/2 and Orc male/female models 3/4. The Orc admission additionally requires
+the exact recorded model/sex/layout pairs below. Other races/layouts retain the
+available static surface and report that their texture profile is unsupported. The GUI shows geometry first,
 then loads the textured sample asynchronously; rotation/zoom remain usable.
 
 The selected choices join `ChrCustomizationElement → ChrCustomizationMaterial →
@@ -202,3 +203,52 @@ is admitted. It retains the full physical integer; the geoset consumer still
 checks the group range before arithmetic. Other raw fields/widths remain refused.
 Read-only appearance verification now uses actual `Db2Reader` physical headers,
 including interpretation metadata, rather than columns reconstructed from DBD.
+
+
+## Orc static appearance profile
+
+The narrow Orc profile was checked against selected-build Forever
+`1.60.1.70707` source DB2 rows and actual physical column metadata, with pinned
+WoWDBDefs revision `b9a63096cdd99b26967f17f9515377ae62cadfd7`.
+
+| Variant | ChrModel | Display / model record | M2 / SKIN FileDataID | Texture layout |
+| --- | --- | --- | --- | --- |
+| Orc male | 3 | 51894 / 6838 | 917116 / 917168 | 105 |
+| Orc female | 4 | 53762 / 7200 | 949470 / 949521 | 106 |
+
+Both layouts record a 2048×1024 body, 512×256 hair and 256×128 eye canvas.
+The known-eligible sampled choices use only the existing copy/source-over
+operations (blend 1/15), with flags 0, second target 0 and second section mask −1.
+Other optional Orc layers include unsupported blend 4/6/9; their presence does
+not admit those operations. Requirements 141/146 and their complete prerequisite
+coverage support the sampled Warrior/Warlock choices; NPC-only Eye Style
+requirement 12 stays excluded. These are deterministic eligible samples, not
+claims about client defaults or account unlocks.
+
+Read-only source validation exercised male and female Warrior 1 and Warlock 9,
+both recorded in `CharBaseInfo`. Warrior clothing resolved items 6125/139/140;
+Warlock clothing resolved robe 6129 (display 10073), pants 1396 and boots 59.
+Every selected diffuse image decoded through the existing bounded image pipeline.
+The model SKIN lookups contain 46,799/44,003 vertices, within the current preview
+limits. Actual composed frames retained the recorded shirt/pants/boots or closed
+robe while leaving separate held items unsupported. All four second requests
+restored the generated appearance in 32–72 ms in the local proof; these measurements
+exclude the initial table acquisition and do not establish universal performance.
+Original and derived game images remain outside the repository.
+
+The proof also exposed a shared geometry-selection defect: an unselected bald
+alternative could remove base body section 0. Customization now overrides only
+active groups, always preserving section 0 as the base body/scalp. Hair variants
+1–99 remain mutually exclusive; bald selects no hair without deleting the body.
+This follows the explicit
+[WoW Model Viewer rule](https://github.com/wowmodelviewer/wowmodelviewer/blob/develop/Source/games/wow/CharDetails.cpp).
+The content-bound appearance identity uses the updated Human/Orc geometry policy;
+neutral-shading diagnostics are reconstructed from cached draw bindings so restored
+previews retain the same limitation warning.
+
+Focused deterministic tests cover both admitted Orc variants, exact model/sex/layout
+refusals, recorded atlas sections, sex-qualified clothing, unsupported blend retention
+of other layers, and body preservation for bald/non-bald samples. Existing partial
+qualifier, requirement, cancellation and borrowed-lifetime tests remain applicable.
+Animation, full shaders, separate attachments and additional race profiles remain
+outside this static profile.

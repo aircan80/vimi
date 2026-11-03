@@ -238,15 +238,13 @@ final class RaceMedia {
             var sample =
                     new RaceCustomization(this).select(raceId, classId, chrModelId, token, issues);
             var selected = sample.choices();
-            var allOptionChoices = sample.allChoices();
             var byId = new HashMap<Long, com.vibeminer.formats.db2.Db2Types.Row>();
             geosets.rows.forEach(row -> byId.put(row.id(), row));
-            var controlled = new HashSet<Integer>();
             var show = new HashSet<Integer>();
             var groups = new HashSet<Integer>();
             for (var element : elements.rows) {
                 long choice = elements.number(element, "ChrCustomizationChoiceID");
-                if (!allOptionChoices.contains(choice)) {
+                if (!selected.contains(choice)) {
                     continue;
                 }
                 long geoset = elements.number(element, "ChrCustomizationGeosetID");
@@ -266,22 +264,28 @@ final class RaceMedia {
                         || part > Integer.MAX_VALUE) {
                     continue;
                 }
-                controlled.add((int) part);
                 long related = elements.number(element, "RelatedChrCustomizationChoiceID");
                 if (selected.contains(choice) && (related == 0 || selected.contains(related))) {
                     show.add((int) part);
                     groups.add((int) group);
                 }
             }
-            visible.removeAll(controlled);
-            visible.removeIf(id -> id > 0 && groups.contains(id / 100));
-            visible.addAll(show);
+            visible = new HashSet<>(applyCustomizationParts(visible, groups, show));
             issue(
                     issues,
                     "Sample look uses the first known eligible recorded customization choice; unknown unlock requirements are omitted.");
         } catch (RacesService.Projection unavailable) {
             issue(issues, "Customization selection unavailable: " + unavailable.getMessage());
         }
+        return Set.copyOf(visible);
+    }
+
+    /** Only active groups override defaults; base section0 is body/scalp, never a hairstyle. */
+    static Set<Integer> applyCustomizationParts(
+            Set<Integer> defaults, Set<Integer> groups, Set<Integer> selected) {
+        var visible = new HashSet<>(defaults);
+        visible.removeIf(id -> id > 0 && groups.contains(id / 100));
+        visible.addAll(selected);
         return Set.copyOf(visible);
     }
 

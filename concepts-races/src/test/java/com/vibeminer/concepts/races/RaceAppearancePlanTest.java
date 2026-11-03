@@ -1,6 +1,7 @@
 package com.vibeminer.concepts.races;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.access.Cancellation;
@@ -181,6 +182,199 @@ final class RaceAppearancePlanTest {
                         "B32B030A",
                         "GenderIndex,ClassID,RaceID",
                         components.toArray(Db2Types.Row[]::new)));
+    }
+
+    private static List<MemoryTables.FakeTable> orcFixture(int model, int layout) {
+        var seed = new ArrayList<>(fixture(false, 9));
+        replace(seed, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(2, "1")));
+        replace(
+                seed,
+                table(
+                        "ChrModel",
+                        "03FAB755",
+                        "CharComponentTextureLayoutID",
+                        row(model, Integer.toString(layout))));
+        replace(
+                seed,
+                table(
+                        "ChrModelMaterial",
+                        "22469480",
+                        "CharComponentTextureLayoutsID,TextureType,Width,Height,Flags",
+                        row(1, Integer.toString(layout), "1", "2048", "1024", "0")));
+        replace(
+                seed,
+                table(
+                        "CharComponentTextureSections",
+                        "2173BA71",
+                        "CharComponentTextureLayoutID,SectionType,X,Y,Width,Height",
+                        row(1, Integer.toString(layout), "3", "512", "0", "512", "256")));
+        replace(
+                seed,
+                table(
+                        "CharacterLoadout",
+                        "713CE8BB",
+                        "ChrClassID,Purpose,Racemask:2",
+                        row(1, "1", "9", "2", "0")));
+        return seed;
+    }
+
+    @Test
+    void orcPairUsesRecordedAtlasSectionsAndSexQualifiedClassClothing() {
+        for (int model : new int[] {3, 4}) {
+            var tables =
+                    new MemoryTables()
+                            .add(BUILD, "enUS", orcFixture(model, model + 102))
+                            .forBuild(BUILD, "enUS", Cancellation.NONE)
+                            .join()
+                            .tables();
+            var service = new RacesService(tables);
+            try {
+                var plan =
+                        new RaceAppearancePlan(
+                                        service, new RaceMedia(service, tables, null, null), tables)
+                                .build(
+                                        2,
+                                        1,
+                                        new RaceMediaTypes.Variant(model, model - 3, 1, 1, 1),
+                                        Cancellation.NONE,
+                                        new ArrayList<>());
+                assertEquals(2048, plan.canvases().getFirst().width());
+                assertEquals(1024, plan.canvases().getFirst().height());
+                var layer = plan.layers().getFirst();
+                assertEquals(model == 3 ? 10000 : 10001, layer.fileDataId());
+                assertEquals(512, layer.x());
+                assertEquals(512, layer.width());
+                assertEquals(256, layer.height());
+                assertEquals(100, plan.items().getFirst().itemId());
+            } finally {
+                service.closeAsync().join();
+                tables.closeAsync().join();
+            }
+        }
+    }
+
+    @Test
+    void orcCustomizationRetainsStrictReviewedBlendProfile() {
+        for (int blend : new int[] {1, 15, 4, 6, 9}) {
+            var seed = new ArrayList<>(orcFixture(3, 105));
+            replace(
+                    seed,
+                    table(
+                            "ChrCustomizationOption",
+                            "DCC2A86E",
+                            "ChrModelID,Requirement",
+                            row(10, "3", "0")));
+            replace(
+                    seed,
+                    table(
+                            "ChrCustomizationChoice",
+                            "9559C358",
+                            "ChrCustomizationOptionID->ChrCustomizationOption,UiOrderIndex,ChrCustomizationReqID,ChrCustomizationVisReqID",
+                            row(20, "10", "0", "0", "0")));
+            replace(
+                    seed,
+                    table(
+                            "ChrCustomizationElement",
+                            "6483C37E",
+                            "ChrCustomizationChoiceID,RelatedChrCustomizationChoiceID,ChrCustomizationMaterialID",
+                            row(30, "20", "0", "40")));
+            replace(
+                    seed,
+                    table(
+                            "ChrCustomizationMaterial",
+                            "BE9767E9",
+                            "ChrModelTextureTargetID,MaterialResourcesID",
+                            row(40, "1", "900")));
+            replace(
+                    seed,
+                    table(
+                            "ChrModelTextureLayer",
+                            "D0583FB4",
+                            "CharComponentTextureLayoutsID,TextureType,Layer,BlendMode,TextureSectionTypeBitMask,TextureSectionTypeBitMask2,Flags,ChrModelTextureTargetID:2",
+                            row(
+                                    50,
+                                    "105",
+                                    "1",
+                                    "0",
+                                    Integer.toString(blend),
+                                    "-1",
+                                    "-1",
+                                    "0",
+                                    "1",
+                                    "0")));
+            var tables =
+                    new MemoryTables()
+                            .add(BUILD, "enUS", seed)
+                            .forBuild(BUILD, "enUS", Cancellation.NONE)
+                            .join()
+                            .tables();
+            var service = new RacesService(tables);
+            try {
+                var notes = new ArrayList<String>();
+                var plan =
+                        new RaceAppearancePlan(
+                                        service, new RaceMedia(service, tables, null, null), tables)
+                                .build(
+                                        2,
+                                        1,
+                                        new RaceMediaTypes.Variant(3, 0, 1, 1, 1),
+                                        Cancellation.NONE,
+                                        notes);
+                boolean supported = blend == 1 || blend == 15;
+                assertEquals(
+                        supported ? 1 : 0,
+                        plan.layers().stream()
+                                .filter(layer -> layer.source().startsWith("Customization"))
+                                .count());
+                assertTrue(plan.layers().stream().anyMatch(layer -> layer.fileDataId() == 10000));
+                if (!supported) {
+                    assertTrue(
+                            notes.stream()
+                                    .anyMatch(
+                                            note ->
+                                                    note.contains(
+                                                            "outside the reviewed static profile")));
+                }
+            } finally {
+                service.closeAsync().join();
+                tables.closeAsync().join();
+            }
+        }
+    }
+
+    @Test
+    void orcAdmissionRejectsWrongRaceModelSexOrAtlas() {
+        for (int[] mismatch :
+                new int[][] {
+                    {3, 2, 3, 0, 105}, {2, 2, 2, 1, 104}, {2, 3, 3, 1, 105}, {2, 4, 4, 1, 105}
+                }) {
+            var tables =
+                    new MemoryTables()
+                            .add(BUILD, "enUS", orcFixture(mismatch[1], mismatch[4]))
+                            .forBuild(BUILD, "enUS", Cancellation.NONE)
+                            .join()
+                            .tables();
+            var service = new RacesService(tables);
+            try {
+                assertThrows(
+                        RacesService.Projection.class,
+                        () ->
+                                new RaceAppearancePlan(
+                                                service,
+                                                new RaceMedia(service, tables, null, null),
+                                                tables)
+                                        .build(
+                                                mismatch[0],
+                                                1,
+                                                new RaceMediaTypes.Variant(
+                                                        mismatch[2], mismatch[3], 1, 1, 1),
+                                                Cancellation.NONE,
+                                                new ArrayList<>()));
+            } finally {
+                service.closeAsync().join();
+                tables.closeAsync().join();
+            }
+        }
     }
 
     @Test

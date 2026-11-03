@@ -96,7 +96,7 @@ final class RaceAppearance {
                             .append('\n')
                             .append(Blp2Decoder.REVISION)
                             .append(
-                                    "\nstraight-alpha-source-over-nearest-v1\nhuman-clothing-geosets-v2\n")
+                                    "\nstraight-alpha-source-over-nearest-v1\nhuman-orc-clothing-geosets-v3\n")
                             .append(files.build())
                             .append('\n')
                             .append(files.locale())
@@ -322,15 +322,6 @@ final class RaceAppearance {
                         issues,
                         "No reviewed static one-stage diffuse draw bindings are available.");
             }
-            if (java.util.stream.IntStream.range(0, mesh.parts().size())
-                    .anyMatch(
-                            index ->
-                                    base.visibleParts().contains(mesh.parts().get(index).id())
-                                            && !seen.contains(index))) {
-                note(
-                        issues,
-                        "Some surfaces retain neutral shading because their draw bindings are outside the reviewed diffuse profile.");
-            }
             var appearance = new MeshAppearance(mesh, uv, normals, bindings, textures);
             if (complete) {
                 save(
@@ -354,6 +345,20 @@ final class RaceAppearance {
             RaceAppearancePlan.Plan plan,
             List<String> issues,
             boolean restored) {
+        var boundSections =
+                appearance.surfaces().stream()
+                        .map(MeshAppearance.Surface::sectionIndex)
+                        .collect(java.util.stream.Collectors.toSet());
+        var parts = appearance.mesh().parts();
+        if (java.util.stream.IntStream.range(0, parts.size())
+                .anyMatch(
+                        index ->
+                                visible.contains(parts.get(index).id())
+                                        && !boundSections.contains(index))) {
+            note(
+                    issues,
+                    "Some surfaces retain neutral shading because their draw bindings are outside the reviewed diffuse profile.");
+        }
         note(
                 issues,
                 "Diffuse source files: "

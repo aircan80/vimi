@@ -10,6 +10,17 @@ import org.junit.jupiter.api.Test;
 
 final class RaceClothingGeometryTest {
     @Test
+    void activeHairstyleKeepsBaseBodyAndLeavesDormantGroupsUnchanged() {
+        var defaults = Set.of(0, 1, 101, 701, 3201);
+        var hair = RaceMedia.applyCustomizationParts(defaults, Set.of(0), Set.of(2));
+        assertTrue(hair.containsAll(Set.of(0, 2, 101, 701, 3201)));
+        assertFalse(hair.contains(1));
+        var bald = RaceMedia.applyCustomizationParts(defaults, Set.of(0), Set.of(0));
+        assertTrue(bald.containsAll(Set.of(0, 101, 701, 3201)));
+        assertFalse(bald.contains(1));
+    }
+
+    @Test
     void robeSelectsSleevesAndClosedSkirtWhileKeepingBootFeetAndSuppressingShaft() {
         var parts =
                 java.util.stream.IntStream.of(
