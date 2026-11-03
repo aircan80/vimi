@@ -127,9 +127,10 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             BuildItemEffects effects,
             com.vibeminer.concepts.talents.BuildTalents talents,
             com.vibeminer.concepts.races.BuildRaces races,
+            com.vibeminer.concepts.world.BuildWorld world,
             long revision) {}
 
-    private volatile Workspace published = new Workspace(null, null, null, null, null, null, null, 0);
+    private volatile Workspace published = new Workspace(null, null, null, null, null, null, null, null, 0);
     private Workspace pending;
     private boolean pendingWarmed;
     private boolean tablePassAttempted;
@@ -231,6 +232,8 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     public com.vibeminer.concepts.talents.BuildTalents talentsHandle() {
         return published.talents();
     }
+
+    public com.vibeminer.concepts.world.BuildWorld worldHandle() { return published.world(); }
 
     public BuildTables tablesHandle() {
         return published.tables();
@@ -484,7 +487,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             synchronized (handlesGate) {
                 token.check();
                 if (closed.get()) throw new java.util.concurrent.CancellationException();
-                pending = new Workspace(next, localService, null, null, null, new com.vibeminer.concepts.talents.TalentsService(next,info.version()), new com.vibeminer.concepts.races.RacesService(next, fileHandle, generated), 0);
+                pending = new Workspace(next, localService, null, null, null, new com.vibeminer.concepts.talents.TalentsService(next,info.version()), new com.vibeminer.concepts.races.RacesService(next, fileHandle, generated), new com.vibeminer.concepts.world.WorldService(next,fileHandle), 0);
                 pendingWarmed = false;
                 staged = true;
             }
@@ -602,6 +605,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                                 nextEffects,
                                 staged.talents(),
                                 staged.races(),
+                                staged.world(),
                                 0);
                 pendingWarmed = true;
                 ownedByPending = true;
@@ -609,7 +613,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             return List.copyOf(issues);
         } catch (Throwable failure) {
             if (!ownedByPending) {
-                var loose = new Workspace(null, null, nextItems, nextCreatures, nextEffects, null, null, 0);
+                var loose = new Workspace(null, null, nextItems, nextCreatures, nextEffects, null, null, null, 0);
                 try {
                     closeWorkspace(loose);
                 } catch (Throwable cleanupFailure) {
@@ -645,6 +649,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                             pending.effects(),
                             pending.talents(),
                             pending.races(),
+                            pending.world(),
                             published.revision() + 1);
             if (published.tables() != null) retired.add(published);
             published = next;
@@ -720,6 +725,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             closeResources(
                     workspace.talents(),
                     workspace.races(),
+                    workspace.world(),
                     workspace.items(),
                     workspace.creatures(),
                     workspace.effects(),
@@ -807,7 +813,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                 owned.add(published);
                 owned.addAll(retired);
                 pending = null;
-                published = new Workspace(null, null, null, null, null, null, null, published.revision());
+                published = new Workspace(null, null, null, null, null, null, null, null, published.revision());
                 retired.clear();
                 retirementJobs.clear();
             }

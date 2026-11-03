@@ -27,6 +27,8 @@ dependencies {
     implementation project(':concepts-talents')
     implementation project(':concepts-races')
     implementation project(':rendering-models')
+    implementation project(':rendering-world')
+    implementation project(':concepts-world')
     implementation project(':concepts-effects')
     testImplementation testFixtures(project(':builds'))
     testImplementation testFixtures(project(':polestar'))
@@ -276,4 +278,12 @@ tasks.register('providerBrowserUiTest', JavaExec) {
     mainClass = 'com.vimi.gui.ProviderBrowserUiTest'
     def screenshots = providers.gradleProperty('providerScreenshots')
     if (screenshots.isPresent()) systemProperty 'vimi.provider.screenshots', screenshots.get()
+}
+
+tasks.register('worldUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldUiTest'
+    def screenshot = providers.gradleProperty('worldScreenshot')
+    if (screenshot.isPresent()) systemProperty 'vimi.world.screenshot', screenshot.get()
 }

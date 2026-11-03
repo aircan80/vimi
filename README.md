@@ -225,6 +225,9 @@ consumed with `testImplementation testFixtures(project(':object-store'))`.
 - `concepts-quests/`: merged quest identities, titles, levels and provider evidence.
 - `concepts-races/`: layer 6 race metadata, recorded class combinations, racial cards and static model projections.
 - `formats-audio/`: bounded isolated Vorbis-to-PCM voice decoding and persisted PCM codec.
+- `formats-world/`: bounded WDT18 terrain inventory and split-root ADT18 height/holes parsing.
+- `concepts-world/`: lazy build map/area metadata and terrain access through owned files.
+- `rendering-world/`: perspective terrain camera, clipping and bounded CPU fallback rendering.
 - `rendering-models/`: bounded CPU static-mesh/diffuse rendering, atlas composition and versioned derivatives, independent of JavaFX/GPU support.
 - `concepts-effects/`: layer 6 item effects, reviewed rules, spell names and definition provenance.
 - `concepts-core/`: shared layer 6 query/cursor rules and bounded reverse relation indexes.
@@ -502,3 +505,5 @@ directory, documented in the GUI README; it does not download game content.
 
 NPC and quest source precedence, snapshot policy and checks: [catalogue guide](docs/npcs-quests.md).
 Mount and profession screen proposals: [reviewed design](docs/mounts-professions-design.md).
+
+The [World explorer](docs/world.md) supports terrain selection, free flight and nearby tile streaming.

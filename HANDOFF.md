@@ -1,5 +1,22 @@
 # vimi development handoff
 
+## Active autonomous roadmap and decisions
+
+User asked to keep working without waiting for input and retain questions for
+their return. No unresolved user question currently blocks implementation.
+World #115 is the current feature: source terrain, continent/map/area browser,
+free-fly camera and bounded neighborhood streaming; see docs/world.md.
+After World is ready, publish installable GitHub PRERELEASES for Linux/macOS/Windows,
+then after each major feature. These are all prereleases, never stable/official
+releases. Windows testing will be through the GitHub installer; bundle Java and
+required native libraries. Routine prerelease publication within this scope is
+authorized. #22 tracks packaging/release automation.
+#116 adds Blizzard zone-map artwork with provider NPC/pickup markers. #108 Dungeons
+is queued; #111 Mounts and #112 Professions are being developed in isolated branches.
+When this roadmap is finished, #117 Build Comparison requires WoW expert, WoW data
+miner, UI expert and BA design, independent peer review and approval before coding.
+Keep true changes separate from incomplete/encrypted/newly readable data.
+
 ## NPCs, Quests and upcoming browser areas
 
 NPCs (#109) and Quests (#110) have separate concept libraries and a shared JavaFX
