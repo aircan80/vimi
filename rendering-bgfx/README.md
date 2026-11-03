@@ -27,18 +27,18 @@ for every mesh, driver or view size. The software renderer remains a fallback.
 
 ## Evidence and limits at the 2026-11-03 checkpoint
 
-Actual hardware evidence is **Linux Vulkan only**, using authored geometry and
-materials rather than game/user data. `GpuMaterialProof` covers 16 material cases;
-`GpuInlineProof` exercises the real offscreen child and frame transport;
+Actual hardware evidence is **Linux Vulkan only**. `GpuMaterialProof` now covers
+30 authored frames, including reflective ENV, additive ordering and rigid cards.
+`GpuInlineProof` exercises the offscreen child and frame transport;
 `GpuInlineUiProof` exercises JavaFX presentation, camera changes, hide/restart and
-failure fallback. The fresh native run recorded cold 324.7 ms, warm
-request-to-copied-frame p50 30.65 ms / p95 39.09 ms, sampled 31.17 fps and copy 1.82 ms.
-These local fixture observations are not live-build or cross-platform benchmarks.
+failure fallback. Independent private acceptance additionally compared 36 live
+mount frames with CPU output. See [material review](../docs/model-materials-review.md).
+These checks establish correctness for their fixtures, not a performance speedup.
 
-At `93da682`, independent GUI review still has two delivery races under correction;
-final implementation approval and fresh full/hosted checks remain pending. Pinned
-Metal/DX11 resources, runtime classifiers and a successful GPU-free native load
-probe do **not** constitute actual Metal/D3D hardware rendering acceptance.
+The delivery races identified during initial integration were corrected before
+PR #138 merged. Pinned Metal/DX11 resources, runtime classifiers and a successful
+GPU-free native load probe do **not** constitute actual Metal/D3D hardware
+rendering acceptance.
 
 Supported runtime targets and native classifiers:
 
