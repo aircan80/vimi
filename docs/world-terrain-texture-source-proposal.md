@@ -145,7 +145,12 @@ leases and reservations. The helper does not need to overwrite a delivered
 current batch merely because newer work is pending.
 
 `source.closeAsync()` rejects new work and cancels/drains only that source's
-active/pending requests and its cache claims. It neither closes borrowed files
+active/pending requests and unpublished claims. The global READY cache belongs
+to the pool, retains only bounded metadata/BuildRef values and atlas entries, and
+never retains BuildFiles, a source instance or a growing source-owner set. It may
+remain until LRU eviction/pool closure; closing either of two same-key sources
+does not invalidate the other's delivered leases or the shared cache. The source
+neither closes borrowed files
 nor closes the shared pool or unrelated sources' requests. Already delivered
 leases are caller-owned and remain valid until closed. Shared pool close is a
 separate application-lifetime operation.
@@ -170,7 +175,11 @@ use borrowed BuildFiles and a private per-request token:
    copy, then release the input before subsequent work. Admit only the reviewed
    split MVER18/MAMP0/MDID+zero-MHID/256 MCNK profile. Preserve local typed
    unsupported chunks; do not promote raw source constructors into authority.
-4. For each of at most 64 recorded positive MDID entries, stat/open a COMPLETE,
+4. Fetch only positive MDID entries referenced by structurally admissible chunk
+   layers, at most 64 unique entries. Unused palette entries require no IO and
+   cannot poison coverage/cache admission. The full ordered palette remains bound
+   by the tex0 CK; per-diffuse receipts cover only consumed bindings. For each
+   consumed entry, stat/open a COMPLETE,
    unprotected BLP of at most 1 MiB. Use the approved public decoder with explicit
    DECLARED_HANDMADE_V1 opt-in, its unchanged strict/default checks and selected
    working limits for a **declared square 4×4 mip**. No resizing, header mutation
