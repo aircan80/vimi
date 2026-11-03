@@ -69,4 +69,15 @@ final class CatalogTest {
                                         .getBytes(java.nio.charset.StandardCharsets.US_ASCII),
                                 100));
     }
+
+    @Test
+    void recordCountsDoNotRoundFractionalOrOverflowingNumbers() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> EgJson.number(new java.math.BigDecimal("1.00000000000000000001")));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> EgJson.number(new java.math.BigInteger("9223372036854775808")));
+        assertEquals(1, EgJson.number(new java.math.BigDecimal("1.0")));
+    }
 }

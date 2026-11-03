@@ -103,12 +103,18 @@ final class EgJson {
     }
 
     static long number(Object value) {
-        if (!(value instanceof Number number)
-                || number.longValue() < 0
-                || number.doubleValue() != number.longValue()) {
+        if (!(value instanceof Number number)) {
             throw new IllegalArgumentException("Expected nonnegative integer");
         }
-        return number.longValue();
+        try {
+            long result = new java.math.BigDecimal(number.toString()).longValueExact();
+            if (result < 0) {
+                throw new IllegalArgumentException("Expected nonnegative integer");
+            }
+            return result;
+        } catch (ArithmeticException invalid) {
+            throw new IllegalArgumentException("Expected bounded integer", invalid);
+        }
     }
 
     static byte[] bytes(Object value) throws IOException {
