@@ -57,3 +57,23 @@ publication, unreviewed semantic adapters, durable resume or closing #117.
 This follow-up commit records those confirmations and does not alter the approved
 five design documents or authored SVG. Approval was obtained before comparison
 implementation began.
+
+## Foundation implementation review
+
+Two independent reviewers approved composition revision
+`4360d6138f6810941b41d4bf8d8e7fbe76c67950` with no blocking findings.
+Architecture review covered admission ownership, cancellation/opening races,
+ordered drain, local-only sources/openers, navigation/shutdown and narrowly scoped
+stale temporary-file cleanup. Domain review covered captured key/policy/receipt
+inputs, exact cached table inventories and honest file membership coverage.
+
+The architecture reviewer independently ran coordinator, native comparison and
+comparison component checks successfully. Native fixtures use forbidden CDN and
+listfile clients and exercise missing local metadata, exact receipt reuse,
+changed-key rejection and independence from an existing browsed context. The
+composition also passed the complete GUI check and authored JavaFX comparison
+screen checks. A subsequent label clarification identifies the captured community
+key fingerprint separately from the effective table preparation identity.
+
+Approvals retain the Foundation scope and all deferred gates above. Other area
+entries are capability placeholders; this does not complete #117.

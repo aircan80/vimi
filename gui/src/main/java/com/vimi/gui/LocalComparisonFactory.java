@@ -64,7 +64,7 @@ final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
             dependencies.put("source.cdnConfig", evidence.cdnConfig());
             dependencies.put("source.root", metadata.rootContentKey().hex());
             dependencies.put("source.encoding", metadata.encodingContentKey().hex());
-            dependencies.put("source.tactFingerprint", keys.fingerprint());
+            dependencies.put("source.communityTactFingerprint", keys.fingerprint());
             dependencies.put("comparison.policy", "local-inventory-v1");
             dependencies.put("comparison.results", "findings-only-session");
             dependencies.put("comparison.acquisition", "local-only");

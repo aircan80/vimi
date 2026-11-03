@@ -5,29 +5,25 @@
 Keep working without waiting for user input; retain questions/follow-ups here.
 No blocking product question is outstanding.
 
-World #115, Mounts #111 and Professions/Recipes #112 are merged. Installable
-prereleases v0.1.0-alpha.1 (World baseline) and alpha.2 (Mounts/Professions) are
-published for Linux x64/ARM64, macOS Intel/Apple Silicon and Windows x64, with
-bundled Java/JavaFX/SQLite, installers, portable archives and checksums. All are
-explicit GitHub prereleases, never stable/latest. #22 and CI epic #2 are complete.
-After each major feature, continue the same tested prerelease workflow.
+World #115, Mounts #111, Professions/Recipes #112, Dungeons #108 and NPC/Quest
+zone maps #116 are merged. Prereleases alpha.1 through alpha.5 are published for
+Linux x64/ARM64, macOS Intel/Apple Silicon and Windows x64, with bundled
+Java/JavaFX/SQLite, installers, portable archives and checksums. All are explicit
+GitHub prereleases, never stable/latest. #22 and CI epic #2 are complete. Continue
+the same tested prerelease workflow after each major feature.
 
-Dungeons #108 is integrated through #125 with independent domain/lifetime review,
-three-platform unit/integration checks and authored UI proof; alpha.3 carries it.
-#116 has provider location contracts, selected-build map/art services and the NPC/
-quest sidebar wired. Direct physical DB2 proof resolves Durotar's12tiles and a
-persistent decoded image cache hit. Source spaces, explicit starters, partial
-results, bounded observation/tile work and source/workspace/selection guards stay
-explicit. Alpha.4 is prepared for the map feature after final CI/merge.
+Alpha.5 includes independently reviewed Orc male/female static appearance profiles
+and the build filter/selection fix #129. #104 remains open for additional profiles,
+animation and held equipment; preserve layout/material/qualification guards.
 
-#104 Orc male/female is the next narrow appearance profile under proof/review in
-an isolated branch. Preserve reviewed layout/material/qualification guards; full
-animation, held equipment and arbitrary race profiles remain separate work.
-
-Once current browser work is complete, #117 Build Comparison requires WoW expert,
-WoW data miner, UI expert and BA design, followed by independent peer review and
-approval before coding. Distinguish true changes from incomplete/encrypted/newly
-readable data.
+#117 Build Comparison has four role contributions and independent design approval
+recorded in docs/comparison/review.md before implementation. The Foundation slice
+adds local-only dedicated sessions, selected-locale file content keys/decoded sizes
+and exact cached known-definition table inventories, bounded session-only findings
+and explicit coverage. Other areas remain Not implemented. No persistent comparison
+reports, provider refresh, payload acquisition or inferred global membership.
+The foundation is undergoing independent integration review and native CI; keep
+#117 open. Raw table row comparisons require their next specific reviewed contract.
 
 Questions/follow-ups for the user's return: Windows MSI installation and deferred
 native Windows filesystem acceptance #24–#26 remain. Native macOS development
