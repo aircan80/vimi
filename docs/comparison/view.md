@@ -51,3 +51,21 @@ It exports `gui/build/ui-review/comparison-authored.png`; all fixtures are inven
 and contain no game assets. Run the display-required authored checks with `./gradlew :gui:compareUiTest`.
 Coordinator and forbidden-network native fixtures are included in `:gui:check`. This document does not claim durable results,
 resume, export, media comparison or full #117 completion.
+
+## Selected prepared table rows
+
+![Authored raw-table comparison](../images/comparison-raw-authored.png)
+
+Tables includes a FileDataID input and explicit **Compare readable rows locally**
+action. A selected inventory finding can prefill the ID without starting work.
+The standard Compare local data action returns to inventory mode. Captured mode
+and table identity remain bound to the result while selectors/input are edited.
+
+Raw rows require matching endpoint schemas and compare recorded verified cells.
+They do not claim gameplay changes or certified table membership. Numeric IDs are
+readable in the list; full canonical identities remain in tooltips/accessibility.
+Unresolved/changed fields precede equal fields. Human coverage captions retain
+all issue reasons, while exact scope fingerprints remain in evidence/tooltips.
+
+The image uses invented data, including a deliberate pending edit to demonstrate
+that the captured result is not relabeled. It contains no game assets or local data.
