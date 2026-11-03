@@ -69,6 +69,18 @@ A proposed detached capability result separates `AVAILABLE`, `NO_RECORDED_PAIR`,
 
 Do not call client account-setting APIs from Vimi or pretend to read the player's account mode. Do not expose an inert selector that changes texture resolution while claiming an HD model. “All recorded surfaces” continues to control mesh-section diagnostics; it is unrelated to SD/HD.
 
+## Proposed future controlled client observation
+
+The exact same UI revision declares useful read-only introspection methods:
+
+- [ModelScene actor GetModelFileID](https://github.com/Gethe/wow-ui-source/blob/17ed2c3e8471cdc3806ab0d26a082be7c67d3d7c/Interface/AddOns/Blizzard_APIDocumentationGenerated/FrameAPIModelSceneFrameActorBaseDocumentation.lua#L111-L124) returns a `fileID` from the actor base.
+- [SimpleModel GetModelFileID](https://github.com/Gethe/wow-ui-source/blob/17ed2c3e8471cdc3806ab0d26a082be7c67d3d7c/Interface/AddOns/Blizzard_APIDocumentationGenerated/SimpleModelAPIDocumentation.lua#L219-L232) returns a `fileID` from the model widget API.
+- [CharacterModel GetDisplayInfo](https://github.com/Gethe/wow-ui-source/blob/17ed2c3e8471cdc3806ab0d26a082be7c67d3d7c/Interface/AddOns/Blizzard_APIDocumentationGenerated/FrameAPICharacterModelBaseDocumentation.lua#L42-L55) returns its numeric display ID. This is a different object API; do not assume ModelScene actors expose it.
+
+Actual matching-client callers provide additional evidence: [EncounterJournal](https://github.com/Gethe/wow-ui-source/blob/17ed2c3e8471cdc3806ab0d26a082be7c67d3d7c/Interface/AddOns/Blizzard_EncounterJournal/Mainline/Blizzard_EncounterJournal.lua#L1484) calls `actor:GetModelFileID()`, while [TalkingHeadUI](https://github.com/Gethe/wow-ui-source/blob/17ed2c3e8471cdc3806ab0d26a082be7c67d3d7c/Interface/AddOns/Blizzard_FrameXML/TalkingHeadUI.lua#L142) calls the character model's `GetDisplayInfo()`. API availability does not prove that a particular character-creation native presentation exposes a suitable widget or that returned IDs reflect every internal replacement stage.
+
+A future **explicitly authorized manual experiment** can select a supported player-model widget/actor for the same character/race/sex, wait for loading to complete, and record available model FileDataID, display ID, selected SD/HD state, build, customization and source context before and after the user changes the real client setting. Keep presentation/camera fixed and account for the UI's documented customization reset. Require a stable loaded model and repeated observations on each side, not a transient zero/stale ID. If IDs change, validate both recorded assets and full composition chains; if they remain equal, investigate textures/content selection rather than declaring the setting ineffective. Repeat separately for a mount before inferring any mount effect. This experiment has **not** been executed; no addon, client script, setting change or account operation is authorized by this proposal.
+
 ## Next investigation gate
 
 1. Inspect the matching prepared UI paths and compare the pinned mirrored UI when available; establish source identity, without scanning or acquiring guessed paths.
