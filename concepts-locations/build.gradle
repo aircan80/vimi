@@ -35,10 +35,15 @@ tasks.withType(JavaCompile).configureEach {
 
 dependencies {
     api project(':object-access')
+    api project(':formats-tables')
+    api project(':formats-assets')
     implementation project(':questie')
     implementation project(':polestar')
     implementation project(':eg-link')
     implementation 'com.fasterxml.jackson.core:jackson-core:2.20.1'
+    testImplementation testFixtures(project(':formats-tables'))
+    testImplementation testFixtures(project(':files'))
+    testImplementation testFixtures(project(':generated-store'))
     testImplementation platform('org.junit:junit-bom:5.13.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'

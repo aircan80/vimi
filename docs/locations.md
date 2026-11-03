@@ -6,9 +6,9 @@ catalogues. It owns no database, repository or download client. Construction is
 cold; `LocationsService` runs bounded local queries asynchronously. Closing it
 cancels/drains owned work without closing borrowed repositories.
 
-The first stage provides contracts, adapters, source-frame projection and tests.
-The selected-build map/area resolver, Blizzard map artwork and GUI marker wiring
-are separate integration work for #116. No new network location service is used.
+Provider contracts, adapters and source-frame projection are joined by the
+[selected-build map/artwork service](map-artwork.md). GUI marker wiring remains
+separate integration work for #116. No new network location service is used.
 
 ## Native coordinates remain distinct
 
