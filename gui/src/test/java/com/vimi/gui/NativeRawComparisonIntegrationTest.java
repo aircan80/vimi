@@ -76,7 +76,7 @@ public final class NativeRawComparisonIntegrationTest {
                             }
                             require(session.progress().state() == ComparisonTypes.RunState.COMPLETED,
                                     "Cached raw scan completes: " + session.progress().message());
-                            require(session.progress().observed() == 2, "Both authored row identities scanned");
+                            require(session.progress().observed() == 3, "All authored row identities scanned");
                             require(session.progress().a().completeness() == ComparisonTypes.Completeness.UNKNOWN
                                             && session.progress().b().completeness() == ComparisonTypes.Completeness.UNKNOWN,
                                     "Readable prepared rows do not certify global membership completeness");
@@ -150,8 +150,13 @@ public final class NativeRawComparisonIntegrationTest {
         for (int i = 0; i < columns.size(); i++) {
             if (columns.get(i).isId()) { other.set(i, "8"); }
         }
+        var maximum = new ArrayList<>(values);
+        for (int i = 0; i < columns.size(); i++) {
+            if (columns.get(i).isId()) { maximum.set(i, "4294967295"); }
+        }
         var rows = List.of(new Db2Types.Row(7, false, null, values, List.of()),
-                new Db2Types.Row(8, false, null, other, List.of()));
+                new Db2Types.Row(8, false, null, other, List.of()),
+                new Db2Types.Row(4294967295L, false, null, maximum, List.of()));
         byte[] original = new byte[128];
         System.arraycopy(MetadataFixtures.text("WDC5"), 0, original, 0, 4);
         String ckey = java.util.HexFormat.of().formatHex(MetadataFixtures.md5(original));
@@ -166,8 +171,8 @@ public final class NativeRawComparisonIntegrationTest {
         var generated = new GeneratedTables(new PackGeneratedStore(library,
                 library.forOwner(info.identity(), LibraryCatalog.Scope.BUILD, "workspace-derived", LibraryCatalog.Role.DERIVED)));
         var content = new GeneratedTableContent(new Db2Types.Header(1, manifest.tableId(),
-                block.layoutHashes().getFirst(), 2, 0, 4, columns, "WDC5"), List.of(),
-                new Db2Types.Completion(2, 2, 0, 0, 0, 0, "complete", 128, 0), List.of(),
+                block.layoutHashes().getFirst(), 3, 0, 4, columns, "WDC5"), List.of(),
+                new Db2Types.Completion(3, 3, 0, 0, 0, 0, "complete", 128, 0), List.of(),
                 (first, count, token) -> CompletableFuture.completedFuture(rows.subList((int) first, Math.min(rows.size(), (int) first + count))),
                 () -> {}, List.of(), List.of());
         generated.store(source, new TactKeyStatus(Map.of()), content, Cancellation.NONE).join();
