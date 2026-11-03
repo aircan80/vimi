@@ -9,7 +9,10 @@
   source shading, resource ownership and cancellation cleanup.
 - Child WORLD transport55c0b4a: root reviewed typed mode/XOR validation, bounded
   pre-map opening, failure protocol and shared ring. Legacy model native/FX proofs
-  pass. Independent actual World FX proof exercises the real default child CLI.
+  pass. Root additionally reviewed/executed nine-case child proofad90fa9 (integrated
+  7d1c4d2): actual color/sky, camera/resize/burst, CLOSE/EOF, wrong-kind/oversized
+  control failure, bridge caps and mixed-scene CLI rejection. Independent actual
+  World FX proof exercises the real default child CLI.
 - Shared GUI service8a6c8e9: acceptance independently reviewed and executed typed
   controls, wrong-kind rejection, one-child replacement and old-owner isolation.
 - Controller9843a7b/c30075f: acceptance's separate manual-FX/fake-process tests
@@ -45,3 +48,23 @@ Actual native hardware evidence is Linux Vulkan only. GL homogeneous depth is
 explicitly declined for terrain. Offline Metal/DX11 compilation and packaged
 native load checks do not qualify those hardware paths. No universal performance
 speedup is claimed. Hosted native CI and all five packaged checks gate delivery.
+
+## Private live-source proof
+
+Independent Forever1.60.1.70755 proof read cached root ADT777947 at32,32 from
+composite read-only original/scratch stores with localOnly and no network. Its
+37120 vertices/65488 triangles/256 chunks rendered through CPU and actual Vulkan
+at four cameras. Minimum silhouette IoU was0.99995716; intersected RGB mean error
+was at most0.000648 channel units. A strict interior mask excludes RGB transitions
+in either image with a one-pixel neighborhood and two-pixel frame border; its
+24268–91876 retained pixels per view matched exactly. Boundary exclusions are
+explicit; this does not claim whole-frame identity.
+
+One WORLD child handled28 requests, including800×500/640×400/720×450 resizes,
+then CLOSED/exit0. On this Intel adapter, launch-to-copied frame was367.403ms and
+27 warm request-to-copied samples had median34.0924ms/p9535.0244ms. Extra detached
+pixel copying sampled0.2162ms median. CPU reference frames separately took20.2–35.1ms
+without budget truncation. FX upload was not measured here, and these observations
+are not a cross-platform or universal speedup benchmark. Frozen JAR hashes,
+private images and logs remain under `/tmp/vimi-live-mount79-proof/terrain-live-final/`.
+No private source assets or images enter Git.

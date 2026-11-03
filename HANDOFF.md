@@ -19,7 +19,7 @@ GPU terrain integration is `/tmp/vimi-gpu-terrain-inline`, branch
 Source/API/native/GUI independent approvals and native/FX checks pass; see
 [review](docs/gpu-terrain-review.md). Final full checks and hosted CI gate merge
 and separate alpha.15; notes are committed before any tag. Private live terrain
-CPU/Vulkan proof is running with frozen verified JARs; never overwrite its copies
+CPU/Vulkan proof passed four cameras and28 same-child requests; see review. Never overwrite its copies
 or running app distributions. Existing material/area frozen launchers remain safe.
 
 Comparison pure projection3e1ff98 and capture/stage528b4e6 have independent reviews.
