@@ -427,7 +427,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                             text(
                                     session == null
                                             ? "Not compared. Choose Files, Tables or Items, then"
-                                                  + " Compare local data."
+                                                    + " Compare local data."
                                             : "Session-only "
                                                     + runArea
                                                     + (capturedRequest != null
@@ -446,13 +446,13 @@ final class CompareView extends BorderPane implements AutoCloseable {
                             text(
                                     raw
                                             ? "Recorded columns from one prepared table. Membership"
-                                                  + " is uncertified; gameplay meaning is"
-                                                  + " unassessed."
+                                                    + " is uncertified; gameplay meaning is"
+                                                    + " unassessed."
                                             : area.equals("Items")
                                                     ? "Recorded Item / ItemSparse facts with"
-                                                          + " source-qualified conflicts."
-                                                          + " Membership is uncertified; effects"
-                                                          + " and assets are unassessed."
+                                                            + " source-qualified conflicts."
+                                                            + " Membership is uncertified; effects"
+                                                            + " and assets are unassessed."
                                                     : "Local "
                                                             + area.toLowerCase(
                                                                     java.util.Locale.ROOT)
@@ -647,7 +647,9 @@ final class CompareView extends BorderPane implements AutoCloseable {
                 "Before\n"
                         + fullCoverage(progress.a())
                         + "\n\nAfter\n"
-                        + fullCoverage(progress.b()));
+                        + fullCoverage(progress.b())
+                        + "\n\nCaptured inputs\n"
+                        + capturedInputs());
         pageStatus.setTooltip(
                 new javafx.scene.control.Tooltip(
                         "Before full scope: "
@@ -705,6 +707,24 @@ final class CompareView extends BorderPane implements AutoCloseable {
                 + " · "
                 + scope
                 + (value.issues().isEmpty() ? "" : " · " + value.issues().size() + " notes");
+    }
+
+    private String capturedInputs() {
+        if (session == null) return "No captured inputs";
+        var text = new StringBuilder();
+        for (var endpoint : java.util.List.of(session.before(), session.after())) {
+            text.append(text.isEmpty() ? "Before" : "\nAfter")
+                    .append(" identity: ")
+                    .append(endpoint.identity())
+                    .append("\nScope: ")
+                    .append(endpoint.scope());
+            new java.util.TreeMap<>(endpoint.dependencies())
+                    .forEach(
+                            (key, value) ->
+                                    text.append('\n').append(key).append(": ").append(value));
+            text.append('\n');
+        }
+        return text.toString();
     }
 
     private static String fullCoverage(ComparisonTypes.Coverage value) {
@@ -903,21 +923,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                     "muted"));
             var sources =
                     new javafx.scene.control.TitledPane(
-                            "Captured inputs",
-                            text(
-                                    "Before identity: "
-                                            + session.before().identity()
-                                            + "\nBefore scope: "
-                                            + session.before().scope()
-                                            + "\nBefore dependencies: "
-                                            + session.before().dependencies()
-                                            + "\nAfter identity: "
-                                            + session.after().identity()
-                                            + "\nAfter scope: "
-                                            + session.after().scope()
-                                            + "\nAfter dependencies: "
-                                            + session.after().dependencies(),
-                                    "muted"));
+                            "Captured inputs", text(capturedInputs(), "muted"));
             sources.setExpanded(false);
             inspector.getChildren().add(sources);
         }

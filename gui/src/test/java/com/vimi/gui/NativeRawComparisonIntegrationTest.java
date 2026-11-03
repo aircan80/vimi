@@ -108,7 +108,7 @@ public final class NativeRawComparisonIntegrationTest {
                         require(
                                 itemsRejected,
                                 "Items with no assessable prepared dependency are unavailable, not"
-                                    + " zero-change");
+                                        + " zero-change");
                         require(
                                 forbidden.get() == 0,
                                 "Unavailable Items never acquire missing dependencies");
@@ -192,7 +192,7 @@ public final class NativeRawComparisonIntegrationTest {
                             require(
                                     itemsSession.progress().observed() == 3,
                                     "Missing ItemSparse does not erase qualified Item IDs including"
-                                        + " unsigned maximum");
+                                            + " unsigned maximum");
                             require(
                                     itemsSession.before().namespace().equals("items.ItemID.v1"),
                                     "Native Items pins source-qualified item namespace");
@@ -203,16 +203,31 @@ public final class NativeRawComparisonIntegrationTest {
                                             .get("items.scope.reasons")
                                             .contains("ITEM_SPARSE"),
                                     "Global unsupported dependency remains visible in coverage"
-                                        + " reasons");
+                                            + " reasons");
+                            require(
+                                    "3"
+                                                    .equals(
+                                                            itemsSession
+                                                                    .before()
+                                                                    .dependencies()
+                                                                    .get(
+                                                                            "items.A.ITEM.capture.items.readable.rows"))
+                                            && itemsSession
+                                                    .before()
+                                                    .dependencies()
+                                                    .containsKey(
+                                                            "items.A.ITEM_SPARSE.capture.captureState"),
+                                    "Captured readable counts and unavailable dependency outcomes"
+                                        + " remain inspectable once per source");
                             require(
                                     itemsSession.progress().a().completeness()
                                             == ComparisonTypes.Completeness.UNKNOWN,
                                     "Prepared Item dependency does not certify complete"
-                                        + " membership");
+                                            + " membership");
                             require(
                                     itemsSession.page(0, 10).join().rows().isEmpty(),
                                     "Equal known Item facts with globally unavailable Sparse yield"
-                                        + " no invented changes");
+                                            + " no invented changes");
                         } finally {
                             itemsSession.closeAsync().get(20, TimeUnit.SECONDS);
                         }
@@ -242,8 +257,8 @@ public final class NativeRawComparisonIntegrationTest {
                 library.closeAsync().join();
             }
             System.out.println(
-                    "Native raw/Items comparison: authored SQLite/pack graph, missing-graph rejection,"
-                            + " cached rows and forbidden acquisition passed");
+                    "Native raw/Items comparison: authored SQLite/pack graph, missing-graph"
+                        + " rejection, cached rows and forbidden acquisition passed");
         } finally {
             try (var paths = Files.walk(directory)) {
                 for (var path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) {

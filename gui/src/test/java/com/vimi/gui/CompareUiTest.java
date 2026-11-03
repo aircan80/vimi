@@ -29,14 +29,36 @@ public final class CompareUiTest {
                 new AtomicReference<>(ComparisonTypes.RunState.RUNNING);
         final AtomicBoolean failPage = new AtomicBoolean(true);
         CompletableFuture<Void> closeGate = CompletableFuture.completedFuture(null);
-        boolean rawFacts, itemFacts;
+        boolean rawFacts, itemFacts, emptyFindings;
 
         public ComparisonTypes.Descriptor before() {
-            return descriptor("authored-before");
+            return fixtureDescriptor("authored-before");
         }
 
         public ComparisonTypes.Descriptor after() {
-            return descriptor("authored-after");
+            return fixtureDescriptor("authored-after");
+        }
+
+        private ComparisonTypes.Descriptor fixtureDescriptor(String identity) {
+            return itemFacts
+                    ? new ComparisonTypes.Descriptor(
+                            identity,
+                            "wowf",
+                            "enUS",
+                            "items.ItemID.v1",
+                            "authored-items-qualified-v1",
+                            emptyFindings
+                                    ? Map.of(
+                                            "items.omission.NAME",
+                                            "UNSUPPORTED_NAME_PAIRED_SCOPE",
+                                            "items.source.state",
+                                            "PARTIAL")
+                                    : Map.of(
+                                            "items.assessed.QUALITY",
+                                            "ItemSparse Quality",
+                                            "items.issueChannel",
+                                            "UNKNOWN"))
+                    : descriptor(identity);
         }
 
         public ComparisonTypes.Progress progress() {
@@ -56,7 +78,7 @@ public final class CompareUiTest {
                                     : itemFacts
                                             ? List.of(
                                                     "Name issue channel unavailable; membership"
-                                                        + " uncertified")
+                                                            + " uncertified")
                                             : List.of("Protected rows")),
                     new ComparisonTypes.Coverage(
                             itemFacts
@@ -72,7 +94,7 @@ public final class CompareUiTest {
                                     : itemFacts
                                             ? List.of(
                                                     "Name issue channel unavailable; membership"
-                                                        + " uncertified")
+                                                            + " uncertified")
                                             : List.of()),
                     rawFacts
                             ? "Session-only findings; known-equal rows omitted; no persistent"
@@ -84,6 +106,10 @@ public final class CompareUiTest {
             if (failPage.getAndSet(false))
                 return CompletableFuture.failedFuture(
                         new IllegalStateException("authored transient page failure"));
+            if (itemFacts && emptyFindings) {
+                return CompletableFuture.completedFuture(
+                        new ComparisonTypes.ResultPage(offset, List.of(), null, progress()));
+            }
             if (itemFacts) {
                 var oldQuality =
                         new ComparisonTypes.Field(
@@ -513,7 +539,8 @@ public final class CompareUiTest {
             require(stale.cancels.get() == 1, "Late session canceled and drained after close");
             require(tokenRef.get().isCanceled(), "Opening canceled on close");
             rawRowsControls(before, after);
-            itemsControls(before, after);
+            itemsControls(before, after, false);
+            itemsControls(before, after, true);
             System.out.println(
                     "Comparison UI: captured pair on running/completed edits, distinguishing"
                         + " configs, coverage reasons, page retry/cursors, responsive drawer and"
@@ -529,9 +556,11 @@ public final class CompareUiTest {
         }
     }
 
-    private static void itemsControls(BuildInfo before, BuildInfo after) throws Exception {
+    private static void itemsControls(BuildInfo before, BuildInfo after, boolean empty)
+            throws Exception {
         var fixture = new Fixture();
         fixture.itemFacts = true;
+        fixture.emptyFindings = empty;
         fixture.state.set(ComparisonTypes.RunState.COMPLETED);
         fixture.failPage.set(false);
         var requests = new java.util.concurrent.CopyOnWriteArrayList<CompareView.Request>();
@@ -568,7 +597,17 @@ public final class CompareUiTest {
                             return stage;
                         });
         try {
-            await(() -> fxUnchecked(() -> resultKeys(view).contains("910001")));
+            await(
+                    () ->
+                            fxUnchecked(
+                                    () ->
+                                            empty
+                                                    ? labels(view)
+                                                            .contains(
+                                                                    "Unknown · Recorded Items"
+                                                                        + " facts")
+                                                    : resultKeys(view).contains("910001")));
+
             fx(
                     () -> {
                         require(
@@ -576,6 +615,15 @@ public final class CompareUiTest {
                                         && requests.getFirst().area().equals("Items")
                                         && requests.getFirst().tableId() == null,
                                 "Items request does not become raw-table mode");
+                        if (empty) {
+                            coveragePane(view).setExpanded(true);
+                            require(
+                                    labels(view).contains("UNSUPPORTED_NAME_PAIRED_SCOPE")
+                                            && labels(view).contains("items.source.state: PARTIAL"),
+                                    "Empty findings keep globally omitted families and source scope"
+                                            + " inspectable");
+                            return null;
+                        }
                         findings(view).getSelectionModel().select(0);
                         view.applyCss();
                         view.layout();
