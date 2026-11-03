@@ -42,6 +42,7 @@ public final class GpuPreviewServiceTest {
             newestPendingRequestReplacesIntermediateScenes(root);
             startupTimeoutStopsUnresponsiveChild(root);
             readyWithoutFramesTimesOut(root);
+            unkillableChildAndBlockedStreamCloseStayBounded(root);
             forcedStopAndBadProtocol(root);
             sizeBoundAndStartFailureCleanScratch(root);
         } finally {
@@ -75,6 +76,102 @@ public final class GpuPreviewServiceTest {
             Set<Integer> parts)
             throws IOException {
         Files.writeString(file, "authored scene", StandardCharsets.UTF_8);
+    }
+
+    private static void unkillableChildAndBlockedStreamCloseStayBounded(Path root)
+            throws Exception {
+        var release = new CountDownLatch(1);
+        var streamCloseEntered = new CountDownLatch(1);
+        var alive = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var launches = new AtomicInteger();
+        var scene = new AtomicReference<Path>();
+        var child =
+                new FakeProcess(false) {
+                    @Override
+                    public boolean isAlive() {
+                        return alive.get();
+                    }
+
+                    @Override
+                    public boolean waitFor(long timeout, TimeUnit unit) {
+                        return !alive.get();
+                    }
+
+                    @Override
+                    public void destroy() {}
+
+                    @Override
+                    public Process destroyForcibly() {
+                        forced.incrementAndGet();
+                        return this;
+                    }
+
+                    @Override
+                    public OutputStream getOutputStream() {
+                        return new OutputStream() {
+                            public void write(int ignored) {}
+
+                            public void close() throws IOException {
+                                streamCloseEntered.countDown();
+                                try {
+                                    release.await();
+                                } catch (InterruptedException error) {
+                                    throw new IOException(error);
+                                }
+                            }
+                        };
+                    }
+                };
+        var service =
+                service(
+                        root,
+                        GpuPreviewServiceTest::write,
+                        path -> {
+                            launches.incrementAndGet();
+                            scene.set(path);
+                            return child;
+                        });
+        try {
+            Object owner = new Object();
+            var first = service.open(owner, mesh(), null, Set.of(1), ignored -> {});
+            await(child.started);
+            child.send("VIMI_GPU HELLO Vulkan\nVIMI_GPU READY Vulkan\n");
+            var close = service.closeOwner(owner);
+            await(streamCloseEntered);
+            var successor = service.open(new Object(), mesh(), null, Set.of(1), ignored -> {});
+            expectFailure(
+                    first, "Unkillable child reports failure without waiting for stream close");
+            expectFailure(close, "Owner drain remains bounded despite blocked stream close");
+            expectFailure(successor, "No successor can launch while previous child lives");
+            expectFailure(service.closeAsync(), "Application drain reports unkillable child");
+            require(
+                    launches.get() == 1 && child.isAlive(),
+                    "One live child prevents any replacement");
+            require(
+                    Files.exists(scene.get())
+                            && Files.exists(scene.get().resolveSibling("frames.vgpu")),
+                    "Scene and frame scratch remain while unkillable child lives");
+        } finally {
+            alive.set(false);
+            release.countDown();
+            ((FakeProcess) child).finish();
+            if (scene.get() != null) {
+                try (var retained = Files.walk(scene.get().getParent())) {
+                    for (var file : retained.sorted(java.util.Comparator.reverseOrder()).toList())
+                        Files.deleteIfExists(file);
+                }
+            }
+        }
+    }
+
+    private static void expectFailure(CompletableFuture<Void> future, String message)
+            throws Exception {
+        try {
+            future.get(3, TimeUnit.SECONDS);
+            throw new AssertionError(message);
+        } catch (java.util.concurrent.ExecutionException expected) {
+            // The failure itself is the bounded lifecycle result, not a test timeout.
+        }
     }
 
     private static void readyWithoutFramesTimesOut(Path root) throws Exception {
@@ -447,7 +544,7 @@ public final class GpuPreviewServiceTest {
         if (!condition) throw new AssertionError(message);
     }
 
-    static final class FakeProcess extends Process {
+    static class FakeProcess extends Process {
         private final PipedInputStream output = new PipedInputStream();
         private final PipedOutputStream events;
         private final CompletableFuture<Integer> exit = new CompletableFuture<>();

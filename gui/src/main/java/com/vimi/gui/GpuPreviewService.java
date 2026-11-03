@@ -483,7 +483,12 @@ final class GpuPreviewService {
                     if (failure == null) failure = stopFailure;
                     else failure.addSuppressed(stopFailure);
                 }
-                closeStreams(child);
+                final Process completedChild = child;
+                var streamCloser =
+                        Thread.ofVirtual()
+                                .name("gpu-preview-stream-close")
+                                .start(() -> closeStreams(completedChild));
+                joinReader(streamCloser);
                 joinReader(stdout);
                 joinReader(stderr);
                 joinReader(controls);
