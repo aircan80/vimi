@@ -45,6 +45,7 @@ dependencies {
     implementation project(':concepts-mounts')
     implementation project(':concepts-professions')
     implementation project(':rendering-models')
+    implementation project(':rendering-bgfx')
     implementation project(':rendering-world')
     implementation project(':concepts-world')
     implementation project(':concepts-dungeons')
@@ -382,3 +383,18 @@ tasks.register('nativeRawComparisonTest', JavaExec) {
     mainClass = 'com.vimi.gui.NativeRawComparisonIntegrationTest'
 }
 check.dependsOn nativeRawComparisonTest
+
+
+tasks.register('gpuPreviewServiceTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.GpuPreviewServiceTest'
+}
+check.dependsOn gpuPreviewServiceTest
+
+// Authored GPU window activity/fallback checks; no GPU child is launched, display required.
+tasks.register('gpuPreviewUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.GpuPreviewUiTest'
+}

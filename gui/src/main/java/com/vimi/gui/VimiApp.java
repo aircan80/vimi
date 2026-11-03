@@ -1024,6 +1024,7 @@ public final class VimiApp extends Application {
 
     @Override
     public void stop() {
+        GpuPreviewService.application().closeAsync();
         if (sourceRefresh != null) sourceRefresh.close();
         if (sourceRefreshDialog != null) sourceRefreshDialog.close();
         preparationClock.stop();
@@ -1051,7 +1052,8 @@ public final class VimiApp extends Application {
         var cleanup = startup == null ? java.util.concurrent.CompletableFuture.<Void>completedFuture(null)
                 : startup.handle((ready, error) -> ready)
                         .thenCompose(ready -> ready == null ? java.util.concurrent.CompletableFuture.completedFuture(null) : ready.closeAsync());
-        cleanup.whenComplete((unused, error) -> Platform.runLater(Platform::exit));
+        java.util.concurrent.CompletableFuture.allOf(cleanup, GpuPreviewService.application().closeAsync())
+                .whenComplete((unused, error) -> Platform.runLater(Platform::exit));
     }
 
     private BuildInfo effectiveBuild(BuildInfo build) {

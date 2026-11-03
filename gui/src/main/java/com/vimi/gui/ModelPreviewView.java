@@ -3,20 +3,25 @@ package com.vimi.gui;
 import com.vibeminer.rendering.models.MeshAppearance;
 import com.vibeminer.rendering.models.PreviewMesh;
 import com.vibeminer.rendering.models.StaticMeshRenderer;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
+
 import javafx.application.Platform;
 import javafx.scene.control.Button;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.Label;
+import javafx.scene.control.ProgressIndicator;
+import javafx.scene.control.Tooltip;
 import javafx.scene.image.ImageView;
 import javafx.scene.image.PixelFormat;
 import javafx.scene.image.WritableImage;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.StackPane;
+import javafx.scene.layout.VBox;
+
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Reusable actual static-mesh view, independent of JavaFX3D hardware support. */
 final class ModelPreviewView extends BorderPane implements AutoCloseable {
@@ -37,6 +42,14 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
             all = new CheckBox("All recorded surfaces"),
             textures = new CheckBox("Textures");
     private final Label status = new Label("Select a model variant");
+    private final GpuPreviewService gpu;
+    private final Object gpuOwner = new Object();
+    private final Button gpuButton = new Button("Open GPU preview");
+    private final ProgressIndicator gpuActivity = new ProgressIndicator(-1);
+    private final Label gpuStatus = new Label("GPU rendering opens in a separate preview window.");
+    private final ProgressIndicator renderingActivity = new ProgressIndicator(-1);
+    private long gpuGeneration;
+    private boolean gpuRequested;
     private PreviewMesh mesh;
     private MeshAppearance appearance;
     private Set<Integer> visible = Set.of();
@@ -46,6 +59,38 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
             new javafx.animation.PauseTransition(javafx.util.Duration.millis(35));
 
     ModelPreviewView() {
+        this(GpuPreviewService.application());
+    }
+
+    ModelPreviewView(GpuPreviewService gpu) {
+        this.gpu = gpu;
+        gpuButton.setId("model-gpu-preview");
+        gpuButton.setAccessibleText("Open or close separate GPU model preview window");
+        gpuButton.setTooltip(
+                new Tooltip(
+                        "Open an independent GPU-rendered snapshot with native camera controls. The"
+                                + " inline preview remains available."));
+        gpuButton.setDisable(true);
+        gpuButton.setOnAction(
+                event -> {
+                    if (gpuRequested) closeGpu();
+                    else openGpu();
+                });
+        gpuActivity.setId("model-gpu-activity");
+        gpuStatus.setId("model-gpu-status");
+        gpuActivity.setAccessibleText("GPU preview window activity");
+        gpuActivity.setPrefSize(16, 16);
+        gpuActivity.setMaxSize(16, 16);
+        gpuStatus.setWrapText(true);
+        gpuStatus.getStyleClass().add("muted");
+        showGpuActivity(false);
+        renderingActivity.setPrefSize(30, 30);
+        renderingActivity.setMaxSize(30, 30);
+        renderingActivity.setMouseTransparent(true);
+        renderingActivity.setAccessibleText("Rendering static model preview");
+        renderingActivity.setVisible(false);
+        renderingActivity.setManaged(false);
+        viewport.getChildren().add(renderingActivity);
         viewport.setMinHeight(320);
         viewport.setPrefHeight(420);
         viewport.getStyleClass().add("model-preview-viewport");
@@ -95,6 +140,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                     zoom = 1.15;
                     request();
                 });
+        all.setId("model-all-surfaces");
         textures.setSelected(true);
         textures.setDisable(true);
         textures.setOnAction(event -> request());
@@ -105,7 +151,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
         setTop(controls);
         status.getStyleClass().add("muted");
         status.setWrapText(true);
-        setBottom(status);
+        setBottom(new VBox(8, status, new HBox(8, gpuButton, gpuActivity), gpuStatus));
         viewport.setOnMousePressed(
                 event -> {
                     viewport.requestFocus();
@@ -132,7 +178,9 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
     }
 
     void setMesh(PreviewMesh value, Set<Integer> visibleParts) {
+        closeGpu();
         mesh = value;
+        gpuButton.setDisable(false);
         appearance = null;
         textures.setDisable(true);
         visible = Set.copyOf(visibleParts);
@@ -149,9 +197,14 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
         visible = Set.copyOf(visibleParts);
         textures.setDisable(false);
         request();
+        if (gpuRequested) openGpu();
     }
 
     void clear(String message) {
+        closeGpu();
+        gpuButton.setDisable(true);
+        renderingActivity.setVisible(false);
+        renderingActivity.setManaged(false);
         generation.incrementAndGet();
         latest.set(null);
         mesh = null;
@@ -171,6 +224,10 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
             return;
         }
         long request = generation.incrementAndGet();
+        status.setText("Rendering static preview…");
+        boolean initialFrame = image.getImage() == null;
+        renderingActivity.setVisible(initialFrame);
+        renderingActivity.setManaged(initialFrame);
         latest.set(
                 new Work(
                         request,
@@ -242,8 +299,11 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                                                             0,
                                                             frame.width());
                                             image.setImage(bitmap);
+                                            renderingActivity.setVisible(false);
+                                            renderingActivity.setManaged(false);
                                             status.setText(
-                                                    "Drag to rotate · scroll or +/− to zoom · arrow keys rotate · static rest surface");
+                                                    "Drag to rotate · scroll or +/− to zoom · arrow"
+                                                            + " keys rotate · static rest surface");
                                         });
                             } catch (java.util.concurrent.CancellationException superseded) {
                                 /* Latest camera request replaces this frame. */
@@ -252,6 +312,8 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                                         () -> {
                                             if (!closed
                                                     && generation.get() == current.generation()) {
+                                                renderingActivity.setVisible(false);
+                                                renderingActivity.setManaged(false);
                                                 status.setText(
                                                         "Model preview could not be rendered.");
                                             }
@@ -267,9 +329,87 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                 });
     }
 
+    private void openGpu() {
+        if (closed || mesh == null) return;
+        gpuRequested = true;
+        gpuButton.setText("Close GPU preview");
+        long request = ++gpuGeneration;
+        Set<Integer> parts =
+                all.isSelected()
+                        ? mesh.parts().stream()
+                                .map(PreviewMesh.Part::id)
+                                .collect(java.util.stream.Collectors.toUnmodifiableSet())
+                        : visible;
+        gpu.open(
+                        gpuOwner,
+                        mesh,
+                        textures.isSelected() ? appearance : null,
+                        parts,
+                        state ->
+                                Platform.runLater(
+                                        () -> {
+                                            if (closed || request != gpuGeneration) return;
+                                            gpuStatus.setText(state.message());
+                                            showGpuActivity(state.busy());
+                                            if (state.state() == GpuPreviewService.State.CLOSED
+                                                    || state.state()
+                                                            == GpuPreviewService.State.FAILED) {
+                                                gpuRequested = false;
+                                                gpuButton.setText("Open GPU preview");
+                                            }
+                                        }))
+                .whenComplete(
+                        (ignored, failure) -> {
+                            if (failure != null)
+                                Platform.runLater(
+                                        () -> {
+                                            if (closed || request != gpuGeneration || !gpuRequested)
+                                                return;
+                                            gpuRequested = false;
+                                            gpuButton.setText("Open GPU preview");
+                                            showGpuActivity(false);
+                                            gpuStatus.setText(
+                                                    "GPU preview unavailable. The inline software"
+                                                            + " preview remains available.");
+                                        });
+                        });
+    }
+
+    private void closeGpu() {
+        boolean stopping = gpuRequested;
+        gpuRequested = false;
+        long request = ++gpuGeneration;
+        gpuButton.setText("Open GPU preview");
+        showGpuActivity(stopping);
+        if (stopping) gpuStatus.setText("Closing GPU preview window…");
+        gpu.closeOwner(gpuOwner)
+                .whenComplete(
+                        (ignored, failure) ->
+                                Platform.runLater(
+                                        () -> {
+                                            if (closed || request != gpuGeneration) return;
+                                            showGpuActivity(false);
+                                            gpuStatus.setText(
+                                                    failure == null
+                                                            ? "GPU rendering opens in a separate"
+                                                                    + " preview window."
+                                                            : "GPU preview could not close cleanly;"
+                                                                    + " the inline preview remains"
+                                                                    + " available.");
+                                        }));
+    }
+
+    private void showGpuActivity(boolean active) {
+        gpuActivity.setVisible(active);
+        gpuActivity.setManaged(active);
+    }
+
     @Override
     public void close() {
+        closeGpu();
         closed = true;
+        renderingActivity.setVisible(false);
+        renderingActivity.setManaged(false);
         resize.stop();
         generation.incrementAndGet();
         latest.set(null);

@@ -353,3 +353,30 @@ classes and racial ability cards from this build and locale. Partial tables reta
 readable data; static combinations do not imply account/server availability.
 Icons are loaded asynchronously through the existing image path. Race portraits
 use an initial until atlas support exists. See [Races](../docs/races.md).
+
+### Separate GPU model preview window
+
+The model inspector keeps its inline software preview. **Open GPU preview** creates
+one application-managed GLFW/bgfx window for the current immutable mesh/appearance
+snapshot. Camera controls run in that window; frames are presented directly there
+and are not read back into JavaFX. This is a separate window, not an embedded GPU
+JavaFX node. The button also closes a pending or active GPU preview. Closing or
+replacing the owning model panel closes its window; an old panel cannot close a
+new panel's preview.
+
+Scene encoding, process startup, bounded protocol reads and process termination run
+off the JavaFX thread. Only one child process and one latest pending request are
+retained. Application shutdown waits asynchronously for the child to terminate
+before deleting its private temporary scene. Startup/native/backend failures leave
+the inline software preview available and show a visible fallback state. The
+renderer child uses the bundled Java runtime; macOS adds `-XstartOnFirstThread`
+only to that child.
+
+`GpuPreviewServiceTest` uses fake processes and authored scene bytes; it never
+launches graphics code or touches application data. The opt-in authored UI fixture
+also uses a fake launcher and needs a display:
+
+```sh
+./gradlew :gui:gpuPreviewServiceTest
+./gradlew :gui:gpuPreviewUiTest
+```
