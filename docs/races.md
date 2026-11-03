@@ -62,9 +62,12 @@ exclusive alternatives.
 ## Reviewed diffuse textures and starting clothing
 
 The reviewed character-composition profiles support current Human male/female
-models 1/2 and Orc male/female models 3/4. The Orc admission additionally requires
-the exact recorded model/sex/layout pairs below. Other races/layouts retain the
-available static surface and report that their texture profile is unsupported. The GUI shows geometry first,
+models 1/2, Orc male/female models 3/4, and the isolated Tauren male/female
+models 11/12 described in the [reviewed Tauren profile](races-tauren-profile-proposal.md).
+The Orc and Tauren admissions additionally require
+their exact recorded model/sex/layout predicates. The Dwarf pair is a
+[pre-code proposal](races-dwarf-profile-proposal.md), not current admission.
+Other races/layouts retain the available static surface and report that their texture profile is unsupported. The GUI shows geometry first,
 then loads the textured sample asynchronously; rotation/zoom remain usable.
 
 The selected choices join `ChrCustomizationElement → ChrCustomizationMaterial →
