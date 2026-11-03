@@ -442,3 +442,10 @@ tasks.register('voicePlaybackTest', JavaExec) {
     mainClass = 'com.vimi.gui.VoicePlaybackTest'
 }
 tasks.named('check') { dependsOn tasks.named('voicePlaybackTest') }
+
+// Authored physical terrain coordinates and deterministic keyboard/timer events; requires a display.
+tasks.register('worldNavigationUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldNavigationUiTest'
+}
