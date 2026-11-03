@@ -83,40 +83,160 @@ public final class EgLinkRepository implements AutoCloseable {
     }
 
     public CompletableFuture<Catalog> check(Cancellation token) {
+        return call(token, () -> checkNow(token));
+    }
+
+    private Catalog checkNow(Cancellation token) throws Exception {
+        Path existing = root.resolve("catalog.json");
+        if (Files.isRegularFile(existing, LinkOption.NOFOLLOW_LINKS)) {
+            var previous = EgJson.object(EgJson.parse(read(existing, 2 << 20), 2 << 20));
+            if (!"vimi-eg-link-catalog-v1".equals(previous.get("format"))) {
+                throw new IOException("Unsupported EG Link catalog format");
+            }
+        }
+        var head = client.fetchEgLinkHead(token).join();
+        token.check();
+        var header = EgJson.object(EgJson.parse(head.bytes(), 64 << 10));
+        String revision = EgJson.text(EgJson.object(header.get("object")).get("sha"));
+        if (!revision.matches("[0-9a-f]{40}")) {
+            throw new IOException("EG Link commit is not immutable");
+        }
+        if (Files.isRegularFile(existing, LinkOption.NOFOLLOW_LINKS)) {
+            var previous = EgJson.object(EgJson.parse(read(existing, 2 << 20), 2 << 20));
+            if (revision.equals(previous.get("revision"))) {
+                var cached =
+                        parseIndex(
+                                revision, head.observedAt(), EgJson.bytes(previous.get("index")));
+                token.check();
+                previous.put("checkedAt", head.observedAt().toString());
+                atomic(existing, EgJson.bytes(previous));
+                return cached;
+            }
+        }
+        var index = client.fetchEgLinkFile(revision, "data/index.json", token).join();
+        var value = parseIndex(revision, index.observedAt(), index.bytes());
+        token.check();
+        atomic(
+                root.resolve("catalog.json"),
+                EgJson.bytes(
+                        Map.of(
+                                "format",
+                                "vimi-eg-link-catalog-v1",
+                                "revision",
+                                revision,
+                                "checkedAt",
+                                value.checkedAt().toString(),
+                                "index",
+                                EgJson.parse(index.bytes(), 1 << 20))));
+        return value;
+    }
+
+    /**
+     * Updates latest advertised build per product and every distinct installed product/build.
+     * Unchanged prepared snapshots are verified/reused; historical builds are never bulk fetched.
+     * Partial failures are returned as issues while completed snapshots remain available.
+     */
+    public CompletableFuture<EgLinkTypes.Sync> sync(
+            Consumer<Progress> progress, Cancellation token) {
         return call(
                 token,
                 () -> {
-                    Path existing = root.resolve("catalog.json");
-                    if (Files.isRegularFile(existing, LinkOption.NOFOLLOW_LINKS)) {
-                        var previous =
-                                EgJson.object(EgJson.parse(read(existing, 2 << 20), 2 << 20));
-                        if (!"vimi-eg-link-catalog-v1".equals(previous.get("format"))) {
-                            throw new IOException("Unsupported EG Link catalog format");
+                    progress.accept(new Progress("Checking EG Link GitHub commit", 0, 1));
+                    Catalog catalog = checkNow(token);
+                    List<Snapshot> installed = local(token);
+                    var targets = new LinkedHashMap<String, Build>();
+                    var advertised = new LinkedHashMap<String, Build>();
+                    var latest = new LinkedHashMap<String, Build>();
+                    for (Build build : catalog.builds()) {
+                        advertised.put(build.product() + "/" + build.version(), build);
+                        latest.merge(
+                                build.product(),
+                                build,
+                                (before, candidate) ->
+                                        compareVersions(before.version(), candidate.version()) < 0
+                                                ? candidate
+                                                : before);
+                    }
+                    var issues = new ArrayList<String>();
+                    for (Snapshot snapshot : installed) {
+                        String key = snapshot.build().product() + "/" + snapshot.build().version();
+                        Build current = advertised.get(key);
+                        if (current != null) {
+                            targets.put(key, current);
+                        } else if (!issues.contains(
+                                "No longer advertised: " + key + "; local data retained")) {
+                            issues.add("No longer advertised: " + key + "; local data retained");
                         }
                     }
-                    var head = client.fetchEgLinkHead(token).join();
-                    token.check();
-                    var header = EgJson.object(EgJson.parse(head.bytes(), 64 << 10));
-                    String revision = EgJson.text(EgJson.object(header.get("object")).get("sha"));
-                    if (!revision.matches("[0-9a-f]{40}")) {
-                        throw new IOException("EG Link commit is not immutable");
+                    latest.values()
+                            .forEach(
+                                    build ->
+                                            targets.put(
+                                                    build.product() + "/" + build.version(),
+                                                    build));
+                    int downloaded = 0, prepared = 0, reused = 0;
+                    for (Build build : targets.values()) {
+                        token.check();
+                        String sourceId = id(build);
+                        boolean retained =
+                                Files.exists(source(sourceId), LinkOption.NOFOLLOW_LINKS);
+                        String label = build.product() + " " + build.version();
+                        try {
+                            downloadNow(
+                                    build,
+                                    value ->
+                                            progress.accept(
+                                                    new Progress(
+                                                            label + ": " + value.message(),
+                                                            value.done(),
+                                                            value.total())),
+                                    token);
+                            if (!retained) {
+                                downloaded++;
+                            }
+                            Snapshot ready =
+                                    installed.stream()
+                                            .filter(
+                                                    value ->
+                                                            value.id().equals(sourceId)
+                                                                    && value.indexedRecords()
+                                                                            != null
+                                                                    && value.problem() == null)
+                                            .findFirst()
+                                            .orElse(null);
+                            if (ready != null) {
+                                reused++;
+                                progress.accept(
+                                        new Progress("Reusing prepared EG Link " + label, 1, 1));
+                            } else {
+                                prepareNow(
+                                        sourceId,
+                                        value ->
+                                                progress.accept(
+                                                        new Progress(
+                                                                label + ": " + value.message(),
+                                                                value.done(),
+                                                                value.total())),
+                                        token);
+                                prepared++;
+                            }
+                        } catch (java.util.concurrent.CancellationException canceled) {
+                            throw canceled;
+                        } catch (Exception failure) {
+                            token.check();
+                            Throwable cause = failure;
+                            while (cause.getCause() != null) {
+                                cause = cause.getCause();
+                            }
+                            issues.add(
+                                    label
+                                            + ": "
+                                            + (cause.getMessage() == null
+                                                    ? cause.getClass().getSimpleName()
+                                                    : cause.getMessage()));
+                        }
                     }
-                    var index = client.fetchEgLinkFile(revision, "data/index.json", token).join();
-                    var value = parseIndex(revision, index.observedAt(), index.bytes());
-                    token.check();
-                    atomic(
-                            root.resolve("catalog.json"),
-                            EgJson.bytes(
-                                    Map.of(
-                                            "format",
-                                            "vimi-eg-link-catalog-v1",
-                                            "revision",
-                                            revision,
-                                            "checkedAt",
-                                            value.checkedAt().toString(),
-                                            "index",
-                                            EgJson.parse(index.bytes(), 1 << 20))));
-                    return value;
+                    return new EgLinkTypes.Sync(local(token), downloaded, prepared, reused, issues);
                 });
     }
 
@@ -218,224 +338,208 @@ public final class EgLinkRepository implements AutoCloseable {
 
     public CompletableFuture<Snapshot> download(
             Build requested, Consumer<Progress> progress, Cancellation token) {
-        return call(
-                token,
-                () -> {
-                    Catalog catalog = catalogNow();
-                    Build build =
-                            catalog.builds().stream()
-                                    .filter(requested::equals)
-                                    .findFirst()
-                                    .orElseThrow(
-                                            () ->
-                                                    new IllegalArgumentException(
-                                                            "Choose an advertised EG Link snapshot"));
-                    String id = id(build);
-                    Path destination = source(id);
-                    if (Files.exists(destination, LinkOption.NOFOLLOW_LINKS)) {
-                        var retained = manifest(id);
-                        verify(retained, token);
-                        return snapshot(retained, null, null, null);
-                    }
-                    if (local(token).size() >= 1024) {
-                        throw new IOException("Retained snapshot limit reached");
-                    }
-                    Path temporary =
-                            Files.createTempDirectory(root.resolve("sources"), ".download-");
-                    try {
-                        long bytes = 0;
-                        int done = 0;
-                        var hashes = new LinkedHashMap<String, Object>();
-                        for (Dataset dataset : build.datasets()) {
-                            token.check();
-                            progress.accept(
-                                    new Progress(
-                                            "Downloading " + dataset.name(),
-                                            done,
-                                            build.datasets().size()));
-                            String path =
-                                    "data/"
-                                            + build.product()
-                                            + "/"
-                                            + build.version()
-                                            + "/"
-                                            + dataset.name()
-                                            + ".json";
-                            var reply =
-                                    client.fetchEgLinkFile(build.revision(), path, token).join();
-                            byte[] body = reply.bytes();
-                            bytes += body.length;
-                            if (bytes > MAX_SNAPSHOT_BYTES) {
-                                throw new IOException("EG Link snapshot exceeds byte bound");
-                            }
-                            validateDataset(body, build, dataset);
-                            atomic(temporary.resolve(dataset.name() + ".json"), body);
-                            hashes.put(dataset.name(), sha(body));
-                            done++;
-                        }
-                        token.check();
-                        var manifest = new LinkedHashMap<String, Object>();
-                        manifest.put("format", "vimi-eg-link-source-v1");
-                        manifest.put("id", id);
-                        manifest.put("revision", build.revision());
-                        manifest.put("product", build.product());
-                        manifest.put("build", build.version());
-                        manifest.put("downloadedAt", Instant.now().toString());
-                        manifest.put("bytes", bytes);
-                        manifest.put("datasets", encodeDatasets(build.datasets()));
-                        manifest.put("hashes", hashes);
-                        atomic(temporary.resolve("source.json"), EgJson.bytes(manifest));
-                        Files.move(temporary, destination, StandardCopyOption.ATOMIC_MOVE);
-                        progress.accept(new Progress("Original snapshot retained", done, done));
-                        return snapshot(manifest, null, null, null);
-                    } finally {
-                        remove(temporary);
-                    }
-                });
+        return call(token, () -> downloadNow(requested, progress, token));
+    }
+
+    private Snapshot downloadNow(Build requested, Consumer<Progress> progress, Cancellation token)
+            throws Exception {
+        Catalog catalog = catalogNow();
+        Build build =
+                catalog.builds().stream()
+                        .filter(requested::equals)
+                        .findFirst()
+                        .orElseThrow(
+                                () ->
+                                        new IllegalArgumentException(
+                                                "Choose an advertised EG Link snapshot"));
+        String id = id(build);
+        Path destination = source(id);
+        if (Files.exists(destination, LinkOption.NOFOLLOW_LINKS)) {
+            var retained = manifest(id);
+            verify(retained, token);
+            return snapshot(retained, null, null, null);
+        }
+        if (local(token).size() >= 1024) {
+            throw new IOException("Retained snapshot limit reached");
+        }
+        Path temporary = Files.createTempDirectory(root.resolve("sources"), ".download-");
+        try {
+            long bytes = 0;
+            int done = 0;
+            var hashes = new LinkedHashMap<String, Object>();
+            for (Dataset dataset : build.datasets()) {
+                token.check();
+                progress.accept(
+                        new Progress(
+                                "Downloading " + dataset.name(), done, build.datasets().size()));
+                String path =
+                        "data/"
+                                + build.product()
+                                + "/"
+                                + build.version()
+                                + "/"
+                                + dataset.name()
+                                + ".json";
+                var reply = client.fetchEgLinkFile(build.revision(), path, token).join();
+                byte[] body = reply.bytes();
+                bytes += body.length;
+                if (bytes > MAX_SNAPSHOT_BYTES) {
+                    throw new IOException("EG Link snapshot exceeds byte bound");
+                }
+                validateDataset(body, build, dataset);
+                atomic(temporary.resolve(dataset.name() + ".json"), body);
+                hashes.put(dataset.name(), sha(body));
+                done++;
+            }
+            token.check();
+            var manifest = new LinkedHashMap<String, Object>();
+            manifest.put("format", "vimi-eg-link-source-v1");
+            manifest.put("id", id);
+            manifest.put("revision", build.revision());
+            manifest.put("product", build.product());
+            manifest.put("build", build.version());
+            manifest.put("downloadedAt", Instant.now().toString());
+            manifest.put("bytes", bytes);
+            manifest.put("datasets", encodeDatasets(build.datasets()));
+            manifest.put("hashes", hashes);
+            atomic(temporary.resolve("source.json"), EgJson.bytes(manifest));
+            Files.move(temporary, destination, StandardCopyOption.ATOMIC_MOVE);
+            progress.accept(new Progress("Original snapshot retained", done, done));
+            return snapshot(manifest, null, null, null);
+        } finally {
+            remove(temporary);
+        }
     }
 
     public CompletableFuture<Snapshot> prepare(
             String id, Consumer<Progress> progress, Cancellation token) {
-        return call(
-                token,
-                () -> {
-                    var manifest = manifest(id);
-                    verify(manifest, token);
-                    Build build = build(manifest);
-                    Path destination = database(id),
-                            temporary =
-                                    root.resolve("derived")
-                                            .resolve(".prepare-" + UUID.randomUUID() + ".sqlite");
-                    try {
-                        long count;
-                        try (var connection = new DerivedSqliteConnection(temporary)) {
-                            count =
-                                    connection.run(
-                                            com.vibeminer.store.Cancellation.NONE,
-                                            true,
-                                            sql -> {
-                                                sql.execute(
-                                                        "PRAGMA application_id=" + APPLICATION_ID);
-                                                sql.execute("PRAGMA user_version=1");
-                                                sql.execute(
-                                                        "CREATE TABLE eg_metadata(k TEXT PRIMARY KEY,v TEXT NOT NULL) WITHOUT ROWID");
-                                                sql.execute(
-                                                        "INSERT INTO eg_metadata VALUES('source',?)",
-                                                        id);
-                                                sql.execute(
-                                                        "INSERT INTO eg_metadata VALUES('source_manifest',?)",
-                                                        hashUnchecked(manifest));
-                                                sql.execute(
-                                                        "CREATE TABLE eg_records(dataset TEXT NOT NULL,collection TEXT NOT NULL,id TEXT NOT NULL,name TEXT NOT NULL,json TEXT NOT NULL,PRIMARY KEY(dataset,collection,id)) WITHOUT ROWID");
-                                                long indexed = 0;
-                                                int done = 0;
-                                                for (Dataset dataset : build.datasets()) {
-                                                    token.check();
-                                                    progress.accept(
-                                                            new Progress(
-                                                                    "Indexing " + dataset.name(),
-                                                                    done,
-                                                                    build.datasets().size()));
-                                                    try {
-                                                        byte[] bytes =
-                                                                read(
-                                                                        source(id)
-                                                                                .resolve(
-                                                                                        dataset
-                                                                                                        .name()
-                                                                                                + ".json"),
-                                                                        MAX_FILE_BYTES);
-                                                        var object =
-                                                                validateDataset(
-                                                                        bytes, build, dataset);
-                                                        for (var collection : object.entrySet()) {
-                                                            if (collection
-                                                                    .getKey()
-                                                                    .equals("meta")) {
-                                                                continue;
-                                                            }
-                                                            if (collection.getKey().length()
-                                                                    > 128) {
-                                                                throw new IOException(
-                                                                        "Collection name exceeds bound");
-                                                            }
-                                                            if (collection.getValue()
-                                                                    instanceof Map<?, ?> values) {
-                                                                for (var entry :
-                                                                        values.entrySet()) {
-                                                                    token.check();
-                                                                    insert(
-                                                                            sql,
-                                                                            dataset.name(),
-                                                                            collection.getKey(),
-                                                                            entry.getKey()
-                                                                                    .toString(),
-                                                                            entry.getValue());
-                                                                    if (++indexed > 1_000_000) {
-                                                                        throw new IOException(
-                                                                                "Too many indexed EG Link records");
-                                                                    }
-                                                                }
-                                                            } else if (collection.getValue()
-                                                                    instanceof List<?> values) {
-                                                                for (int i = 0;
-                                                                        i < values.size();
-                                                                        i++) {
-                                                                    token.check();
-                                                                    insert(
-                                                                            sql,
-                                                                            dataset.name(),
-                                                                            collection.getKey(),
-                                                                            Integer.toString(i),
-                                                                            values.get(i));
-                                                                    if (++indexed > 1_000_000) {
-                                                                        throw new IOException(
-                                                                                "Too many indexed EG Link records");
-                                                                    }
-                                                                }
-                                                            } else {
-                                                                insert(
-                                                                        sql,
-                                                                        dataset.name(),
-                                                                        collection.getKey(),
-                                                                        "value",
-                                                                        collection.getValue());
-                                                                indexed++;
-                                                            }
-                                                        }
-                                                    } catch (IOException failure) {
-                                                        throw new java.io.UncheckedIOException(
-                                                                failure);
-                                                    }
-                                                    done++;
+        return call(token, () -> prepareNow(id, progress, token));
+    }
+
+    private Snapshot prepareNow(String id, Consumer<Progress> progress, Cancellation token)
+            throws Exception {
+        var manifest = manifest(id);
+        verify(manifest, token);
+        Build build = build(manifest);
+        Path destination = database(id),
+                temporary =
+                        root.resolve("derived")
+                                .resolve(".prepare-" + UUID.randomUUID() + ".sqlite");
+        try {
+            long count;
+            try (var connection = new DerivedSqliteConnection(temporary)) {
+                count =
+                        connection.run(
+                                com.vibeminer.store.Cancellation.NONE,
+                                true,
+                                sql -> {
+                                    sql.execute("PRAGMA application_id=" + APPLICATION_ID);
+                                    sql.execute("PRAGMA user_version=1");
+                                    sql.execute(
+                                            "CREATE TABLE eg_metadata(k TEXT PRIMARY KEY,v TEXT NOT NULL) WITHOUT ROWID");
+                                    sql.execute("INSERT INTO eg_metadata VALUES('source',?)", id);
+                                    sql.execute(
+                                            "INSERT INTO eg_metadata VALUES('source_manifest',?)",
+                                            hashUnchecked(manifest));
+                                    sql.execute(
+                                            "CREATE TABLE eg_records(dataset TEXT NOT NULL,collection TEXT NOT NULL,id TEXT NOT NULL,name TEXT NOT NULL,json TEXT NOT NULL,PRIMARY KEY(dataset,collection,id)) WITHOUT ROWID");
+                                    long indexed = 0;
+                                    int done = 0;
+                                    for (Dataset dataset : build.datasets()) {
+                                        token.check();
+                                        progress.accept(
+                                                new Progress(
+                                                        "Indexing " + dataset.name(),
+                                                        done,
+                                                        build.datasets().size()));
+                                        try {
+                                            byte[] bytes =
+                                                    read(
+                                                            source(id)
+                                                                    .resolve(
+                                                                            dataset.name()
+                                                                                    + ".json"),
+                                                            MAX_FILE_BYTES);
+                                            var object = validateDataset(bytes, build, dataset);
+                                            for (var collection : object.entrySet()) {
+                                                if (collection.getKey().equals("meta")) {
+                                                    continue;
                                                 }
-                                                sql.execute(
-                                                        "CREATE INDEX eg_names ON eg_records(dataset,collection,name COLLATE NOCASE,id)");
-                                                return indexed;
-                                            });
-                            connection.run(
-                                    com.vibeminer.store.Cancellation.NONE,
-                                    false,
-                                    sql -> {
-                                        sql.query("PRAGMA wal_checkpoint(TRUNCATE)");
-                                        sql.execute("PRAGMA journal_mode=DELETE");
-                                        return null;
-                                    });
-                        }
-                        token.check();
-                        Files.move(
-                                temporary,
-                                destination,
-                                StandardCopyOption.ATOMIC_MOVE,
-                                StandardCopyOption.REPLACE_EXISTING);
-                        progress.accept(new Progress("Prepared locally", count, count));
-                        return snapshot(manifest, count, Files.size(destination), null);
-                    } finally {
-                        Files.deleteIfExists(temporary);
-                        Files.deleteIfExists(Path.of(temporary + "-wal"));
-                        Files.deleteIfExists(Path.of(temporary + "-shm"));
-                    }
-                });
+                                                if (collection.getKey().length() > 128) {
+                                                    throw new IOException(
+                                                            "Collection name exceeds bound");
+                                                }
+                                                if (collection.getValue()
+                                                        instanceof Map<?, ?> values) {
+                                                    for (var entry : values.entrySet()) {
+                                                        token.check();
+                                                        insert(
+                                                                sql,
+                                                                dataset.name(),
+                                                                collection.getKey(),
+                                                                entry.getKey().toString(),
+                                                                entry.getValue());
+                                                        if (++indexed > 1_000_000) {
+                                                            throw new IOException(
+                                                                    "Too many indexed EG Link records");
+                                                        }
+                                                    }
+                                                } else if (collection.getValue()
+                                                        instanceof List<?> values) {
+                                                    for (int i = 0; i < values.size(); i++) {
+                                                        token.check();
+                                                        insert(
+                                                                sql,
+                                                                dataset.name(),
+                                                                collection.getKey(),
+                                                                Integer.toString(i),
+                                                                values.get(i));
+                                                        if (++indexed > 1_000_000) {
+                                                            throw new IOException(
+                                                                    "Too many indexed EG Link records");
+                                                        }
+                                                    }
+                                                } else {
+                                                    insert(
+                                                            sql,
+                                                            dataset.name(),
+                                                            collection.getKey(),
+                                                            "value",
+                                                            collection.getValue());
+                                                    indexed++;
+                                                }
+                                            }
+                                        } catch (IOException failure) {
+                                            throw new java.io.UncheckedIOException(failure);
+                                        }
+                                        done++;
+                                    }
+                                    sql.execute(
+                                            "CREATE INDEX eg_names ON eg_records(dataset,collection,name COLLATE NOCASE,id)");
+                                    return indexed;
+                                });
+                connection.run(
+                        com.vibeminer.store.Cancellation.NONE,
+                        false,
+                        sql -> {
+                            sql.query("PRAGMA wal_checkpoint(TRUNCATE)");
+                            sql.execute("PRAGMA journal_mode=DELETE");
+                            return null;
+                        });
+            }
+            token.check();
+            Files.move(
+                    temporary,
+                    destination,
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING);
+            progress.accept(new Progress("Prepared locally", count, count));
+            return snapshot(manifest, count, Files.size(destination), null);
+        } finally {
+            Files.deleteIfExists(temporary);
+            Files.deleteIfExists(Path.of(temporary + "-wal"));
+            Files.deleteIfExists(Path.of(temporary + "-shm"));
+        }
     }
 
     private static void insert(

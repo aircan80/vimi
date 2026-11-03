@@ -30,3 +30,12 @@ Queries validate database format and source-manifest identity.
 Original datasets are CC BY 4.0, credited to Efficient Games. Game text remains
 Blizzard content. This module's code uses the repository's project license.
 See [source workflow and coverage](../docs/eg-link.md).
+
+`sync(progress, token)` is the reusable refresh operation: it checks GitHub and
+updates the newest advertised build per product plus each distinct installed
+product/build still advertised. It does not acquire all historical builds.
+The typed `Sync` result reports downloaded/prepared/reused counts and per-build
+issues; failures preserve earlier snapshots and do not prevent another target
+build completing. Identical commits use one branch-head request and reuse local
+index/data/prepared artifacts. A changed commit downloads the selected datasets
+again because upstream record counts/dates are not content hashes.

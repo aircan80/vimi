@@ -72,6 +72,18 @@ public final class EgLinkTypes {
             Long databaseBytes,
             String problem) {}
 
+    public record Sync(
+            List<Snapshot> snapshots,
+            int downloaded,
+            int prepared,
+            int reused,
+            List<String> issues) {
+        public Sync {
+            snapshots = List.copyOf(snapshots);
+            issues = List.copyOf(issues);
+        }
+    }
+
     public record Progress(String message, long done, long total) {}
 
     /** JSON is source-preserving content; a record ID is only meaningful within its collection. */

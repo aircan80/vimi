@@ -26,6 +26,7 @@ final class RepositoryTest {
     static final class Source implements EgLinkClient {
         final Map<String, byte[]> files = new HashMap<>();
         int requests;
+        String revision = REVISION;
 
         Source() throws Exception {
             files.put(
@@ -91,7 +92,7 @@ final class RepositoryTest {
                         new NetworkTypes.EgLinkReply(
                                 SourceUrls.EG_LINK_HEAD,
                                 Instant.EPOCH,
-                                EgJson.bytes(Map.of("object", Map.of("sha", REVISION)))));
+                                EgJson.bytes(Map.of("object", Map.of("sha", revision)))));
             } catch (Exception failure) {
                 return CompletableFuture.failedFuture(failure);
             }
@@ -188,6 +189,7 @@ final class RepositoryTest {
         var source = new Source();
         try (var repository = new EgLinkRepository(folder, source)) {
             var catalog = repository.check(Cancellation.NONE).join();
+            source.revision = "b".repeat(40);
             source.files.put(
                     "data/index.json", "bad".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
             assertThrows(
@@ -266,6 +268,75 @@ final class RepositoryTest {
                     CompletionException.class, () -> repository.check(Cancellation.NONE).join());
             org.junit.jupiter.api.Assertions.assertArrayEquals(
                     future, Files.readAllBytes(folder.resolve("catalog.json")));
+        }
+    }
+
+    @Test
+    void syncUpdatesLatestAndInstalledBuildsAndReusesUnchangedPreparedData() throws Exception {
+        var source = new Source();
+        String old = "1.60.1.70000", middle = "1.60.1.70500";
+        var spec = Map.of("records", 2, "sources", 1, "lastCollectedOn", "2026-11-01");
+        source.files.put(
+                "data/index.json",
+                EgJson.bytes(
+                        Map.of(
+                                "license",
+                                EgLinkTypes.LICENSE,
+                                "attribution",
+                                EgLinkTypes.ATTRIBUTION,
+                                "products",
+                                Map.of(
+                                        "wowf",
+                                        Map.of(
+                                                old, Map.of("creature_details.enUS", spec),
+                                                middle, Map.of("creature_details.enUS", spec),
+                                                VERSION, Map.of("creature_details.enUS", spec))))));
+        byte[] current = source.files.get("data/wowf/" + VERSION + "/creature_details.enUS.json");
+        for (String version : java.util.List.of(old, middle)) {
+            var dataset = EgJson.object(EgJson.parse(current, 1 << 20));
+            EgJson.object(dataset.get("meta")).put("clientBuild", version);
+            source.files.put(
+                    "data/wowf/" + version + "/creature_details.enUS.json", EgJson.bytes(dataset));
+        }
+        try (var repository = new EgLinkRepository(folder, source)) {
+            var catalog = repository.check(Cancellation.NONE).join();
+            var oldBuild =
+                    catalog.builds().stream()
+                            .filter(build -> build.version().equals(old))
+                            .findFirst()
+                            .orElseThrow();
+            repository.download(oldBuild, progress -> {}, Cancellation.NONE).join();
+            var synced = repository.sync(progress -> {}, Cancellation.NONE).join();
+            assertEquals(1, synced.downloaded());
+            assertEquals(2, synced.prepared());
+            assertEquals(0, synced.reused());
+            assertEquals(2, synced.snapshots().size());
+            assertTrue(
+                    synced.snapshots().stream()
+                            .noneMatch(value -> value.build().version().equals(middle)));
+            int requests = source.requests;
+            var unchanged = repository.sync(progress -> {}, Cancellation.NONE).join();
+            assertEquals(0, unchanged.downloaded());
+            assertEquals(0, unchanged.prepared());
+            assertEquals(2, unchanged.reused());
+            assertEquals(
+                    requests + 1, source.requests, "Unchanged commit makes one head request only");
+            source.revision = "b".repeat(40);
+            var changed = repository.sync(progress -> {}, Cancellation.NONE).join();
+            assertEquals(2, changed.downloaded());
+            assertEquals(2, changed.prepared());
+            assertEquals(4, changed.snapshots().size(), "Earlier exact revisions remain available");
+            source.revision = "c".repeat(40);
+            source.files.put(
+                    "data/wowf/" + old + "/creature_details.enUS.json", new byte[] {'{', '}'});
+            var partial = repository.sync(progress -> {}, Cancellation.NONE).join();
+            assertEquals(1, partial.downloaded());
+            assertEquals(1, partial.prepared());
+            assertEquals(1, partial.issues().size());
+            assertEquals(
+                    5,
+                    partial.snapshots().size(),
+                    "A failed build does not discard earlier snapshots or block another build");
         }
     }
 }
