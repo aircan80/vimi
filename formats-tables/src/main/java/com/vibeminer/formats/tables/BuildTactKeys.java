@@ -26,7 +26,11 @@ public final class BuildTactKeys {
         NOT_NEEDED,
         MISSING_COLUMNS,
         STALE,
-        TOO_MANY_ROWS
+        TOO_MANY_ROWS,
+        NOT_PREPARED,
+        UNSUPPORTED,
+        SOURCE_INVALID,
+        RESOURCE_LIMIT
     }
 
     public record Table(TableTypes.Entry table, Outcome outcome) {}
@@ -128,7 +132,7 @@ public final class BuildTactKeys {
         return String.format(java.util.Locale.ROOT, "%016X", value);
     }
 
-    private record Read(
+    record Read(
             Table table, Map<Long, byte[]> rows, java.util.Set<Long> malformedIds, int malformed) {}
 
     public static CompletableFuture<KeySet> load(
@@ -151,82 +155,81 @@ public final class BuildTactKeys {
                     var keyRead = read(tables, keySchema, "Key", 16, needed, priority, token);
                     var lookupRead =
                             read(tables, lookupSchema, "TACTID", 8, needed, priority, token);
-                    int malformed = keyRead.malformed() + lookupRead.malformed();
-                    if (keyRead.table().outcome() != Outcome.READ
-                            || lookupRead.table().outcome() != Outcome.READ) {
-                        return new KeySet(
-                                Map.of(),
-                                keyRead.table(),
-                                lookupRead.table(),
-                                0,
-                                0,
-                                0,
-                                List.of(),
-                                malformed);
-                    }
-                    var byId = new HashMap<Long, byte[]>();
-                    int skipped = 0;
-                    for (var row : keyRead.rows().entrySet()) {
-                        boolean zero = true;
-                        for (byte b : row.getValue()) {
-                            zero &= b == 0;
-                        }
-                        if (zero) {
-                            skipped++;
-                        } else {
-                            byId.put(row.getKey(), row.getValue());
-                        }
-                    }
-                    int unmatched = 0, unknown = 0;
-                    var joined = new HashMap<Long, byte[]>();
-                    var conflicts = new HashSet<Long>();
-                    for (var row : lookupRead.rows().entrySet()) {
-                        byte[] key = byId.remove(row.getKey());
-                        if (key == null) {
-                            if (!keyRead.rows().containsKey(row.getKey())
-                                    && !keyRead.malformedIds().contains(row.getKey())) {
-                                if (keyRead.table().table().state() == TableTypes.State.PARTIAL) {
-                                    unknown++;
-                                } else {
-                                    unmatched++;
-                                }
-                            }
-                            continue;
-                        }
-                        long name =
-                                ByteBuffer.wrap(row.getValue())
-                                        .order(ByteOrder.LITTLE_ENDIAN)
-                                        .getLong();
-                        if (conflicts.contains(name)) {
-                            continue;
-                        }
-                        byte[] previous = joined.putIfAbsent(name, key);
-                        if (previous != null && !Arrays.equals(previous, key)) {
-                            joined.remove(name);
-                            conflicts.add(name);
-                        }
-                    }
-                    for (long id : byId.keySet()) {
-                        if (!lookupRead.rows().containsKey(id)
-                                && !lookupRead.malformedIds().contains(id)) {
-                            if (lookupRead.table().table().state() == TableTypes.State.PARTIAL) {
-                                unknown++;
-                            } else {
-                                unmatched++;
-                            }
-                        }
-                    }
-                    return new KeySet(
-                            joined,
-                            keyRead.table(),
-                            lookupRead.table(),
-                            skipped,
-                            unmatched,
-                            unknown,
-                            conflicts.stream().map(BuildTactKeys::nameOf).sorted().toList(),
-                            malformed);
+                    return join(keyRead, lookupRead);
                 },
                 command -> Thread.ofVirtual().start(command));
+    }
+
+    /** Prepared local graphs only; unavailable build keys do not prevent use of community keys. */
+    public static CompletableFuture<KeySet> loadPreparedLocal(
+            BuildTables tables, Cancellation token) {
+        return PreparedTactKeys.load(tables, token);
+    }
+
+    static KeySet join(Read keyRead, Read lookupRead) {
+        int malformed = keyRead.malformed() + lookupRead.malformed();
+        if (keyRead.table().outcome() != Outcome.READ
+                || lookupRead.table().outcome() != Outcome.READ) {
+            return new KeySet(
+                    Map.of(), keyRead.table(), lookupRead.table(), 0, 0, 0, List.of(), malformed);
+        }
+        var byId = new HashMap<Long, byte[]>();
+        int skipped = 0;
+        for (var row : keyRead.rows().entrySet()) {
+            boolean zero = true;
+            for (byte b : row.getValue()) {
+                zero &= b == 0;
+            }
+            if (zero) {
+                skipped++;
+            } else {
+                byId.put(row.getKey(), row.getValue());
+            }
+        }
+        int unmatched = 0, unknown = 0;
+        var joined = new HashMap<Long, byte[]>();
+        var conflicts = new HashSet<Long>();
+        for (var row : lookupRead.rows().entrySet()) {
+            byte[] key = byId.remove(row.getKey());
+            if (key == null) {
+                if (!keyRead.rows().containsKey(row.getKey())
+                        && !keyRead.malformedIds().contains(row.getKey())) {
+                    if (keyRead.table().table().state() == TableTypes.State.PARTIAL) {
+                        unknown++;
+                    } else {
+                        unmatched++;
+                    }
+                }
+                continue;
+            }
+            long name = ByteBuffer.wrap(row.getValue()).order(ByteOrder.LITTLE_ENDIAN).getLong();
+            if (conflicts.contains(name)) {
+                continue;
+            }
+            byte[] previous = joined.putIfAbsent(name, key);
+            if (previous != null && !Arrays.equals(previous, key)) {
+                joined.remove(name);
+                conflicts.add(name);
+            }
+        }
+        for (long id : byId.keySet()) {
+            if (!lookupRead.rows().containsKey(id) && !lookupRead.malformedIds().contains(id)) {
+                if (lookupRead.table().table().state() == TableTypes.State.PARTIAL) {
+                    unknown++;
+                } else {
+                    unmatched++;
+                }
+            }
+        }
+        return new KeySet(
+                joined,
+                keyRead.table(),
+                lookupRead.table(),
+                skipped,
+                unmatched,
+                unknown,
+                conflicts.stream().map(BuildTactKeys::nameOf).sorted().toList(),
+                malformed);
     }
 
     private static TableTypes.SchemaResult schema(
@@ -355,7 +358,7 @@ public final class BuildTactKeys {
         return empty(entry, Outcome.STALE);
     }
 
-    private static byte[] bytes(List<String> values, int[] indexes, boolean signed) {
+    static byte[] bytes(List<String> values, int[] indexes, boolean signed) {
         byte[] bytes = new byte[indexes.length];
         for (int i = 0; i < indexes.length; i++) {
             if (indexes[i] >= values.size()) {

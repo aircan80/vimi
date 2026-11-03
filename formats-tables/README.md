@@ -211,3 +211,34 @@ persistence, resume or report-publication protocol is supplied by this capabilit
 Focused offline validation is in `CapturedRowsTest`; the normal
 `./gradlew :formats-tables:check` also verifies existing repair/read behavior and
 Java integration tests.
+
+
+## Prepared-local build key bootstrap
+
+`BuildTactKeys.loadPreparedLocal(tables, token)` returns the same immutable KeySet
+as ordinary `load`, using only `capturePreparedLocal` for the exact TactKey and
+TactKeyLookup FileDataIDs. It verifies captured build/locale/table identities,
+actual integer byte columns, page identity/ordinals/counts and short continuations.
+There is no by-name fallback, check/schema/normal page call, table decode, repair or
+acquisition. The ordinary loading path is unchanged; both paths share its byte
+validation and ID-join/zero/duplicate/conflict rules.
+
+Missing/unsupported/damaged local bootstrap produces typed table outcomes and an
+empty build-key set. The application can retain its captured community key source;
+missing bootstrap does not block an unencrypted comparison table. Readable PARTIAL
+rows remain useful, and unmatched joins retain the existing unknown accounting.
+Returned key bytes are owned copies, and diagnostics expose counts/outcomes and
+fingerprints rather than key material. Tests use authored byte patterns only.
+
+Source-specific bootstrap limits are65,536rows per table,32MiB cumulative scanned
+cell/issue estimates and8MiB conservative retained source-map admissions across both
+tables. Join/output copies remain bounded by these input/row limits; the8MiB figure
+is not an exact whole-bootstrap heap cap. Native capture currently reads one raw
+row per page. Bootstrap runs before comparison capture/sort; its parser/decompressor
+allocations and these source-specific caps must not be presented as the comparison
+core's32MiB working-buffer guarantee. Quota failure produces RESOURCE_LIMIT and
+no partially conflict-checked usable keys.
+
+Both captured handles close/drain on cancellation, failure or success. Canceling
+the returned delivery future requests worker cancellation without detaching private
+cleanup. The borrowed BuildTables and shared library remain application-owned.
