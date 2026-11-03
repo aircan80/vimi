@@ -221,6 +221,21 @@ final class TalentsServiceTest {
     }
 
     @Test
+    void malformedOptionalTextKeepsTheValidatedTrees() {
+        var data = new ArrayList<>(fixture(nodes()));
+        data.set(3, table(4, "SpellName", List.of(text("Name_lang")), List.of(row(1000))));
+        data.set(4, table(5, "Spell", List.of(text("Description_lang")), List.of(row(1000))));
+        try (var tables = handle(data);
+                var service = new TalentsService(tables, "1.60.1.70000")) {
+            var result = service.trees(1, Cancellation.NONE).join();
+            assertEquals(TalentTypes.State.READY, result.state());
+            assertEquals("Spell 1000", result.trees().getFirst().talents().getFirst().name());
+            assertEquals(null, result.trees().getFirst().talents().getFirst().description());
+            assertFalse(result.issues().isEmpty());
+        }
+    }
+
+    @Test
     void rejectsRetailAndMistsModelsEvenWhenLegacyTablesExist() {
         try (var tables = handle(fixture(nodes()));
                 var service = new TalentsService(tables, "5.5.4.70000")) {

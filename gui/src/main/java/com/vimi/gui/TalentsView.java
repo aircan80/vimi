@@ -37,6 +37,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
     private final java.util.function.Supplier<com.vibeminer.concepts.talents.BuildTalents>
             handleSupplier;
     private final java.util.function.LongSupplier workspaceRevision;
+    private com.vibeminer.concepts.talents.BuildTalents boundHandle;
     private ScrollPane scroll;
 
     private record PendingIcon(
@@ -165,6 +166,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
             return;
         }
         loaded = true;
+        boundHandle = handle;
         revision = workspaceRevision.getAsLong();
         long request = ++generation;
         status.setText("Loading class and talent table facts…");
@@ -207,10 +209,18 @@ final class TalentsView extends BorderPane implements AutoCloseable {
     }
 
     private boolean stale(long request) {
-        return closed || request != generation || workspaceRevision.getAsLong() != revision;
+        return closed
+                || request != generation
+                || workspaceRevision.getAsLong() != revision
+                || handleSupplier.get() != boundHandle;
     }
 
     private void loadClass(TalentTypes.PlayerClass player) {
+        if (stale(generation)) {
+            invalidate();
+            ensureLoaded();
+            return;
+        }
         selectedClass = player.id();
         classTitle.setText(player.name() + " · Talents");
         token.cancel();
@@ -222,7 +232,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
         selection.setManaged(false);
         icons.retain(java.util.Set.of());
         status.setText("Loading " + player.name() + " talent trees…");
-        var handle = handleSupplier.get();
+        var handle = boundHandle;
         if (handle == null) return;
         handle.trees(player.id(), token)
                 .whenComplete(
@@ -483,12 +493,17 @@ final class TalentsView extends BorderPane implements AutoCloseable {
     }
 
     private void loadImage(long id, StackPane target, double size, long request, boolean guarded) {
+        var imageHandle = boundHandle;
+        long imageRevision = revision;
         icons.request(id)
                 .whenComplete(
                         (result, error) ->
                                 Platform.runLater(
                                         () -> {
                                             if (closed
+                                                    || handleSupplier.get() != imageHandle
+                                                    || workspaceRevision.getAsLong()
+                                                            != imageRevision
                                                     || (guarded && stale(request))
                                                     || error != null
                                                     || result == null

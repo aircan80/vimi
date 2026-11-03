@@ -39,7 +39,7 @@ public final class TalentsUiTest {
                                                         List.of(player),
                                                         null,
                                                         "Authored layout fixture · not a real"
-                                                            + " build"));
+                                                                + " build"));
                                     }
 
                                     public CompletableFuture<TalentTypes.ClassTrees> trees(
@@ -104,6 +104,33 @@ public final class TalentsUiTest {
                                         return CompletableFuture.completedFuture(null);
                                     }
                                 };
+                        // Publish another workspace between reading the handle and its revision.
+                        // The first catalog reply must not populate the newer workspace's menu.
+                        BuildTalents retired =
+                                new BuildTalents() {
+                                    public CompletableFuture<TalentTypes.Catalog> catalog(
+                                            Cancellation token) {
+                                        return fixture.catalog(token);
+                                    }
+
+                                    public CompletableFuture<TalentTypes.ClassTrees> trees(
+                                            long id, Cancellation token) {
+                                        return fixture.trees(id, token);
+                                    }
+
+                                    public CompletableFuture<Void> closeAsync() {
+                                        return CompletableFuture.completedFuture(null);
+                                    }
+                                };
+                        var swapped = new java.util.concurrent.atomic.AtomicBoolean();
+                        var staleView =
+                                new TalentsView(
+                                        () -> swapped.getAndSet(true) ? fixture : retired,
+                                        () -> 2,
+                                        (id, token) ->
+                                                CompletableFuture.failedFuture(
+                                                        new AssertionError("No media")));
+                        staleView.ensureLoaded();
                         var view =
                                 new TalentsView(
                                         () -> fixture,
@@ -112,12 +139,12 @@ public final class TalentsUiTest {
                                                 CompletableFuture.failedFuture(
                                                         new AssertionError(
                                                                 "Fixture media must not be"
-                                                                    + " requested")));
+                                                                        + " requested")));
                         var page = new BorderPane(view);
                         var heading =
                                 new Label(
                                         "AUTHORED TALENT LAYOUT FIXTURE · no character or real"
-                                            + " build data");
+                                                + " build data");
                         heading.setStyle("-fx-padding: 12; -fx-text-fill: #88611f;");
                         page.setTop(heading);
                         var scene = new Scene(page, 1320, 850);
@@ -133,6 +160,16 @@ public final class TalentsUiTest {
                         pause.setOnFinished(
                                 event -> {
                                     try {
+                                        var staleMenu =
+                                                (javafx.scene.control.ListView<?>)
+                                                        ((javafx.scene.layout.VBox)
+                                                                        staleView.getLeft())
+                                                                .getChildren()
+                                                                .getLast();
+                                        if (!staleMenu.getItems().isEmpty())
+                                            throw new AssertionError(
+                                                    "Retired catalog populated the new workspace");
+                                        staleView.close();
                                         var image = scene.snapshot(null);
                                         var out =
                                                 new BufferedImage(

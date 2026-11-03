@@ -224,20 +224,18 @@ public final class TalentsService implements BuildTalents {
                                     }
                                 }
                                 long spell = spells.getFirst();
-                                var spellRow = optionalRow(spellNames, spell, token);
                                 String name =
-                                        spellRow == null
-                                                ? "Spell " + spell
-                                                : spellNames.text(spellRow, "Name_lang");
-                                if (name.isEmpty()) {
+                                        optionalText(spellNames, spell, "Name_lang", token, issues);
+                                if (name == null || name.isEmpty()) {
                                     name = "Spell " + spell;
                                 }
-                                var descriptionRow = optionalRow(spellDescriptions, spell, token);
                                 String description =
-                                        descriptionRow == null
-                                                ? null
-                                                : spellDescriptions.text(
-                                                        descriptionRow, "Description_lang");
+                                        optionalText(
+                                                spellDescriptions,
+                                                spell,
+                                                "Description_lang",
+                                                token,
+                                                issues);
                                 nodes.add(
                                         new TalentTypes.Talent(
                                                 row.id(),
@@ -304,24 +302,22 @@ public final class TalentsService implements BuildTalents {
 
     private List<TalentTypes.PlayerClass> playerClasses() {
         var result = new ArrayList<TalentTypes.PlayerClass>();
+        var populatedTabs = new HashSet<Long>();
+        for (var talent : talents.rows) {
+            populatedTabs.add(talents.number(talent, "TabID"));
+        }
+        long playerMask = 0;
+        for (var tab : tabs.rows) {
+            if (populatedTabs.contains(tab.id())) {
+                playerMask |= mask(tabs.number(tab, "ClassMask"));
+            }
+        }
         for (var row : classes.rows) {
             if (row.id() < 1 || row.id() > MAX_CLASSES) {
                 continue;
             }
             long bit = 1L << (row.id() - 1);
-            boolean usable =
-                    tabs.rows.stream()
-                            .anyMatch(
-                                    tab ->
-                                            (mask(tabs.number(tab, "ClassMask")) & bit) != 0
-                                                    && talents.rows.stream()
-                                                            .anyMatch(
-                                                                    t ->
-                                                                            talents.number(
-                                                                                            t,
-                                                                                            "TabID")
-                                                                                    == tab.id()));
-            if (!usable) {
+            if ((playerMask & bit) == 0) {
                 continue;
             }
             String name = classes.text(row, "Name_lang");
@@ -404,6 +400,20 @@ public final class TalentsService implements BuildTalents {
             checkedIcons.addAll(requested);
         } catch (Projection failure) {
             issues.add("Spell icon references are unavailable: " + failure.getMessage());
+        }
+    }
+
+    private String optionalText(
+            Data data, long id, String field, Cancellation token, List<String> issues) {
+        try {
+            var row = optionalRow(data, id, token);
+            return row == null ? null : data.text(row, field);
+        } catch (Projection failure) {
+            String issue = "Some optional spell text is unavailable.";
+            if (!issues.contains(issue)) {
+                issues.add(issue);
+            }
+            return null;
         }
     }
 
