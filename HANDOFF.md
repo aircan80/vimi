@@ -29,10 +29,12 @@ WoW data miner, UI expert and BA design, followed by independent peer review and
 approval before coding. Distinguish true changes from incomplete/encrypted/newly
 readable data.
 
-Questions/follow-ups for the user's return: Windows MSI installation and native
-Windows/macOS filesystem acceptance #24–#26 still require hands-on machines; hosted
-packaged-GUI checks are passing but do not close those native-machine stories.
-Initial installers are unsigned; signing/notarization is separate future scope.
+Questions/follow-ups for the user's return: Windows MSI installation and deferred
+native Windows filesystem acceptance #24–#26 remain. Native macOS development
+checks passed on November1 (evidence below); pristine installer installation still
+needs hands-on validation. Hosted packaged-GUI checks do not close the remaining
+native-machine stories. Initial installers are unsigned; signing/notarization is
+separate future scope.
 
 ## NPCs, Quests and upcoming browser areas
 
