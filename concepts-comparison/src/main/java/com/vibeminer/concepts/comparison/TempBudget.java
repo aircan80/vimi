@@ -154,6 +154,22 @@ public final class TempBudget implements AutoCloseable {
             }
         }
 
+        /**
+         * Validate a live borrowed memory allowance without changing ownership/accounting. The
+         * borrower must not release, shrink or transfer it; the caller controls its full lifetime.
+         */
+        public void requireMemory(TempBudget expectedBudget, long plannedBytes) {
+            synchronized (TempBudget.this) {
+                Objects.requireNonNull(expectedBudget);
+                checkAmount(plannedBytes);
+                requireOwned();
+                if (expectedBudget != TempBudget.this || !inMemory || bytes < plannedBytes) {
+                    throw new IllegalArgumentException(
+                            "A live same-budget memory allowance of sufficient size is required");
+                }
+            }
+        }
+
         public void grow(long additionalBytes, Cancellation token) throws Limit {
             synchronized (TempBudget.this) {
                 checkAmount(additionalBytes);

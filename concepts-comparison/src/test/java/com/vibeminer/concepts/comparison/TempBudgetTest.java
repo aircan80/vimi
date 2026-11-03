@@ -14,6 +14,24 @@ import org.junit.jupiter.api.Test;
 @SuppressWarnings("try") // Tests release old stages before final idempotent cleanup.
 class TempBudgetTest {
     @Test
+    void borrowedPageAllowanceMustBeLiveMemoryFromTheSameBudgetAndLargeEnough() throws Exception {
+        try (var budget = new TempBudget(32, 100);
+                var other = new TempBudget(32, 100);
+                var memory = budget.reserveMemory("page", 14, new Cancellation());
+                var disk = budget.reserveDisk("file", 14, new Cancellation())) {
+            memory.requireMemory(budget, 14);
+            assertEquals(14, memory.size());
+            assertThrows(IllegalArgumentException.class, () -> memory.requireMemory(other, 14));
+            assertThrows(IllegalArgumentException.class, () -> disk.requireMemory(budget, 14));
+            assertThrows(IllegalArgumentException.class, () -> memory.requireMemory(budget, 15));
+            assertThrows(IllegalArgumentException.class, () -> memory.requireMemory(budget, -1));
+            memory.close();
+            assertThrows(IllegalStateException.class, () -> memory.requireMemory(budget, 1));
+            assertEquals(0, budget.snapshot().memory());
+        }
+    }
+
+    @Test
     void sortingInputsReplacementAndResultsShareOneDiskQuota() throws Exception {
         try (var budget = new TempBudget(32, 100);
                 var a = budget.reserveDisk("input-a", 30, new Cancellation());

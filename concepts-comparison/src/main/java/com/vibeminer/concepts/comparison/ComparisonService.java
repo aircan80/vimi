@@ -462,7 +462,9 @@ public final class ComparisonService implements AutoCloseable {
             if (!exhausted && pending == null) {
                 pendingMemory = budget.reserveMemory(owner, INPUT_PAGE_MEMORY, lifetime);
                 try {
-                    pending = Objects.requireNonNull(input.read(cursor, INPUT_PAGE, lifetime));
+                    pending =
+                            Objects.requireNonNull(
+                                    input.read(cursor, INPUT_PAGE, lifetime, pendingMemory));
                 } catch (RuntimeException | Error failure) {
                     pendingMemory.close();
                     pendingMemory = null;
