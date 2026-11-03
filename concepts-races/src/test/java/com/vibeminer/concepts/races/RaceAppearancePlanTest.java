@@ -418,4 +418,71 @@ final class RaceAppearancePlanTest {
             }
         }
     }
+
+    @Test
+    void stableSampleUsesRecordedIdsWithoutAdmittingRawUiOrderSemantics() {
+        var seed = new ArrayList<>(fixture(false, 9));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationOption",
+                        "DCC2A86E",
+                        "ChrModelID,Requirement",
+                        row(10, "1", "0")));
+        var choices =
+                table(
+                        "ChrCustomizationChoice",
+                        "9559C358",
+                        "ChrCustomizationOptionID->ChrCustomizationOption,UiOrderIndex,ChrCustomizationReqID,ChrCustomizationVisReqID",
+                        row(1, "10", "65536", "0", "0"),
+                        row(2, "10", "0", "0", "0"));
+        var columns =
+                choices.columns().stream()
+                        .map(
+                                column ->
+                                        column.name().equals("UiOrderIndex")
+                                                ? new Db2Types.Column(
+                                                        column.name(),
+                                                        column.kind(),
+                                                        false,
+                                                        new Db2Types.Interpretation(
+                                                                "raw-physical-integer-v1",
+                                                                32,
+                                                                false,
+                                                                16,
+                                                                true,
+                                                                "Unverified provider field preserves physical integers."),
+                                                        null)
+                                                : column)
+                        .toList();
+        replace(
+                seed,
+                new MemoryTables.FakeTable(
+                        choices.entry(),
+                        columns,
+                        choices.rows(),
+                        choices.schema(),
+                        Map.of(),
+                        true));
+        var tables =
+                new MemoryTables()
+                        .add(BUILD, "enUS", seed)
+                        .forBuild(BUILD, "enUS", Cancellation.NONE)
+                        .join()
+                        .tables();
+        var service = new RacesService(tables);
+        try {
+            var selected =
+                    new RaceCustomization(new RaceMedia(service, tables, null, null))
+                            .select(1, 1, 1, Cancellation.NONE, new ArrayList<>());
+            assertEquals(java.util.Set.of(1L), selected.choices());
+            var schema =
+                    service.schema("ChrCustomizationChoice", Cancellation.NONE, new ArrayList<>());
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    RacesService.Projection.class, () -> schema.field("UiOrderIndex", true));
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
 }

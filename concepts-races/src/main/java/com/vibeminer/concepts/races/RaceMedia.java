@@ -230,7 +230,6 @@ final class RaceMedia {
                 options.field(field, true);
             }
             choices.reference("ChrCustomizationOptionID", "ChrCustomizationOption");
-            choices.field("UiOrderIndex", true);
             elements.reference("ChrCustomizationChoiceID", "ChrCustomizationChoice");
             elements.reference("ChrCustomizationGeosetID", "ChrCustomizationGeoset");
             elements.field("RelatedChrCustomizationChoiceID", true);

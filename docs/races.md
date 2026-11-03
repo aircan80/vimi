@@ -46,7 +46,7 @@ on Linux ARM systems where the installed JavaFX pipeline reports no SCENE3D supp
 Frame size, vertices, indices, surface count and raster work are capped. Cancellation
 and latest-camera replacement keep stale frames out of the UI.
 
-Sample customization uses the first recorded choice whose reviewed player/class/race
+Sample customization uses the lowest recorded choice ID whose reviewed player/class/race
 requirements are known to pass, plus related-choice gates and recorded geoset joins.
 NPC-only options are excluded. Unknown account, region, archive, visibility or
 prerequisite requirements are omitted rather than guessed. Race masks contain two
@@ -190,3 +190,8 @@ An absent prerequisite relationship is treated as no prerequisite only with comp
 requirement unknown, while unrestricted readable choices can still be selected.
 Unsupported garment metadata does not activate robe suppression. Recorded default
 geometry variants do not overwrite an already selected specific clothing variant.
+
+Sample selection does not interpret `ChrCustomizationChoice.UiOrderIndex`: current
+layout9559C358 exposes that unverified candidate16-bit field as a preserved raw
+physical32-bit column. Stable row-ID ordering avoids narrowing or granting raw
+columns semantic admission. The original raw value remains available in Tables.

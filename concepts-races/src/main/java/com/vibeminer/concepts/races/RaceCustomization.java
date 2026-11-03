@@ -86,8 +86,7 @@ final class RaceCustomization {
         options.field("ChrModelID", true);
         options.field("Requirement", true);
         choices.reference("ChrCustomizationOptionID", "ChrCustomizationOption");
-        for (String field :
-                List.of("UiOrderIndex", "ChrCustomizationReqID", "ChrCustomizationVisReqID")) {
+        for (String field : List.of("ChrCustomizationReqID", "ChrCustomizationVisReqID")) {
             choices.field(field, true);
         }
         for (String field :
@@ -135,11 +134,7 @@ final class RaceCustomization {
                                     row ->
                                             choices.number(row, "ChrCustomizationOptionID")
                                                     == option.id())
-                            .sorted(
-                                    Comparator.comparingLong(
-                                                    (Db2Types.Row row) ->
-                                                            choices.number(row, "UiOrderIndex"))
-                                            .thenComparingLong(Db2Types.Row::id))
+                            .sorted(Comparator.comparingLong(Db2Types.Row::id))
                             .toList();
             candidates.forEach(row -> all.add(row.id()));
             var match =
