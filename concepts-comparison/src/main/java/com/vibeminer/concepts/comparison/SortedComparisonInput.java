@@ -31,6 +31,7 @@ public final class SortedComparisonInput implements ComparisonInput {
     public static final long MAX_KEYS = 5_000_000;
     private static final long CODEC_BYTES = 8L << 20;
     private static final long READ_PAGE_BYTES = 4L << 20;
+    public static final long READ_ALLOWANCE_BYTES = 14L << 20;
     private static final int MAX_RUNS = 1024;
 
     /**
@@ -520,26 +521,77 @@ public final class SortedComparisonInput implements ComparisonInput {
         return descriptor;
     }
 
-    /** Core owns its planned 14 MiB page allowance; this adapter does not double-charge it. */
+    /**
+     * Standalone reads own an allowance until the private worker finishes, independently of
+     * public-future cancellation.
+     */
     @Override
     public CompletableFuture<InputPage> read(String cursor, int limit, Cancellation token) {
         if (limit < 1 || limit > PAGE_ROWS) {
             return CompletableFuture.failedFuture(
                     new IllegalArgumentException("Invalid sorted page size"));
         }
+        try {
+            var allowance =
+                    budget.reserveMemory("sort-standalone-read", READ_ALLOWANCE_BYTES, token);
+            return readPlanned(cursor, limit, token, allowance, true);
+        } catch (Throwable failure) {
+            return CompletableFuture.failedFuture(failure);
+        }
+    }
+
+    /**
+     * Borrowed allowance remains entirely caller-owned; require its same-budget live memory plan
+     * before reading.
+     */
+    @Override
+    public CompletableFuture<InputPage> read(
+            String cursor, int limit, Cancellation token, TempBudget.Reservation allowance) {
+        return readPlanned(cursor, limit, token, allowance, false);
+    }
+
+    private CompletableFuture<InputPage> readPlanned(
+            String cursor,
+            int limit,
+            Cancellation token,
+            TempBudget.Reservation allowance,
+            boolean owned) {
+        try {
+            Objects.requireNonNull(token);
+            Objects.requireNonNull(allowance).requireMemory(budget, READ_ALLOWANCE_BYTES);
+        } catch (Throwable failure) {
+            if (owned && allowance != null) {
+                allowance.close();
+            }
+            return CompletableFuture.failedFuture(failure);
+        }
+        if (limit < 1 || limit > PAGE_ROWS) {
+            if (owned) {
+                allowance.close();
+            }
+            return CompletableFuture.failedFuture(
+                    new IllegalArgumentException("Invalid sorted page size"));
+        }
         if (closing.get()) {
+            if (owned) {
+                allowance.close();
+            }
             return CompletableFuture.failedFuture(new IllegalStateException("Sorted input closed"));
         }
         var result = new CompletableFuture<InputPage>();
         try {
             synchronized (worker) {
                 if (closing.get()) {
+                    if (owned) {
+                        allowance.close();
+                    }
                     return CompletableFuture.failedFuture(
                             new IllegalStateException("Sorted input closed"));
                 }
                 worker.execute(
                         () -> {
                             try {
+                                allowance.requireMemory(budget, READ_ALLOWANCE_BYTES);
                                 check(token);
                                 var wanted = cursor == null ? 0 : Long.parseLong(cursor);
                                 if (wanted != nextOrdinal) {
@@ -574,6 +626,7 @@ public final class SortedComparisonInput implements ComparisonInput {
                                     if (!rows.isEmpty() && retained + predicted > READ_PAGE_BYTES) {
                                         break;
                                     }
+                                    allowance.requireMemory(budget, READ_ALLOWANCE_BYTES);
                                     var row = readBody(reader, pendingFrameLength);
                                     pendingFrameLength = null;
                                     var actual = retainedBytes(row);
@@ -604,10 +657,17 @@ public final class SortedComparisonInput implements ComparisonInput {
                             } catch (Throwable caught) {
                                 CompletableFuture.runAsync(
                                         () -> result.completeExceptionally(caught));
+                            } finally {
+                                if (owned) {
+                                    allowance.close();
+                                }
                             }
                         });
             }
         } catch (Throwable rejected) {
+            if (owned) {
+                allowance.close();
+            }
             result.completeExceptionally(rejected);
         }
         return result;

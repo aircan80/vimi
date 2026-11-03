@@ -512,6 +512,175 @@ final class SortedComparisonInputTest {
         }
     }
 
+    @Test
+    void borrowedReadRequiresLiveSameBudgetMemoryAndNeverChangesItsOwnership() throws Exception {
+        try (var budget = new TempBudget();
+                var otherBudget = new TempBudget()) {
+            var input =
+                    SortedComparisonInput.capture(
+                                    new Fixture(List.of(row(1, "a"))),
+                                    temporary,
+                                    budget,
+                                    Cancellation.NONE)
+                            .join();
+            try (var wrong =
+                            otherBudget.reserveMemory(
+                                    "other-page",
+                                    SortedComparisonInput.READ_ALLOWANCE_BYTES,
+                                    Cancellation.NONE);
+                    var disk =
+                            budget.reserveDisk(
+                                    "disk-is-not-memory",
+                                    SortedComparisonInput.READ_ALLOWANCE_BYTES,
+                                    Cancellation.NONE);
+                    var small =
+                            budget.reserveMemory(
+                                    "too-small",
+                                    SortedComparisonInput.READ_ALLOWANCE_BYTES - 1,
+                                    Cancellation.NONE)) {
+                var released =
+                        budget.reserveMemory(
+                                "released-page",
+                                SortedComparisonInput.READ_ALLOWANCE_BYTES,
+                                Cancellation.NONE);
+                released.close();
+                for (var invalid : List.of(wrong, disk, small, released)) {
+                    assertThrows(
+                            CompletionException.class,
+                            () -> input.read(null, 1, Cancellation.NONE, invalid).join());
+                }
+                assertEquals("other-page", wrong.owner());
+                assertEquals(SortedComparisonInput.READ_ALLOWANCE_BYTES, wrong.size());
+                assertEquals("disk-is-not-memory", disk.owner());
+                assertEquals(SortedComparisonInput.READ_ALLOWANCE_BYTES, disk.size());
+                assertEquals("too-small", small.owner());
+                assertEquals(SortedComparisonInput.READ_ALLOWANCE_BYTES - 1, small.size());
+            }
+            try (var valid =
+                    budget.reserveMemory(
+                            "caller-page",
+                            SortedComparisonInput.READ_ALLOWANCE_BYTES,
+                            Cancellation.NONE)) {
+                var page = input.read(null, 1, Cancellation.NONE, valid).join();
+                assertEquals(
+                        List.of(key(1)),
+                        page.rows().stream().map(Record::key).toList(),
+                        "Rejected allowances did not consume input");
+                assertEquals("caller-page", valid.owner());
+                assertEquals(SortedComparisonInput.READ_ALLOWANCE_BYTES, valid.size());
+                input.closeAsync().join();
+                assertEquals(
+                        SortedComparisonInput.READ_ALLOWANCE_BYTES,
+                        budget.snapshot().memory(),
+                        "Input close must not release borrowed caller allowance");
+            }
+            assertDrained(budget);
+        }
+    }
+
+    @Test
+    void allowanceIsRevalidatedWhenQueuedWorkerActuallyStarts() throws Exception {
+        try (var budget = new TempBudget()) {
+            var input =
+                    SortedComparisonInput.capture(
+                                    new Fixture(List.of(row(1, "a"))),
+                                    temporary,
+                                    budget,
+                                    Cancellation.NONE)
+                            .join();
+            var release = new CompletableFuture<Void>();
+            var entered = new CompletableFuture<Void>();
+            var worker = worker(input);
+            worker.execute(
+                    () -> {
+                        entered.complete(null);
+                        release.join();
+                    });
+            entered.get(3, java.util.concurrent.TimeUnit.SECONDS);
+            var allowance =
+                    budget.reserveMemory(
+                            "borrowed-queued",
+                            SortedComparisonInput.READ_ALLOWANCE_BYTES,
+                            Cancellation.NONE);
+            var read = input.read(null, 1, Cancellation.NONE, allowance);
+            allowance.close();
+            release.complete(null);
+            var failure = assertThrows(CompletionException.class, read::join);
+            assertInstanceOf(IllegalStateException.class, failure.getCause());
+            input.closeAsync().join();
+            assertDrained(budget);
+        }
+    }
+
+    @Test
+    void standaloneReadCancellationDoesNotReleasePrivateAllowanceBeforeWorkerCompletion()
+            throws Exception {
+        try (var budget = new TempBudget()) {
+            var input =
+                    SortedComparisonInput.capture(
+                                    new Fixture(List.of(row(1, "a"))),
+                                    temporary,
+                                    budget,
+                                    Cancellation.NONE)
+                            .join();
+            var release = new CompletableFuture<Void>();
+            var entered = new CompletableFuture<Void>();
+            var worker = worker(input);
+            worker.execute(
+                    () -> {
+                        entered.complete(null);
+                        release.join();
+                    });
+            entered.get(3, java.util.concurrent.TimeUnit.SECONDS);
+            var read = input.read(null, 1, Cancellation.NONE);
+            assertEquals(SortedComparisonInput.READ_ALLOWANCE_BYTES, budget.snapshot().memory());
+            assertTrue(read.cancel(false));
+            assertEquals(
+                    SortedComparisonInput.READ_ALLOWANCE_BYTES,
+                    budget.snapshot().memory(),
+                    "Canceling caller future is not private-worker completion");
+            var completed = new CompletableFuture<Void>();
+            worker.execute(() -> completed.complete(null));
+            release.complete(null);
+            completed.get(3, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(
+                    0,
+                    budget.snapshot().memory(),
+                    "Private completion releases standalone allowance even when caller future is canceled");
+            input.closeAsync().join();
+            assertDrained(budget);
+        }
+    }
+
+    @Test
+    void standaloneReadCannotDecodeWithoutItsOwnFullAllowance() throws Exception {
+        try (var budget = new TempBudget(13L << 20, 512L << 20)) {
+            var input =
+                    SortedComparisonInput.capture(
+                                    new Fixture(List.of(row(1, "a"))),
+                                    temporary,
+                                    budget,
+                                    Cancellation.NONE)
+                            .join();
+            var failure =
+                    assertThrows(
+                            CompletionException.class,
+                            () -> input.read(null, 1, Cancellation.NONE).join());
+            assertInstanceOf(TempBudget.Limit.class, failure.getCause());
+            assertEquals(0, budget.snapshot().memory());
+            input.closeAsync().join();
+            assertDrained(budget);
+        }
+    }
+
+    private static java.util.concurrent.ThreadPoolExecutor worker(SortedComparisonInput input)
+            throws Exception {
+        // Hold the private operation deterministically without adding test hooks to the public API.
+        var field = SortedComparisonInput.class.getDeclaredField("worker");
+        field.setAccessible(true);
+        return (java.util.concurrent.ThreadPoolExecutor) field.get(input);
+    }
+
     private void assertFailure(Fixture source, SortedComparisonInput.Reason reason)
             throws Exception {
         try (var budget = new TempBudget()) {
