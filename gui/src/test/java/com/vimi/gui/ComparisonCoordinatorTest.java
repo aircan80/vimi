@@ -32,6 +32,7 @@ public final class ComparisonCoordinatorTest {
             failedAdapterClose(directory);
             staleCleanup(directory);
             sourceHint();
+            rawPairAdmission(directory);
             System.out.println(
                     "Comparison composition: pair ownership, opening/read cancellation, rejection,"
                             + " failure drain, stale staging and source context passed");
@@ -331,6 +332,164 @@ public final class ComparisonCoordinatorTest {
                 "All contexts close even when adapters report cleanup failures");
     }
 
+    private static void rawPairAdmission(Path directory) throws Exception {
+        for (int mode = 0; mode < 3; mode++) {
+            final int scenario = mode;
+            var opens = new AtomicInteger();
+            var reads = new AtomicInteger();
+            var prepares = new AtomicInteger();
+            var inputsClosed = new AtomicInteger();
+            var contextsClosed = new AtomicInteger();
+            var plansClosed = new AtomicInteger();
+            var preparing = new CountDownLatch(1);
+            var budget = new com.vibeminer.concepts.comparison.TempBudget();
+            var manager =
+                    new ComparisonCoordinator(
+                            (request, token) ->
+                                    new ComparisonCoordinator.EndpointOpener() {
+                                        public ComparisonCoordinator.Opened open(
+                                                BuildInfo build,
+                                                String locale,
+                                                String area,
+                                                Cancellation cancel) {
+                                            int side = opens.incrementAndGet();
+                                            var descriptor =
+                                                    new ComparisonTypes.Descriptor(
+                                                            "raw-" + side,
+                                                            "wowf",
+                                                            "enUS",
+                                                            "raw-table:100",
+                                                            scenario == 0 && side == 2
+                                                                    ? "different-schema"
+                                                                    : "same-schema",
+                                                            Map.of());
+                                            ComparisonInput input =
+                                                    new ComparisonInput() {
+                                                        public ComparisonTypes.Descriptor
+                                                                descriptor() {
+                                                            return descriptor;
+                                                        }
+
+                                                        public CompletableFuture<
+                                                                        ComparisonTypes.InputPage>
+                                                                read(
+                                                                        String cursor,
+                                                                        int limit,
+                                                                        Cancellation call) {
+                                                            reads.incrementAndGet();
+                                                            return CompletableFuture
+                                                                    .completedFuture(
+                                                                            new ComparisonTypes
+                                                                                    .InputPage(
+                                                                                    descriptor
+                                                                                            .identity(),
+                                                                                    List.of(),
+                                                                                    null,
+                                                                                    new ComparisonTypes
+                                                                                            .Coverage(
+                                                                                            ComparisonTypes
+                                                                                                    .Completeness
+                                                                                                    .UNKNOWN,
+                                                                                            descriptor
+                                                                                                    .scope(),
+                                                                                            List
+                                                                                                    .of())));
+                                                        }
+
+                                                        public CompletableFuture<Void>
+                                                                closeAsync() {
+                                                            inputsClosed.incrementAndGet();
+                                                            return CompletableFuture
+                                                                    .completedFuture(null);
+                                                        }
+                                                    };
+                                            return new ComparisonCoordinator.Opened(
+                                                    input, contextsClosed::incrementAndGet);
+                                        }
+
+                                        public com.vibeminer.concepts.comparison.TempBudget
+                                                budget() {
+                                            return budget;
+                                        }
+
+                                        public void prepare(
+                                                ComparisonCoordinator.Opened before,
+                                                ComparisonCoordinator.Opened after,
+                                                Cancellation call) {
+                                            require(
+                                                    opens.get() == 2,
+                                                    "Both descriptors are captured before raw"
+                                                        + " sorting");
+                                            require(
+                                                    before.input()
+                                                            .descriptor()
+                                                            .scope()
+                                                            .equals(
+                                                                    after.input()
+                                                                            .descriptor()
+                                                                            .scope()),
+                                                    "Raw preparation only receives compatible"
+                                                        + " schemas");
+                                            prepares.incrementAndGet();
+                                            preparing.countDown();
+                                            if (scenario == 2) {
+                                                var held = new CompletableFuture<Void>();
+                                                var link =
+                                                        call.onCancel(
+                                                                () ->
+                                                                        held.completeExceptionally(
+                                                                                new java.util
+                                                                                        .concurrent
+                                                                                        .CancellationException()));
+                                                try {
+                                                    held.join();
+                                                } finally {
+                                                    link.close();
+                                                }
+                                            }
+                                        }
+
+                                        public void close() {
+                                            require(
+                                                    inputsClosed.get() == 2
+                                                            && contextsClosed.get() == 2,
+                                                    "Plan closes after accepted inputs and original"
+                                                        + " contexts drain");
+                                            budget.close();
+                                            plansClosed.incrementAndGet();
+                                        }
+                                    },
+                            directory);
+            var opening =
+                    manager.start(
+                            new BuildComparisons.Request(
+                                    build("a"), "enUS", build("b"), "enUS", "Tables", 100L),
+                            new Cancellation());
+            if (scenario == 1) {
+                var session = opening.get(10, TimeUnit.SECONDS);
+                terminal(session);
+                require(
+                        session.progress().state() == ComparisonTypes.RunState.COMPLETED,
+                        "Shared-budget raw pair completes");
+                session.closeAsync().get(10, TimeUnit.SECONDS);
+            } else if (scenario == 0) {
+                failure(opening);
+                require(
+                        prepares.get() == 0 && reads.get() == 0,
+                        "Mismatched schemas fail before any sorting or input reads");
+            } else {
+                require(preparing.await(10, TimeUnit.SECONDS), "Raw preparation is held");
+                manager.closeAsync().get(10, TimeUnit.SECONDS);
+                failure(opening);
+                require(reads.get() == 0, "Canceling preparation does not admit core reads");
+            }
+            manager.closeAsync().get(10, TimeUnit.SECONDS);
+            require(
+                    plansClosed.get() == 1 && budget.snapshot().reservations() == 0,
+                    "Every pair outcome closes its plan and shared resource budget once");
+        }
+    }
+
     private static void staleCleanup(Path directory) throws Exception {
         var parent = directory.resolve("stale");
         Files.createDirectories(parent);
@@ -340,7 +499,18 @@ public final class ComparisonCoordinatorTest {
         Files.writeString(foreign.resolve("user-note.txt"), "retain");
         var unrelated = Files.createDirectory(parent.resolve("other"));
         Files.writeString(unrelated.resolve("results.tmp"), "retain");
+        var sorted = Files.createDirectory(parent.resolve("comparison-sort-123"));
+        Files.writeString(sorted.resolve("run-456.tmp"), "authored framed input");
+        var generated = Files.createDirectory(parent.resolve("comparison-789"));
+        Files.writeString(generated.resolve("results123.tmp"), "authored framed results");
+        var protectedSort = Files.createDirectory(parent.resolve("comparison-sort-foreign"));
+        Files.writeString(protectedSort.resolve("notes.txt"), "retain foreign file");
         ComparisonTemporaryFiles.cleanStale(parent);
+        require(
+                !Files.exists(sorted)
+                        && !Files.exists(generated)
+                        && Files.exists(protectedSort.resolve("notes.txt")),
+                "Recognized sort/result scratch is reclaimed while foreign files remain");
         require(
                 !Files.exists(own)
                         && Files.exists(foreign.resolve("user-note.txt"))

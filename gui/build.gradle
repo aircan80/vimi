@@ -375,3 +375,10 @@ tasks.register('nativeComparisonTest', JavaExec) {
     mainClass = 'com.vimi.gui.NativeComparisonTest'
 }
 check.dependsOn nativeComparisonTest
+
+tasks.register('nativeRawComparisonTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.NativeRawComparisonIntegrationTest'
+}
+check.dependsOn nativeRawComparisonTest

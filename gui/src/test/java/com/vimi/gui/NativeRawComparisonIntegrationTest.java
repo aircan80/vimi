@@ -16,6 +16,7 @@ import com.vibeminer.network.CdnClient;
 import com.vibeminer.network.ListfileClient;
 import com.vibeminer.store.LibraryCatalog;
 import com.vibeminer.store.ObjectStore;
+
 import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -30,6 +31,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class NativeRawComparisonIntegrationTest {
     private static final long TABLE = 841626;
     private static final String VERSION = "1.60.1.70450";
+
     private NativeRawComparisonIntegrationTest() {}
 
     public static void main(String[] args) throws Exception {
@@ -42,69 +44,134 @@ public final class NativeRawComparisonIntegrationTest {
                 var forbidden = new AtomicInteger();
                 var history = PreparationHistory.forLibrary(library.databasePath());
                 history.load();
-                var contexts = new NativePreparationContexts(library, catalog, registry,
-                        forbidden(CdnClient.class, forbidden), forbidden(ListfileClient.class, forbidden),
-                        null, history, null, directory.resolve("grids"), ignored -> {});
+                var contexts =
+                        new NativePreparationContexts(
+                                library,
+                                catalog,
+                                registry,
+                                forbidden(CdnClient.class, forbidden),
+                                forbidden(ListfileClient.class, forbidden),
+                                null,
+                                history,
+                                null,
+                                directory.resolve("grids"),
+                                ignored -> {});
                 try {
                     String cdn = new SyntheticBuild().ref.cdnConfig();
                     var source = new BuildInfo.RegionEvidence("us", cdn, true, null, null);
-                    var info = new BuildInfo("wow", "Authored fixture", VERSION, "us",
-                            fixture.buildConfig().hex(), BuildInfo.BuildSource.CURRENT, true,
-                            null, 0, "wow:" + fixture.buildConfig().hex(), null, null, List.of(source));
+                    var info =
+                            new BuildInfo(
+                                    "wow",
+                                    "Authored fixture",
+                                    VERSION,
+                                    "us",
+                                    fixture.buildConfig().hex(),
+                                    BuildInfo.BuildSource.CURRENT,
+                                    true,
+                                    null,
+                                    0,
+                                    "wow:" + fixture.buildConfig().hex(),
+                                    null,
+                                    null,
+                                    List.of(source));
                     Files.createDirectories(directory.resolve("sort"));
-                    var manager = new ComparisonCoordinator(new LocalComparisonFactory(contexts, null,
-                            directory.resolve("sort")), directory.resolve("results"));
+                    var manager =
+                            new ComparisonCoordinator(
+                                    new LocalComparisonFactory(
+                                            contexts, null, directory.resolve("sort")),
+                                    directory.resolve("results"));
                     try {
-                        var request = new BuildComparisons.Request(info, "enUS", info, "enUS", "Tables", TABLE);
+                        var request =
+                                new BuildComparisons.Request(
+                                        info, "enUS", info, "enUS", "Tables", TABLE);
                         boolean rejected = false;
                         try {
                             manager.start(request, new Cancellation()).get(20, TimeUnit.SECONDS);
                         } catch (java.util.concurrent.ExecutionException expected) {
                             rejected = true;
                         }
-                        require(rejected, "Missing prepared graph fails without ordinary preparation");
-                        require(forbidden.get() == 0, "Missing graph does not acquire bytes or names");
+                        require(
+                                rejected,
+                                "Missing prepared graph fails without ordinary preparation");
+                        require(
+                                forbidden.get() == 0,
+                                "Missing graph does not acquire bytes or names");
                         seedGraph(library, info, cdn);
                         var storedBefore = library.stats().join();
-                        var before = registry.get(info.identity(), com.vibeminer.store.Cancellation.NONE).join();
-                        var session = manager.start(request, new Cancellation()).get(20, TimeUnit.SECONDS);
+                        var before =
+                                registry.get(info.identity(), com.vibeminer.store.Cancellation.NONE)
+                                        .join();
+                        var session =
+                                manager.start(request, new Cancellation())
+                                        .get(20, TimeUnit.SECONDS);
                         try {
                             long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
                             while (session.progress().state() == ComparisonTypes.RunState.RUNNING) {
                                 require(System.nanoTime() < end, "Native raw scan terminates");
                                 Thread.sleep(5);
                             }
-                            require(session.progress().state() == ComparisonTypes.RunState.COMPLETED,
+                            require(
+                                    session.progress().state()
+                                            == ComparisonTypes.RunState.COMPLETED,
                                     "Cached raw scan completes: " + session.progress().message());
-                            require(session.progress().observed() == 3, "All authored row identities scanned");
-                            require(session.progress().a().completeness() == ComparisonTypes.Completeness.UNKNOWN
-                                            && session.progress().b().completeness() == ComparisonTypes.Completeness.UNKNOWN,
-                                    "Readable prepared rows do not certify global membership completeness");
-                            require(session.page(0, 10).join().rows().isEmpty(),
+                            require(
+                                    session.progress().observed() == 3,
+                                    "All authored row identities scanned");
+                            require(
+                                    session.progress().a().completeness()
+                                                    == ComparisonTypes.Completeness.UNKNOWN
+                                            && session.progress().b().completeness()
+                                                    == ComparisonTypes.Completeness.UNKNOWN,
+                                    "Readable prepared rows do not certify global membership"
+                                        + " completeness");
+                            require(
+                                    session.page(0, 10).join().rows().isEmpty(),
                                     "Equal typed authored rows produce no false findings");
-                            require(session.before().locale().equals("enUS"), "Requested locale pinned");
+                            require(
+                                    session.before().locale().equals("enUS"),
+                                    "Requested locale pinned");
                             var dependencies = session.before().dependencies();
-                            require(Long.toString(TABLE).equals(dependencies.get("raw.table.id"))
+                            require(
+                                    Long.toString(TABLE).equals(dependencies.get("raw.table.id"))
                                             && "9A2A4834".equals(dependencies.get("raw.layout")),
                                     "Native request pins the selected table and prepared layout");
-                            require("prepared-local-only".equals(dependencies.get("comparison.acquisition"))
-                                            && dependencies.get("raw.schema.fingerprint").matches("[0-9a-f]{64}")
-                                            && dependencies.get("raw.graph.identity").matches("[0-9a-f]{32}"),
-                                    "Native source records exact graph and interpretation fingerprints");
-                            require(session.before().namespace().equals(session.after().namespace()),
+                            require(
+                                    "prepared-local-only"
+                                                    .equals(
+                                                            dependencies.get(
+                                                                    "comparison.acquisition"))
+                                            && dependencies
+                                                    .get("raw.schema.fingerprint")
+                                                    .matches("[0-9a-f]{64}")
+                                            && dependencies
+                                                    .get("raw.graph.identity")
+                                                    .matches("[0-9a-f]{32}"),
+                                    "Native source records exact graph and interpretation"
+                                        + " fingerprints");
+                            require(
+                                    session.before()
+                                            .namespace()
+                                            .equals(session.after().namespace()),
                                     "Both prepared inputs use the same typed raw namespace");
                         } finally {
                             session.closeAsync().get(20, TimeUnit.SECONDS);
                         }
-                        require(java.util.Objects.equals(before,
-                                registry.get(info.identity(), com.vibeminer.store.Cancellation.NONE).join()),
+                        require(
+                                java.util.Objects.equals(
+                                        before,
+                                        registry.get(
+                                                        info.identity(),
+                                                        com.vibeminer.store.Cancellation.NONE)
+                                                .join()),
                                 "Comparison leaves build readiness unchanged");
                         require(forbidden.get() == 0, "No CDN/listfile/network capability invoked");
                         var storedAfter = library.stats().join();
-                        require(storedBefore.objects() == storedAfter.objects()
+                        require(
+                                storedBefore.objects() == storedAfter.objects()
                                         && storedBefore.liveBytes() == storedAfter.liveBytes()
                                         && storedBefore.packBytes() == storedAfter.packBytes(),
-                                "Prepared comparison performs no object writes, repairs or graph rebuilding");
+                                "Prepared comparison performs no object writes, repairs or graph"
+                                    + " rebuilding");
                     } finally {
                         manager.closeAsync().get(20, TimeUnit.SECONDS);
                     }
@@ -114,7 +181,9 @@ public final class NativeRawComparisonIntegrationTest {
             } finally {
                 library.closeAsync().join();
             }
-            System.out.println("Native raw comparison: authored SQLite/pack graph, missing-graph rejection, cached rows and forbidden acquisition passed");
+            System.out.println(
+                    "Native raw comparison: authored SQLite/pack graph, missing-graph rejection,"
+                        + " cached rows and forbidden acquisition passed");
         } finally {
             try (var paths = Files.walk(directory)) {
                 for (var path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) {
@@ -126,7 +195,11 @@ public final class NativeRawComparisonIntegrationTest {
 
     private static void seedGraph(ObjectStore library, BuildInfo info, String cdn) {
         var provider = BundledDefinitions.open(Cancellation.NONE).join();
-        var manifest = provider.tables().stream().filter(t -> Long.toString(TABLE).equals(t.db2FileDataId())).findFirst().orElseThrow();
+        var manifest =
+                provider.tables().stream()
+                        .filter(t -> Long.toString(TABLE).equals(t.db2FileDataId()))
+                        .findFirst()
+                        .orElseThrow();
         var document = provider.tryGet(manifest.tableId()).definition().document();
         var selected = document.selectFile(VERSION, null, Cancellation.NONE);
         require(selected.blocks().size() == 1, "Fixture uses one exact bundled build block");
@@ -136,57 +209,117 @@ public final class NativeRawComparisonIntegrationTest {
         var values = new ArrayList<String>();
         for (var field : block.fields()) {
             for (int index = 0; index < field.arrayLength(); index++) {
-                String name = field.column().name() + (field.arrayLength() == 1 ? "" : "[" + index + "]");
-                String kind = switch (field.column().family()) {
-                    case "int" -> "integer";
-                    case "float" -> "float";
-                    default -> "string";
-                };
+                String name =
+                        field.column().name() + (field.arrayLength() == 1 ? "" : "[" + index + "]");
+                String kind =
+                        switch (field.column().family()) {
+                            case "int" -> "integer";
+                            case "float" -> "float";
+                            default -> "string";
+                        };
                 columns.add(new Db2Types.Column(name, kind, field.isId(), null, null));
-                values.add(field.isId() ? "7" : kind.equals("string") ? "Authored fixture text" : "0");
+                values.add(
+                        field.isId() ? "7" : kind.equals("string") ? "Authored fixture text" : "0");
             }
         }
         var other = new ArrayList<>(values);
         for (int i = 0; i < columns.size(); i++) {
-            if (columns.get(i).isId()) { other.set(i, "8"); }
+            if (columns.get(i).isId()) {
+                other.set(i, "8");
+            }
         }
         var maximum = new ArrayList<>(values);
         for (int i = 0; i < columns.size(); i++) {
-            if (columns.get(i).isId()) { maximum.set(i, "4294967295"); }
+            if (columns.get(i).isId()) {
+                maximum.set(i, "4294967295");
+            }
         }
-        var rows = List.of(new Db2Types.Row(7, false, null, values, List.of()),
-                new Db2Types.Row(8, false, null, other, List.of()),
-                new Db2Types.Row(4294967295L, false, null, maximum, List.of()));
+        var rows =
+                List.of(
+                        new Db2Types.Row(7, false, null, values, List.of()),
+                        new Db2Types.Row(8, false, null, other, List.of()),
+                        new Db2Types.Row(4294967295L, false, null, maximum, List.of()));
         byte[] original = new byte[128];
         System.arraycopy(MetadataFixtures.text("WDC5"), 0, original, 0, 4);
         String ckey = java.util.HexFormat.of().formatHex(MetadataFixtures.md5(original));
         var base = new Db2Types.Limits();
-        var limits = new Db2Types.Limits(base.maxDecodedBytes(), base.maxRows(), base.maxFields(),
-                base.maxSections(), base.maxRecordBytes(), base.maxAuxiliaryBytes(), base.maxStringBytes(),
-                base.maxIndexBytes(), base.maxColumns(), base.maxCopyDepth(), true, true,
-                base.maxRawTextEvidenceBytes(), base.maxRelationshipBytes(), base.maxRelationshipEntries(),
-                base.definitionSha256(), base.verifiedRawIntegerRules());
-        var source = GeneratedTableSource.forBlock(block, "enUS", ckey, limits,
-                info.product() + " " + info.config() + " " + cdn);
-        var generated = new GeneratedTables(new PackGeneratedStore(library,
-                library.forOwner(info.identity(), LibraryCatalog.Scope.BUILD, "workspace-derived", LibraryCatalog.Role.DERIVED)));
-        var content = new GeneratedTableContent(new Db2Types.Header(1, manifest.tableId(),
-                block.layoutHashes().getFirst(), 3, 0, 4, columns, "WDC5"), List.of(),
-                new Db2Types.Completion(3, 3, 0, 0, 0, 0, "complete", 128, 0), List.of(),
-                (first, count, token) -> CompletableFuture.completedFuture(rows.subList((int) first, Math.min(rows.size(), (int) first + count))),
-                () -> {}, List.of(), List.of());
+        var limits =
+                new Db2Types.Limits(
+                        base.maxDecodedBytes(),
+                        base.maxRows(),
+                        base.maxFields(),
+                        base.maxSections(),
+                        base.maxRecordBytes(),
+                        base.maxAuxiliaryBytes(),
+                        base.maxStringBytes(),
+                        base.maxIndexBytes(),
+                        base.maxColumns(),
+                        base.maxCopyDepth(),
+                        true,
+                        true,
+                        base.maxRawTextEvidenceBytes(),
+                        base.maxRelationshipBytes(),
+                        base.maxRelationshipEntries(),
+                        base.definitionSha256(),
+                        base.verifiedRawIntegerRules());
+        var source =
+                GeneratedTableSource.forBlock(
+                        block,
+                        "enUS",
+                        ckey,
+                        limits,
+                        info.product() + " " + info.config() + " " + cdn);
+        var generated =
+                new GeneratedTables(
+                        new PackGeneratedStore(
+                                library,
+                                library.forOwner(
+                                        info.identity(),
+                                        LibraryCatalog.Scope.BUILD,
+                                        "workspace-derived",
+                                        LibraryCatalog.Role.DERIVED)));
+        var content =
+                new GeneratedTableContent(
+                        new Db2Types.Header(
+                                1,
+                                manifest.tableId(),
+                                block.layoutHashes().getFirst(),
+                                3,
+                                0,
+                                4,
+                                columns,
+                                "WDC5"),
+                        List.of(),
+                        new Db2Types.Completion(3, 3, 0, 0, 0, 0, "complete", 128, 0),
+                        List.of(),
+                        (first, count, token) ->
+                                CompletableFuture.completedFuture(
+                                        rows.subList(
+                                                (int) first,
+                                                Math.min(rows.size(), (int) first + count))),
+                        () -> {},
+                        List.of(),
+                        List.of());
         generated.store(source, new TactKeyStatus(Map.of()), content, Cancellation.NONE).join();
     }
 
     @SuppressWarnings("unchecked")
     private static <T> T forbidden(Class<T> type, AtomicInteger calls) {
-        return (T) Proxy.newProxyInstance(type.getClassLoader(), new Class<?>[] {type}, (proxy, method, args) -> {
-            calls.incrementAndGet();
-            return CompletableFuture.failedFuture(new AssertionError("Forbidden acquisition: " + method.getName()));
-        });
+        return (T)
+                Proxy.newProxyInstance(
+                        type.getClassLoader(),
+                        new Class<?>[] {type},
+                        (proxy, method, args) -> {
+                            calls.incrementAndGet();
+                            return CompletableFuture.failedFuture(
+                                    new AssertionError(
+                                            "Forbidden acquisition: " + method.getName()));
+                        });
     }
 
     private static void require(boolean condition, String message) {
-        if (!condition) { throw new AssertionError(message); }
+        if (!condition) {
+            throw new AssertionError(message);
+        }
     }
 }
