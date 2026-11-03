@@ -23,7 +23,7 @@ highlighting and hit testing share that mapping. WDT tuple/file identities and
 outline: a read-only Eastern Kingdoms inventory spans42rows by23columns.
 An authored asymmetric-grid test verifies orientation and exact clicked fileID. Zone-map artwork and spawn/pickup markers are tracked separately in #116.
 
-Click the viewport to focus it. WASD moves horizontally, Q/E changes altitude,
+Click the viewport to focus it. WASD moves horizontally, Space or E ascends and Q descends,
 mouse drag or arrow keys changes view direction, Shift increases movement speed,
 and the wheel changes speed. Back to map returns to tile selection. Leaving the
 World area cancels background requests and pauses movement/rendering; returning
@@ -155,3 +155,9 @@ See [terrain review](gpu-terrain-review.md) for exact scope and platform limits.
 ```
 
 ![Authored inline GPU terrain](images/world-inline-gpu-authored.png)
+
+Streaming follows filename X along native world X and filename Y along native
+world Y. Camera lookup uses the loaded origin tile’s native maximum on each
+matching axis. This differs from the continent grid’s screen layout (filename Y
+horizontally, X vertically). Keeping these mappings separate prevents walking
+toward a tile from loading its transposed neighbor and evicting visible terrain.

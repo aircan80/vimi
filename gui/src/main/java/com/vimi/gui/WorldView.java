@@ -439,7 +439,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                         (keys.contains(KeyCode.D) ? 1 : 0)
                                                 - (keys.contains(KeyCode.A) ? 1 : 0),
                                 z =
-                                        (keys.contains(KeyCode.E) ? 1 : 0)
+                                        ((keys.contains(KeyCode.E) || keys.contains(KeyCode.SPACE))
+                                                        ? 1
+                                                        : 0)
                                                 - (keys.contains(KeyCode.Q) ? 1 : 0);
                         double
                                 turn =
@@ -967,7 +969,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                 10,
                                 back,
                                 new Label(
-                                        "WASD move · Q/E down/up · drag or arrows to look · Shift"
+                                        "WASD move · Space/E up · Q down · drag or arrows to look · Shift"
                                                 + " faster · scroll changes speed")),
                         position,
                         new HBox(8, gpuEnabled, gpuActivity, retryGpu, gpuStatus)));
@@ -1123,11 +1125,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private int tileX() {
-        return origin.x() + (int) Math.floor((originY - camera.y()) / WorldFormats.TILE_SIZE);
+        return origin.x() + (int) Math.floor((originX - camera.x()) / WorldFormats.TILE_SIZE);
     }
 
     private int tileY() {
-        return origin.y() + (int) Math.floor((originX - camera.x()) / WorldFormats.TILE_SIZE);
+        return origin.y() + (int) Math.floor((originY - camera.y()) / WorldFormats.TILE_SIZE);
     }
 
     private void loadNext() {
