@@ -47,6 +47,31 @@
 
 .builds-title-row { -fx-border-color: transparent transparent #d9e0d9 transparent; }
 
+.product-sidebar { -fx-padding: 20 10; -fx-background-color: #edf2ec; -fx-border-color: transparent #d9e0d9 transparent transparent; }
+.product-sidebar > .eyebrow { -fx-padding: 0 10; }
+.list-view.product-menu { -fx-background-color: transparent; -fx-border-color: transparent; -fx-background-insets: 0; -fx-padding: 0; }
+.list-view.product-menu .list-cell { -fx-background-color: transparent; -fx-border-color: transparent; -fx-padding: 9 10; -fx-cursor: hand; }
+.list-view.product-menu .list-cell:filled:hover { -fx-background-color: #e1ebe2; -fx-background-radius: 6; }
+.list-view.product-menu .list-cell:filled:selected { -fx-background-color: #d4e8de; -fx-background-radius: 6; -fx-border-color: transparent transparent transparent #137b70; -fx-border-width: 0 0 0 3; }
+.product-name { -fx-font-weight: bold; }
+.product-code { -fx-font-size: 11px; -fx-text-fill: #586a64; }
+.product-count { -fx-font-size: 11px; -fx-text-fill: #586a64; -fx-background-color: #ffffff80; -fx-background-radius: 10; -fx-padding: 2 6; }
+.source-panel { -fx-padding: 18; -fx-background-color: #fffefa; -fx-border-color: #d8e1d9; -fx-border-radius: 7; -fx-background-radius: 7; }
+.source-metric { -fx-font-size: 24px; -fx-font-weight: bold; }
+.source-enabled { -fx-font-weight: bold; -fx-padding: 8 0; }
+.button.source-action { -fx-padding: 7 12; }
+.build-list { -fx-padding: 16 20 20; -fx-background-color: #fffefa; }
+.toolbar.builds-product-heading { -fx-padding: 0 0 14; }
+.toolbar.builds-filters { -fx-padding: 0 0 14; }
+.table-view.builds-table .table-row-cell:empty { -fx-background-color: #fffefa; -fx-border-color: transparent; }
+.table-view.builds-table .table-row-cell:empty .table-cell { -fx-border-color: transparent; }
+.build-source-badge { -fx-font-size: 11px; -fx-text-fill: #175e57; -fx-background-color: #e1eee6; -fx-background-radius: 4; -fx-padding: 4 8; }
+.combo-box.build-choice { -fx-padding: 0; -fx-min-height: 28; -fx-pref-height: 28; -fx-max-height: 28; }
+.combo-box.build-choice > .list-cell { -fx-padding: 3 9; }
+.combo-box.build-choice > .arrow-button { -fx-padding: 0 8; }
+.inspector .titled-pane > .title { -fx-background-color: #eeeee7; -fx-padding: 10 8; }
+.inspector .titled-pane > .content { -fx-background-color: transparent; -fx-padding: 12 0; -fx-border-color: transparent; }
+
 .download-source { -fx-padding: 0; }
 .download-source > .list-cell { -fx-padding: 4 9; }
 .download-source > .arrow-button { -fx-padding: 0 8; }
@@ -84,6 +109,7 @@
 .retained-value { -fx-font-size: 13px; -fx-font-weight: normal; }
 
 .area-navigation { -fx-padding: 0 16; -fx-background-color: #fffefa; -fx-border-color: transparent transparent #d9e0d9 transparent; }
+.application-area-divider .line { -fx-border-color: #cddbd4; -fx-border-width: 0 0 0 1; }
 .button.area-link { -fx-padding: 11 14; -fx-background-color: transparent; -fx-background-insets: 0; -fx-border-color: transparent; -fx-border-radius: 0; -fx-background-radius: 0; -fx-text-fill: #586a64; }
 .button.area-link:hover { -fx-background-color: #edf5ef; }
 .button.area-link.area-active { -fx-text-fill: #137b70; -fx-font-weight: bold; -fx-border-color: transparent transparent #137b70 transparent; -fx-border-width: 0 0 3 0; }

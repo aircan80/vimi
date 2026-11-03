@@ -26,8 +26,13 @@ public final class BuildApplicationIntegrationTest {
             var service = BuildApplication.open(directory).join();
             try {
                 require(service.preparation() != null, "Native composition wires the full preparation service");
+                var hidden = service.listBuilds().get(20, java.util.concurrent.TimeUnit.SECONDS);
+                require(hidden.isEmpty(), "Future products are ignored until enabled");
+                require(service.settings().snapshot().products().stream().anyMatch(product -> product.id().equals("wow_future_test") && !product.enabled()),
+                        "Persisted discovery remains available in Settings");
+                service.settings().setEnabled("wow_future_test", true).join();
                 var builds = service.listBuilds().get(20, java.util.concurrent.TimeUnit.SECONDS);
-                require(builds.size() == 1, "Offline discovery must find persisted future products");
+                require(builds.size() == 1, "Enabled future products can be read offline");
                 var build = builds.getFirst();
                 require(build.product().equals("wow_future_test"), "Preserve product identity");
                 require(build.current() && !build.prepared() && build.totalGiB() == null,

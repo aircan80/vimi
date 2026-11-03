@@ -93,6 +93,10 @@ final class NativePreparationContexts implements BuildPreparation.Factory {
                         });
     }
 
+    private DataSourcesService sourcePolicies;
+    NativePreparationContexts withSources(DataSourcesService sources) { sourcePolicies = sources; return this; }
+    CommunityFileNames communityNames() { return names; }
+
     @Override
     public synchronized NativePreparationWork create(
             BuildInfo info, BuildInfo.RegionEvidence evidence, String locale) {
@@ -120,6 +124,7 @@ final class NativePreparationContexts implements BuildPreparation.Factory {
                                     names,
                                     context.localSource,
                                     grids)
+                            .withSourcePolicies(sourcePolicies)
                             .withHistory(history)
                             .withAccounting(accounting)
                             .withAssessment(ignored -> statusChanged.accept(info))

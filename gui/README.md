@@ -1,5 +1,11 @@
 # Vimi JavaFX application
 
+Builds now has product navigation on the left. **Settings → Products** persists
+which channels appear; **Data Sources** manages real QuestieDB versions, filename
+listfile updates and bundled-definition policy. See [source management](../docs/data-sources.md)
+and [product settings](../docs/product-settings.md). Build Overview includes a
+persisted Questie flavor mapping; this does not yet enrich Items results.
+
 Default mode uses real build data. Opening a selected build/region/locale now follows
 three preparation milestones:
 

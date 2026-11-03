@@ -14,10 +14,13 @@ import javafx.scene.Scene;
 import javafx.scene.control.Button;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
+import javafx.scene.control.ListCell;
+import javafx.scene.control.ListView;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TableColumn;
 import javafx.scene.control.TableView;
 import javafx.scene.control.TextField;
+import javafx.scene.control.TitledPane;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
 import javafx.scene.layout.BorderPane;
@@ -29,6 +32,8 @@ import javafx.stage.Stage;
 
 public final class VimiApp extends Application {
     private BuildService service;
+    private DataSourcesView dataSourcesView;
+    private SettingsView settingsView;
     private java.util.concurrent.CompletableFuture<? extends BuildService> startup;
     private boolean closing;
     private BuildPreparation.Job preparationFocus;
@@ -83,7 +88,10 @@ public final class VimiApp extends Application {
     private final TableView<BuildInfo> table = new TableView<>();
     private final VBox inspector = new VBox(11);
     private final TextField search = new TextField();
-    private final ComboBox<String> product = new ComboBox<>();
+    private final ListView<String> product = new ListView<>();
+    private final Label buildsHeading = new Label("Builds");
+    private final Label buildCount = new Label();
+    private boolean updatingProducts;
     private final ComboBox<String> scope = new ComboBox<>();
     private final Label status = new Label("Mock data · No connections or disk changes");
     private final Map<String, Boolean> downloadAll = new HashMap<>();
@@ -115,13 +123,42 @@ public final class VimiApp extends Application {
                 downloadAll.put(opened.config(), "Download all".equals(value));
             }
         });
-        search.setPromptText("Search version or product");
+        search.setPromptText("Search builds");
         search.setAccessibleText("Search builds by version or product");
         search.textProperty().addListener((o, before, after) -> filter());
-        product.getItems().add("All products");
-        product.setValue("All products");
-        product.setAccessibleText("Product filter");
-        product.setOnAction(e -> filter());
+        product.setAccessibleText("Products");
+        product.getStyleClass().add("product-menu");
+        product.setCellFactory(ignored -> new ListCell<>() {
+            @Override
+            protected void updateItem(String code, boolean empty) {
+                super.updateItem(code, empty);
+                setText(null);
+                setGraphic(null);
+                if (empty || code == null) return;
+                long count = builds.stream().filter(b -> code.equals(b.product())).count();
+                var name = label(productName(code), "product-name");
+                name.setWrapText(true);
+                name.setMinWidth(0);
+                name.setMaxWidth(Double.MAX_VALUE);
+                HBox.setHgrow(name, Priority.ALWAYS);
+                var total = label(Long.toString(count), "product-count");
+                var row = new HBox(8, name, total);
+                row.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+                var content = new VBox(5, row);
+                content.prefWidthProperty().bind(widthProperty().subtract(28));
+                setPrefWidth(0);
+                var productCode = label(code, "product-code");
+                productCode.setWrapText(false);
+                content.getChildren().add(productCode);
+                setGraphic(content);
+            }
+        });
+        product.getSelectionModel().selectedItemProperty().addListener((observable, before, after) -> {
+            if (!updatingProducts && after != null) {
+                selected = null;
+                filter();
+            }
+        });
         scope.getItems().addAll("All builds", "Current", "Saved");
         if (getParameters().getRaw().contains("--mock")) {
             scope.getItems().addAll("Prepared", "Community");
@@ -134,6 +171,8 @@ public final class VimiApp extends Application {
         column("Build source", b -> b.source().label(), 110);
         column("Stored", b -> mockMode() ? effectiveBuild(b).downloaded() : loadStored(b), 110);
         column("Status", this::preparationSummary, 230);
+        table.getStyleClass().add("builds-table");
+        table.setFixedCellSize(36);
         table.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_FLEX_LAST_COLUMN);
         table.setPlaceholder(new Label("No matching builds. Adjust or clear the filters."));
         table.getSelectionModel().selectedItemProperty().addListener((o, before, after) -> {
@@ -290,35 +329,58 @@ public final class VimiApp extends Application {
                 return;
             }
             String selectedIdentity = selected == null ? null : selected.identity();
+            boolean firstCatalog = builds.isEmpty();
             builds = List.copyOf(result);
             selected = builds.stream().filter(build -> build.identity().equals(selectedIdentity)).findFirst()
                     .orElse(builds.isEmpty() ? null : builds.getFirst());
-            String priorProduct = product.getValue();
-            product.getItems().setAll("All products");
-            builds.stream().map(BuildInfo::product).distinct().sorted().forEach(product.getItems()::add);
-            product.setValue(product.getItems().contains(priorProduct) ? priorProduct : "All products");
+            String priorProduct = product.getSelectionModel().getSelectedItem();
+            updatingProducts = true;
+            try {
+                product.getItems().clear();
+                builds.stream().map(BuildInfo::product).distinct().sorted().forEach(product.getItems()::add);
+                product.getSelectionModel().select(firstCatalog && selected != null
+                        ? selected.product()
+                        : product.getItems().contains(priorProduct) ? priorProduct
+                                : product.getItems().isEmpty() ? null : product.getItems().getFirst());
+                product.refresh();
+            } finally {
+                updatingProducts = false;
+            }
             filter();
             status.setText(service.status() + " · " + builds.size() + " builds");
             issuesButton.setVisible(!service.problems().isEmpty());
             issuesButton.setManaged(!service.problems().isEmpty());
             table.setPlaceholder(new Label(builds.isEmpty()
-                    ? "No saved builds yet. Refresh builds to check published versions."
+                    ? service.settings() != null && service.settings().enabledProducts().isEmpty()
+                            ? "No products enabled. Choose products in Settings."
+                            : "No saved builds yet. Refresh builds to check published versions."
                     : "No matching builds. Adjust or clear the filters."));
         }));
+    }
+
+    private String productName(String code) {
+        return builds.stream().filter(build -> code.equals(build.product()))
+                .map(BuildInfo::edition).filter(name -> name != null && !name.isBlank())
+                .findFirst().orElse(code);
     }
 
     private void filter() {
         String query = search.getText().strip().toLowerCase(Locale.ROOT);
         List<BuildInfo> visible = builds.stream()
                 .filter(b -> (b.version() + " " + b.product() + " " + b.edition()).toLowerCase(Locale.ROOT).contains(query))
-                .filter(b -> "All products".equals(product.getValue()) || java.util.Objects.equals(product.getValue(), b.product()))
+                .filter(b -> java.util.Objects.equals(product.getSelectionModel().getSelectedItem(), b.product()))
                 .filter(b -> !scope.getValue().equals("Prepared") || effectiveBuild(b).prepared())
                 .filter(b -> !scope.getValue().equals("Current") || b.current())
                 .filter(b -> !scope.getValue().equals("Saved") || b.source() == BuildInfo.BuildSource.SAVED)
                 .filter(b -> !scope.getValue().equals("Community") || b.source() == BuildInfo.BuildSource.COMMUNITY).toList();
         updating = true;
         table.setItems(FXCollections.observableArrayList(visible));
+        if (selected == null && !visible.isEmpty()) selected = visible.getFirst();
         table.getSelectionModel().select(selected);
+        String code = product.getSelectionModel().getSelectedItem();
+        buildsHeading.setText(code == null ? "Choose a product" : productName(code));
+        buildCount.setText(visible.size() + (visible.size() == 1 ? " build" : " builds"));
+        table.getColumns().getFirst().setVisible(false);
         updating = false;
         inspect();
     }
@@ -332,27 +394,96 @@ public final class VimiApp extends Application {
         Button refresh = refreshButton;
         refresh.setAccessibleText("Refresh builds");
         refresh.getStyleClass().add("refresh-button");
-        HBox titleRow = new HBox(12, label("Builds", "nav"), spacer(), catalogActivity, refresh);
-        titleRow.getStyleClass().addAll("toolbar", "builds-title-row");
-        HBox filters = new HBox(12, search, product, scope, button("Clear filters", () -> {
+        buildsHeading.getStyleClass().setAll("h2");
+        buildCount.getStyleClass().setAll("muted");
+        HBox titleRow = new HBox(12, buildsHeading, buildCount, spacer(), catalogActivity, refresh);
+        titleRow.getStyleClass().addAll("toolbar", "builds-product-heading");
+        HBox filters = new HBox(12, search, scope, button("Clear filters", () -> {
             search.clear();
-            product.setValue("All products");
             scope.setValue("All builds");
         }));
-        filters.getStyleClass().add("toolbar");
+        filters.getStyleClass().addAll("toolbar", "builds-filters");
         HBox.setHgrow(search, Priority.ALWAYS);
         VBox list = new VBox(titleRow, filters, table);
+        list.getStyleClass().add("build-list");
         VBox.setVgrow(table, Priority.ALWAYS);
-        inspector.setPadding(new Insets(24));
-        inspector.setPrefWidth(350);
-        inspector.setMinWidth(320);
+        inspector.setPadding(new Insets(20));
+        inspector.setPrefWidth(320);
+        inspector.setMinWidth(280);
         inspector.getStyleClass().setAll("inspector");
+        VBox products = new VBox(16, label("PRODUCTS", "eyebrow"), product);
+        products.getStyleClass().add("product-sidebar");
+        products.setPrefWidth(230);
+        products.setMinWidth(210);
+        VBox.setVgrow(product, Priority.ALWAYS);
         BorderPane content = new BorderPane(list);
+        content.setLeft(products);
         ScrollPane details = scroll(inspector);
-        details.setPrefWidth(360);
+        details.setPrefWidth(330);
         content.setRight(details);
-        root.setCenter(content);
+        BorderPane page = new BorderPane(content);
+        page.setTop(applicationNavigation("Builds"));
+        root.setCenter(page);
         inspect();
+    }
+
+    private HBox applicationNavigation(String active) {
+        Button buildsMenu = button("Builds", this::showBuilds);
+        Button sourcesMenu = button("Data Sources", this::showDataSources);
+        Button settingsMenu = button("Settings", this::showSettings);
+        for (Button item : List.of(buildsMenu, sourcesMenu, settingsMenu)) {
+            item.getStyleClass().add("area-link");
+            if (item.getText().equals(active)) item.getStyleClass().add("area-active");
+        }
+        var divider = new javafx.scene.control.Separator(javafx.geometry.Orientation.VERTICAL);
+        divider.getStyleClass().add("application-area-divider");
+        divider.setMinHeight(20);
+        divider.setPrefHeight(20);
+        divider.setMaxHeight(20);
+        HBox.setMargin(divider, new Insets(0, 12, 0, 12));
+        HBox navigation = new HBox(4, buildsMenu, divider, sourcesMenu, settingsMenu);
+        navigation.getStyleClass().add("area-navigation");
+        navigation.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+        return navigation;
+    }
+
+    private void showSettings() {
+        if (service == null || service.settings() == null) {
+            showApplicationArea("Settings", "Settings are unavailable", "Open the local library to manage products."); return;
+        }
+        viewedPreparation = null;
+        if (preparationPane != null) { preparationPane.close(); preparationPane = null; }
+        navigationGeneration++;
+        root.setTop(header(null, null));
+        if (settingsView == null) settingsView = new SettingsView(service.settings(), () -> loadBuilds(false));
+        BorderPane page = new BorderPane(settingsView);
+        page.setTop(applicationNavigation("Settings"));
+        root.setCenter(page);
+    }
+
+    private void showDataSources() {
+        viewedPreparation = null;
+        if (preparationPane != null) { preparationPane.close(); preparationPane = null; }
+        navigationGeneration++;
+        root.setTop(header(null, null));
+        if (service == null) { showApplicationArea("Data Sources", "Opening the local library…", "Source data will be available after startup."); return; }
+        if (dataSourcesView == null) dataSourcesView = new DataSourcesView(service.dataSources());
+        BorderPane page = new BorderPane(dataSourcesView);
+        page.setTop(applicationNavigation("Data Sources"));
+        root.setCenter(page);
+    }
+
+    private void showApplicationArea(String title, String subtitle, String emptyMessage) {
+        viewedPreparation = null;
+        if (preparationPane != null) { preparationPane.close(); preparationPane = null; }
+        navigationGeneration++;
+        root.setTop(header(null, null));
+        VBox content = new VBox(12, label(title, "h1"), label(subtitle, "subtitle"),
+                label(emptyMessage, "muted"));
+        content.setPadding(new Insets(28));
+        BorderPane page = new BorderPane(content);
+        page.setTop(applicationNavigation(title));
+        root.setCenter(page);
     }
 
     private void inspect() {
@@ -377,24 +508,27 @@ public final class VimiApp extends Application {
         if (!table.getItems().contains(b)) {
             inspector.getChildren().add(notice("Selection hidden by filters", "Clear filters to see this build in the list."));
         }
-        inspector.getChildren().addAll(notice(b.source().label(), b.source().description()),
-                label("IDENTITY", "eyebrow"), fact("Product", b.product()), fact("Build config", b.config()),
+        var sourceBadge = label(b.source().label(), "build-source-badge");
+        sourceBadge.setTooltip(new javafx.scene.control.Tooltip(b.source().description()));
+        inspector.getChildren().add(sourceBadge);
+        VBox technical = new VBox(12);
+        technical.getChildren().addAll(label("IDENTITY", "eyebrow"), fact("Product", b.product()), fact("Build config", b.config()),
                 label("OBSERVATION", "eyebrow"), fact(mockMode() ? "Advertised regions" : "Observed regions", b.regions().isEmpty() ? "Never observed by VibeMiner" : b.regions()),
                 fact("Stored", mockMode() ? effectiveBuild(b).downloaded() : loadStored(b)));
         if (!mockMode()) {
             var load = service.loadSnapshot(b);
             if (load != null) {
-                inspector.getChildren().add(fact("Load status", load.status()));
+
                 if (load.entry() != null && load.entry().errorMessage() != null)
                     inspector.getChildren().add(notice("Last load", load.entry().errorMessage()));
             }
-            inspector.getChildren().addAll(
+            technical.getChildren().addAll(
                     fact("Catalog identity", b.identity()),
                     fact("First observed", b.firstSeen() == null ? "Unknown" : b.firstSeen().toString()),
                     fact("Last observed", b.lastSeen() == null ? "Unknown" : b.lastSeen().toString()));
-            inspector.getChildren().add(label("REGIONAL OBSERVATIONS", "eyebrow"));
+            var observations = new VBox(10);
             for (var observation : b.observations()) {
-                inspector.getChildren().add(notice(observation.region().toUpperCase(Locale.ROOT)
+                observations.getChildren().add(notice(observation.region().toUpperCase(Locale.ROOT)
                         + (observation.current() ? " · Current" : " · Saved"),
                         "CDN config: " + observation.cdnConfig() + "\nLast observed: " + observation.lastSeen()));
             }
@@ -402,7 +536,7 @@ public final class VimiApp extends Application {
             regions.setConverter(new javafx.util.StringConverter<>() {
                 @Override public String toString(BuildInfo.RegionEvidence value) {
                     return value == null ? "" : value.region().toUpperCase(Locale.ROOT) + " · "
-                            + (value.current() ? "Current" : "Saved") + " · " + value.cdnConfig();
+                            + (value.current() ? "Current" : "Saved");
                 }
                 @Override public BuildInfo.RegionEvidence fromString(String value) { throw new UnsupportedOperationException(); }
             });
@@ -413,12 +547,14 @@ public final class VimiApp extends Application {
                         .findFirst().orElse(regions.getItems().getFirst()));
             }
             regions.setAccessibleText("Build source region");
+            regions.getStyleClass().add("build-choice");
             regions.setMinWidth(0);
             regions.setMaxWidth(Double.MAX_VALUE);
             var locale = new ComboBox<String>();
             com.vibeminer.formats.definitions.WowLocale.ALL.forEach(value -> locale.getItems().add(value.code()));
             locale.setValue(preparationLocales.getOrDefault(b.identity(),"enUS"));
             locale.setAccessibleText("Build locale");
+            locale.getStyleClass().add("build-choice");
             locale.valueProperty().addListener((observable,before,after) -> preparationLocales.put(b.identity(),after));
             Button open = new Button(realOpened.containsKey(b.identity()) ? "View opened build" : "Open build");
             open.getStyleClass().addAll("primary", "open-build");
@@ -448,12 +584,28 @@ public final class VimiApp extends Application {
                 if (ready != null && ready.build().region().equals(regions.getValue().region()) && ready.build().cdnConfig().equals(regions.getValue().cdnConfig())) showOpenedBuild(b, ready);
                 else startRealOpening(b, regions.getValue());
             });
-            inspector.getChildren().addAll(label("SOURCE REGION", "eyebrow"), regions);
-            if (service.preparation() != null) inspector.getChildren().addAll(label("LOCALE", "eyebrow"), locale);
+            var routeChoice = new VBox(6, label("Source region", "muted"), regions);
+            var choices = new HBox(12, routeChoice);
+            HBox.setHgrow(routeChoice, Priority.ALWAYS);
+            routeChoice.setMinWidth(0);
+            if (service.preparation() != null) {
+                locale.setMaxWidth(Double.MAX_VALUE);
+                var localeChoice = new VBox(6, label("Locale", "muted"), locale);
+                HBox.setHgrow(localeChoice, Priority.ALWAYS);
+                choices.getChildren().add(localeChoice);
+            }
+            inspector.getChildren().add(choices);
             inspector.getChildren().addAll(open,
                     label(service.preparation() == null
                             ? "Loading verifies build metadata and indexes object ownership. Tables, items and other research data are not prepared."
                             : "Overview opens after metadata. Files and known table data prepare in the background; community names and media do not block readiness.", "muted"));
+            inspector.getChildren().add(fact("Stored locally", loadStored(b)));
+            if (load != null) inspector.getChildren().add(fact("Load status", load.status()));
+            var technicalPane = new TitledPane("Technical details", technical);
+            technicalPane.setExpanded(false);
+            var observationsPane = new TitledPane("Regional observations", observations);
+            observationsPane.setExpanded(false);
+            inspector.getChildren().addAll(technicalPane, observationsPane);
             if (openingProblems.containsKey(b.identity())) inspector.getChildren().add(notice("Opening problem", openingProblems.get(b.identity())));
             return;
         }
@@ -483,6 +635,9 @@ public final class VimiApp extends Application {
         preparationBusy = label("", "muted");
         inspector.getChildren().addAll(label("DOWNLOAD SOURCE · MOCK", "eyebrow"), region, open, previewOpening, preparationBusy,
                 label(community ? "Opening requires verified build metadata and a source route. Community history alone does not provide these." : "First opens simulate metadata preparation. No content is fetched or stored.", "muted"));
+        var technicalPane = new TitledPane("Technical details", technical);
+        technicalPane.setExpanded(false);
+        inspector.getChildren().add(technicalPane);
         updatePreparationControls();
     }
 
@@ -558,7 +713,7 @@ public final class VimiApp extends Application {
                 var enriched = service.preparation().enrich(job.build(),job.source(),job.locale());
                 preparationFocus = enriched; showPreparedWorkspace(enriched);
             } catch (RuntimeException error) { status.setText(problem(error)); }
-        }, service.downloads());
+        }, service.downloads(), service.dataSources());
         viewedPreparation = job;
         root.setTop(preparedOverviewHeader(job)); root.setCenter(preparationPane);
         status.setText("Prepared data is scoped to this build and locale. Unknown and protected data remain explicit.");
@@ -1127,7 +1282,7 @@ public final class VimiApp extends Application {
         if (area != null) {
             header.getChildren().add(label(area, "nav"));
         }
-        header.getChildren().addAll(spacer(), preparationActivity, label("MOCK DATA", "badge"));
+        header.getChildren().addAll(spacer(), preparationActivity, label(mockMode() ? "MOCK DATA" : "Local library", "badge"));
         if (action != null) {
             header.getChildren().add(action);
         }

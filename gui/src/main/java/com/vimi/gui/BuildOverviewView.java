@@ -103,16 +103,22 @@ public final class BuildOverviewView {
 
     /** Real Overview using the approved card/grid layout and measured workspace facts only. */
     public static Live live(BuildPreparation.Job job, Consumer<String> navigate, Node preparationControls) {
-        return new Live(job,navigate,preparationControls,null);
+        return new Live(job,navigate,preparationControls,null,null);
     }
 
     public static Live live(BuildPreparation.Job job, Consumer<String> navigate, Node preparationControls, BuildDownloads downloads) {
-        return new Live(job,navigate,preparationControls,downloads);
+        return new Live(job,navigate,preparationControls,downloads,null);
+    }
+
+    public static Live live(BuildPreparation.Job job, Consumer<String> navigate, Node controls,
+            BuildDownloads downloads, DataSourcesService sources) {
+        return new Live(job, navigate, controls, downloads, sources);
     }
 
     public static final class Live {
         private final VBox page=new VBox(18);
         private final DownloadControls downloadControls;
+        private final QuestieMappingControls questieControls;
         private final Label filesValue=text("Not measured","landing-metric"),filesScope=text("","muted"),
                 tablesValue=text("Not measured","landing-metric"),tablesScope=text("","muted"),
                 namesValue=text("Not measured","landing-metric"),namesScope=text("","muted"),
@@ -132,7 +138,8 @@ public final class BuildOverviewView {
         private final Label derivedValue=text("Not measured","value"),derivedScope=text("","muted"),
                 libraryValue=text("Not measured","value"),libraryScope=text("","muted"),
                 retainedStored=text("Not measured","value");
-        private Live(BuildPreparation.Job job,Consumer<String> navigate,Node controls,BuildDownloads downloads) {
+        private Live(BuildPreparation.Job job,Consumer<String> navigate,Node controls,BuildDownloads downloads,DataSourcesService sources) {
+            questieControls=sources==null?null:new QuestieMappingControls(sources,job.build());
             downloadControls=downloads==null?null:new DownloadControls(downloads,job);
             this.job=java.util.Objects.requireNonNull(job);
             page.setPadding(new Insets(24));
@@ -178,12 +185,17 @@ public final class BuildOverviewView {
                     text("Catalog figures count locale-scoped FileDataIDs. Readable table counts include explicitly partial sources; unavailable and protected outcomes remain in the committed ledger. Names count locale-selected FileDataIDs with community labels. Encoded byte coverage includes all published ENCODING variants, deduplicated by encoded object identity. Sharing is relative to retained library builds; global data and container overhead are outside build payload attribution.","muted"));
             evidence.setPadding(new Insets(14));var identity=new TitledPane("Build identity & measurement scope",evidence);identity.setExpanded(false);identity.setAnimated(false);
             var details=new TitledPane("Availability details",availability);details.setExpanded(false);details.setAnimated(false);
+            if(questieControls!=null) {
+                var mapping=new TitledPane("Questie data",questieControls);
+                page.getChildren().add(mapping);
+            }
             page.getChildren().addAll(identity,details);
             update(job.snapshot(),job.enrichingNames(),job.namesProblem());
         }
         public Node node(){return page;}
         public void update(BuildPreparation.Snapshot snapshot,boolean namesRunning,String namesProblem) {
             if(downloadControls!=null) downloadControls.refresh();
+            if(questieControls!=null) questieControls.refresh();
             var model=OverviewPresentation.from(snapshot,namesRunning,namesProblem,job.work()==null?null:job.work().accounting());
             apply(filesValue,filesScope,model.files());apply(tablesValue,tablesScope,model.tables());
             apply(namesValue,namesScope,model.names());apply(storedValue,storedScope,model.stored());

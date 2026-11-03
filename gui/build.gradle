@@ -15,6 +15,7 @@ def classifier = platform + (arch in ['aarch64', 'arm64'] ? '-aarch64' : '')
 
 dependencies {
     implementation project(':builds')
+    implementation project(':questie')
     implementation project(':accounting')
     implementation project(':formats-tables')
     implementation project(':concepts-items')
@@ -218,3 +219,17 @@ tasks.register('nativeDownloadTest', JavaExec) {
     mainClass = 'com.vimi.gui.NativeDownloadIntegrationTest'
 }
 check.dependsOn nativeDownloadTest
+
+tasks.register('dataSourcesTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.DataSourcesServiceTest'
+}
+check.dependsOn dataSourcesTest
+
+tasks.register('settingsServiceTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.SettingsServiceTest'
+}
+check.dependsOn settingsServiceTest

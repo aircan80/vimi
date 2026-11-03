@@ -1,5 +1,35 @@
 # vimi development handoff
 
+## External source management and product settings (2026-11-02)
+
+Stories #77/#78 replace source mock settings with real application services. The
+new Builds screen retains horizontal Builds | Data Sources / Settings navigation,
+with product/source/settings sidebars. SettingsService persists settings_* product
+selection; defaults wow/wow_beta/wow_anniversary/wowf/wow_classic_beta/wow_cn_beta.
+Disabled products skip catalog reads and refreshes but preserve payloads/history
+and active download policies. Unknown discovered products remain selectable in
+Settings, disabled by default.
+
+DataSourcesService persists sources_* enablement, update policy and Questie
+per-flavor defaults/per-build overrides. Source work uses bounded asynchronous
+commands and one job per provider. Questie archives/prepared versions use the
+existing independent repository; UI now lists real local inventory and performs
+release checks/download/preparation/default selection. Listfile uses the existing
+shared global provider and update/index path. Definitions remain bundled-only.
+Open workspaces retain policy; close/reopen honors changes, with disabled definition
+cache identity isolation. Native listfile acquisitions participate in cancellation.
+
+Overview Questie mapping selects Automatic/None/flavor and resolves the default
+prepared database; Items enrichment has NOT been added. See docs/data-sources.md
+and docs/product-settings.md. Local GUI/Questie checks and live temporary-library
+Questie Forever v1.0.10 smoke pass (46,957 records, 10 locales).
+
+Parallel Talents work: feature/talents in /tmp/vimi-talents. User confirmed Classic
+three-tree layout first, Anniversary/Forever. Developer /root/talents_developer;
+WoW expert and designer supplied schema/layout guidance; architect requires a
+Workspace-owned lazy talent handle closed before its borrowed tables. Do not merge
+that branch without adapting root's new source-policy and UI integration.
+
 ## Download all — persistent background policy (2026-11-02)
 
 Story #74 wires native Overview policy to the existing DownloadAllJobs engine.

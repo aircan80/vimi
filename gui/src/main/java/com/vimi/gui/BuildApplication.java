@@ -173,6 +173,12 @@ public final class BuildApplication {
                                         directory.resolve("derived").resolve("grids"),
                                         state::invalidate);
                         cleanup.addFirst(fullContexts::closeAsync);
+                        var settings = SettingsService.open(library.databasePath()).join();
+                        cleanup.addFirst(settings::closeAsync);
+                        var dataSources = DataSourcesService.open(library.databasePath(), directory.resolve("questie"),
+                                fullContexts.communityNames(), ownership);
+                        cleanup.addFirst(dataSources::closeAsync);
+                        fullContexts.withSources(dataSources);
                         var preparation = new BuildPreparation(fullContexts);
                         cleanup.addFirst(preparation::closeAsync);
                         cleanup.addFirst(
@@ -203,6 +209,8 @@ public final class BuildApplication {
                                         .withOpening(opening)
                                         .withPreparation(preparation)
                                         .withDownloads(downloads)
+                                        .withDataSources(dataSources)
+                                        .withSettings(settings)
                                         .withLoadState(state)
                                         .withHistory(saved);
                         if (!result.complete(service)) service.closeAsync().join();

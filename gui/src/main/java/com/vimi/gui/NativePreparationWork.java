@@ -50,6 +50,18 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         return this;
     }
 
+    private DataSourcesService sourcePolicies;
+    private boolean listfileAllowed = true, definitionsAllowed = true;
+    NativePreparationWork withSourcePolicy(boolean listfile, boolean definitions) {
+        listfileAllowed = listfile; definitionsAllowed = definitions; return this;
+    }
+
+    NativePreparationWork withSourcePolicies(DataSourcesService sources) {
+        sourcePolicies = sources;
+        return withSourcePolicy(sources == null || sources.policy(DataSourcesService.Id.LISTFILE).enabled(),
+                sources == null || sources.policy(DataSourcesService.Id.DEFINITIONS).enabled());
+    }
+
     NativePreparationWork withAccounting(OverviewAccounting value) {
         if (value != null)
             usageAccounting = new BuildUsageAccounting(value, info, ref, locale, community);
@@ -304,7 +316,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     }
 
     private TablesService tablesService(Cancellation token, boolean onlinePreparation) {
-        var definitions = new TableDefinitions(BundledDefinitions.open(token).join(), null, null);
+        var definitions = new TableDefinitions(definitionsAllowed ? BundledDefinitions.open(token).join() : BundledDefinitions.of(List.of(), java.util.Map.of()), null, null);
         var available = keys.get();
         var status = available == null ? TactKeyStatus.NONE : available.status();
         var defaults =
@@ -369,6 +381,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
 
     @Override
     public List<String> keys(Cancellation token) {
+        if (!definitionsAllowed) return List.of("Table definitions are disabled for this workspace");
         var issues = new ArrayList<String>();
         try (var bootstrap = openTables(tablesService(token, true), token)) {
             var found = BuildTactKeys.load(bootstrap, TableTypes.Priority.BACKGROUND, token).join();
@@ -448,7 +461,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                                 .collect(java.util.stream.Collectors.joining(","));
         return String.join(
                 "\n",
-                "native-table-policy-v1",
+                definitionsAllowed ? "native-table-policy-v1" : "native-table-policy-definitions-disabled-v1",
                 ref.product(),
                 ref.buildConfig(),
                 ref.cdnConfig(),
@@ -680,7 +693,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         return com.vibeminer.formats.internal.Json.sha256(
                 com.vibeminer.formats.internal.Json.bytes(
                         List.of(
-                                "native-item-catalog-v1",
+                                definitionsAllowed ? "native-item-catalog-v1" : "native-item-catalog-definitions-disabled-v1",
                                 BundledDefinitions.REVISION,
                                 BundledDefinitions.MANIFEST_SHA256,
                                 BundledDefinitions.SOURCES_SHA256,
@@ -712,7 +725,14 @@ public final class NativePreparationWork implements BuildPreparation.Work {
 
     @Override
     public void enrichNames(Cancellation token) {
-        var status = community.update(false, token).join();
+        if (!listfileAllowed) return;
+        NamesTypes.FileNamesStatus status;
+        if (sourcePolicies == null) status = community.update(false, token).join();
+        else {
+            var registration = sourcePolicies.nameAcquisition(token);
+            try { token.check(); status = community.update(false, token).join(); }
+            finally { registration.close(); }
+        }
         token.check();
         if (status.state() == NamesTypes.FileNamesState.READY) {
             namesEnabled.set(true);

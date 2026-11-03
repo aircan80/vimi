@@ -184,7 +184,7 @@ public final class FullPreparationLibraryIntegrationTest {
                         require(
                                 redundantInventories == 0,
                                 "Unified accounting uses publication metadata, not artifact graph"
-                                    + " scans");
+                                        + " scans");
                         require(
                                 work.accounting().usage().derivedComplete(),
                                 "All current library derived objects have authoritative ownership");
@@ -243,7 +243,36 @@ public final class FullPreparationLibraryIntegrationTest {
                                     && service.historicalPreparation(build)
                                             .contains("Tables ready"),
                             "Preparation receipts persist through the shared library receipt"
-                                + " table");
+                                    + " table");
+                    if (round == 1) {
+                        service.dataSources()
+                                .setEnabled(DataSourcesService.Id.DEFINITIONS, false)
+                                .join();
+                        service.dataSources()
+                                .setEnabled(DataSourcesService.Id.LISTFILE, false)
+                                .join();
+                        require(
+                                !job.snapshot().tables().isEmpty(),
+                                "Open workspace retains its pinned definition snapshot");
+                        service.preparation().release(job).get(20, TimeUnit.SECONDS);
+                        var disabled =
+                                service.preparation()
+                                        .start(build, build.observations().getFirst(), "enUS");
+                        var disabledSnapshot = disabled.completion().get(40, TimeUnit.SECONDS);
+                        require(
+                                disabledSnapshot.ready() == BuildPreparation.Ready.TABLES_READY,
+                                "Disabled optional providers do not block raw build/file opening");
+                        require(
+                                disabledSnapshot.tables().isEmpty(),
+                                "Reopened workspace does not restore a table inventory from enabled"
+                                    + " definitions");
+                        require(
+                                disabledSnapshot.issues().stream()
+                                        .anyMatch(
+                                                issue ->
+                                                        issue.contains("definitions are disabled")),
+                                "Disabled definitions are reported explicitly");
+                    }
                 } finally {
                     service.closeAsync().get(20, TimeUnit.SECONDS);
                 }

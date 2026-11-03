@@ -23,6 +23,12 @@ public final class BackendBuildService implements BuildService {
     @Override public CompletableFuture<BuildLoadSnapshot> refreshLoadSnapshot(BuildInfo build) {
         return loadState == null ? CompletableFuture.completedFuture(null) : loadState.refresh(build);
     }
+    private SettingsService settings;
+    public BackendBuildService withSettings(SettingsService value) { settings=Objects.requireNonNull(value); return this; }
+    @Override public SettingsService settings() { return settings; }
+    private DataSourcesService dataSources;
+    BackendBuildService withDataSources(DataSourcesService value) { dataSources=value; return this; }
+    @Override public DataSourcesService dataSources() { return dataSources; }
     private BuildDownloads downloads;
     BackendBuildService withDownloads(BuildDownloads value) { downloads=value; return this; }
     @Override public BuildDownloads downloads() { return downloads; }
@@ -153,13 +159,25 @@ public final class BackendBuildService implements BuildService {
             } catch (Throwable error) { warning(warnings, "Summary refresh", error); }
         }
         // Retain only the reviewed fourteen plus the bounded natural-order discovery window.
-        var listed = Products.listed(products);
+        if (settings != null) remember(settings.enabledProducts());
+        var listed = new ArrayList<>(Products.listed(products));
+        if (settings != null) {
+            for (String id : settings.enabledProducts()) {
+                if (listed.stream().noneMatch(product -> product.id().equals(id)))
+                    listed.add(new Products.Listed(id, Products.name(id), Products.isKnown(id)));
+            }
+            settings.rememberProducts(listed.stream().map(Products.Listed::id).toList()).join();
+        }
         lastGood.keySet().retainAll(listed.stream().map(Products.Listed::id).toList());
         products.clear();
         listed.stream().filter(p -> !p.reviewed()).forEach(p -> products.add(p.id()));
         List<BuildInfo> result = new ArrayList<>();
+        int enabledCount = 0;
+        int readableCount = 0;
         for (var product : listed) {
             token.check();
+            if (settings != null && !settings.enabled(product.id())) continue;
+            enabledCount++;
             CatalogTypes.BuildList list = null;
             if (refresh && (eligible == null || eligible.contains(product.id()))) {
                 try {
@@ -178,15 +196,17 @@ public final class BackendBuildService implements BuildService {
                     warnings.add(product.id() + ": showing previous catalog snapshot");
                 }
             }
+            readableCount++;
             lastGood.put(product.id(), list);
             problems(warnings, product.id(), list.problems());
             for (var build : list.builds()) result.add(project(build));
         }
         token.check();
         if (loadState != null) result = new ArrayList<>(loadState.observe(result, token::check));
-        if (lastGood.isEmpty() && result.isEmpty()) throw new CatalogFailure(warnings);
+        if (enabledCount > 0 && readableCount == 0) throw new CatalogFailure(warnings);
         diagnostics = List.copyOf(warnings);
-        status = (refresh ? "Refresh complete" : "Local catalog · No network requests")
+        status = (enabledCount == 0 ? "No products enabled · Choose products in Settings"
+                : refresh ? "Refresh complete" : "Local catalog · No network requests")
                 + (warnings.isEmpty() ? "" : " · " + warnings.size() + " issues");
         return List.copyOf(result);
     }
