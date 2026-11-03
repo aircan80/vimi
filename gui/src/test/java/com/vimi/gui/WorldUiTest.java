@@ -26,6 +26,8 @@ import java.util.function.BooleanSupplier;
 public final class WorldUiTest {
     private WorldUiTest() {}
 
+    private static final CompletableFuture<Void> orientationChecks = new CompletableFuture<>();
+
     public static void main(String[] args) throws Exception {
         var done = new CompletableFuture<Void>();
         var closes = new AtomicInteger();
@@ -34,6 +36,7 @@ public final class WorldUiTest {
                         Platform.runLater(
                                 () -> {
                                     Platform.setImplicitExit(false);
+                                    gridOrientation();
                                     var stage = new Stage();
                                     try {
                                         var continent =
@@ -347,12 +350,190 @@ public final class WorldUiTest {
                                 }));
         try {
             done.get(30, TimeUnit.SECONDS);
+            orientationChecks.get(10, TimeUnit.SECONDS);
         } finally {
             Platform.exit();
         }
         System.out.println(
                 "World UI: continent drill-down, stale inventory, terrain frame and borrowed"
                         + " lifetime passed");
+    }
+
+    private static void gridOrientation() {
+        var map = new WorldService.MapInfo(0, "Authored tall continent", "Authored", 0, 1L);
+        var inventory = new java.util.ArrayList<WorldFormats.Tile>();
+        for (int row = 8; row <= 30; row++)
+            for (int column = 20; column <= 22; column++)
+                inventory.add(new WorldFormats.Tile(row, column, 100000 + row * 64 + column, 0, 0));
+        var chosen = new java.util.concurrent.atomic.AtomicReference<WorldFormats.Tile>();
+        BuildWorld handle =
+                new BuildWorld() {
+                    public CompletableFuture<WorldService.Catalog> catalog(Cancellation token) {
+                        return CompletableFuture.completedFuture(
+                                new WorldService.Catalog(
+                                        List.of(map),
+                                        List.of(
+                                                new WorldService.Area(
+                                                        1, "Authored area reference", 0, 0)),
+                                        List.of()));
+                    }
+
+                    public CompletableFuture<WorldService.Inventory> inventory(
+                            WorldService.MapInfo map, Cancellation token) {
+                        return CompletableFuture.completedFuture(
+                                new WorldService.Inventory(
+                                        map, new WorldFormats.World(inventory, false), null));
+                    }
+
+                    public CompletableFuture<WorldService.LoadedTile> tile(
+                            WorldService.MapInfo map, WorldFormats.Tile tile, Cancellation token) {
+                        chosen.set(tile);
+                        return new CompletableFuture<>();
+                    }
+
+                    public CompletableFuture<Void> closeAsync() {
+                        return CompletableFuture.completedFuture(null);
+                    }
+                };
+        var view = new WorldView(() -> handle, () -> 1);
+        var stage = new Stage();
+        var scene = new Scene(view, 1150, 950);
+        stage.setScene(scene);
+        stage.show();
+        view.ensureLoaded();
+        await(
+                () -> ((ListView<?>) view.lookup("#world-maps")).getItems().size() == 1,
+                () -> {
+                    ((ListView<?>) view.lookup("#world-maps")).getSelectionModel().selectFirst();
+                    await(
+                            () ->
+                                    view.lookup("#world-tiles") != null
+                                            && !((Button) view.lookup("#world-open")).isDisabled(),
+                            () -> {
+                                try {
+                                    var canvas =
+                                            (javafx.scene.canvas.Canvas)
+                                                    view.lookup("#world-tiles");
+                                    var gridImage = canvas.snapshot(null, null);
+                                    var pixels = gridImage.getPixelReader();
+                                    int[] gridPixels = new int[512 * 512];
+                                    pixels.getPixels(
+                                            0,
+                                            0,
+                                            512,
+                                            512,
+                                            javafx.scene.image.PixelFormat.getIntArgbInstance(),
+                                            gridPixels,
+                                            0,
+                                            512);
+                                    var gridBitmap =
+                                            new java.awt.image.BufferedImage(
+                                                    512,
+                                                    512,
+                                                    java.awt.image.BufferedImage.TYPE_INT_ARGB);
+                                    gridBitmap.setRGB(0, 0, 512, 512, gridPixels, 0, 512);
+                                    var proofDirectory =
+                                            Path.of(
+                                                    System.getProperty(
+                                                            "vimi.uiReviewDirectory",
+                                                            "build/ui-review"));
+                                    java.nio.file.Files.createDirectories(proofDirectory);
+                                    javax.imageio.ImageIO.write(
+                                            gridBitmap,
+                                            "png",
+                                            proofDirectory
+                                                    .resolve("world-grid-orientation-authored.png")
+                                                    .toFile());
+                                    int green = 0xff6c9a7c, blank = 0xffe5ebe6;
+                                    require(
+                                            pixels.getArgb(21 * 8 + 3, 8 * 8 + 3) == green
+                                                    && pixels.getArgb(21 * 8 + 3, 17 * 8 + 3)
+                                                            == green,
+                                            "Filename first index runs vertically in the"
+                                                + " full64-grid");
+                                    require(
+                                            pixels.getArgb(8 * 8 + 3, 21 * 8 + 3) == blank,
+                                            "Tall asymmetric inventory is not drawn transposed");
+                                    var zones =
+                                            (ListView<?>)
+                                                    view.lookupAll(".list-view").stream()
+                                                            .filter(
+                                                                    node ->
+                                                                            "Areas in selected map"
+                                                                                    .equals(
+                                                                                            node
+                                                                                                    .getAccessibleText()))
+                                                            .findFirst()
+                                                            .orElseThrow();
+                                    zones.getSelectionModel().selectFirst();
+                                    require(
+                                            canvas.snapshot(null, null)
+                                                            .getPixelReader()
+                                                            .getArgb(21 * 8 + 3, 17 * 8 + 3)
+                                                    == green,
+                                            "Area reference selection preserves the full-map"
+                                                + " inventory");
+                                    double x = 21 * 8 + 3, y = 17 * 8 + 3;
+                                    canvas.getOnMouseClicked()
+                                            .handle(
+                                                    new javafx.scene.input.MouseEvent(
+                                                            javafx.scene.input.MouseEvent
+                                                                    .MOUSE_CLICKED,
+                                                            x,
+                                                            y,
+                                                            x,
+                                                            y,
+                                                            javafx.scene.input.MouseButton.PRIMARY,
+                                                            1,
+                                                            false,
+                                                            false,
+                                                            false,
+                                                            false,
+                                                            true,
+                                                            false,
+                                                            false,
+                                                            false,
+                                                            false,
+                                                            true,
+                                                            null));
+                                    var selectedPixels =
+                                            canvas.snapshot(null, null).getPixelReader();
+                                    require(
+                                            selectedPixels.getArgb(21 * 8, 17 * 8) != green,
+                                            "Selection highlight follows the displayed cell");
+                                    ((Button) view.lookup("#world-open")).fire();
+                                    await(
+                                            () -> chosen.get() != null,
+                                            () -> {
+                                                try {
+                                                    require(
+                                                            chosen.get().x() == 17
+                                                                    && chosen.get().y() == 21
+                                                                    && chosen.get().rootId()
+                                                                            == 101109,
+                                                            "Clicked cell loads the original"
+                                                                + " filename tuple and exact"
+                                                                + " FileDataID");
+                                                    view.close();
+                                                    stage.close();
+                                                    orientationChecks.complete(null);
+                                                } catch (Throwable failure) {
+                                                    view.close();
+                                                    stage.close();
+                                                    orientationChecks.completeExceptionally(
+                                                            failure);
+                                                }
+                                            },
+                                            orientationChecks);
+                                } catch (Throwable failure) {
+                                    view.close();
+                                    stage.close();
+                                    orientationChecks.completeExceptionally(failure);
+                                }
+                            },
+                            orientationChecks);
+                },
+                orientationChecks);
     }
 
     private static void externalRetirementAndFailure(CompletableFuture<Void> done) {
@@ -426,7 +607,7 @@ public final class WorldUiTest {
                                                                         .getItems()
                                                                         .isEmpty(),
                                                                 "Changed handle cannot commit"
-                                                                    + " catalog");
+                                                                        + " catalog");
                                                         replacement.catalogue =
                                                                 CompletableFuture.failedFuture(
                                                                         new IllegalStateException(

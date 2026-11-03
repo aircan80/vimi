@@ -199,7 +199,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                         b
                                                 + " · Area #"
                                                 + b.id()
-                                                + " · Choose a terrain tile below to explore");
+                                                + " · Full-map terrain inventory below; area"
+                                                + " selection does not filter tiles");
                         });
         maps.getSelectionModel()
                 .selectedItemProperty()
@@ -219,10 +220,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var split = new SplitPane(sidebar, content);
         split.setDividerPositions(.23);
         setCenter(split);
+        tiles.setId("world-tiles");
+        tiles.setAccessibleText("Full-map terrain tile inventory");
         tiles.setOnMouseClicked(
                 e -> {
                     if (inventory == null || inventory.world() == null) return;
-                    int x = (int) (e.getX() / 8), y = (int) (e.getY() / 8);
+                    // Tile.x/y retain ADT filename order; screen columns use the second index.
+                    int x = (int) (e.getY() / 8), y = (int) (e.getX() / 8);
                     selected =
                             inventory.world().tiles().stream()
                                     .filter(t -> t.x() == x && t.y() == y)
@@ -539,8 +543,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 new javafx.scene.control.ScrollPane(
                         new VBox(
                                 12,
-                                new Label("AREAS / ZONES"),
+                                new Label("AREAS / ZONES · reference list"),
                                 zones,
+                                new Label("Terrain tiles below cover the entire selected map."),
                                 new Label("TERRAIN TILES · click to choose a starting location"),
                                 tiles)));
         content.setBottom(new HBox(10, open));
@@ -548,16 +553,18 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void drawTiles() {
+        // WDT/ADT filename x is the north/south row, y the east/west column.
+        // Keep file and explorer coordinates intact; transpose only the 2D presentation.
         var g = tiles.getGraphicsContext2D();
         g.setFill(javafx.scene.paint.Color.web("#e5ebe6"));
         g.fillRect(0, 0, 512, 512);
         if (inventory == null || inventory.world() == null) return;
         g.setFill(javafx.scene.paint.Color.web("#6c9a7c"));
-        for (var t : inventory.world().tiles()) g.fillRect(t.x() * 8, t.y() * 8, 7, 7);
+        for (var t : inventory.world().tiles()) g.fillRect(t.y() * 8, t.x() * 8, 7, 7);
         if (selected != null) {
             g.setStroke(javafx.scene.paint.Color.web("#e0ae3d"));
             g.setLineWidth(2);
-            g.strokeRect(selected.x() * 8, selected.y() * 8, 8, 8);
+            g.strokeRect(selected.y() * 8, selected.x() * 8, 8, 8);
         }
     }
 
@@ -696,7 +703,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                         show(firstFrameActivity, false);
                                         status.setText(
                                                 "Terrain preview preparation unavailable; readable"
-                                                    + " terrain retained.");
+                                                        + " terrain retained.");
                                         return;
                                     }
                                     terrainScene = prepared.scene();
@@ -835,7 +842,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                             show(firstFrameActivity, false);
                                             status.setText(
                                                     "Terrain frame unavailable; previous image"
-                                                        + " retained.");
+                                                            + " retained.");
                                         });
                             }
                         }
