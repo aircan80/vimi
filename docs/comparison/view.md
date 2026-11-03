@@ -48,7 +48,6 @@ variable-length cursor history, responsive details and stale-opening cleanup.
 Search and status filtering are both visibly current-page scoped. Failed page
 loads preserve current findings and restore navigation while offering Retry.
 It exports `gui/build/ui-review/comparison-authored.png`; all fixtures are invented
-and contain no game assets. GUI Gradle wiring belongs to application composition;
-register a display-required JavaExec task for `com.vimi.gui.CompareUiTest` with the
-existing GUI test runtime classpath. This document does not claim durable results,
+and contain no game assets. Run the display-required authored checks with `./gradlew :gui:compareUiTest`.
+Coordinator and forbidden-network native fixtures are included in `:gui:check`. This document does not claim durable results,
 resume, export, media comparison or full #117 completion.

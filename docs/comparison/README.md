@@ -9,9 +9,30 @@ contributions are present:
 - UI expert: [screens and interaction](ui.md), with an
   [authored mockup](../images/build-comparison-design.svg).
 
-**Implementation is gated on independent peer review and recorded approval.**
-These documents contain no comparison implementation. The decisions below resolve
-initial scope questions in the role proposals; they are themselves reviewable.
+The Foundation/inventory design received independent approval before coding;
+its implementation was FF-merged in #131 after native unit/integration checks on
+Linux, macOS and Windows and storage compatibility checks. See [review.md](review.md)
+for exact approval revisions and [view.md](view.md) for the delivered UI contract.
+The role documents below preserve the reviewed proposal. Their later phases remain
+gated; inventory delivery does not complete #117.
+
+## Delivered foundation
+
+Open **Compare**, select two locally prepared builds of the same product/locale,
+choose **Files** or **Tables**, and select **Compare local data**. Merely selecting
+endpoints or browsing results starts no acquisition. Missing local inputs explain
+what needs preparation through the ordinary build workflow.
+
+Files assesses content keys and decoded sizes; names and current storage presence
+are unassessed, and membership coverage remains unknown. Tables restores an exact
+cached known-definition preparation inventory with full schemas unassessed. It
+does not compare table rows. Other areas remain explicitly Not implemented.
+
+Findings are session-only, paged and bounded. Search/status filters apply to the
+current page. Known-equal records are omitted; scanned identities and findings
+are distinct. Coverage reasons and captured dependency evidence are shown.
+Leaving Compare cancels/drains both dedicated sessions before navigation proceeds.
+There is no persistent comparison report or resume capability.
 
 ## Product decisions
 

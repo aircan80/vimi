@@ -22,7 +22,9 @@ adds local-only dedicated sessions, selected-locale file content keys/decoded si
 and exact cached known-definition table inventories, bounded session-only findings
 and explicit coverage. Other areas remain Not implemented. No persistent comparison
 reports, provider refresh, payload acquisition or inferred global membership.
-The foundation is undergoing independent integration review and native CI; keep
+The foundation passed independent integration review and all native CI, and #131
+is FF-merged. A content-inventory cursor optimization is underway before alpha.6
+publication; avoid unused per-file storage presence queries during comparison. Keep
 #117 open. Raw table row comparisons require their next specific reviewed contract.
 
 Questions/follow-ups for the user's return: Windows MSI installation and deferred

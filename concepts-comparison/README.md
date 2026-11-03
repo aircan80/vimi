@@ -1,8 +1,8 @@
 # Comparison core
 
 Session-only, local comparison contracts and a bounded ordered merge engine for
-#117. This is the foundation; Files/table adapters and application sessions are
-separate work. No persisted reports, semantic adapters, resume, SQL, acquisition,
+#117. Files/table inventory adapters live in `inputs/`; dedicated application sessions
+and local-only capability composition belong to the GUI application module. No persisted reports, semantic adapters, resume, SQL, acquisition,
 or `GeneratedStore` publications are implemented here.
 
 `ComparisonService(Path temporaryParent)` owns an isolated temporary directory and
