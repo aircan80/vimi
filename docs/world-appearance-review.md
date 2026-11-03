@@ -15,6 +15,8 @@ and scenery take priority over packaged GPU diagnostics.
 | Distance designd3e1153 | Independently reviewed source-free stitched/hole-preserving geometry spike, unchanged aggregate geometry bounds; no production distance scene |
 | Error reference517979e | Root source review and module checks; bounded exact-rational TEST-ONLY overlap/coverage/error oracle. No runtime budget/performance/fidelity acceptance |
 | Texture design879dd6c / API2960bcb | Source-backed pre-code design. Root approved staged root-grid/mask-reader then pure compositor checkpoints. The source/pool/persistence and render integration still require implementation review |
+| Texture formatsca99757 + f3e1819 | Root/domain source approval after public DTO cap-before-copy correction; shared native grid and lazy split-texture masks, unchanged old geometry. Three source pairs match111,360 original vertex positions and2,024 independent mask hashes. No atlas/render claim |
+| Water source1789221 +96d0969 | Source/parser API design approved; one bounded immutable MH2O owner with explicit low-level layout parsing and separate concepts qualification. No production liquid reader or rendering |
 | SD/HD investigation throughb279d03 | Root reviewed exact-build client UI/API, known-table and sampled ROOT evidence. Local pairing remains unproven; no inert toggle or game setting change |
 
 Integrated format/world/render/GUI checks pass. The explicit handmade decoder also
