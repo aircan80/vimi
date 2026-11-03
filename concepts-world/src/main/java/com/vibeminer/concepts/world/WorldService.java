@@ -7,7 +7,6 @@ import com.vibeminer.formats.db2.Db2Types;
 import com.vibeminer.formats.tables.BuildTables;
 import com.vibeminer.formats.tables.TableTypes;
 import com.vibeminer.formats.world.WorldFormats;
-import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -61,6 +60,7 @@ public final class WorldService implements BuildWorld {
     private CompletableFuture<Void> closing;
     private final Map<String, LoadedTile> cache = new LinkedHashMap<>(16, .75f, true);
     private Catalog catalog;
+    private WorldAreaNavigation areaNavigation;
 
     public WorldService(BuildTables tables, BuildFiles files) {
         this.tables = java.util.Objects.requireNonNull(tables);
@@ -209,35 +209,27 @@ public final class WorldService implements BuildWorld {
                 });
     }
 
+    @Override
+    public CompletableFuture<WorldAreaNavigation.Result> findArea(
+            WorldAreaNavigation.Request request,
+            Cancellation token,
+            java.util.function.Consumer<WorldAreaNavigation.Progress> progress) {
+        WorldAreaNavigation navigation;
+        synchronized (this) {
+            if (closing != null) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("World workspace closed"));
+            }
+            if (areaNavigation == null) {
+                areaNavigation = new WorldAreaNavigation(files);
+            }
+            navigation = areaNavigation;
+        }
+        return navigation.scan(request, token, progress);
+    }
+
     private byte[] bytes(FileTypes.FileRef ref, Cancellation token) {
-        if (files == null) {
-            throw new IllegalStateException("Build files are unavailable in this workspace");
-        }
-        var stat = files.stat(ref, token).join();
-        if (stat.file() == null
-                || stat.file().size() != null && stat.file().size() > WorldFormats.MAX_FILE_BYTES) {
-            throw new IllegalStateException("File absent or exceeds world preview limit");
-        }
-        var opened = files.openRead(ref, token).join();
-        if (opened.stream() == null) {
-            throw new IllegalStateException("File is " + opened.state());
-        }
-        try (var stream = opened.stream()) {
-            if (!stream.holes().isEmpty()) {
-                throw new IllegalStateException("File has protected sections");
-            }
-            if (stream.length() < 12 || stream.length() > WorldFormats.MAX_FILE_BYTES) {
-                throw new IllegalStateException("World file size outside bounds");
-            }
-            var target = ByteBuffer.allocate((int) stream.length());
-            while (target.hasRemaining()) {
-                token.check();
-                if (stream.read(target, token).join() <= 0) {
-                    throw new IllegalStateException("Truncated world file");
-                }
-            }
-            return target.array();
-        }
+        return WorldFileBytes.read(files, ref, token, false).bytes();
     }
 
     @FunctionalInterface
@@ -408,15 +400,22 @@ public final class WorldService implements BuildWorld {
         closing = new CompletableFuture<>();
         lifetime.cancel();
         worker.shutdown();
+        var areasClosed =
+                areaNavigation == null
+                        ? CompletableFuture.<Void>completedFuture(null)
+                        : areaNavigation.closeAsync();
         Thread.startVirtualThread(
                 () -> {
                     try {
                         while (!worker.awaitTermination(1, TimeUnit.SECONDS)) {}
+                        areasClosed.join();
                         cache.clear();
                         closing.complete(null);
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                         closing.completeExceptionally(e);
+                    } catch (RuntimeException failure) {
+                        closing.completeExceptionally(failure);
                     }
                 });
         return closing.copy();

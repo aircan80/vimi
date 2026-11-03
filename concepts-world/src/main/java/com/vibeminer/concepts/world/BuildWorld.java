@@ -14,6 +14,17 @@ public interface BuildWorld extends AutoCloseable {
     CompletableFuture<WorldService.LoadedTile> tile(
             WorldService.MapInfo map, WorldFormats.Tile tile, Cancellation token);
 
+    /**
+     * Optional exact-area discovery; custom world providers retain explicit unsupported behavior.
+     */
+    default CompletableFuture<WorldAreaNavigation.Result> findArea(
+            WorldAreaNavigation.Request request,
+            Cancellation token,
+            java.util.function.Consumer<WorldAreaNavigation.Progress> progress) {
+        return CompletableFuture.failedFuture(
+                new UnsupportedOperationException("Area terrain discovery is unavailable"));
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override
