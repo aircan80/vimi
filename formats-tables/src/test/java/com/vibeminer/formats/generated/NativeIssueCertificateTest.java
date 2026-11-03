@@ -233,6 +233,173 @@ final class NativeIssueCertificateTest {
     }
 
     @Test
+    void factoryRejectsDifferentEffectiveReaderOptionsBeforeTakingOwner() {
+        var fixture = fixture(null);
+        var l = fixture.source().readerLimits();
+        var changedLimits =
+                new Db2Types.Limits(
+                        l.maxDecodedBytes(),
+                        l.maxRows(),
+                        l.maxFields(),
+                        l.maxSections(),
+                        l.maxRecordBytes(),
+                        l.maxAuxiliaryBytes(),
+                        l.maxStringBytes() - 1,
+                        l.maxIndexBytes(),
+                        l.maxColumns(),
+                        l.maxCopyDepth(),
+                        l.allowPartialEncryptedSections(),
+                        l.allowRawTextEvidence(),
+                        l.maxRawTextEvidenceBytes(),
+                        l.maxRelationshipBytes(),
+                        l.maxRelationshipEntries(),
+                        l.definitionSha256(),
+                        l.verifiedRawIntegerRules());
+        var changedSource =
+                new GeneratedTableSource(
+                        fixture.source().locale(),
+                        fixture.source().contentKey(),
+                        fixture.source().definition(),
+                        changedLimits,
+                        fixture.source().encodingScope(),
+                        GeneratedTableSource.IssuePolicy.NATIVE_V1);
+        assertNotEquals(fixture.source().readerOptions(), changedSource.readerOptions());
+        var closed = new AtomicInteger();
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        GeneratedTableContent.nativeDb2(
+                                changedSource,
+                                fixture.table(),
+                                List.of(),
+                                closed::incrementAndGet,
+                                List.of(),
+                                List.of()));
+        assertEquals(0, closed.get(), "A failed factory does not take ownership from its caller");
+    }
+
+    @Test
+    void exchangingScopedAndUnscopedSourceDigestsRejectsBothGraphsWithoutRepair() {
+        for (boolean scoped : List.of(false, true)) {
+            var memory = new MemoryGeneratedStore();
+            var tables = new GeneratedTables(memory);
+            var fixture = fixture("build-a");
+            var saved =
+                    tables.store(
+                                    fixture.source(),
+                                    name -> "key-a",
+                                    fixture.content(new AtomicInteger(), scoped),
+                                    TOKEN)
+                            .join();
+            var node = GeneratedKey.parse(saved.identity());
+            var manifest =
+                    GeneratedKey.hash(
+                            ByteBuffer.allocate(21)
+                                    .put("table".getBytes(StandardCharsets.US_ASCII))
+                                    .put(node.bytes())
+                                    .array());
+            var file = RecordFile.open(memory, manifest, LOWER).join().file();
+            var metadata =
+                    new java.util.LinkedHashMap<>(Json.object(Json.parse(file.metadata(), 16384)));
+            var certificate =
+                    new java.util.LinkedHashMap<>(Json.object(metadata.get("IssueCertificate")));
+            assertEquals(
+                    fixture.source().baseHash(scoped), certificate.get("SourceIdentitySha256"));
+            certificate.put("SourceIdentitySha256", fixture.source().baseHash(!scoped));
+            metadata.put("IssueCertificate", certificate);
+            var rows = file.read(0, 2, LOWER).join();
+            memory.delete(List.of(manifest), LOWER).join();
+            try (var writer = new RecordFileWriter(memory, new RecordFileOptions())) {
+                for (var row : rows) {
+                    writer.add(row.id(), row.bytes(), LOWER).join();
+                }
+                writer.complete(manifest, Json.bytes(metadata), LOWER).join();
+            }
+            int puts = memory.puts();
+            var keys = memory.keys();
+            var failure =
+                    assertThrows(
+                            CompletionException.class,
+                            () ->
+                                    tables.openPreparedLocal(
+                                                    fixture.source(), name -> "key-a", TOKEN)
+                                            .join());
+            assertInstanceOf(
+                    com.vibeminer.generated.GeneratedStoreException.class, failure.getCause());
+            assertThrows(
+                    CompletionException.class,
+                    () -> tables.savedArtifacts(fixture.source(), name -> "key-a", TOKEN).join());
+            assertEquals(puts, memory.puts());
+            assertEquals(keys, memory.keys());
+        }
+    }
+
+    @Test
+    void nonsparseMalformedUtf8StillFailsWithRawEvidenceEnabledAndPublishesNoCertificate() {
+        // One nonsparse 8-byte record, a relative string pointer of 8 to string offset 0,
+        // then the malformed terminated string and its unsigned row ID.
+        var numeric = Db2Fixture.numeric("WDC5", 0, 32, 8, new long[0], false);
+        var bytes = new byte[numeric.length + 2];
+        System.arraycopy(numeric, 0, bytes, 0, 280);
+        bytes[280] = (byte) 0xff;
+        System.arraycopy(numeric, 280, bytes, 282, 4);
+        var buffer = ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        buffer.putInt(148, 2);
+        buffer.putInt(220, 2);
+        var document =
+                Db2Fixture.definition("int ID\nlocstring Name", "$id,noninline$ID<u32>\nName");
+        var l = new Db2Types.Limits();
+        var limits =
+                new Db2Types.Limits(
+                        l.maxDecodedBytes(),
+                        l.maxRows(),
+                        l.maxFields(),
+                        l.maxSections(),
+                        l.maxRecordBytes(),
+                        l.maxAuxiliaryBytes(),
+                        l.maxStringBytes(),
+                        l.maxIndexBytes(),
+                        l.maxColumns(),
+                        l.maxCopyDepth(),
+                        l.allowPartialEncryptedSections(),
+                        true,
+                        l.maxRawTextEvidenceBytes(),
+                        l.maxRelationshipBytes(),
+                        l.maxRelationshipEntries(),
+                        l.definitionSha256(),
+                        l.verifiedRawIntegerRules());
+        var table =
+                Db2Reader.open(Db2ByteSource.memory(bytes), document, "1.2.3.4", limits, TOKEN)
+                        .join();
+        var readFailure =
+                assertThrows(
+                        CompletionException.class, () -> table.readOrdinals(0, 1, TOKEN).join());
+        assertInstanceOf(com.vibeminer.formats.Db2FormatException.class, readFailure.getCause());
+        assertEquals(
+                "DB2_INVALID",
+                ((com.vibeminer.formats.Db2FormatException) readFailure.getCause()).code());
+        assertTrue(readFailure.getCause().getMessage().contains("strict UTF-8"));
+        var block =
+                document.selectFile("1.2.3.4", table.header().layoutHash(), TOKEN)
+                        .blocks()
+                        .getFirst();
+        var source =
+                GeneratedTableSource.forNativeBlock(block, "enUS", "1".repeat(32), limits, null);
+        var closed = new AtomicInteger();
+        var memory = new MemoryGeneratedStore();
+        var tables = new GeneratedTables(memory);
+        var content =
+                GeneratedTableContent.nativeDb2(
+                        source, table, List.of(), closed::incrementAndGet, List.of(), List.of());
+        assertThrows(
+                CompletionException.class,
+                () -> tables.store(source, TactKeyStatus.NONE, content, TOKEN).join());
+        assertEquals(1, closed.get());
+        assertNull(tables.openPreparedLocal(source, TactKeyStatus.NONE, TOKEN).join());
+        assertTrue(memory.keys().isEmpty());
+    }
+
+    @Test
     void crossedCertificateFieldsAndCountsFailBothReadAndInventoryWithoutRepair() {
         for (String field :
                 List.of(

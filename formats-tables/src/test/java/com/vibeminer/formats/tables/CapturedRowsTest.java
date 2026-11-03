@@ -92,6 +92,28 @@ final class CapturedRowsTest {
                 boolean certified,
                 com.vibeminer.formats.definitions.DbdDocument document,
                 byte[] bytes) {
+            this(
+                    seed,
+                    legacy,
+                    keyed,
+                    initialKey,
+                    replacement,
+                    certified,
+                    document,
+                    bytes,
+                    List.of());
+        }
+
+        Fixture(
+                boolean seed,
+                boolean legacy,
+                boolean keyed,
+                String initialKey,
+                String replacement,
+                boolean certified,
+                com.vibeminer.formats.definitions.DbdDocument document,
+                byte[] bytes,
+                List<Db2Types.Hole> holes) {
             keyValue.set(initialKey);
             var base = new Db2Types.Limits();
             var limits =
@@ -135,7 +157,7 @@ final class CapturedRowsTest {
                             true);
             var decoded =
                     Db2Reader.open(
-                                    Db2ByteSource.memory(bytes),
+                                    projected(bytes, holes),
                                     document,
                                     "1.2.3.4",
                                     limits,
@@ -203,8 +225,23 @@ final class CapturedRowsTest {
                                         keyed ? name -> keyValue.get() : TactKeyStatus.NONE,
                                         certified
                                                 ? GeneratedTableContent.nativeDb2(
-                                                        source, decoded, List.of(), () -> {},
-                                                        List.of(), List.of())
+                                                        source,
+                                                        decoded,
+                                                        decoded.sections().stream()
+                                                                .filter(
+                                                                        Db2Types.Section
+                                                                                ::isEncrypted)
+                                                                .map(Db2Types.Section::key)
+                                                                .distinct()
+                                                                .sorted()
+                                                                .toList(),
+                                                        () -> {},
+                                                        holes.stream()
+                                                                .map(Db2Types.Hole::name)
+                                                                .distinct()
+                                                                .sorted()
+                                                                .toList(),
+                                                        List.of())
                                                 : content,
                                         Cancellation.NONE)
                                 .join();
@@ -543,6 +580,280 @@ final class CapturedRowsTest {
                     assertEquals(-1, page.cellIssues().getFirst().columnIndex());
                     assertEquals(
                             "CAPTURE_ISSUE_CHANNEL_LIMIT", page.cellIssues().getFirst().code());
+                }
+            }
+        }
+    }
+
+    @Test
+    void legacyExplicitEmptyChannelStaysEmptyWithoutAcquiringNativeEvidence() {
+        var fixture = new Fixture(false, false, false);
+        var decoded =
+                Db2Reader.open(
+                                Db2ByteSource.memory(
+                                        Db2Fixture.numeric("WDC5", 0, 32, 9, new long[0], true)),
+                                Db2Fixture.definition(
+                                        "int ID\nint Value", "$id,noninline$ID<u32>\nValue<u32>"),
+                                "1.2.3.4",
+                                fixture.source.readerLimits(),
+                                Cancellation.NONE)
+                        .join();
+        var saved =
+                fixture.writable
+                        .store(
+                                fixture.source,
+                                TactKeyStatus.NONE,
+                                new GeneratedTableContent(
+                                        decoded.header(),
+                                        decoded.sections(),
+                                        decoded.completion(),
+                                        List.of(),
+                                        (first, count, token) ->
+                                                decoded.readOrdinals(first, count, token)
+                                                        .thenApply(
+                                                                rows ->
+                                                                        rows.stream()
+                                                                                .map(
+                                                                                        row ->
+                                                                                                new Db2Types
+                                                                                                        .Row(
+                                                                                                        row
+                                                                                                                .id(),
+                                                                                                        row
+                                                                                                                .isCopy(),
+                                                                                                        row
+                                                                                                                .copySourceId(),
+                                                                                                        row
+                                                                                                                .values(),
+                                                                                                        List
+                                                                                                                .of()))
+                                                                                .toList()),
+                                        () -> {},
+                                        List.of(),
+                                        List.of()),
+                                Cancellation.NONE)
+                        .join();
+        int puts = fixture.memory.puts();
+        try (var tables = fixture.open();
+                var captured = tables.capturePreparedLocal(REF, Cancellation.NONE).join().rows()) {
+            assertEquals(
+                    CapturedRowsTypes.IssueChannelState.UNKNOWN,
+                    captured.receipt().issueChannelEvidence().state());
+            assertEquals(saved.identity(), captured.receipt().graphIdentity());
+            assertEquals(
+                    CapturedRowsTypes.Membership.NOT_CERTIFIED, captured.receipt().membership());
+            assertEquals(
+                    List.of(),
+                    captured.readOrdinalPage(0, 1, Cancellation.NONE)
+                            .join()
+                            .rows()
+                            .getFirst()
+                            .row()
+                            .textIssues());
+        }
+        assertEquals(puts, fixture.memory.puts());
+    }
+
+    @Test
+    void nativeIssueEvidenceAcceptsExactly65536BytesAndLimitsTheNextEightBytes() {
+        for (int secondLength : List.of(4076, 4077)) {
+            byte[] first = new byte[4075], second = new byte[secondLength];
+            java.util.Arrays.fill(first, (byte) 0xff);
+            java.util.Arrays.fill(second, (byte) 0xff);
+            int start = 204 + 40 + 3 * 28;
+            int width = (first.length + second.length + 2 + 4 + 3) & ~3;
+            var buffer =
+                    java.nio.ByteBuffer.allocate(start + width + 14)
+                            .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            buffer.put("WDC5".getBytes(java.nio.charset.StandardCharsets.US_ASCII)).putInt(5);
+            buffer.putInt(136, 1)
+                    .putInt(140, 3)
+                    .putInt(144, 12)
+                    .putInt(152, 0x11223344)
+                    .putInt(156, 0x01020304);
+            buffer.putShort(172, (short) 5).putInt(176, 3).putInt(188, 72).putInt(200, 1);
+            buffer.position(204);
+            buffer.putLong(0)
+                    .putInt(start)
+                    .putInt(1)
+                    .putInt(0)
+                    .putInt(start + width)
+                    .putInt(4)
+                    .putInt(0)
+                    .putInt(1)
+                    .putInt(0);
+            for (int field = 0; field < 3; field++) {
+                buffer.putShort((short) 0).putShort((short) (field * 4));
+            }
+            for (int field = 0; field < 3; field++) {
+                buffer.putShort((short) (field * 32))
+                        .putShort((short) 32)
+                        .putInt(0)
+                        .putInt(0)
+                        .putInt(0)
+                        .putInt(0)
+                        .putInt(0);
+            }
+            assertEquals(start, buffer.position());
+            buffer.put(first).put((byte) 0).put(second).put((byte) 0).putInt(123);
+            buffer.position(start + width);
+            buffer.putInt(7).putInt(start).putShort((short) width).putInt(7);
+            var fixture =
+                    new Fixture(
+                            true,
+                            false,
+                            false,
+                            "before",
+                            null,
+                            true,
+                            Db2Fixture.definition(
+                                    "int ID\nlocstring First\nlocstring Second\nint Value",
+                                    "$id,noninline$ID<u32>\nFirst\nSecond\nValue<u32>"),
+                            buffer.array());
+            try (var tables = fixture.open();
+                    var captured =
+                            tables.capturePreparedLocal(REF, Cancellation.NONE).join().rows()) {
+                var page = captured.readOrdinalPage(0, 1, Cancellation.NONE).join();
+                assertEquals(CapturedRowsTypes.ReadState.READ, page.state());
+                var row = page.rows().getFirst().row();
+                assertEquals("123", row.values().getLast());
+                assertEquals(secondLength == 4076 ? 2 : 1, row.textIssues().size());
+                long retained =
+                        row.textIssues().stream()
+                                .mapToLong(
+                                        issue ->
+                                                64L
+                                                        + 4L * issue.code().length()
+                                                        + 4L * issue.rawBytesHex().length())
+                                .sum();
+                if (secondLength == 4076) {
+                    assertEquals(65536, retained);
+                    assertEquals(List.of(), page.cellIssues());
+                } else {
+                    assertTrue(retained < 65536);
+                    assertEquals(-1, page.cellIssues().getFirst().columnIndex());
+                    assertEquals(
+                            "CAPTURE_ISSUE_CHANNEL_LIMIT", page.cellIssues().getFirst().code());
+                }
+            }
+        }
+    }
+
+    private static Db2ByteSource projected(byte[] bytes, List<Db2Types.Hole> holes) {
+        return new Db2ByteSource() {
+            public long length() {
+                return bytes.length;
+            }
+
+            public List<Db2Types.Hole> holes() {
+                return holes;
+            }
+
+            public CompletableFuture<Void> readRange(
+                    long offset, java.nio.ByteBuffer destination, Cancellation token) {
+                token.check();
+                long end = offset + destination.remaining();
+                assertTrue(
+                        holes.stream()
+                                .noneMatch(
+                                        hole ->
+                                                offset < hole.offset() + hole.length()
+                                                        && hole.offset() < end),
+                        "The native reader must not touch hidden bytes");
+                destination.put(bytes, (int) offset, destination.remaining());
+                return CompletableFuture.completedFuture(null);
+            }
+        };
+    }
+
+    @Test
+    void
+            certifiedPartialGraphKeepsReadableLocalizedTextAndResolvedTextCopyWithoutMembershipClaims() {
+        int start = 320;
+        byte[] text = "café\0".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        int hidden = start + 4 + text.length + 4 + 8;
+        var buffer =
+                java.nio.ByteBuffer.allocate(hidden + 4 + text.length + 4)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        buffer.put("WDC5".getBytes(java.nio.charset.StandardCharsets.US_ASCII)).putInt(5);
+        buffer.putInt(136, 2)
+                .putInt(140, 1)
+                .putInt(144, 4)
+                .putInt(148, text.length * 2)
+                .putInt(152, 0x11223344)
+                .putInt(156, 0x01020304);
+        buffer.putShort(172, (short) 4).putInt(176, 1).putInt(188, 24).putInt(200, 2);
+        buffer.position(204);
+        buffer.putLong(0)
+                .putInt(start)
+                .putInt(1)
+                .putInt(text.length)
+                .putInt(0)
+                .putInt(4)
+                .putInt(0)
+                .putInt(0)
+                .putInt(1);
+        buffer.putLong(123)
+                .putInt(hidden)
+                .putInt(1)
+                .putInt(text.length)
+                .putInt(0)
+                .putInt(4)
+                .putInt(0)
+                .putInt(0)
+                .putInt(0);
+        buffer.putShort((short) 0).putShort((short) 0);
+        buffer.putShort((short) 0)
+                .putShort((short) 32)
+                .putInt(0)
+                .putInt(0)
+                .putInt(0)
+                .putInt(0)
+                .putInt(0);
+        buffer.putInt(1).putInt(21); // Clear keyed-physical ID inventory.
+        assertEquals(start, buffer.position());
+        buffer.putInt(8).put(text).putInt(7).putInt(8).putInt(7);
+        assertEquals(hidden, buffer.position());
+        buffer.putInt(4 + text.length).put(text).putInt(21);
+        String sectionKey = "000000000000007B";
+        var fixture =
+                new Fixture(
+                        true,
+                        false,
+                        true,
+                        "before",
+                        null,
+                        true,
+                        Db2Fixture.definition(
+                                "int ID\nlocstring Name", "$id,noninline$ID<u32>\nName"),
+                        buffer.array(),
+                        List.of(new Db2Types.Hole(hidden, buffer.capacity() - hidden, sectionKey)));
+        var saved =
+                fixture.readonly
+                        .openPreparedLocal(fixture.source, name -> "before", Cancellation.NONE)
+                        .join();
+        assertTrue(saved.scoped());
+        assertNull(saved.readPage(0, 1, Cancellation.NONE).join().getFirst().textIssues());
+        try (var tables = fixture.open();
+                var captured = tables.capturePreparedLocal(REF, Cancellation.NONE).join().rows()) {
+            assertEquals(TableTypes.State.PARTIAL, captured.receipt().table().state());
+            assertEquals(1, captured.receipt().completion().excludedEncryptedSections());
+            assertEquals(1, captured.receipt().completion().excludedPhysicalRecords());
+            assertEquals(2, captured.receipt().rowCount());
+            assertEquals(
+                    CapturedRowsTypes.Membership.NOT_CERTIFIED, captured.receipt().membership());
+            assertEquals(
+                    CapturedRowsTypes.IssueChannelState.VERIFIED_NATIVE,
+                    captured.receipt().issueChannelEvidence().state());
+            for (int ordinal = 0; ordinal < 2; ordinal++) {
+                var page = captured.readOrdinalPage(ordinal, 1, Cancellation.NONE).join();
+                assertEquals(CapturedRowsTypes.ReadState.READ, page.state());
+                var row = page.rows().getFirst().row();
+                assertEquals("café", row.values().get(1));
+                assertEquals(List.of(), row.textIssues());
+                assertEquals(ordinal == 1, row.isCopy());
+                if (row.isCopy()) {
+                    assertEquals(7L, row.copySourceId());
                 }
             }
         }
