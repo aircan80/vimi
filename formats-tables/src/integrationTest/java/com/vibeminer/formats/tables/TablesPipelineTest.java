@@ -30,6 +30,15 @@ final class TablesPipelineTest {
 
     @Test
     void inventoryReopensWithoutEncodedSourceAndMissingGraphRepairsOnAccess() {
+        pipeline(false);
+    }
+
+    @Test
+    void unifiedGraphRestorationAttachesAllDependenciesBeforeAnyRowQuery() {
+        pipeline(true);
+    }
+
+    private void pipeline(boolean unified) {
         byte[] db2 = Db2Fixture.numeric("WDC5", 0, 32, 9, new long[0], true);
         var document =
                 Db2Fixture.definition("int ID\nint Value", "$id,noninline$ID<u32>\nValue<u32>");
@@ -44,10 +53,37 @@ final class TablesPipelineTest {
                                         "a".repeat(64), "fixture", document)));
         String identity = null;
         for (int round = 0; round < 3; round++) {
-            ObjectStore objects = ObjectStore.open(temporary.resolve("objects")).join();
-            DiskGeneratedStore generated =
-                    DiskGeneratedStore.open(temporary.resolve("generated")).join();
-            CachingObjectSource access = CachingObjectSource.localOnly(objects, objects);
+            ObjectStore objects =
+                    unified
+                            ? ObjectStore.openLibrary(temporary.resolve("library")).join()
+                            : ObjectStore.open(temporary.resolve("objects")).join();
+            var catalog =
+                    unified
+                            ? com.vibeminer.store.LibraryCatalog.open(objects.databasePath()).join()
+                            : null;
+            String owner = round == 0 ? "build-a" : "build-b";
+            var original =
+                    unified
+                            ? objects.forOwner(
+                                    owner,
+                                    com.vibeminer.store.LibraryCatalog.Scope.BUILD,
+                                    "source",
+                                    com.vibeminer.store.LibraryCatalog.Role.ORIGINAL)
+                            : null;
+            com.vibeminer.generated.GeneratedStore generated =
+                    unified
+                            ? new com.vibeminer.generated.PackGeneratedStore(
+                                    objects,
+                                    objects.forOwner(
+                                            owner,
+                                            com.vibeminer.store.LibraryCatalog.Scope.BUILD,
+                                            "tables",
+                                            com.vibeminer.store.LibraryCatalog.Role.DERIVED))
+                            : DiskGeneratedStore.open(temporary.resolve("generated")).join();
+            CachingObjectSource access =
+                    unified
+                            ? CachingObjectSource.localOnly(original, original)
+                            : CachingObjectSource.localOnly(objects, objects);
             try {
                 FilesScenario fixture =
                         new FilesScenario(false, FileSystemOptions.defaults(), ignored -> access)
@@ -55,7 +91,11 @@ final class TablesPipelineTest {
                 var encoded = fixture.encoded.get(100L);
                 ObjectKey key = new ObjectKey(ObjectKey.ENCODED, encoded.key().bytes());
                 if (round != 1) {
-                    objects.put(List.of(new PutObject(key, encoded.bytes()))).join();
+                    if (unified) {
+                        original.put(List.of(new PutObject(key, encoded.bytes()))).join();
+                    } else {
+                        objects.put(List.of(new PutObject(key, encoded.bytes()))).join();
+                    }
                 } else {
                     // No decoded-file cache exists: successful queries must use generated rows.
                     objects.delete(List.of(key)).join();
@@ -127,6 +167,26 @@ final class TablesPipelineTest {
                                             Cancellation.NONE)
                                     .join();
                     assertEquals("Value", schema.columns().get(1).name());
+                    if (unified && round == 1) {
+                        var first =
+                                catalog.figures("build-a", com.vibeminer.store.Cancellation.NONE)
+                                        .join()
+                                        .derived();
+                        var current =
+                                catalog.figures(owner, com.vibeminer.store.Cancellation.NONE)
+                                        .join()
+                                        .derived();
+                        assertEquals(
+                                true,
+                                first.storedObjects() >= 4,
+                                "Inventory, node, manifest and segment are distinct payloads");
+                        assertEquals(
+                                first.storedObjects(),
+                                current.storedObjects(),
+                                "Opening cached schema claims all dependencies without row enumeration");
+                        assertEquals(first.storedBytes(), current.sharedWithBuildBytes());
+                        assertEquals(0, current.uniqueToBuildBytes());
+                    }
                     var page =
                             tables.page(
                                             new TableTypes.PageRequest(TableTypes.Ref.id(100)),
@@ -167,7 +227,12 @@ final class TablesPipelineTest {
                 }
             } finally {
                 access.closeAsync().join();
-                generated.closeAsync().join();
+                if (generated instanceof DiskGeneratedStore disk) {
+                    disk.closeAsync().join();
+                }
+                if (catalog != null) {
+                    catalog.closeAsync().join();
+                }
                 objects.closeAsync().join();
             }
         }
