@@ -240,3 +240,27 @@ passed with 110 table unit, 2 disk/pack pipeline, 3 interoperability and 156 com
 tests, all without failures/errors/skips. This is author validation, **not independent
 implementation approval**. Architecture/domain implementation acceptance and hosted
 CI remain required before integration. No live-library test or new release is claimed.
+
+
+## Native issue certificate implementation approval
+
+Independent architecture and domain reviewers approved exact implementation
+`66700ad2d39b75a315bca3d8c0324aa6a84521b0`, including the native publication fix
+`6c24cac` and authored acceptance fixtures. Architecture reproduced and blocked
+publication before a subsequent layout failure; final native publication now
+follows stream completion, manifest readback, owner cleanup and layout/alias writes.
+Lost final acknowledgements reconcile only the exact committed graph without
+repair or deletion. Unavailable reconciliation leaves an explicitly uncertain
+storage outcome; no incomplete stream gains a certificate.
+
+Architecture independently forced fresh execution of 119 table unit, 2 native
+pipeline and 156 comparison tests at the approved revision, all passing with zero
+failures/errors/skips. Domain independently ran 39 focused capture/certificate/
+publication tests at the approved revision, also passing, and previously reran
+110 table plus 156 comparison tests before the final acceptance additions.
+The real PARTIAL/protected localized text and resolved string-copy fixture,
+nonsparse strict malformed UTF-8, legacy explicit-empty UNKNOWN, exact 65,536-byte
+issue budget and scoped/unscoped digest exchange cases close the identified gaps.
+Approval remains limited to prepared-local, session-only comparisons, legacy/custom
+UNKNOWN evidence, LIMITED overrides, unchanged semantic admission and uncertified
+membership. Hosted CI for this corrected revision is still required before merge.

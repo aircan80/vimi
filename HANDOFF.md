@@ -1,5 +1,26 @@
 # vimi development handoff
 
+## GPU viewport work — 2026-11-03
+
+The user selected Java + LWJGL/bgfx hardware rendering and explicitly authorized
+persistent sub-agent use. GPU work is isolated on `feature/gpu-model-preview` in
+`/tmp/vimi-gpu-integration`; preserve committed branches against reboot and commit
+meaningful checkpoints. The architect's GUI activity audit is complete. Model/GPU
+pending states and the first-load Files/browser fixes are under implementation.
+Native GPU rendering is a separate app-managed GLFW child window: JavaFX has no
+public cross-platform external GPU texture import, and macOS GLFW event loops
+cannot safely share the JavaFX process. A user preference question for inline vs
+separate first delivery was offered; no response has been received as of this note.
+The stated implementation assumption is separate-window first, retaining software
+inline previews and explicit unsupported/failure states. Never imply inline GPU
+presentation, complete WoW materials, animation, or measured FPS without evidence.
+
+Native issue certificates PR #137 has independent architecture/domain approval at
+`66700ad`; publication correction and full acceptance fixtures are included.
+Final affected Linux checks and unchanged C# interoperability pass. Recorded exact
+independent review evidence is in docs/comparison/review.md. Corrected hosted CI is
+required before FF/squash integration and prerelease.
+
 ## Linux continuation — 2026-11-03
 
 Development remains on Linux x64; no Mac/data transfer is in progress. Native issue
