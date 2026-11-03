@@ -49,6 +49,7 @@ public final class WorldNavigationUiTest {
         final java.util.concurrent.atomic.AtomicLong revision = new java.util.concurrent.atomic.AtomicLong(1);
         final java.util.concurrent.atomic.AtomicInteger minimapCalls = new java.util.concurrent.atomic.AtomicInteger();
         volatile boolean hold, unavailable;
+        final java.util.concurrent.atomic.AtomicInteger tileCalls = new java.util.concurrent.atomic.AtomicInteger();
         final java.util.concurrent.atomic.AtomicInteger unavailableCalls = new java.util.concurrent.atomic.AtomicInteger();
         final java.util.concurrent.ConcurrentLinkedQueue<Runnable> releases = new java.util.concurrent.ConcurrentLinkedQueue<>();
         Fixture() {
@@ -62,6 +63,7 @@ public final class WorldNavigationUiTest {
             return CompletableFuture.completedFuture(new WorldService.Inventory(map,new WorldFormats.World(tiles,false),null));
         }
         public CompletableFuture<WorldService.LoadedTile> tile(WorldService.MapInfo selected,WorldFormats.Tile tile,Cancellation token) {
+            tileCalls.incrementAndGet();
             var expected=allowed.get();
             if(expected!=null && !expected.contains(tile.key()))
                 failure.compareAndSet(null,new AssertionError("Wrong native-axis request "+tile.key()+" expected "+expected));
@@ -101,7 +103,7 @@ public final class WorldNavigationUiTest {
                     set(view,"selected",fixture.tiles.stream().filter(t -> t.x()==X&&t.y()==Y).findFirst().orElseThrow());
                     ((Button)view.lookup("#world-open")).fire();
                     ((AnimationTimer)get(view,"timer")).stop();
-                    await(fixture,() -> settled(view,keys(0,0)) && !(boolean)get(view,"scenePreparing"),() -> heldBoundary(view,fixture));
+                    await(fixture,() -> settled(view,keys(0,0)) && !(boolean)get(view,"scenePreparing"),() -> heldBoundary(view,fixture,0));
                 });
             });
         });
@@ -122,29 +124,38 @@ public final class WorldNavigationUiTest {
         return !(boolean)get(view,"loadingTile") && !(boolean)get(view,"scenePreparing") && loaded.keySet().equals(expected);
     }
 
-    private static void heldBoundary(WorldView view, Fixture fixture) {
+    private static final int[][] HELD_MOVES = {{1,0},{0,0},{-1,0},{0,0},{0,-1},{0,0}};
+
+    private static void heldBoundary(WorldView view, Fixture fixture, int index) {
+        if (index == HELD_MOVES.length) { move(view,fixture,0); return; }
         var original = get(view, "terrainScene");
         long generation = (long)get(view, "sceneGeneration");
+        int calls = fixture.tileCalls.get();
+        int dx=HELD_MOVES[index][0], dy=HELD_MOVES[index][1];
+        var wanted=keys(dx,dy);
         fixture.hold = true;
-        fixture.allowed.set(keys(1,0));
-        set(view,"camera",new TerrainRenderer.Camera(10000-1.5*SIZE,20000-.5*SIZE,100,0,0));
+        fixture.allowed.set(wanted);
+        set(view,"camera",new TerrainRenderer.Camera(10000-(dx+.5)*SIZE,20000-(dy+.5)*SIZE,100,0,0));
         invoke(view,"loadNext");
-        releaseBoundary(view, fixture, original, generation, 0);
+        releaseBoundary(view, fixture, original, generation, calls, wanted, index, 0);
     }
 
-    private static void releaseBoundary(WorldView view, Fixture fixture, Object original, long generation, int count) {
+    private static void releaseBoundary(WorldView view, Fixture fixture, Object original, long generation,
+            int calls, Set<String> wanted, int index, int count) {
         await(fixture, () -> !fixture.releases.isEmpty(), () -> {
             require(get(view,"terrainScene") == original, "Held arrivals retain readable scene");
             require((long)get(view,"sceneGeneration") == generation, "No eager/per-arrival scene preparation");
+            require(fixture.tileCalls.get() == calls+count+1, "Only missing strip source calls are admitted");
             fixture.releases.remove().run();
             if (count < 2) {
-                releaseBoundary(view,fixture,original,generation,count+1);
+                releaseBoundary(view,fixture,original,generation,calls,wanted,index,count+1);
             } else {
                 fixture.hold=false;
-                await(fixture, () -> settled(view,keys(1,0)) && !(boolean)get(view,"scenePreparing"), () -> {
+                await(fixture, () -> settled(view,wanted), () -> {
                     require(get(view,"terrainScene") != original, "Completed wave publishes replacement");
                     require((long)get(view,"sceneGeneration") == generation+1, "Three arrivals prepare exactly one replacement");
-                    move(view,fixture,0);
+                    require(fixture.tileCalls.get() == calls+3, "Negative/positive strip never reloads retained wanted tiles");
+                    heldBoundary(view,fixture,index+1);
                 });
             }
         });

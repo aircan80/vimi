@@ -1070,6 +1070,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                 if (Math.abs(tile.x() - x) <= 1 && Math.abs(tile.y() - y) <= 1) {
                                                     if (!loaded.containsKey(tile.key()) && loaded.size() == 9) {
                                                         var outgoing = loaded.values().stream()
+                                                                .filter(t -> Math.abs(t.tile().x() - x) > 1 || Math.abs(t.tile().y() - y) > 1)
                                                                 .max(Comparator.comparingInt(t -> Math.abs(t.tile().x() - x) + Math.abs(t.tile().y() - y)))
                                                                 .orElseThrow();
                                                         loaded.remove(outgoing.tile().key());
