@@ -2,6 +2,7 @@ package com.vimi.gui;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.world.BuildWorld;
+import com.vibeminer.concepts.world.WorldAreaNavigation;
 import com.vibeminer.concepts.world.WorldService;
 import com.vibeminer.formats.world.WorldFormats;
 
@@ -26,10 +27,15 @@ import java.util.function.BooleanSupplier;
 public final class WorldUiTest {
     private WorldUiTest() {}
 
+    private static final CompletableFuture<Void> areaChecks = new CompletableFuture<>();
     private static final CompletableFuture<Void> orientationChecks = new CompletableFuture<>();
 
     public static void main(String[] args) throws Exception {
         var done = new CompletableFuture<Void>();
+        areaChecks.whenComplete(
+                (value, error) -> {
+                    if (error != null) done.completeExceptionally(error);
+                });
         var closes = new AtomicInteger();
         Platform.startup(
                 () ->
@@ -37,6 +43,7 @@ public final class WorldUiTest {
                                 () -> {
                                     Platform.setImplicitExit(false);
                                     gridOrientation();
+                                    areaNavigation();
                                     var stage = new Stage();
                                     try {
                                         var continent =
@@ -351,12 +358,465 @@ public final class WorldUiTest {
         try {
             done.get(30, TimeUnit.SECONDS);
             orientationChecks.get(10, TimeUnit.SECONDS);
+            areaChecks.get(15, TimeUnit.SECONDS);
         } finally {
             Platform.exit();
         }
         System.out.println(
                 "World UI: continent drill-down, stale inventory, terrain frame and borrowed"
                         + " lifetime passed");
+    }
+
+    private static void areaNavigation() {
+        var map = new WorldService.MapInfo(0, "Area fixture", "Authored", 0, 1L);
+        var tile = new WorldFormats.Tile(17, 21, 12345, 0, 0);
+        var other = new WorldFormats.Tile(18, 21, 12346, 0, 0);
+        var entry =
+                new WorldFormats.AreaChunk(
+                        3, 7, 42, 100, 500, 700, new WorldFormats.AreaPoint(123, 456, 789));
+        var match = new WorldAreaNavigation.Match(tile, "a".repeat(32), 2, entry);
+        var revision = new java.util.concurrent.atomic.AtomicLong();
+        class Handle implements BuildWorld {
+            final java.util.List<CompletableFuture<WorldAreaNavigation.Result>> scans =
+                    new java.util.concurrent.CopyOnWriteArrayList<>();
+            final java.util.List<java.util.function.Consumer<WorldAreaNavigation.Progress>>
+                    progress = new java.util.concurrent.CopyOnWriteArrayList<>();
+            volatile Cancellation scanToken;
+            final AtomicInteger areaOpens = new AtomicInteger(),
+                    borrowedCloses = new AtomicInteger();
+
+            public CompletableFuture<WorldService.Catalog> catalog(Cancellation token) {
+                return CompletableFuture.completedFuture(
+                        new WorldService.Catalog(
+                                List.of(map),
+                                List.of(
+                                        new WorldService.Area(42, "Exact area", 0, 0),
+                                        new WorldService.Area(43, "Other area", 0, 0)),
+                                List.of()));
+            }
+
+            public CompletableFuture<WorldService.Inventory> inventory(
+                    WorldService.MapInfo chosen, Cancellation token) {
+                return CompletableFuture.completedFuture(
+                        new WorldService.Inventory(
+                                map, new WorldFormats.World(List.of(tile, other), false), null));
+            }
+
+            public CompletableFuture<WorldAreaNavigation.Result> findArea(
+                    WorldAreaNavigation.Request request,
+                    Cancellation token,
+                    java.util.function.Consumer<WorldAreaNavigation.Progress> observer) {
+                require(!Platform.isFxApplicationThread(), "Area scan is invoked off FX");
+                require(
+                        request.tiles().equals(List.of(tile, other)),
+                        "Exact full inventory references retained");
+                scanToken = token;
+                progress.add(observer);
+                var future = new CompletableFuture<WorldAreaNavigation.Result>();
+                scans.add(future);
+                return future;
+            }
+
+            public CompletableFuture<WorldService.LoadedTile> areaTile(
+                    WorldService.MapInfo chosen,
+                    WorldAreaNavigation.Match selected,
+                    Cancellation token) {
+                require(!Platform.isFxApplicationThread(), "Verified area open is off FX");
+                require(selected.equals(match), "Opening carries exact tile/CKey/chunk evidence");
+                areaOpens.incrementAndGet();
+                return CompletableFuture.completedFuture(
+                        new WorldService.LoadedTile(tile, terrain(), null));
+            }
+
+            public CompletableFuture<WorldService.LoadedTile> tile(
+                    WorldService.MapInfo chosen, WorldFormats.Tile selected, Cancellation token) {
+                return CompletableFuture.completedFuture(
+                        new WorldService.LoadedTile(selected, null, "Authored nearby unavailable"));
+            }
+
+            public CompletableFuture<Void> closeAsync() {
+                borrowedCloses.incrementAndGet();
+                return CompletableFuture.completedFuture(null);
+            }
+        }
+        var handle = new Handle();
+        var view = new WorldView(() -> handle, revision::get);
+        var stage = new Stage();
+        stage.setScene(new Scene(view, 1100, 850));
+        stage.show();
+        view.ensureLoaded();
+        await(
+                () -> !((ListView<?>) view.lookup("#world-maps")).getItems().isEmpty(),
+                () -> {
+                    ((ListView<?>) view.lookup("#world-maps")).getSelectionModel().selectFirst();
+                    await(
+                            () ->
+                                    ((ListView<?>) view.lookup("#world-areas")).getItems().size()
+                                            == 2,
+                            () -> {
+                                var areas = (ListView<?>) view.lookup("#world-areas");
+                                areas.getSelectionModel().selectFirst();
+                                await(
+                                        () ->
+                                                !((Button) view.lookup("#world-area-find"))
+                                                        .isDisabled(),
+                                        () -> {
+                                            require(
+                                                    handle.scans.isEmpty(),
+                                                    "Selecting an area never acquires files");
+                                            ((Button) view.lookup("#world-area-find")).fire();
+                                            await(
+                                                    () -> handle.scans.size() == 1,
+                                                    () -> {
+                                                        require(
+                                                                view.lookup("#world-area-activity")
+                                                                        .isVisible(),
+                                                                "Delayed scan has local animated"
+                                                                        + " activity");
+                                                        handle.progress
+                                                                .getFirst()
+                                                                .accept(
+                                                                        new WorldAreaNavigation
+                                                                                .Progress(
+                                                                                1, 2, 1, 0));
+                                                        ((Button) view.lookup("#world-area-cancel"))
+                                                                .fire();
+                                                        await(
+                                                                () -> handle.scanToken.isCanceled(),
+                                                                () -> {
+                                                                    require(
+                                                                            view.lookup(
+                                                                                            "#world-area-activity")
+                                                                                    .isVisible(),
+                                                                            "Cancellation remains"
+                                                                                + " pending until"
+                                                                                + " current file"
+                                                                                + " drains");
+                                                                    handle.scans
+                                                                            .getFirst()
+                                                                            .complete(
+                                                                                    new WorldAreaNavigation
+                                                                                            .Result(
+                                                                                            WorldAreaNavigation
+                                                                                                    .State
+                                                                                                    .CANCELED,
+                                                                                            new WorldAreaNavigation
+                                                                                                    .Progress(
+                                                                                                    1,
+                                                                                                    2,
+                                                                                                    1,
+                                                                                                    0),
+                                                                                            List.of(
+                                                                                                    match),
+                                                                                            List
+                                                                                                    .of()));
+                                                                    await(
+                                                                            () ->
+                                                                                    ((ListView<?>)
+                                                                                                            view
+                                                                                                                    .lookup(
+                                                                                                                            "#world-area-matches"))
+                                                                                                    .getItems()
+                                                                                                    .size()
+                                                                                            == 1,
+                                                                            () -> {
+                                                                                require(
+                                                                                        !view.lookup(
+                                                                                                        "#world-area-activity")
+                                                                                                .isVisible(),
+                                                                                        "Terminal"
+                                                                                            + " cancellation"
+                                                                                            + " clears"
+                                                                                            + " activity");
+                                                                                require(
+                                                                                        ((javafx
+                                                                                                                .scene
+                                                                                                                .control
+                                                                                                                .Label)
+                                                                                                        view
+                                                                                                                .lookup(
+                                                                                                                        "#world-area-status"))
+                                                                                                .getText()
+                                                                                                .contains(
+                                                                                                        "Incomplete"),
+                                                                                        "Canceled"
+                                                                                            + " coverage"
+                                                                                            + " is explicit");
+                                                                                if (System
+                                                                                                .getProperty(
+                                                                                                        "vimi.world.screenshot")
+                                                                                        != null) {
+                                                                                    view.applyCss();
+                                                                                    view.layout();
+                                                                                    snapshot(
+                                                                                            stage
+                                                                                                    .getScene(),
+                                                                                            System
+                                                                                                            .getProperty(
+                                                                                                                    "vimi.world.screenshot")
+                                                                                                    + ".area.png");
+                                                                                }
+
+                                                                                ((ListView<?>)
+                                                                                                view
+                                                                                                        .lookup(
+                                                                                                                "#world-area-matches"))
+                                                                                        .getSelectionModel()
+                                                                                        .selectFirst();
+                                                                                ((Button)
+                                                                                                view
+                                                                                                        .lookup(
+                                                                                                                "#world-open"))
+                                                                                        .fire();
+                                                                                await(
+                                                                                        () ->
+                                                                                                ((ImageView)
+                                                                                                                        view
+                                                                                                                                .lookup(
+                                                                                                                                        "#world-frame"))
+                                                                                                                .getImage()
+                                                                                                        != null,
+                                                                                        () -> {
+                                                                                            require(
+                                                                                                    handle
+                                                                                                                    .areaOpens
+                                                                                                                    .get()
+                                                                                                            == 1,
+                                                                                                    "Discovered"
+                                                                                                        + " tile"
+                                                                                                        + " uses"
+                                                                                                        + " CKey-verifying"
+                                                                                                        + " areaTile"
+                                                                                                        + " API");
+                                                                                            var
+                                                                                                    position =
+                                                                                                            ((javafx
+                                                                                                                                    .scene
+                                                                                                                                    .control
+                                                                                                                                    .Label)
+                                                                                                                            view
+                                                                                                                                    .lookup(
+                                                                                                                                            "#world-position"))
+                                                                                                                    .getText();
+                                                                                            require(
+                                                                                                    position
+                                                                                                            .contains(
+                                                                                                                    "x 123.0"
+                                                                                                                        + " / y 456.0"
+                                                                                                                        + " / altitude"
+                                                                                                                        + " 889.0"),
+                                                                                                    "Initial"
+                                                                                                        + " camera"
+                                                                                                        + " uses"
+                                                                                                        + " exact"
+                                                                                                        + " matching"
+                                                                                                        + " entry"
+                                                                                                        + " +100,"
+                                                                                                        + " not tile"
+                                                                                                        + " center");
+                                                                                            ((Button)
+                                                                                                            view
+                                                                                                                    .lookup(
+                                                                                                                            "#world-back"))
+                                                                                                    .fire();
+                                                                                            view
+                                                                                                    .applyCss();
+                                                                                            view
+                                                                                                    .layout();
+                                                                                            areas.getSelectionModel()
+                                                                                                    .select(
+                                                                                                            1);
+                                                                                            require(
+                                                                                                    ((ListView<
+                                                                                                                            ?>)
+                                                                                                                    view
+                                                                                                                            .lookup(
+                                                                                                                                    "#world-area-matches"))
+                                                                                                            .getItems()
+                                                                                                            .isEmpty(),
+                                                                                                    "Area change"
+                                                                                                        + " clears"
+                                                                                                        + " old highlights/matches");
+                                                                                            ((Button)
+                                                                                                            view
+                                                                                                                    .lookup(
+                                                                                                                            "#world-area-find"))
+                                                                                                    .fire();
+                                                                                            await(
+                                                                                                    () ->
+                                                                                                            handle
+                                                                                                                            .scans
+                                                                                                                            .size()
+                                                                                                                    == 2,
+                                                                                                    () -> {
+                                                                                                        areas.getSelectionModel()
+                                                                                                                .selectFirst();
+                                                                                                        handle.scans
+                                                                                                                .get(
+                                                                                                                        1)
+                                                                                                                .complete(
+                                                                                                                        new WorldAreaNavigation
+                                                                                                                                .Result(
+                                                                                                                                WorldAreaNavigation
+                                                                                                                                        .State
+                                                                                                                                        .COMPLETE,
+                                                                                                                                new WorldAreaNavigation
+                                                                                                                                        .Progress(
+                                                                                                                                        2,
+                                                                                                                                        2,
+                                                                                                                                        1,
+                                                                                                                                        0),
+                                                                                                                                List
+                                                                                                                                        .of(
+                                                                                                                                                match),
+                                                                                                                                List
+                                                                                                                                        .of()));
+                                                                                                        await(
+                                                                                                                () ->
+                                                                                                                        !((Button)
+                                                                                                                                        view
+                                                                                                                                                .lookup(
+                                                                                                                                                        "#world-area-find"))
+                                                                                                                                .isDisabled(),
+                                                                                                                () -> {
+                                                                                                                    require(
+                                                                                                                            ((ListView<
+                                                                                                                                                    ?>)
+                                                                                                                                            view
+                                                                                                                                                    .lookup(
+                                                                                                                                                            "#world-area-matches"))
+                                                                                                                                    .getItems()
+                                                                                                                                    .isEmpty(),
+                                                                                                                            "Old area"
+                                                                                                                                + " completion"
+                                                                                                                                + " cannot"
+                                                                                                                                + " republish"
+                                                                                                                                + " matches");
+                                                                                                                    ((Button)
+                                                                                                                                    view
+                                                                                                                                            .lookup(
+                                                                                                                                                    "#world-area-find"))
+                                                                                                                            .fire();
+                                                                                                                    await(
+                                                                                                                            () ->
+                                                                                                                                    handle
+                                                                                                                                                    .scans
+                                                                                                                                                    .size()
+                                                                                                                                            == 3,
+                                                                                                                            () -> {
+                                                                                                                                handle.progress
+                                                                                                                                        .get(
+                                                                                                                                                1)
+                                                                                                                                        .accept(
+                                                                                                                                                new WorldAreaNavigation
+                                                                                                                                                        .Progress(
+                                                                                                                                                        2,
+                                                                                                                                                        2,
+                                                                                                                                                        1,
+                                                                                                                                                        0));
+                                                                                                                                Platform
+                                                                                                                                        .runLater(
+                                                                                                                                                () -> {
+                                                                                                                                                    require(
+                                                                                                                                                            view.lookup(
+                                                                                                                                                                            "#world-area-activity")
+                                                                                                                                                                    .isVisible(),
+                                                                                                                                                            "Old progress"
+                                                                                                                                                                + " cannot"
+                                                                                                                                                                + " clear"
+                                                                                                                                                                + " newer"
+                                                                                                                                                                + " activity");
+                                                                                                                                                    revision
+                                                                                                                                                            .incrementAndGet();
+                                                                                                                                                    handle.scans
+                                                                                                                                                            .get(
+                                                                                                                                                                    2)
+                                                                                                                                                            .complete(
+                                                                                                                                                                    new WorldAreaNavigation
+                                                                                                                                                                            .Result(
+                                                                                                                                                                            WorldAreaNavigation
+                                                                                                                                                                                    .State
+                                                                                                                                                                                    .COMPLETE,
+                                                                                                                                                                            new WorldAreaNavigation
+                                                                                                                                                                                    .Progress(
+                                                                                                                                                                                    2,
+                                                                                                                                                                                    2,
+                                                                                                                                                                                    1,
+                                                                                                                                                                                    0),
+                                                                                                                                                                            List
+                                                                                                                                                                                    .of(
+                                                                                                                                                                                            match),
+                                                                                                                                                                            List
+                                                                                                                                                                                    .of()));
+                                                                                                                                                    await(
+                                                                                                                                                            () ->
+                                                                                                                                                                    !view.lookup(
+                                                                                                                                                                                    "#world-area-activity")
+                                                                                                                                                                            .isVisible(),
+                                                                                                                                                            () -> {
+                                                                                                                                                                require(
+                                                                                                                                                                        ((Button)
+                                                                                                                                                                                        view
+                                                                                                                                                                                                .lookup(
+                                                                                                                                                                                                        "#world-area-find"))
+                                                                                                                                                                                .isDisabled(),
+                                                                                                                                                                        "External"
+                                                                                                                                                                            + " retirement"
+                                                                                                                                                                            + " disables"
+                                                                                                                                                                            + " old actions");
+                                                                                                                                                                require(
+                                                                                                                                                                        ((ListView<
+                                                                                                                                                                                                ?>)
+                                                                                                                                                                                        view
+                                                                                                                                                                                                .lookup(
+                                                                                                                                                                                                        "#world-area-matches"))
+                                                                                                                                                                                .getItems()
+                                                                                                                                                                                .isEmpty(),
+                                                                                                                                                                        "Retired"
+                                                                                                                                                                            + " result"
+                                                                                                                                                                            + " never"
+                                                                                                                                                                            + " attaches");
+                                                                                                                                                                view
+                                                                                                                                                                        .close();
+                                                                                                                                                                stage
+                                                                                                                                                                        .close();
+                                                                                                                                                                require(
+                                                                                                                                                                        handle
+                                                                                                                                                                                        .borrowedCloses
+                                                                                                                                                                                        .get()
+                                                                                                                                                                                == 0,
+                                                                                                                                                                        "Area UI"
+                                                                                                                                                                            + " keeps"
+                                                                                                                                                                            + " borrowed"
+                                                                                                                                                                            + " world"
+                                                                                                                                                                            + " handle"
+                                                                                                                                                                            + " open");
+                                                                                                                                                                areaChecks
+                                                                                                                                                                        .complete(
+                                                                                                                                                                                null);
+                                                                                                                                                            },
+                                                                                                                                                            areaChecks);
+                                                                                                                                                });
+                                                                                                                            },
+                                                                                                                            areaChecks);
+                                                                                                                },
+                                                                                                                areaChecks);
+                                                                                                    },
+                                                                                                    areaChecks);
+                                                                                        },
+                                                                                        areaChecks);
+                                                                            },
+                                                                            areaChecks);
+                                                                },
+                                                                areaChecks);
+                                                    },
+                                                    areaChecks);
+                                        },
+                                        areaChecks);
+                            },
+                            areaChecks);
+                },
+                areaChecks);
     }
 
     private static void gridOrientation() {
@@ -450,7 +910,7 @@ public final class WorldUiTest {
                                                     && pixels.getArgb(21 * 8 + 3, 17 * 8 + 3)
                                                             == green,
                                             "Filename first index runs vertically in the"
-                                                + " full64-grid");
+                                                    + " full64-grid");
                                     require(
                                             pixels.getArgb(8 * 8 + 3, 21 * 8 + 3) == blank,
                                             "Tall asymmetric inventory is not drawn transposed");
@@ -472,7 +932,7 @@ public final class WorldUiTest {
                                                             .getArgb(21 * 8 + 3, 17 * 8 + 3)
                                                     == green,
                                             "Area reference selection preserves the full-map"
-                                                + " inventory");
+                                                    + " inventory");
                                     double x = 21 * 8 + 3, y = 17 * 8 + 3;
                                     canvas.getOnMouseClicked()
                                             .handle(
@@ -512,8 +972,8 @@ public final class WorldUiTest {
                                                                     && chosen.get().rootId()
                                                                             == 101109,
                                                             "Clicked cell loads the original"
-                                                                + " filename tuple and exact"
-                                                                + " FileDataID");
+                                                                    + " filename tuple and exact"
+                                                                    + " FileDataID");
                                                     view.close();
                                                     stage.close();
                                                     orientationChecks.complete(null);
@@ -834,7 +1294,10 @@ public final class WorldUiTest {
     }
 
     private static void snapshot(Scene scene) {
-        String destination = System.getProperty("vimi.world.screenshot");
+        snapshot(scene, System.getProperty("vimi.world.screenshot"));
+    }
+
+    private static void snapshot(Scene scene, String destination) {
         if (destination == null) return;
         try {
             var image = scene.snapshot(null);

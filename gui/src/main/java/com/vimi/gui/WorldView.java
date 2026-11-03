@@ -2,6 +2,7 @@ package com.vimi.gui;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.world.BuildWorld;
+import com.vibeminer.concepts.world.WorldAreaNavigation;
 import com.vibeminer.concepts.world.WorldService;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.rendering.world.TerrainRenderer;
@@ -45,6 +46,19 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final java.util.function.LongSupplier revisions;
     private final ListView<WorldService.MapInfo> maps = new ListView<>();
     private final ListView<WorldService.Area> zones = new ListView<>();
+    private final ListView<WorldAreaNavigation.Match> areaMatches = new ListView<>();
+    private final Button findArea = new Button("Find terrain"),
+            cancelArea = new Button("Cancel scan");
+    private final Label areaStatus =
+            new Label("Select an area, then Find terrain. Missing files may be downloaded.");
+    private final ProgressIndicator areaActivity = activity("world-area-activity", 18);
+    private final ThreadPoolExecutor areaRequests = worker("world-area-requests");
+    private Cancellation areaToken;
+    private CompletableFuture<WorldAreaNavigation.Result> areaFuture;
+    private CompletableFuture<Void> areaDrain = CompletableFuture.completedFuture(null);
+    private long areaGeneration;
+    private boolean areaScanning, areaCancelRequested, areaDrainMessage;
+    private WorldAreaNavigation.Match areaEntry;
     private final TextField search = new TextField();
     private final CheckBox allMaps = new CheckBox("Include instances and other maps");
     private final Label heading = new Label("World"),
@@ -161,6 +175,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         maps.setId("world-maps");
         viewport.setId("world-viewport");
         image.setId("world-frame");
+        position.setId("world-position");
         open.setId("world-open");
         back.setId("world-back");
         maps.setAccessibleText("World maps and continents");
@@ -190,18 +205,72 @@ final class WorldView extends BorderPane implements AutoCloseable {
         position.setWrapText(true);
         zones.setPrefHeight(180);
         zones.setAccessibleText("Areas in selected map");
+        zones.setId("world-areas");
+        findArea.setId("world-area-find");
+        cancelArea.setId("world-area-cancel");
+        areaStatus.setId("world-area-status");
+        areaStatus.setWrapText(true);
+        areaActivity.setAccessibleText("Finding terrain for the selected exact area");
+        areaMatches.setId("world-area-matches");
+        areaMatches.setAccessibleText("Verified exact-area terrain matches");
+        areaMatches.setPrefHeight(130);
+        areaMatches.setPlaceholder(new Label("No observed matching tiles"));
+        areaMatches.setCellFactory(
+                list ->
+                        new javafx.scene.control.ListCell<>() {
+                            @Override
+                            protected void updateItem(
+                                    WorldAreaNavigation.Match match, boolean empty) {
+                                super.updateItem(match, empty);
+                                setText(
+                                        empty || match == null
+                                                ? null
+                                                : "Tile "
+                                                        + match.tile().key()
+                                                        + " · "
+                                                        + match.matchingChunks()
+                                                        + " matching chunks"
+                                                        + (match.entryChunk() == null
+                                                                ? " · no rendered entry (holes)"
+                                                                : " · entry chunk "
+                                                                        + match.entryChunk().x()
+                                                                        + ","
+                                                                        + match.entryChunk().y()));
+                            }
+                        });
+        areaMatches
+                .getSelectionModel()
+                .selectedItemProperty()
+                .addListener(
+                        (o, a, b) -> {
+                            if (b == null || stale(selection)) return;
+                            selected = b.tile();
+                            areaEntry = b;
+                            open.setDisable(areaScanning || b.entryChunk() == null);
+                            status.setText(
+                                    "Selected exact-area tile "
+                                            + selected.key()
+                                            + " · source and entry will be verified when opened");
+                            drawTiles();
+                        });
+        findArea.setOnAction(e -> findTerrain());
+        cancelArea.setOnAction(e -> cancelAreaScan());
         zones.getSelectionModel()
                 .selectedItemProperty()
                 .addListener(
                         (o, a, b) -> {
+                            stopArea(true);
+                            areaEntry = null;
                             if (b != null)
                                 status.setText(
                                         b
                                                 + " · Area #"
                                                 + b.id()
-                                                + " · Full-map terrain inventory below; area"
-                                                + " selection does not filter tiles");
+                                                + " · Select Find terrain to check exact-area"
+                                                + " chunks; full-map inventory remains below");
+                            areaButtons();
                         });
+        areaButtons();
         maps.getSelectionModel()
                 .selectedItemProperty()
                 .addListener(
@@ -224,7 +293,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         tiles.setAccessibleText("Full-map terrain tile inventory");
         tiles.setOnMouseClicked(
                 e -> {
-                    if (inventory == null || inventory.world() == null) return;
+                    if (stale(selection) || inventory == null || inventory.world() == null) return;
                     // Tile.x/y retain ADT filename order; screen columns use the second index.
                     int x = (int) (e.getY() / 8), y = (int) (e.getX() / 8);
                     selected =
@@ -232,8 +301,16 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                     .filter(t -> t.x() == x && t.y() == y)
                                     .findFirst()
                                     .orElse(null);
+                    areaEntry =
+                            areaMatches.getItems().stream()
+                                    .filter(match -> match.tile().equals(selected))
+                                    .findFirst()
+                                    .orElse(null);
                     drawTiles();
-                    open.setDisable(selected == null);
+                    open.setDisable(
+                            areaScanning
+                                    || selected == null
+                                    || areaEntry != null && areaEntry.entryChunk() == null);
                     if (selected != null)
                         status.setText(
                                 "Selected terrain tile "
@@ -367,6 +444,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     void invalidate() {
+        stopArea(true);
+        areaEntry = null;
         selection++;
         token.cancel();
         token = new Cancellation();
@@ -427,6 +506,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void cancelRequests() {
+        stopArea(false);
         selection++;
         token.cancel();
         token = new Cancellation();
@@ -451,6 +531,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     void activate() {
         active = true;
         ensureLoaded();
+        areaButtons();
         if (explorer && inventory != null) {
             if (camera == null) openExplorer();
             else {
@@ -463,6 +544,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void selectMap(WorldService.MapInfo map) {
+        stopArea(true);
+        areaEntry = null;
         selection++;
         token.cancel();
         token = new Cancellation();
@@ -511,6 +594,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                 return;
                                             }
                                             inventory = data;
+                                            if (zones.getSelectionModel().getSelectedItem() != null)
+                                                areaStatus.setText(areaHint());
+                                            areaButtons();
                                             selected =
                                                     data.world().tiles().stream()
                                                             .min(
@@ -534,6 +620,221 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                         }));
     }
 
+    private String areaHint() {
+        return inventory == null || inventory.world() == null
+                ? "Select an area after the terrain inventory loads. Missing files may be"
+                        + " downloaded."
+                : "Find terrain checks "
+                        + inventory.world().tiles().size()
+                        + " files for this exact area. Missing files may be downloaded; you can"
+                        + " cancel.";
+    }
+
+    private void areaButtons() {
+        boolean usable =
+                !closed
+                        && active
+                        && !explorer
+                        && inventory != null
+                        && inventory.world() != null
+                        && zones.getSelectionModel().getSelectedItem() != null
+                        && zones.getSelectionModel().getSelectedItem().id() > 0
+                        && revision == revisions.getAsLong()
+                        && handle == handles.get();
+        if (!areaScanning && !areaDrain.isDone()) {
+            areaDrainMessage = true;
+            areaStatus.setText(
+                    "Previous area scan is stopping; waiting for its current file before another"
+                        + " scan.");
+        } else if (!areaScanning && areaDrainMessage) {
+            areaDrainMessage = false;
+            areaStatus.setText(areaHint());
+        }
+        show(areaActivity, !closed && active && !explorer && (areaScanning || !areaDrain.isDone()));
+        findArea.setDisable(!usable || areaScanning || !areaDrain.isDone());
+        cancelArea.setDisable(!areaScanning || areaCancelRequested);
+        areaMatches.setDisable(!usable || areaScanning);
+    }
+
+    private void cancelAreaScan() {
+        var cancel = areaToken;
+        var pending = areaFuture;
+        if (cancel == null || pending == null || areaCancelRequested) return;
+        areaToken = null;
+        areaCancelRequested = true;
+        areaStatus.setText(
+                "Stopping scan · waiting for the current file; observed matches will be retained as"
+                        + " incomplete");
+        areaButtons();
+        areaDrain =
+                CompletableFuture.runAsync(cancel::cancel, areaRequests)
+                        .thenCompose(ignored -> pending.handle((result, error) -> (Void) null));
+        areaDrain.whenComplete((result, error) -> Platform.runLater(this::areaButtons));
+    }
+
+    private void stopArea(boolean clear) {
+        ++areaGeneration;
+        var cancel = areaToken;
+        var pending = areaFuture;
+        areaToken = null;
+        areaFuture = null;
+        areaScanning = false;
+        areaCancelRequested = false;
+        show(areaActivity, false);
+        if (cancel != null) {
+            try {
+                areaDrain =
+                        CompletableFuture.runAsync(cancel::cancel, areaRequests)
+                                .thenCompose(
+                                        ignored ->
+                                                pending == null
+                                                        ? CompletableFuture.completedFuture(null)
+                                                        : pending.handle(
+                                                                (value, error) -> (Void) null));
+                areaDrain.whenComplete((value, error) -> Platform.runLater(this::areaButtons));
+            } catch (RuntimeException rejected) {
+                areaStatus.setText("Area scan is stopping; reload the workspace before retrying.");
+            }
+            if (!clear)
+                areaStatus.setText(
+                        "Scan canceled · observed matches retained only after readable checked"
+                                + " files finish; coverage is incomplete.");
+        }
+        if (clear) {
+            areaMatches.getItems().clear();
+            areaStatus.setText(areaHint());
+            drawTiles();
+        }
+        areaButtons();
+    }
+
+    private void findTerrain() {
+        if (stale(selection)) return;
+        var area = zones.getSelectionModel().getSelectedItem();
+        if (area == null
+                || area.id() <= 0
+                || inventory == null
+                || inventory.world() == null
+                || areaScanning
+                || !areaDrain.isDone()) return;
+        long generation = ++areaGeneration, request = selection;
+        var selectedHandle = handle;
+        var source =
+                new WorldAreaNavigation.Request(
+                        inventory.map(), area.id(), inventory.world().tiles());
+        areaToken = new Cancellation();
+        var cancel = areaToken;
+        areaScanning = true;
+        areaCancelRequested = false;
+        areaEntry = null;
+        areaMatches.getItems().clear();
+        open.setDisable(true);
+        show(areaActivity, true);
+        areaStatus.setText(
+                "Checking 0 / "
+                        + source.tiles().size()
+                        + " terrain files · missing files may be downloaded");
+        areaButtons();
+        var latestProgress = new AtomicReference<WorldAreaNavigation.Progress>();
+        var progressQueued = new AtomicBoolean();
+        try {
+            areaFuture =
+                    CompletableFuture.supplyAsync(
+                                    () ->
+                                            selectedHandle.findArea(
+                                                    source,
+                                                    cancel,
+                                                    progress -> {
+                                                        latestProgress.set(progress);
+                                                        if (progressQueued.compareAndSet(
+                                                                false, true))
+                                                            Platform.runLater(
+                                                                    () -> {
+                                                                        progressQueued.set(false);
+                                                                        var current =
+                                                                                latestProgress
+                                                                                        .getAndSet(
+                                                                                                null);
+                                                                        if (generation
+                                                                                        != areaGeneration
+                                                                                || stale(request)
+                                                                                || current == null
+                                                                                || !areaScanning)
+                                                                            return;
+                                                                        areaStatus.setText(
+                                                                                "Checked "
+                                                                                        + current
+                                                                                                .checked()
+                                                                                        + " / "
+                                                                                        + current
+                                                                                                .total()
+                                                                                        + " · "
+                                                                                        + current
+                                                                                                .matches()
+                                                                                        + " matching"
+                                                                                        + " tiles ·"
+                                                                                        + " "
+                                                                                        + current
+                                                                                                .unavailable()
+                                                                                        + " unavailable");
+                                                                    });
+                                                    }),
+                                    areaRequests)
+                            .thenCompose(value -> value);
+        } catch (RuntimeException failure) {
+            areaFuture = CompletableFuture.failedFuture(failure);
+        }
+        areaFuture.whenComplete(
+                (result, error) ->
+                        Platform.runLater(
+                                () -> {
+                                    if (generation != areaGeneration || stale(request)) return;
+                                    areaScanning = false;
+                                    areaCancelRequested = false;
+                                    areaToken = null;
+                                    areaFuture = null;
+                                    show(areaActivity, false);
+                                    if (error != null || result == null) {
+                                        areaStatus.setText(
+                                                "Area terrain discovery unavailable · full-map"
+                                                        + " inventory remains usable");
+                                    } else {
+                                        areaMatches.getItems().setAll(result.matches());
+                                        String coverage =
+                                                result.state() == WorldAreaNavigation.State.COMPLETE
+                                                        ? "Checked complete inventory for this"
+                                                                + " exact area"
+                                                        : "Incomplete checked subset ("
+                                                                + result.state()
+                                                                        .name()
+                                                                        .toLowerCase(
+                                                                                java.util.Locale
+                                                                                        .ROOT)
+                                                                + ")";
+                                        areaStatus.setText(
+                                                coverage
+                                                        + " · "
+                                                        + result.progress().checked()
+                                                        + " / "
+                                                        + result.progress().total()
+                                                        + " files · "
+                                                        + result.matches().size()
+                                                        + " matching tiles · "
+                                                        + result.progress().unavailable()
+                                                        + " unavailable"
+                                                        + (result.matches().isEmpty()
+                                                                ? " · no match observed; no claim"
+                                                                        + " about unchecked or"
+                                                                        + " unreadable files"
+                                                                : " · choose a match to open its"
+                                                                        + " verified chunk entry"));
+                                    }
+                                    open.setDisable(selected == null);
+                                    drawTiles();
+                                    areaButtons();
+                                }));
+    }
+
     private void showInventory() {
         explorer = false;
         timer.stop();
@@ -543,13 +844,18 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 new javafx.scene.control.ScrollPane(
                         new VBox(
                                 12,
-                                new Label("AREAS / ZONES · reference list"),
+                                new Label("AREAS / ZONES · exact-area discovery"),
                                 zones,
+                                new HBox(8, findArea, cancelArea, areaActivity),
+                                areaStatus,
+                                new Label("Exact area IDs only; child areas are not included."),
+                                areaMatches,
                                 new Label("Terrain tiles below cover the entire selected map."),
                                 new Label("TERRAIN TILES · click to choose a starting location"),
                                 tiles)));
         content.setBottom(new HBox(10, open));
         drawTiles();
+        areaButtons();
     }
 
     private void drawTiles() {
@@ -561,6 +867,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (inventory == null || inventory.world() == null) return;
         g.setFill(javafx.scene.paint.Color.web("#6c9a7c"));
         for (var t : inventory.world().tiles()) g.fillRect(t.y() * 8, t.x() * 8, 7, 7);
+        g.setStroke(javafx.scene.paint.Color.web("#286cb5"));
+        g.setLineWidth(2);
+        for (var match : areaMatches.getItems())
+            g.strokeRect(match.tile().y() * 8 + 1, match.tile().x() * 8 + 1, 6, 6);
         if (selected != null) {
             g.setStroke(javafx.scene.paint.Color.web("#e0ae3d"));
             g.setLineWidth(2);
@@ -569,7 +879,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void openExplorer() {
-        if (selected == null || inventory == null) return;
+        if (stale(selection) || selected == null || inventory == null) return;
         cancelRequests();
         explorer = true;
         origin = selected;
@@ -597,13 +907,21 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     private void loadTile(WorldFormats.Tile tile, boolean initial) {
         loadingTile = true;
-        busy(initial ? "Loading first terrain tile…" : "Loading nearby terrain…");
+        busy(
+                initial && areaEntry != null
+                        ? "Verifying discovered source and area entry…"
+                        : initial ? "Loading first terrain tile…" : "Loading nearby terrain…");
         attempted.add(tile.key());
         long request = selection;
         var selectedHandle = handle;
         var map = inventory.map();
         var cancel = token;
-        invoke(() -> selectedHandle.tile(map, tile, cancel))
+        var match = initial ? areaEntry : null;
+        invoke(
+                        () ->
+                                match == null
+                                        ? selectedHandle.tile(map, tile, cancel)
+                                        : selectedHandle.areaTile(map, match, cancel))
                 .whenComplete(
                         (data, error) ->
                                 Platform.runLater(
@@ -708,7 +1026,25 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                     }
                                     terrainScene = prepared.scene();
                                     if (prepared.camera() != null) {
-                                        camera = prepared.camera();
+                                        camera =
+                                                areaEntry != null && areaEntry.entryChunk() != null
+                                                        ? new TerrainRenderer.Camera(
+                                                                areaEntry
+                                                                        .entryChunk()
+                                                                        .entryReference()
+                                                                        .x(),
+                                                                areaEntry
+                                                                        .entryChunk()
+                                                                        .entryReference()
+                                                                        .y(),
+                                                                areaEntry
+                                                                                .entryChunk()
+                                                                                .entryReference()
+                                                                                .z()
+                                                                        + 100,
+                                                                Math.PI,
+                                                                -.8)
+                                                        : prepared.camera();
                                         originX = prepared.x();
                                         originY = prepared.y();
                                     }
@@ -858,6 +1194,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         closed = true;
         invalidate();
         requests.shutdownNow();
+        areaRequests.shutdown();
         preparation.shutdownNow();
     }
 }
