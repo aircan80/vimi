@@ -414,16 +414,16 @@ one TempBudget, whose authoritative cap may shorten/refuse work):
 
 | Phase | Heavy metadata / canonical work | Required release |
 | --- | --- | --- |
-| Capture A Item | Hold the1MiB compact snapshot owner; at most one heavy schema/profile reservation4MiB; compact compile output≤64KiB within that owner; sorter chunks/reservations within remaining budget (up to22MiB only if raw row/projection/codec/index reservations also fit32MiB). | Seal sorted source; close/drain capture; drop whole receipt/schema/raw profile before opening another dependency. |
+| Capture A Item | Hold1MiB compact metadata and at most one4MiB heavy profile; retain the existing raw sorter's24MiB TOTAL plan (12MiB chunk +8MiB codec +4MiB source page). Additional projector/index/reference work must reserve within the remaining3MiB or shorten/refuse. | Seal sorted source; close/drain capture; drop whole receipt/schema/raw profile before opening another dependency. |
 | Capture A Sparse | Same single-heavy-profile rule, plus only compact A Item metadata. | Seal source; close/drop its heavy metadata. |
 | Join A | No live heavy source schema profiles; two bounded reader heads/pages plus output/codec/index under shared32MiB. Compact A profiles stay inside the held1MiB owner. | Seal candidate joined A; delete consumed A Item/Sparse source runs only after successor seal. |
 | Capture B Item, then B Sparse | Repeat single-heavy-profile capture; retained A candidate and all old/new files consume disk, not unbounded memory. Retain at most four compact64KiB profiles total. | Drop each heavy capture before the next; independently admit each compact source pair when B counterpart is available. |
 | Join B | Same bounded merge with held1MiB metadata owner; A candidate remains on disk. | Seal B; delete consumed B source runs after seal. Finalize the paired field mask; no rows are called semantic changes before this gate. |
 | Compare candidates | Use the Items core memory plan below: two12MiB input leases,3.5MiB codec,0.5MiB index plus the held1MiB source-snapshot metadata reservation =29MiB. Both candidates/findings share512MiB disk. | Release exhausted pages before replacements; retain metadata through paging; drain core/inputs before releasing metadata on close. |
 
-This schedule **never retains four4MiB profiles beside a24MiB sorter**. Compiled
+This schedule **never retains four4MiB profiles beside a24MiB-total sorter**. Compiled
 SourceProfile must not retain an indirect reference back to a receipt/schema/
-CapturedRows handle. Do not open both heavy source receipts before the Items22MiB capture
+CapturedRows handle. Do not open both heavy source receipts before the24MiB-total capture
 sort, or retain all four receipts until final pair admission. A paired-source
 alternative is allowed only with smaller reserved sort buffers and the same total
 cap; it is not permission to assume free metadata.
@@ -501,20 +501,40 @@ belong to that budget and be owned by the composed session. A naked claimed
 admission transfers no inputs/metadata ownership. Existing core APIs need not
 gain item DTOs; metadata lifetime remains the coordinator's responsibility.
 
-Capture is adjusted consistently: the Items-only sorter chunk ceiling is22MiB,
-not the raw default24MiB. One4MiB heavy profile +1MiB metadata +22MiB sort chunk
-leaves5MiB for incoming raw row, projected source row, codec and indexes. Suggested
-sub-reservations are≤1MiB each for the first three and≤0.5MiB index/bookkeeping
-(30.5MiB planned total); every actual allocation still obtains its reservation,
-and the sorter reduces its chunk or returns LIMITED if a source needs more.
-There is never a four-profile16MiB hold alongside that sorter. Source parsing/
-RecordFile decompression retain their separately documented source limits.
+Capture retains the **existing raw sorter24MiB TOTAL**, not a new22MiB or24MiB
+chunk:12MiB sort chunk +8MiB codec workspace +4MiB source-page workspace. One4MiB
+heavy profile +1MiB compact metadata +24MiB sorter total =29MiB. At most3MiB remains
+for additional projector work and any run-index/reference/bookkeeping reservations
+outside that total. Reserve actual extra work from that shared remainder, release
+it when no longer retained, and shorten/refuse with typed LIMITED if it cannot fit.
+Do not guess that a1MiB frame needs only1MiB codec scratch, reduce the reviewed8MiB
+codec reservation without proof, or reserve3MiB projector work in addition to
+unaccounted sort indexes. No four-profile16MiB hold is allowed. Native source parser
+and RecordFile decompression allocations remain separately documented.
+
+The **final Items candidate reader** implements the ComparisonInput allowance path
+against the ItemUnionJoin's own sealed session candidate format. It must validate
+and enforce its **12MiB combined read/decode/projection/canonical working allowance**
+from the Items core plan, including simultaneous frame/decoded/output/container
+lifetimes; it shortens pages or returns typed LIMIT before overrunning that
+allowance. It does not allocate a separate uncharged source buffer. The final
+reader must not forward this12MiB lease into SortedComparisonInput.read, whose
+existing READ_ALLOWANCE_BYTES guard is14MiB, nor call its standalone14MiB reader
+while the core already holds input leases. SortedComparisonInput remains reusable
+for earlier dependency sorting under its existing reviewed reservation plan; that
+is a distinct phase from reading joined candidates into the Items core. If a
+plan-aware SortedComparisonInput reader is preferred instead, its changed guard,
+codec/canonical bounds and ownership require separate specific review before use.
+No adapter may simply bypass a guard or claim that12MiB satisfies the existing14MiB
+contract.
 
 Mandatory integrated acceptance fixture: construct four compact profiles plus
 stamp/binding/mask/descriptor dictionaries and hold the charged1MiB metadata owner;
 run the real ItemUnionJoin over authored Item/Sparse source spools for both endpoints,
-then the real ComparisonService with the Items plan and shared32MiB TempBudget.
-Verify complete scanning of admitted identities, a sparse known change and partial
+then the real final Items candidate reader and ComparisonService with the Items
+plan and shared32MiB TempBudget. Assert the real12MiB allowance path succeeds
+without forwarding through the14MiB SortedComparisonInput guard or silently
+reserving a second reader allowance. Verify complete scanning of admitted identities, a sparse known change and partial
 joined facts, and successful result paging **while metadata remains reserved**.
 Exercise enough/larger findings for byte-shortened paging and multiple pages,
 assert metadata is still1MiB after input close, and assert budget peaks≤32MiB
