@@ -216,3 +216,275 @@ publishes no comparison objects, catalog references, reports or new persistent D
 No production edits, app-data writes, tests requiring credentials, or persistent
 reports are part of this design task. All references above are repository APIs;
 concrete reviewed field profiles still determine which selected builds qualify.
+
+## Concrete increment-A contracts for pre-code review
+
+Both independent reviewers approved the direction at `1632baa`. The following
+contracts refine that direction; they still require **specific independent approval
+before implementation**. Increment B effects remains a later design, not part of
+these DTOs or dependency set.
+
+### Pure public boundary in concepts-items
+
+Propose `PreparedItemProjection`, a pure public class with these operations:
+
+- `compile(SourceSchema, Selection) -> Compilation`: qualify one source schema and
+  build a compact immutable SourceProfile. No row reads, service calls or storage.
+- `projectSource(SourceProfile, SourceRow) -> SourceFacts`: project one source row
+  independently, retaining typed cells and provenance. No other ItemID lookup.
+- `combine(itemId, SourceFacts item, SourceFacts sparse, Selection) -> ItemView`:
+  combine already projected same-endpoint sources without selecting a value winner.
+  Validate identical ItemID/build/locale. Missing optional input is represented by
+  typed SourceFacts, never null meaning an empty dependency.
+- `unobservedSource(itemId, SourceStamp, SourceState, RowState, presenceEvidence,
+  Selection) -> SourceFacts`: construct a typed non-present half when no profile/
+  row is available. It emits source state/omissions, never synthetic known cells;
+  MISSING/PROTECTED require the corresponding explicit evidence.
+
+All inputs/outputs are immutable DTOs in `concepts-items`, using existing public
+formats/build metadata where suitable and **no comparison DTOs, BuildTables,
+CapturedRows handles, SQL, files, JavaFX, network or GeneratedStore**. ItemView is
+not ItemDetail and does not prepare classifications, appearances, media or stats.
+
+Exact proposed DTO vocabulary:
+
+| DTO | Fields / invariant |
+| --- | --- |
+| `SourceKind` | ITEM or ITEM_SPARSE. No provider priority/winner order. |
+| `SourceState` | READABLE, PARTIAL, UNAVAILABLE, UNSUPPORTED, INCOMPATIBLE, INVALID, LIMITED. This is dependency availability, independent of the per-ID RowState. |
+| `FactFamily` | NAME, QUALITY, CLASSIFICATION, LEVELS, FLAGS, RAW_DESCRIPTION. |
+| `Selection` | Immutable selected families plus policy revision. Default NAME/QUALITY/CLASSIFICATION/LEVELS/FLAGS; RAW_DESCRIPTION opt-in. Family→fact whitelist is versioned, not layout-discovered. CLASSIFICATION means class/subclass/inventoryType; LEVELS means itemLevel/requiredLevel only. |
+| `FactId` | NAME, QUALITY, CLASS_ID, SUBCLASS_ID, INVENTORY_TYPE, ITEM_LEVEL, REQUIRED_LEVEL, FLAGS_WORD, RAW_DESCRIPTION. Stable explicit tags, not serialized enum ordinals. |
+| `SourceStamp` | SourceKind, BuildRef, locale, table FileDataID/name, CKey/layout, definition-document SHA-256, selected-block identity, reader/options/row-codec identities, graph identity and effective-key-set fingerprint. BuildRef/locale/SourceKind/FileDataID are required; unavailable captured identities are explicitly unknown optional fields, not fabricated empty hashes. Bounded scalar strings only; no key bytes, whole receipt/document/schema or mutable source object retained. |
+| `SourceSchema` | Stamp, captured Db2Types.Header, TableSchema, actual flattened columns, source availability state and selected families. Caller owns temporary schema/receipt metadata until compile returns. |
+| `Compilation` | IdentityAdmission, FieldAdmission, optional compact SourceProfile, bounded typed omissions. Identity can qualify while fields are unsupported. Invalid identity means no row stream can be published as ItemIDs. |
+| `SourceProfile` | Compact stamp, identity-policy fingerprint, per-family/field signatures, immutable admitted bindings and omissions. At most64KiB conservative retained metadata and64selected scalar bindings per source. Exceeding either yields LIMITED for affected field scope, not a hidden giant profile. No whole SourceSchema/receipt retained. |
+| `SourceQualifiedKey` | FactId, SourceKind, table FileDataID, exact source schema field name, scalar/array tag and zero-based arraySlot (scalar uses `-1`), versioned semantic signature. It excludes endpoint CKey/graph/build config and column ordinal. Actual column index remains source evidence. |
+| `RowState` | PRESENT, MISSING, PROTECTED, UNKNOWN, INVALID, LIMITED. MISSING requires explicit certified absence evidence; current captured adapters cannot emit it. PROTECTED requires row-specific protection evidence, never a guess from a table-wide excluded section. |
+| `IssueChannel` | KNOWN, UNKNOWN, LIMITED. UNKNOWN includes nullable Row.textIssues; LIMITED includes captured row-level issue-channel limits. These are not empty issue lists. |
+| `SourceRow` | ItemID, RowState, optional Db2Types.Row (present iff PRESENT), IssueChannel, immutable per-column IssueOverride values, typed presence/protection evidence. IDs and stamp must match the profile. No row is fabricated for an absent half. |
+| `CellState` | VALUE, KNOWN_EMPTY, MISSING, UNKNOWN, PROTECTED, UNSUPPORTED, INVALID, LIMITED. UNKNOWN/etc never carry a known value. Bounded raw evidence may remain independently available. |
+| `ScalarKind` | INTEGER, TEXT, FLAG_WORD; recorded referenced IDs retain declared target metadata in the binding/evidence, without resolving labels. No inferred boolean/eligibility/stat amount. |
+| `SourceCell` | SourceQualifiedKey, CellState, ScalarKind, optional canonical known value, bounded raw evidence, actual source row ID/column index, source-copy metadata/state and issue codes. Every source cell keeps its own state even when another source is invalid or conflicting. |
+| `SourceFacts` | ItemID, compact SourceStamp, SourceState and RowState/IssueChannel, admitted source cells, source/field omissions and bounded issues. A valid source remains readable when the other source fails. |
+| `FactGroup` | FactId, ordered source-qualified cells, agreement state and assessed-source scope. Agreement is AGREE/DISAGREE only for comparable known vectors; SINGLE_KNOWN_SOURCE means one known source was observed, not that an unknown source is absent. INDETERMINATE retains partial states. |
+| `ItemView` | ItemID, per-source states/stamps, groups, separately sourced name cell, bounded issues and projection policy. It has no “winning stat/name” across Item/Sparse sources; the known name originates from Sparse by the verified policy. |
+
+`IssueOverride` names the column and a restrictive state (LIMITED, INVALID,
+PROTECTED or UNKNOWN) with a typed code. It cannot upgrade source unknown/invalid
+facts to VALUE. A present row's null textIssues forces UNKNOWN for affected text/
+placeholder-sensitive fields even if the caller supplies a more optimistic
+IssueChannel. Independently valid numeric facts can survive. KNOWN_EMPTY text
+requires an admitted text cell, a known issue channel and no issue/limit at that
+cell. Row-level unknown/limited issue channel cannot silently become issue-free.
+
+Keep per-source family limits explicit: reuse ItemFacts.MAXIMUM_VALUES16 for the
+existing source-cell extraction bound. A source-family exceeding that bound is
+LIMITED while unrelated families survive; two admitted source vectors may retain
+up to16cells each under the total64bindings/source cap. No global all-facts erasure
+because one optional family/name is unsupported. Name/description text is bounded
+to8192characters, and raw issue evidence to a bounded code/prefix; these rules are
+fingerprinted. Serialized source/item/result frames remain≤1MiB. If metadata or
+an entire record cannot fit, produce a typed limited scope and stop/omit according
+to the existing staged-source contract, never silently truncate known values.
+
+### Reuse and compatibility obligations
+
+Extract a shared pure internal source-cell/name helper from ItemFacts/ItemLayout:
+field aliases and source qualification, array-slot expansion, canonical integer
+checks, name validation and label lookup remain one implementation. The new
+boundary uses the helper with independent optional halves and restrictive issue
+states. Existing ItemFacts.project and ordinary ItemLayout/ItemsService delegate
+only where that preserves their established public behavior. Do not force the
+new partial-source agreement states into legacy enums or change ordinary browsing
+as a side effect.
+
+Compatibility fixtures must demonstrate existing valid ItemFactSet values,
+source order, alias selection, agreement, labels and ordinary ItemName states are
+unchanged. New fixtures separately demonstrate sparse-only facts, unsupported name
+with known numeric facts, row-local limitations, independently invalid halves and
+conflicting vectors. If a legacy aggregate cannot express the new state, keep the
+legacy wrapper behavior and expose the richer state only through the new DTOs.
+Ambiguous duplicate columns/aliases use the existing rejection rules; do not pick
+a candidate by position or let one ambiguity erase unrelated admitted families.
+No second stat formula implementation, duplicate label dictionary or imitation of
+ItemStatCalculator is allowed.
+
+### Unsigned identity and signed source values
+
+The identity policy is `item-row-id-unsigned32-decoder-v1`: the authoritative ID is
+Db2Types.Row.id in `[0,4294967295]`, including zero and the maximum. For an actual
+ID column, compare its decoded text against that unsigned decoder ID; **do not
+reject4294967295 merely because the selected DBD ID field declares signed32**.
+The reader emits ID cells through its unsigned decoder identity path, separately
+from ordinary signed scalar formatting. A mismatch between decoded ID cell and
+row.id is invalid source evidence. Do not reinterpret a negative generic cell as
+an ItemID or repair a mismatch by casting `-1` to unsigned.
+
+Ordinary non-ID integer cells still obey their admitted schema width/signedness.
+Recorded `-1` masks/sentinels remain signed VALUE `-1` with policy/source evidence;
+they are not MISSING, unknown, zero, max unsigned or a fabricated “all classes”
+set. Unknown enum/flag values remain known raw values if well typed. A width,
+signedness, decoder-ID policy, reference meaning or sentinel-policy mismatch is
+an incompatible field scope, not a numeric conversion/crosswalk. Source copies
+keep their own unsigned ItemID; copySourceId is independently typed provenance,
+never an alternate entity identity.
+
+### Independent per-dependency pair admission
+
+The comparison adapter proposes `ItemsPairScope.admit(leftProfiles, rightProfiles,
+Selection) -> ItemsFieldScope`. These are comparison-layer contracts using the
+pure compact item profiles; concepts-items does not depend on that adapter or the
+comparison core. Output contains separate ITEM and ITEM_SPARSE identity admissions,
+per-family source-qualified field masks, omissions and a descriptor-scope digest.
+
+For each dependency independently, admit ItemID identity under the verified table
+FileDataID/product lineage and decoder-ID policy. The pinned repository manifest
+currently identifies Item as FileDataID841626/tableHash50238EC2 and ItemSparse as
+FileDataID1572924/tableHash919BE54E. Verify the captured source against that selected
+manifest/profile; do not pair an arbitrary named table or infer table identity from
+its columns. Header/table identity mismatch is unsupported/invalid. The compact
+profile retains only the bounded header identity/ID-policy fields, not the header's
+whole columns list. A changed manifest mapping requires an explicitly reviewed
+profile, not a fallback guess. Admit its selected fields only
+under the raw slice's exact-layout/document/structural/interpretation policy and
+the new projector policy. A Sparse field-schema mismatch suppresses Sparse field
+comparison but does not suppress compatible Item facts or already qualified ItemID
+streams. There is no attempt to map different Sparse layouts by column name, or
+to reuse their numeric fields with guessed semantics. If its identity itself
+cannot qualify, that dependency is unavailable for the identity union too.
+
+Globally unavailable/incompatible/unsupported fields on either side are excluded
+from the run's assessed field mask and listed once as unassessed descriptor scope.
+Single-side known values can remain bounded detail evidence; they are not
+manufactured as known-vs-empty changes. If no field family is assessable, show an
+unsupported/unavailable Items capability, not “zero item changes.”
+
+For a globally admitted field family, a particular joined row missing/protected/
+limited within readable partial data remains a per-row UNKNOWN/PROTECTED/LIMITED
+field and therefore a meaningful finding alongside other known cells. An Item
+half missing for one ItemID cannot hide Sparse name/quality/level values. Membership
+coverage of the union remains UNKNOWN; a field agreement moving from AGREE to
+INDETERMINATE is an availability outcome, not a proven content-value change.
+
+Field keys in ComparisonTypes.Record come from SourceQualifiedKey and the admitted
+mask. Each raw source vector is compared independently; no “first available value”
+comparison shortcut. A wrapper can show FactGroup agreement as interpretation/
+availability evidence without converting disagreement into a made-up winner.
+Schema/profile semantic signatures exclude endpoint availability state, CKey,
+graph identity and observation time; those do not prevent known values from a
+PARTIAL source comparing with a READY source. The ComparisonTypes.Descriptor
+scope binds selected families, per-dependency
+admissions/omissions, policy fingerprints and coverage. Endpoint-only stamps remain
+annotations/dependency identity, not per-row changed content fields.
+
+### Bounded capture, source projection, union and stream join
+
+Propose a comparison-owned `PreparedItemsInputs.open(pairSessions, Selection,
+TempBudget, token) -> ItemsInputsResult`, returning admitted descriptors, two owned
+ComparisonInput adapters and typed per-dependency capability details. No resource
+ownership transfers on failed admission. The implementation uses the existing
+CapturedRows, ordered bounded source staging and result classifier; it does not
+call BuildItems, ordinary table APIs or construct a normal ItemsService.
+
+An internal `ProjectedItemSource` adapts one captured dependency into bounded
+source records containing ItemID, SourceKind, typed SourceFacts and compact stamp
+references. It calls only the pure projector. The existing sorter orders records
+by fixed-width20decimal ItemID; duplicate IDs within one source invalidate that
+source scope rather than selecting a row winner. It retains exact source-qualified
+column/slot evidence and typed limitations, not an entire repeated schema/receipt
+on every row. The stamp dictionary has at most four source entries and selected
+binding dictionaries at most256entries total (four compact profiles×64bindings);
+all dictionary strings/containers are charged to TempBudget. Row-specific source
+IDs/column/slot/issue evidence remain in the records. No unbounded metadata or ID map.
+
+An internal `ItemUnionJoin` consumes two sealed ordered source streams for one
+endpoint. Its page contract is `next(maxRows≤256, maxBytes≤4MiB, token)` returning
+immutable ItemViews/source states, stable snapshot identity, continuation and
+UNKNOWN coverage; it may shorten the page. It owns at most one row head per source
+plus bounded output. Equal IDs combine the two sources; an ID from just one source
+produces typed UNKNOWN for the missing half. No per-ID source lookup or full map.
+It can either seal a bounded candidate ItemView stream or feed an already admitted
+mask; the initial schedule below seals candidates until both endpoints' compact
+profiles are available. Core input adapters apply the final paired field mask when
+reading candidates, before classifying/staging findings.
+
+Memory phase schedule (one active comparison; allocations remain reserved from
+one TempBudget, whose authoritative cap may shorten/refuse work):
+
+| Phase | Heavy metadata / canonical work | Required release |
+| --- | --- | --- |
+| Capture A Item | At most one captured schema/profile metadata reservation4MiB; compact compile output≤64KiB; sorter chunks/reservations within remaining budget (up to24MiB only if raw row/codec/index reservations also fit32MiB). | Seal sorted source; close/drain capture; drop whole receipt/schema/raw profile before opening another dependency. |
+| Capture A Sparse | Same single-heavy-profile rule, plus only compact A Item metadata. | Seal source; close/drop its heavy metadata. |
+| Join A | No live source schema profiles; two bounded reader heads/pages plus output/codec/index under shared32MiB. Compact A profiles only. | Seal candidate joined A; delete consumed A Item/Sparse source runs only after successor seal. |
+| Capture B Item, then B Sparse | Repeat single-heavy-profile capture; retained A candidate and all old/new files consume disk, not unbounded memory. Retain at most four compact64KiB profiles total. | Drop each heavy capture before the next; independently admit each compact source pair when B counterpart is available. |
+| Join B | Same bounded merge; A candidate remains on disk. | Seal B; delete consumed B source runs after seal. Finalize the paired field mask; no rows are called semantic changes before this gate. |
+| Compare candidates | Core/adapter source-page, normalization, codec and sparse-index reservations share32MiB; compact profiles/dictionaries count too. Both candidate streams and findings count toward512MiB. | Release exhausted pages before replacements; drain inputs/core and delete all scratch on close/failure. |
+
+This schedule **never retains four4MiB profiles beside a24MiB sorter**. Compiled
+SourceProfile must not retain an indirect reference back to a receipt/schema/
+CapturedRows handle. Do not open both heavy source receipts before a24MiB capture
+sort, or retain all four receipts until final pair admission. A paired-source
+alternative is allowed only with smaller reserved sort buffers and the same total
+cap; it is not permission to assume free metadata.
+
+Before source-sort startup, reserve and validate the heavy comparison metadata
+profile within4MiB. If it cannot fit, publish a typed LIMITED source capability
+and close/drop that capture; do not start a24MiB sorter beside uncapped retained
+metadata. Native parser/reader metadata allocations retain their separately
+stated limits; this reservation is not a whole-source/whole-process heap claim.
+Compact profiles expose a conservative retained-size estimate for caller budget
+charging, and family/source shape admission is complete before candidate projection.
+
+A-before-B candidate sealing is safe only because it stores typed source facts
+under a candidate selection, not an asserted final comparable schema. Compact B
+admission may later remove a globally incompatible source family from both final
+inputs; this filtering is recorded in descriptor scope. IDs remain available only
+under their separately qualified identity policy. No source value is reinterpreted
+or recaptured silently after admission.
+
+All sealed dependency inputs, candidate outputs, source-sort runs, merge successors,
+findings frames, file headers/footers and old-but-not-yet-deleted runs share the
+same512MiB live disk budget. Reserve before writing; keep old/new bytes charged
+until deletion succeeds. If a joined successor cannot fit alongside its inputs,
+return LIMITED and clean up rather than exceed quota, discard the sole usable
+input or create another per-stage512MiB budget. Streaming join output does not
+make its retained input files free. Evidence is compact/source-qualified, not
+removed to hide quota use.
+
+Initial source records/ItemViews/results remain≤1MiB, named field text≤8192chars,
+source heads/pages≤4MiB and observed union identities≤5million. The source parser,
+record decompressor and prepared-key bootstrap retain their separately documented
+limits; none of this claims a32MiB whole-process cap. Cancellation or failed delivery
+keeps private ownership until captured reads, sorter/join workers and abandoned
+adapters drain. The coordinator then closes borrowed endpoint sessions, without
+closing the browsed build/shared library. No new persistent reports or generic
+cross-layout cache identity is introduced.
+
+### Exact-contract acceptance fixtures
+
+Specific independent approval must cover the DTO/state/family masks and the above
+phase/budget ownership, then code must prove:
+
+- Legacy projector compatibility plus richer sparse-only/invalid-half preservation;
+  explicit source-qualified disagreement, array slot ordering and no value winner.
+- Unsigned max ItemID under signed32 DBD ID metadata, mismatched ID-cell rejection,
+  and signed non-ID `-1` sentinel preservation without unsigned coercion.
+- Incompatible Sparse fields with compatible Item values/IDs; globally excluded
+  field scope versus a particular missing joined row; no-assessable-fields capability.
+- Unknown/limited issue channels, exact row protection only when evidenced, known
+  empty names versus unknown placeholders and cell-level LIMITED overrides.
+- Sequential metadata turnover proving one4MiB heavy profile at a time, compact
+  profile retention limits, shared source-sort/join/core reservations, all old/new
+  file bytes charged, and quota failure without an unlimited fallback map/index.
+- Forbidden ordinary item/table APIs and persistent publications; private cleanup
+  after canceled capture/join/delivery; stable captured-source identity and honest
+  UNKNOWN union membership. A readonly native paired proof follows authored tests.
+
+These contracts remain **design only** until independent exact-contract approval
+is recorded. Effects/use-text increment B needs its own later concrete design.
+
+
+Manifest identity evidence for the exact initial source pair is the repository's
+[definition manifest](../../formats-tables/src/main/resources/com/vibeminer/formats/definitions/manifest.json).
+This is profile evidence, not permission to fetch definitions or client bytes.
