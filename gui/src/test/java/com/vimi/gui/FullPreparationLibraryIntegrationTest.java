@@ -38,7 +38,7 @@ public final class FullPreparationLibraryIntegrationTest {
             String identity = null;
             long generatedAfterFirst = 0;
             for (int round = 0; round < 2; round++) {
-                var service = BuildApplication.open(directory).get(20, TimeUnit.SECONDS);
+                var service = BuildApplication.open(directory, OfflineSourceFixtures::publicKeys).get(20, TimeUnit.SECONDS);
                 try {
                     require(
                             service.preparation() != null,

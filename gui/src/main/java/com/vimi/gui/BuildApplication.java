@@ -49,6 +49,10 @@ public final class BuildApplication {
     }
 
     public static CompletableFuture<BackendBuildService> open(Path directory) {
+        return open(directory, null);
+    }
+
+    static CompletableFuture<BackendBuildService> open(Path directory, com.vibeminer.network.TactKeyClient keyClient) {
         java.util.Objects.requireNonNull(directory);
         var result = new CompletableFuture<BackendBuildService>();
         var token = new Cancellation();
@@ -180,7 +184,7 @@ public final class BuildApplication {
                                 "source", LibraryCatalog.Role.ORIGINAL);
                         ownership.retainOwner("provider:tact-keys", LibraryCatalog.Scope.GLOBAL).join();
                         var dataSources = DataSourcesService.open(library.databasePath(), directory.resolve("questie"),
-                                fullContexts.communityNames(), ownership, network, tactOwner, tactOwner);
+                                fullContexts.communityNames(), ownership, keyClient == null ? network : keyClient, tactOwner, tactOwner);
                         cleanup.addFirst(dataSources::closeAsync);
                         fullContexts.withSources(dataSources);
                         var preparation = new BuildPreparation(fullContexts);

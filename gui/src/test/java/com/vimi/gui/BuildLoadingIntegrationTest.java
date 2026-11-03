@@ -65,7 +65,7 @@ public final class BuildLoadingIntegrationTest {
                 old.closeAsync().join();
             }
             String identity;
-            var service = BuildApplication.open(directory).get(15, TimeUnit.SECONDS);
+            var service = BuildApplication.open(directory, OfflineSourceFixtures::publicKeys).get(15, TimeUnit.SECONDS);
             try {
                 var build =
                         service.listBuilds().get(15, TimeUnit.SECONDS).stream()
@@ -158,7 +158,7 @@ public final class BuildLoadingIntegrationTest {
             } finally {
                 service.closeAsync().get(15, TimeUnit.SECONDS);
             }
-            var reopened = BuildApplication.open(directory).get(15, TimeUnit.SECONDS);
+            var reopened = BuildApplication.open(directory, OfflineSourceFixtures::publicKeys).get(15, TimeUnit.SECONDS);
             try {
                 var build =
                         reopened.listBuilds().join().stream()

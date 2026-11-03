@@ -23,7 +23,7 @@ public final class BuildApplicationIntegrationTest {
                         versions.getBytes(StandardCharsets.UTF_8)), Cancellation.NONE).join();
             } finally { store.closeAsync().join(); }
             String identity;
-            var service = BuildApplication.open(directory).join();
+            var service = BuildApplication.open(directory, OfflineSourceFixtures::publicKeys).join();
             try {
                 require(service.preparation() != null, "Native composition wires the full preparation service");
                 var hidden = service.listBuilds().get(20, java.util.concurrent.TimeUnit.SECONDS);
@@ -45,7 +45,7 @@ public final class BuildApplicationIntegrationTest {
                         "Build list status comes from persisted registry table");
                 identity = build.identity();
             } finally { service.closeAsync().get(20, java.util.concurrent.TimeUnit.SECONDS); }
-            var reopened = BuildApplication.open(directory).join();
+            var reopened = BuildApplication.open(directory, OfflineSourceFixtures::publicKeys).join();
             try {
                 var restored = reopened.listBuilds().join().getFirst();
                 require(reopened.loadSnapshot(restored).entry().status() == com.vibeminer.builds.BuildRegistry.Status.DISCOVERED,
