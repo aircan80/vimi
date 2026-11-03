@@ -49,6 +49,40 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
         viewport.setMinHeight(320);
         viewport.setPrefHeight(420);
         viewport.getStyleClass().add("model-preview-viewport");
+        viewport.setFocusTraversable(true);
+        viewport.setAccessibleText("Static model preview");
+        viewport.setAccessibleHelp("Arrow keys rotate. Plus or minus zoom. Home resets the view.");
+        viewport.focusedProperty()
+                .addListener(
+                        (o, b, a) ->
+                                viewport.setStyle(
+                                        a
+                                                ? "-fx-border-color: #137b70; -fx-border-width: 2;"
+                                                : ""));
+        viewport.setOnKeyPressed(
+                event -> {
+                    if (mesh == null) {
+                        return;
+                    }
+                    switch (event.getCode()) {
+                        case LEFT -> yaw -= .12;
+                        case RIGHT -> yaw += .12;
+                        case UP -> pitch = Math.max(-1.1, pitch - .08);
+                        case DOWN -> pitch = Math.min(1.1, pitch + .08);
+                        case PLUS, ADD, EQUALS, PAGE_UP -> zoom = Math.min(3, zoom * 1.1);
+                        case MINUS, SUBTRACT, PAGE_DOWN -> zoom = Math.max(.4, zoom / 1.1);
+                        case HOME -> {
+                            yaw = -.3;
+                            pitch = 0;
+                            zoom = 1.15;
+                        }
+                        default -> {
+                            return;
+                        }
+                    }
+                    request();
+                    event.consume();
+                });
         image.setPreserveRatio(true);
         image.fitWidthProperty().bind(viewport.widthProperty());
         image.fitHeightProperty().bind(viewport.heightProperty());
@@ -70,9 +104,11 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
         controls.getStyleClass().add("model-preview-controls");
         setTop(controls);
         status.getStyleClass().add("muted");
+        status.setWrapText(true);
         setBottom(status);
         viewport.setOnMousePressed(
                 event -> {
+                    viewport.requestFocus();
                     mouseX = event.getX();
                     mouseY = event.getY();
                 });
@@ -207,7 +243,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                                                             frame.width());
                                             image.setImage(bitmap);
                                             status.setText(
-                                                    "Drag to rotate · scroll to zoom · static rest surface");
+                                                    "Drag to rotate · scroll or +/− to zoom · arrow keys rotate · static rest surface");
                                         });
                             } catch (java.util.concurrent.CancellationException superseded) {
                                 /* Latest camera request replaces this frame. */

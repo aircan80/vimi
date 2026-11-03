@@ -1,0 +1,382 @@
+package com.vimi.gui;
+
+import com.vibeminer.access.Cancellation;
+import com.vibeminer.concepts.models.DisplayModelTypes;
+import com.vibeminer.concepts.mounts.BuildMounts;
+import com.vibeminer.concepts.mounts.MountTypes;
+import com.vibeminer.rendering.models.MeshAppearance;
+import com.vibeminer.rendering.models.PreviewMesh;
+import java.awt.image.BufferedImage;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import javafx.application.Platform;
+import javafx.scene.Scene;
+import javafx.scene.control.ComboBox;
+import javafx.scene.control.Label;
+import javafx.scene.control.ListView;
+import javafx.scene.control.TextField;
+import javafx.scene.layout.BorderPane;
+import javafx.stage.Stage;
+import javax.imageio.ImageIO;
+
+/** Authored-only UI proof: readable partial records, lazy variants, search and stale selection. */
+public final class MountsUiTest {
+    private MountsUiTest() {}
+
+    public static void main(String[] args) throws Exception {
+        var done = new CompletableFuture<Void>();
+        Platform.startup(
+                () -> {
+                    try {
+                        var runner =
+                                new MountTypes.Mount(
+                                        6,
+                                        "Authored Plains Runner",
+                                        "An authored description for reviewing the mount layout.",
+                                        "Recorded source text appears here. No player collection state is inferred.",
+                                        458L,
+                                        0L,
+                                        10L,
+                                        0L,
+                                        0L);
+                        var hidden =
+                                new MountTypes.Mount(
+                                        7,
+                                        "Delayed appearance",
+                                        null,
+                                        null,
+                                        459L,
+                                        null,
+                                        null,
+                                        null,
+                                        null);
+                        var pending = new CompletableFuture<MountTypes.Overview>();
+                        var calls = new AtomicInteger();
+                        var closes = new AtomicInteger();
+                        var catalogs = new AtomicInteger();
+                        var revision = new AtomicLong(1);
+                        BuildMounts handle =
+                                new BuildMounts() {
+                                    public CompletableFuture<MountTypes.Catalog> catalog(
+                                            Cancellation token) {
+                                        catalogs.incrementAndGet();
+                                        return CompletableFuture.completedFuture(
+                                                new MountTypes.Catalog(
+                                                        MountTypes.State.PARTIAL,
+                                                        List.of(runner, hidden),
+                                                        List.of(
+                                                                "Authored protected section; readable mounts remain available."),
+                                                        null));
+                                    }
+
+                                    public CompletableFuture<MountTypes.Overview> overview(
+                                            long id, Cancellation token) {
+                                        if (id == 7) {
+                                            return pending;
+                                        }
+                                        return CompletableFuture.completedFuture(
+                                                new MountTypes.Overview(
+                                                        MountTypes.State.PARTIAL,
+                                                        runner,
+                                                        List.of(
+                                                                new MountTypes.Variant(
+                                                                        1, 20, 0L, "MountXDisplay"),
+                                                                new MountTypes.Variant(
+                                                                        2,
+                                                                        21,
+                                                                        99L,
+                                                                        "MountXDisplay")),
+                                                        List.of("Authored partial links"),
+                                                        null));
+                                    }
+
+                                    public CompletableFuture<DisplayModelTypes.Preview> preview(
+                                            long id, long variant, Cancellation token) {
+                                        calls.incrementAndGet();
+                                        return CompletableFuture.completedFuture(
+                                                new DisplayModelTypes.Preview(
+                                                        DisplayModelTypes.State.PARTIAL,
+                                                        new DisplayModelTypes.Reference(
+                                                                variant == 1 ? 20 : 21,
+                                                                30,
+                                                                40,
+                                                                List.of(50L),
+                                                                0L,
+                                                                0L),
+                                                        appearance(),
+                                                        Set.of(0),
+                                                        List.of(
+                                                                "Authored geometry and diffuse texture; no game assets."),
+                                                        true,
+                                                        null));
+                                    }
+
+                                    public CompletableFuture<Void> closeAsync() {
+                                        closes.incrementAndGet();
+                                        return CompletableFuture.completedFuture(null);
+                                    }
+                                };
+                        var view =
+                                new MountsView(
+                                        () -> handle, revision::get, "Authored build · enUS");
+                        var root = new BorderPane(view);
+                        root.setTop(
+                                new Label(
+                                        "AUTHORED MOUNTS UI FIXTURE · no game assets or real build data"));
+                        var scene = new Scene(root, 1320, 850);
+                        scene.getStylesheets()
+                                .add(MountsUiTest.class.getResource("/vimi.css").toExternalForm());
+                        var stage = new Stage();
+                        stage.setScene(scene);
+                        stage.show();
+                        view.ensureLoaded();
+                        await(
+                                () ->
+                                        labels(view).stream()
+                                                .anyMatch(
+                                                        t -> t.startsWith("Static model preview")),
+                                () -> {
+                                    require(
+                                            calls.get() == 1,
+                                            "Only the selected first variant loads");
+                                    require(
+                                            labels(view).contains("Authored Plains Runner"),
+                                            "Readable mount shown");
+                                    require(
+                                            labels(view).stream()
+                                                    .anyMatch(t -> t.contains("partial")),
+                                            "Partial state remains visible");
+                                    @SuppressWarnings("unchecked")
+                                    var list =
+                                            (ListView<MountTypes.Mount>)
+                                                    view.lookupAll(".list-view").stream()
+                                                            .filter(
+                                                                    n ->
+                                                                            "Build mount records"
+                                                                                    .equals(
+                                                                                            n
+                                                                                                    .getAccessibleText()))
+                                                            .findFirst()
+                                                            .orElseThrow();
+                                    var query =
+                                            (TextField)
+                                                    view.lookupAll(".text-field").stream()
+                                                            .filter(
+                                                                    n ->
+                                                                            "Search mount records"
+                                                                                    .equals(
+                                                                                            n
+                                                                                                    .getAccessibleText()))
+                                                            .findFirst()
+                                                            .orElseThrow();
+                                    query.setText("458");
+                                    require(list.getItems().size() == 1, "Source spell search");
+                                    require(
+                                            calls.get() == 1,
+                                            "Filtering does not load more models");
+                                    query.clear();
+                                    @SuppressWarnings("unchecked")
+                                    var variant =
+                                            (ComboBox<MountTypes.Variant>)
+                                                    view.lookupAll(".combo-box").stream()
+                                                            .filter(
+                                                                    n ->
+                                                                            "Recorded mount display variants"
+                                                                                    .equals(
+                                                                                            n
+                                                                                                    .getAccessibleText()))
+                                                            .findFirst()
+                                                            .orElseThrow();
+                                    variant.getSelectionModel().select(1);
+                                    await(
+                                            () ->
+                                                    calls.get() == 2
+                                                            && labels(view).stream()
+                                                                    .anyMatch(
+                                                                            t ->
+                                                                                    t.startsWith(
+                                                                                            "Static model preview"))
+                                                            && hasImage(view),
+                                            () -> {
+                                                require(
+                                                        calls.get() == 2,
+                                                        "Explicit variant selection loads only chosen variant");
+                                                try {
+                                                    stage.setWidth(1150);
+                                                    stage.setHeight(760);
+                                                    root.applyCss();
+                                                    root.layout();
+                                                    require(
+                                                            view.getBoundsInParent().getWidth()
+                                                                    > 900,
+                                                            "Resize retains content");
+                                                    stage.setWidth(1320);
+                                                    stage.setHeight(850);
+                                                    root.applyCss();
+                                                    root.layout();
+                                                    snapshot(scene);
+                                                } catch (Exception failure) {
+                                                    done.completeExceptionally(failure);
+                                                    stage.close();
+                                                    return;
+                                                }
+                                                list.getSelectionModel().select(hidden);
+                                                view.close();
+                                                pending.complete(
+                                                        new MountTypes.Overview(
+                                                                MountTypes.State.READY,
+                                                                hidden,
+                                                                List.of(),
+                                                                List.of(),
+                                                                "STALE SHOULD NOT APPEAR"));
+                                                Platform.runLater(
+                                                        () -> {
+                                                            try {
+                                                                require(
+                                                                        labels(view).stream()
+                                                                                .noneMatch(
+                                                                                        t ->
+                                                                                                t
+                                                                                                        .contains(
+                                                                                                                "STALE SHOULD NOT APPEAR")),
+                                                                        "Stale selection suppressed after close");
+                                                                require(
+                                                                        closes.get() == 0,
+                                                                        "View never closes borrowed handle");
+                                                                require(
+                                                                        catalogs.get() == 1,
+                                                                        "Catalogue is reused until invalidated");
+                                                                stage.close();
+                                                                done.complete(null);
+                                                            } catch (Throwable failure) {
+                                                                done.completeExceptionally(failure);
+                                                                stage.close();
+                                                            }
+                                                        });
+                                            },
+                                            done,
+                                            0);
+                                },
+                                done,
+                                0);
+                    } catch (Throwable failure) {
+                        done.completeExceptionally(failure);
+                    }
+                });
+        try {
+            done.get(20, TimeUnit.SECONDS);
+            System.out.println(
+                    "Mounts UI: partial records, lazy variants, source-spell search, resize, stale selection and borrowed lifetime passed");
+        } finally {
+            Platform.exit();
+        }
+    }
+
+    private static MeshAppearance appearance() {
+        var mesh =
+                new PreviewMesh(
+                        new float[] {0, 0, 1, -1, -1, -1, 1, -1, -1, 0, 1, -1},
+                        new int[] {0, 1, 2, 0, 2, 3, 0, 3, 1, 1, 3, 2},
+                        List.of(new PreviewMesh.Part(0, 0, 12)));
+        return new MeshAppearance(
+                mesh,
+                new float[] {.5f, 0, 0, 1, 1, 1, .5f, .5f},
+                List.of(new MeshAppearance.Surface(0, 0, false, false, false)),
+                List.of(
+                        new MeshAppearance.Texture(
+                                2, 2, new int[] {0xffd8ac66, 0xff43968a, 0xff43968a, 0xffd8ac66})));
+    }
+
+    private static void await(
+            java.util.function.BooleanSupplier condition,
+            Runnable action,
+            CompletableFuture<Void> done,
+            int attempts) {
+        if (done.isDone()) {
+            return;
+        }
+        try {
+            if (condition.getAsBoolean()) {
+                action.run();
+                return;
+            }
+            if (attempts > 100) {
+                throw new AssertionError("UI readiness timed out");
+            }
+            var pause = new javafx.animation.PauseTransition(javafx.util.Duration.millis(50));
+            pause.setOnFinished(e -> await(condition, action, done, attempts + 1));
+            pause.play();
+        } catch (Throwable failure) {
+            done.completeExceptionally(failure);
+        }
+    }
+
+    private static List<String> labels(javafx.scene.Parent parent) {
+        return parent.lookupAll(".label").stream()
+                .filter(Label.class::isInstance)
+                .map(Label.class::cast)
+                .map(Label::getText)
+                .toList();
+    }
+
+    private static boolean hasImage(javafx.scene.Node node) {
+        if (node instanceof javafx.scene.image.ImageView image && image.getImage() != null) {
+            var source = image.getImage();
+            var reader = source.getPixelReader();
+            for (int y = 0; y < 16; y++) {
+                for (int x = 0; x < 16; x++) {
+                    int pixel =
+                            reader.getArgb(
+                                    (int) (source.getWidth() * (x + .5) / 16),
+                                    (int) (source.getHeight() * (y + .5) / 16));
+                    int r = pixel >>> 16 & 255, g = pixel >>> 8 & 255, b = pixel & 255;
+                    if (r != g - 8 || b != g + 2) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+        if (node instanceof javafx.scene.Parent parent) {
+            for (var child : parent.getChildrenUnmodifiable()) {
+                if (hasImage(child)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static void snapshot(Scene scene) throws Exception {
+        var snapshot = scene.snapshot(null);
+        int width = (int) snapshot.getWidth(), height = (int) snapshot.getHeight();
+        int[] pixels = new int[width * height];
+        snapshot.getPixelReader()
+                .getPixels(
+                        0,
+                        0,
+                        width,
+                        height,
+                        javafx.scene.image.PixelFormat.getIntArgbInstance(),
+                        pixels,
+                        0,
+                        width);
+        var image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+        image.setRGB(0, 0, width, height, pixels, 0, width);
+        var directory = Path.of(System.getProperty("vimi.uiReviewDirectory", "build/ui-review"));
+        Files.createDirectories(directory);
+        ImageIO.write(image, "png", directory.resolve("mounts-authored.png").toFile());
+    }
+
+    private static void require(boolean value, String message) {
+        if (!value) {
+            throw new AssertionError(message);
+        }
+    }
+}
