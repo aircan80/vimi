@@ -193,7 +193,8 @@ capture an artificial bridge. Otherwise attempt one prepared-local bridge captur
 and admit bridge mode only if that bridge positively qualifies; a missing effect
 source can then leave bridge references useful with effect inputs unassessed. An
 unsupported readable effect layout is not silently treated as the retail target
-profile. Close heavy compilation before compiling the next source. Register
+profile: when both bridge profiles qualify, reference-only comparison remains
+admitted with target input families globally unassessed. Close heavy compilation before compiling the next source. Register
 explicit unavailable/unsupported dependency outcomes.
 
 Compare semantic inputs only when each dependency has the matching reviewed
