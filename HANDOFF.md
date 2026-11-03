@@ -6,7 +6,7 @@ Keep working without waiting for user input; retain questions/follow-ups here.
 No blocking product question is outstanding.
 
 World #115, Mounts #111, Professions/Recipes #112, Dungeons #108 and NPC/Quest
-zone maps #116 are merged. Prereleases alpha.1 through alpha.5 are published for
+zone maps #116 are merged. Prereleases alpha.1 through alpha.6 are published for
 Linux x64/ARM64, macOS Intel/Apple Silicon and Windows x64, with bundled
 Java/JavaFX/SQLite, installers, portable archives and checksums. All are explicit
 GitHub prereleases, never stable/latest. #22 and CI epic #2 are complete. Continue
@@ -23,9 +23,12 @@ and exact cached known-definition table inventories, bounded session-only findin
 and explicit coverage. Other areas remain Not implemented. No persistent comparison
 reports, provider refresh, payload acquisition or inferred global membership.
 The foundation passed independent integration review and all native CI, and #131
-is FF-merged. A content-inventory cursor optimization is underway before alpha.6
-publication; avoid unused per-file storage presence queries during comparison. Keep
-#117 open. Raw table row comparisons require their next specific reviewed contract.
+is FF-merged. The content-inventory cursor optimization is merged and alpha.6 is published;
+Files comparison avoids unused per-file storage presence/name queries. Keep
+#117 open. The selected raw-table contract received independent approval before coding
+(docs/comparison/raw-tables-proposal.md). Implementation is in isolated work:
+nonrepair prepared-local readers, bounded ID sorting, shared scratch/buffer quotas
+and raw-field projection; retain uncertified membership and session-only results.
 
 Questions/follow-ups for the user's return: Windows MSI installation and deferred
 native Windows filesystem acceptance #24–#26 remain. Native macOS development
