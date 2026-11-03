@@ -96,3 +96,17 @@ fingerprint and combined-quota fixtures remain implementation acceptance checks.
 This gate authorizes that narrow implementation. It excludes acquisition, missing
 table rebuilds, repair/deletion fallback, cross-layout mapping, semantic gameplay
 claims, persistent reports and completion of #117.
+
+## Content-inventory optimization review
+
+Independent architecture review approved
+`d2e1daf946900a8c5eb6e55a56b58604331bf93a` (including `24b6ab5`). The new native
+content cursor preserves locale/ID/size/CKey semantics and avoids names, storage
+presence and payload queries. Explicit unsupported fallback retains the slower
+metadata path without upgrading coverage.
+
+Review caught admission-rejection and returned-future cancellation serialization;
+private completion cleanup and a returned observer copy now preserve the busy
+flag until the actual worker drains. Deterministic fixtures exercise saturation,
+cancellation, retry and ID order. The reviewer independently ran Files and
+comparison checks successfully.
