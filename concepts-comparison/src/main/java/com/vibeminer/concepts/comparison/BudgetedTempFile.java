@@ -87,7 +87,7 @@ public final class BudgetedTempFile implements AutoCloseable {
                     ByteBuffer.allocate(4).putInt(frame.length).flip(),
                     ByteBuffer.wrap(frame),
                     token);
-        } catch (IOException | RuntimeException failure) {
+        } catch (IOException | RuntimeException | Error failure) {
             failed = true;
             throw failure;
         }

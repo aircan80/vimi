@@ -75,3 +75,41 @@ to use metadata listing. Both paths keep membership completeness UNKNOWN, omit
 unpinned names/live storage, preserve genuinely unknown sizes as uncertain findings,
 and compare identical known content equally even when source API annotations differ.
 No same-build shortcut or comparison-classification change is introduced.
+## Shared scratch budget
+
+`new ComparisonService(parent, budget)` borrows a caller-owned `TempBudget` shared
+with capture/sort inputs and their replacement files. The existing constructor
+retains its privately owned default budget. Closing the core drains accepted reads,
+closes accepted adapters, deletes its result file and releases its own reservations;
+it never closes a borrowed budget. Rejected start admission leaves input ownership
+with the caller. The caller closes the shared budget only after every stage drains.
+
+Capture and sorting finish before core merge starts. Core reserves 14 MiB for each
+source page **before** invoking `read`, including returned-page/canonicalization
+work. Exhausted pages release their allowance before their replacement is requested.
+The remaining run allowance is 3.5 MiB for framing/codec work and 0.5 MiB for the
+bounded primitive sparse index (at most 50,000 longs). The index stays charged while
+results remain available; codec and input-page reservations drain after the merge.
+
+A nonempty result-page read reserves the remaining 31.5 MiB while constructing the
+page, including its retained DTOs, transient frame/decode/classification work. The
+16 MiB retained-output cutoff is a separate policy, not a claim that transient
+allocations fit in 16 MiB. The scoped reservation ends when the page is handed to
+the caller: caller-retained pages and JVM overhead are outside that core-owned
+scope. GUI composition must retain only its bounded displayed page. Borrowed source
+parsers must separately enforce/charge their own allocations; these reservations
+are not a universal heap bound for arbitrary `ComparisonInput` implementations.
+
+`BudgetedTempFile` owns one private scratch file. `appendFrame` grows the shared
+disk reservation for the four-byte length plus frame **before** writing. A failed
+or partial append keeps its full planned charge, rejects further appends and releases
+only after successful file deletion. `seal` closes the writer before a reader opens;
+`transferTo` changes stage ownership without an accounting gap. Old inputs and their
+replacement/output files coexist under the same disk quota until deletion. An
+external-budget core has no separate 512 MiB output allowance that could bypass the
+whole-job quota. Quota exhaustion produces an incomplete `LIMITED` run; it does not
+certify missing records or change field classification.
+
+Tests combine sealed input files with output, enforce low shared memory/disk limits,
+exercise partial writes and stage replacement, inspect peak/page-turnover accounting,
+and verify result-page/rejected-admission/close cleanup and caller budget ownership.

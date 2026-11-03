@@ -31,6 +31,7 @@ import java.util.concurrent.TimeUnit;
 /**
  * One session-only local comparison. Owns input adapters and staging, not borrowed build services.
  */
+@SuppressWarnings("try")
 public final class ComparisonService implements AutoCloseable {
     public static final int INPUT_PAGE = 256;
     public static final int RESULT_PAGE = 100;
@@ -57,8 +58,15 @@ public final class ComparisonService implements AutoCloseable {
     private volatile RuntimeException cancellationFailure;
     private final Path directory;
     private final Path staging;
-    private final long maxKeys, maxStaging;
-    private final List<Long> offsets = new ArrayList<>();
+    private static final long INPUT_PAGE_MEMORY = 14L << 20;
+    private static final long INDEX_MEMORY = 512L << 10;
+    private static final long CODEC_MEMORY = (4L << 20) - INDEX_MEMORY;
+    private final long maxKeys;
+    private final TempBudget budget;
+    private final boolean ownsBudget;
+    private final BudgetedTempFile resultFile;
+    private TempBudget.Reservation indexReservation;
+    private long[] offsets;
     private volatile Progress progress =
             new Progress(RunState.RUNNING, 0, 0, null, null, "Not started");
     private ComparisonInput a, b;
@@ -70,6 +78,16 @@ public final class ComparisonService implements AutoCloseable {
         this(temporaryParent, MAX_KEYS, STAGING_BYTES);
     }
 
+    /** Borrows a whole-job budget shared with prepared inputs/sort runs; never closes it. */
+    public ComparisonService(Path temporaryParent, TempBudget budget) throws IOException {
+        this(temporaryParent, MAX_KEYS, newWorker(), budget, false);
+    }
+
+    ComparisonService(Path temporaryParent, TempBudget budget, ThreadPoolExecutor worker)
+            throws IOException {
+        this(temporaryParent, MAX_KEYS, worker, budget, false);
+    }
+
     ComparisonService(Path temporaryParent, long maxKeys, long maxStaging) throws IOException {
         this(temporaryParent, maxKeys, maxStaging, newWorker());
     }
@@ -77,14 +95,40 @@ public final class ComparisonService implements AutoCloseable {
     ComparisonService(
             Path temporaryParent, long maxKeys, long maxStaging, ThreadPoolExecutor worker)
             throws IOException {
-        if (maxKeys < 1 || maxKeys > MAX_KEYS || maxStaging < 1 || maxStaging > STAGING_BYTES) {
-            throw new IllegalArgumentException("Invalid comparison bounds");
+        this(temporaryParent, maxKeys, worker, new TempBudget(BUFFER_BYTES, maxStaging), true);
+    }
+
+    private ComparisonService(
+            Path temporaryParent,
+            long maxKeys,
+            ThreadPoolExecutor worker,
+            TempBudget budget,
+            boolean ownsBudget)
+            throws IOException {
+        if (maxKeys < 1 || maxKeys > MAX_KEYS) {
+            throw new IllegalArgumentException("Invalid comparison identity bound");
         }
         this.worker = Objects.requireNonNull(worker);
+        this.budget = Objects.requireNonNull(budget);
+        this.ownsBudget = ownsBudget;
         this.maxKeys = maxKeys;
-        this.maxStaging = maxStaging;
         directory = Files.createTempDirectory(temporaryParent, "comparison-");
-        staging = directory.resolve("results.tmp");
+        try {
+            resultFile =
+                    BudgetedTempFile.create(
+                            directory, "results", budget, "core-results", Cancellation.NONE);
+        } catch (IOException | RuntimeException failure) {
+            try {
+                Files.deleteIfExists(directory);
+            } catch (IOException cleanup) {
+                failure.addSuppressed(cleanup);
+            }
+            if (ownsBudget) {
+                budget.close();
+            }
+            throw failure;
+        }
+        staging = resultFile.path();
     }
 
     public synchronized CompletableFuture<Progress> start(
@@ -179,12 +223,14 @@ public final class ComparisonService implements AutoCloseable {
     }
 
     private Progress run(Descriptor x, Descriptor y) throws IOException {
-        var left = new Cursor(a, x);
-        var right = new Cursor(b, y);
+        var left = new Cursor(a, x, "core-a-page");
+        var right = new Cursor(b, y, "core-b-page");
         long count = 0, bytes = 0;
         RunState state = RunState.COMPLETED;
         String message = "Session-only findings; known-equal rows omitted; no persistent report";
-        try (var file = new RandomAccessFile(staging.toFile(), "rw")) {
+        try (var workspace = budget.reserveMemory("core-codec", CODEC_MEMORY, lifetime)) {
+            indexReservation = budget.reserveMemory("core-index", INDEX_MEMORY, lifetime);
+            offsets = new long[Math.toIntExact((maxKeys + RESULT_PAGE - 1) / RESULT_PAGE)];
             // Start both initial reads before waiting: no more than two source reads in flight.
             left.request();
             right.request();
@@ -205,16 +251,15 @@ public final class ComparisonService implements AutoCloseable {
                 Record la = order <= 0 ? l : null, rb = order >= 0 ? r : null;
                 if (!knownEqual(la, rb)) {
                     byte[] frame = ComparisonCodec.pair(la, rb);
-                    if (frame.length > RECORD_BYTES || bytes + 4L + frame.length > maxStaging) {
+                    if (frame.length > RECORD_BYTES) {
                         state = RunState.LIMITED;
                         message = "Result staging limit reached";
                         break;
                     }
+                    resultFile.appendFrame(frame, lifetime);
                     if (stagedRows % RESULT_PAGE == 0) {
-                        offsets.add(bytes);
+                        offsets[Math.toIntExact(stagedRows / RESULT_PAGE)] = bytes;
                     }
-                    file.writeInt(frame.length);
-                    file.write(frame);
                     bytes += 4L + frame.length;
                     stagedRows++;
                 }
@@ -234,7 +279,7 @@ public final class ComparisonService implements AutoCloseable {
                                 right.coverage,
                                 "Comparing local captured inputs; findings-only results");
             }
-        } catch (ComparisonLimit limited) {
+        } catch (ComparisonLimit | TempBudget.Limit limited) {
             state = RunState.LIMITED;
             message = limited.getMessage();
             requestCancel();
@@ -248,6 +293,12 @@ public final class ComparisonService implements AutoCloseable {
         } finally {
             left.drain();
             right.drain();
+            try {
+                resultFile.seal();
+            } catch (IOException sealFailure) {
+                state = RunState.FAILED;
+                message = "Comparison result writer failed to seal";
+            }
         }
         if (state != RunState.COMPLETED) {
             left.incomplete(message);
@@ -269,40 +320,48 @@ public final class ComparisonService implements AutoCloseable {
         if (current.state() == RunState.RUNNING || !started) {
             throw new IllegalStateException("Results available after run drains");
         }
-        var result = new ArrayList<Result>();
         long total = stagedRows;
         if (offset >= total) {
-            return new ResultPage(offset, result, null, current);
+            return new ResultPage(offset, List.of(), null, current);
         }
-        long base = offset / RESULT_PAGE * RESULT_PAGE;
-        long retainedBytes = 0;
-        try (var file = new RandomAccessFile(staging.toFile(), "r")) {
-            file.seek(offsets.get(Math.toIntExact(offset / RESULT_PAGE)));
-            for (long index = base; index < Math.min(total, offset + limit); index++) {
-                int n = file.readInt();
-                if (n < 0 || n > RECORD_BYTES) {
-                    throw new IOException("Invalid result frame");
-                }
-                if (index >= offset
-                        && !result.isEmpty()
-                        && retainedBytes + n * 8L > BUFFER_BYTES / 2) {
-                    break;
-                }
-                byte[] frame = new byte[n];
-                file.readFully(frame);
-                if (index >= offset) {
-                    var pair = ComparisonCodec.pair(frame);
-                    retainedBytes +=
-                            Math.max(
-                                    n * 8L,
-                                    ComparisonCodec.retainedBytes(pair[0])
-                                            + ComparisonCodec.retainedBytes(pair[1]));
-                    result.add(classify(pair[0], pair[1], current));
+        try (var pageMemory =
+                budget.reserveMemory(
+                        "core-result-page", BUFFER_BYTES - INDEX_MEMORY, Cancellation.NONE)) {
+            var result = new ArrayList<Result>();
+            long base = offset / RESULT_PAGE * RESULT_PAGE;
+            long retainedBytes = 0;
+            try (var file = new RandomAccessFile(staging.toFile(), "r")) {
+                file.seek(offsets[Math.toIntExact(offset / RESULT_PAGE)]);
+                for (long index = base; index < Math.min(total, offset + limit); index++) {
+                    int n = file.readInt();
+                    if (n < 0 || n > RECORD_BYTES) {
+                        throw new IOException("Invalid result frame");
+                    }
+                    if (index >= offset
+                            && !result.isEmpty()
+                            && retainedBytes + n * 8L > BUFFER_BYTES / 2) {
+                        break;
+                    }
+                    byte[] frame = new byte[n];
+                    file.readFully(frame);
+                    if (index >= offset) {
+                        var pair = ComparisonCodec.pair(frame);
+                        long retainedPair =
+                                Math.max(
+                                        n * 8L,
+                                        ComparisonCodec.retainedBytes(pair[0])
+                                                + ComparisonCodec.retainedBytes(pair[1]));
+                        if (!result.isEmpty() && retainedBytes + retainedPair > BUFFER_BYTES / 2) {
+                            break;
+                        }
+                        retainedBytes += retainedPair;
+                        result.add(classify(pair[0], pair[1], current));
+                    }
                 }
             }
+            long next = offset + result.size();
+            return new ResultPage(offset, result, next < total ? next : null, current);
         }
-        long next = offset + result.size();
-        return new ResultPage(offset, result, next < total ? next : null, current);
     }
 
     static Result classify(Record a, Record b, Progress progress) {
@@ -385,10 +444,13 @@ public final class ComparisonService implements AutoCloseable {
         CompletableFuture<InputPage> pending;
         Coverage coverage;
         long pageBytes;
+        final String owner;
+        TempBudget.Reservation pendingMemory, pageMemory;
 
-        Cursor(ComparisonInput input, Descriptor descriptor) {
+        Cursor(ComparisonInput input, Descriptor descriptor, String owner) {
             this.input = input;
             this.descriptor = descriptor;
+            this.owner = owner;
             coverage =
                     new Coverage(
                             Completeness.UNKNOWN,
@@ -396,9 +458,16 @@ public final class ComparisonService implements AutoCloseable {
                             List.of("Not fully assessed"));
         }
 
-        void request() {
+        void request() throws IOException {
             if (!exhausted && pending == null) {
-                pending = input.read(cursor, INPUT_PAGE, lifetime);
+                pendingMemory = budget.reserveMemory(owner, INPUT_PAGE_MEMORY, lifetime);
+                try {
+                    pending = Objects.requireNonNull(input.read(cursor, INPUT_PAGE, lifetime));
+                } catch (RuntimeException | Error failure) {
+                    pendingMemory.close();
+                    pendingMemory = null;
+                    throw failure;
+                }
             }
         }
 
@@ -411,8 +480,21 @@ public final class ComparisonService implements AutoCloseable {
                 return;
             }
             request();
-            var page = pending.join();
+            InputPage page;
+            try {
+                page = pending.join();
+            } catch (java.util.concurrent.CompletionException failure) {
+                if (failure.getCause() instanceof TempBudget.Limit limited) {
+                    throw limited;
+                }
+                if (failure.getCause() instanceof ComparisonLimit limited) {
+                    throw limited;
+                }
+                throw failure;
+            }
             pending = null;
+            pageMemory = pendingMemory;
+            pendingMemory = null;
             lifetime.check();
             if (!descriptor.identity().equals(page.identity())
                     || !descriptor.scope().equals(page.coverage().scope())
@@ -474,6 +556,10 @@ public final class ComparisonService implements AutoCloseable {
                 }
                 pending = null;
             }
+            if (pendingMemory != null) {
+                pendingMemory.close();
+                pendingMemory = null;
+            }
             releasePage();
         }
 
@@ -482,6 +568,10 @@ public final class ComparisonService implements AutoCloseable {
             index = 0;
             retainedInputBytes -= pageBytes;
             pageBytes = 0;
+            if (pageMemory != null) {
+                pageMemory.close();
+                pageMemory = null;
+            }
         }
     }
 
@@ -551,13 +641,29 @@ public final class ComparisonService implements AutoCloseable {
                                 }
                             }
                             try {
-                                Files.deleteIfExists(staging);
+                                resultFile.close();
                                 Files.deleteIfExists(directory);
                             } catch (IOException failure) {
                                 if (problem == null) {
                                     problem = failure;
                                 } else {
                                     problem.addSuppressed(failure);
+                                }
+                            }
+                            offsets = null;
+                            if (indexReservation != null) {
+                                indexReservation.close();
+                                indexReservation = null;
+                            }
+                            if (ownsBudget) {
+                                try {
+                                    budget.close();
+                                } catch (RuntimeException failure) {
+                                    if (problem == null) {
+                                        problem = failure;
+                                    } else {
+                                        problem.addSuppressed(failure);
+                                    }
                                 }
                             }
                             progress =
