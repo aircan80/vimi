@@ -406,6 +406,53 @@ class RawTableSchemaTest {
     }
 
     @Test
+    void inlineAndNoninlineIdCellsFollowTheDecodersUnsignedIdentityDomain() {
+        for (var storage :
+                List.of(TableSchema.KeyStorage.INLINE, TableSchema.KeyStorage.NONINLINE)) {
+            var schema =
+                    new TableSchema.SchemaColumn(
+                            "ID",
+                            TableSchema.ColumnKind.INT,
+                            32,
+                            false,
+                            1,
+                            null,
+                            storage,
+                            TableSchema.KeyStorage.NONE,
+                            true,
+                            null,
+                            null,
+                            null);
+            var profile =
+                    create(
+                            List.of(schema),
+                            List.of(new Db2Types.Column("ID", "integer", true, null, null)));
+            var maximum =
+                    profile.project(
+                            row(0xffffffffL, List.of("4294967295"), List.of()),
+                            "graph:max",
+                            Map.of());
+            assertEquals("00000000004294967295", maximum.key());
+            assertEquals(ComparisonTypes.ValueState.VALUE, maximum.fields().get("cell.ID").state());
+            assertEquals("4294967295", maximum.fields().get("cell.ID").value());
+            assertTrue(
+                    maximum.fields()
+                            .get("cell.ID")
+                            .semantics()
+                            .startsWith("raw-id-cell-unsigned32-decoder-v1:"));
+            for (String invalid : List.of("-1", "4294967296", "01", "7")) {
+                var record =
+                        profile.project(
+                                row(0xffffffffL, List.of(invalid), List.of()),
+                                "graph:max",
+                                Map.of());
+                assertEquals(
+                        ComparisonTypes.ValueState.INVALID, record.fields().get("cell.ID").state());
+            }
+        }
+    }
+
+    @Test
     void copyMetadataPreservesOwnIdAndKnownNoCopySource() {
         var profile = textAndCount();
         var ordinary =

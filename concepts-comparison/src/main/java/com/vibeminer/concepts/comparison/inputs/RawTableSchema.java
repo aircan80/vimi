@@ -231,7 +231,10 @@ public final class RawTableSchema {
                             state = ComparisonTypes.ValueState.VALUE;
                             value = raw;
                         } else {
-                            var number = integer(raw, cell.schema());
+                            var number =
+                                    cell.schema().id() == TableSchema.KeyStorage.NONE
+                                            ? integer(raw, cell.schema())
+                                            : unsignedRowId(raw);
                             if (cell.schema().id() != TableSchema.KeyStorage.NONE
                                     && !number.equals(BigInteger.valueOf(row.id()))) {
                                 throw new IllegalArgumentException(
@@ -349,7 +352,9 @@ public final class RawTableSchema {
                                     column,
                                     name,
                                     valueKind,
-                                    "raw-cell-v1:"
+                                    (column.id() == TableSchema.KeyStorage.NONE
+                                                    ? "raw-cell-v1:"
+                                                    : "raw-id-cell-unsigned32-decoder-v1:")
                                             + digest(
                                                     out -> {
                                                         schemaColumn(out, column);
@@ -384,6 +389,7 @@ public final class RawTableSchema {
                                 actualColumn(out, column);
                             }
                             text(out, "verified-raw-cell-scope-v1");
+                            text(out, "id-cell-unsigned32-decoder-v1");
                             out.writeInt(MAX_TEXT);
                             out.writeInt(MAX_ROW_TEXT);
                             out.writeInt(scope.size());
@@ -430,6 +436,17 @@ public final class RawTableSchema {
                 && (column.foreignKey().table() == null || column.foreignKey().column() == null)) {
             throw new IllegalArgumentException("Incomplete reference target");
         }
+    }
+
+    private static BigInteger unsignedRowId(String raw) {
+        if (raw.length() > 10 || !raw.matches("0|[1-9][0-9]*")) {
+            throw new IllegalArgumentException("Noncanonical unsigned row ID");
+        }
+        var value = new BigInteger(raw);
+        if (value.compareTo(BigInteger.valueOf(0xffffffffL)) > 0) {
+            throw new IllegalArgumentException("Row ID exceeds unsigned32");
+        }
+        return value;
     }
 
     private static BigInteger integer(String raw, TableSchema.SchemaColumn column) {
