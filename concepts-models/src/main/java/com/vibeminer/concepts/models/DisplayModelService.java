@@ -38,7 +38,7 @@ import java.util.concurrent.TimeUnit;
  */
 @SuppressWarnings("try")
 public final class DisplayModelService implements BuildDisplayModels {
-    public static final String POLICY = "display-static-diffuse-rest-implicit-uv0-v1";
+    public static final String POLICY = "display-static-diffuse-rest-legacy272-sections-v2";
     private final TableProjection tables;
     private final BuildFiles files;
     private final GeneratedStore generated;
@@ -407,7 +407,10 @@ public final class DisplayModelService implements BuildDisplayModels {
                 || batch.textureCount() != 1
                 || batch.colorIndex() != -1
                 || batch.priority() != 0
+                // Offset 6 is a second section reference in the reviewed legacy 272 profile.
+                // Modern layouts can use these bits for projection; keep those strict.
                 || batch.flags2() != 0
+                        && !(model.version() == 272 && batch.flags2() == batch.sectionIndex())
                 || batch.materialLayer() != 0
                 || batch.flags() != 0 && batch.flags() != 16
                 || material.blendMode() > 1

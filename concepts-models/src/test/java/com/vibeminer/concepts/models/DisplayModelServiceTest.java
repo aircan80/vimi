@@ -125,6 +125,52 @@ class DisplayModelServiceTest {
         assertFalse(DisplayModelService.simpleDraw(model, batch, null));
     }
 
+    @Test
+    void legacy272DuplicateSectionReferenceAdmitsCutoutWhileModernFlagsStayStrict()
+            throws Exception {
+        byte[] modernBytes = golden("appearance-simple.m2");
+        byte[] legacyBytes = modernBytes.clone();
+        var header = java.nio.ByteBuffer.wrap(legacyBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        assertEquals(274, header.getInt(12));
+        header.putInt(12, 272);
+        var legacy = M2ModelReader.read(AssetSource.bytes(legacyBytes)).join();
+        var modern = M2ModelReader.read(AssetSource.bytes(modernBytes)).join();
+        var facts =
+                M2Appearance.readModel(AssetSource.bytes(legacyBytes), legacy, Cancellation.NONE)
+                        .join();
+        var skin =
+                M2RestDrawSkinReader.read(
+                                AssetSource.bytes(golden("appearance-simple.skin")),
+                                legacy,
+                                null,
+                                Cancellation.NONE)
+                        .join();
+        var original = skin.batches().getFirst();
+        assertTrue(DisplayModelService.simpleDraw(legacy, section(original, 1, 1), facts));
+        assertTrue(DisplayModelService.simpleDraw(legacy, section(original, 2, 2), facts));
+        assertTrue(DisplayModelService.simpleDraw(legacy, section(original, 2, 0), facts));
+        assertFalse(DisplayModelService.simpleDraw(legacy, section(original, 1, 2), facts));
+        assertFalse(DisplayModelService.simpleDraw(modern, section(original, 1, 1), facts));
+        assertFalse(DisplayModelService.simpleDraw(modern, section(original, 2, 2), facts));
+    }
+
+    private static M2Types.Batch section(M2Types.Batch batch, int section, int second) {
+        return new M2Types.Batch(
+                batch.flags(),
+                batch.priority(),
+                batch.shaderId(),
+                section,
+                second,
+                batch.colorIndex(),
+                batch.materialIndex(),
+                batch.materialLayer(),
+                batch.textureCount(),
+                batch.textureComboIndex(),
+                batch.textureCoordinateComboIndex(),
+                batch.textureWeightComboIndex(),
+                batch.textureTransformComboIndex());
+    }
+
     private static byte[] golden(String name) throws Exception {
         try (var input = DisplayModelServiceTest.class.getResourceAsStream("/golden/" + name)) {
             if (input == null) {
