@@ -496,7 +496,7 @@ final class MountsView extends BorderPane implements AutoCloseable {
         return (supported < total ? "Partial material preview · " : "Static model preview · ")
                 + supported + "/" + total + " supported sections"
                 + (supported < total
-                        ? ". Unsupported passes are hidden unless All recorded surfaces is enabled."
+                        ? ". Unresolved material sections are hidden unless All recorded surfaces is enabled."
                         : "");
     }
 
