@@ -30,7 +30,7 @@ public final class LibraryCatalog implements AutoCloseable {
             ), principal AS MATERIALIZED (
                 SELECT generation FROM sources ORDER BY refs DESC,generation LIMIT 1
             ), rest AS MATERIALIZED (
-                SELECT r.k,min(r.declared) declared_min,max(r.declared) declared_max,
+                SELECT r.k,min(nullif(r.declared,0)) declared_min,max(r.declared) declared_max,
                        min(r.role) role_min,max(r.role) role_max
                 FROM sources s CROSS JOIN catalog_refs r
                 WHERE s.generation<>(SELECT generation FROM principal) AND r.generation=s.generation
@@ -38,7 +38,8 @@ public final class LibraryCatalog implements AutoCloseable {
             ), own AS (
                 SELECT p.k,max(p.declared,coalesce(rest.declared_max,p.declared)) declared,
                        min(p.role,coalesce(rest.role_min,p.role)) role,
-                       CASE WHEN rest.declared_min<>p.declared OR rest.declared_max<>p.declared
+                       CASE WHEN rest.declared_min<>rest.declared_max
+                                   OR (p.declared>0 AND rest.declared_min<>p.declared)
                                    OR rest.role_min<>p.role OR rest.role_max<>p.role
                             THEN 1 ELSE 0 END conflicting
                 FROM catalog_refs p LEFT JOIN rest ON rest.k=p.k
@@ -83,6 +84,7 @@ public final class LibraryCatalog implements AutoCloseable {
         DERIVED
     }
 
+    /** A declared length of zero means unknown; actual stored payloads are always nonempty. */
     public record Reference(ObjectKey key, long declaredLength) {
         public Reference {
             Objects.requireNonNull(key);
@@ -517,8 +519,9 @@ public final class LibraryCatalog implements AutoCloseable {
             }
             sql.append(
                     " ON CONFLICT(generation,k) DO UPDATE SET declared=CASE WHEN"
-                            + " catalog_refs.declared=excluded.declared THEN catalog_refs.declared ELSE"
-                            + " -1 END");
+                            + " catalog_refs.declared=0 THEN excluded.declared WHEN excluded.declared=0"
+                            + " OR catalog_refs.declared=excluded.declared THEN catalog_refs.declared"
+                            + " ELSE -1 END");
             try {
                 database.exec(sql.toString(), parameters.toArray());
             } catch (NativeSqlite.Failure failure) {

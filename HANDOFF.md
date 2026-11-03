@@ -1,5 +1,30 @@
 # vimi development handoff
 
+## Current milestone — full preparation on the unified pack library (2026-11-02)
+
+This section supersedes the builds-only limitation below. Story #72 restores the
+existing native Files, Tables, Items, Creatures, Effects and research pipeline.
+
+- Original CDN objects and derived preparation artifacts use immutable owner-bound
+  capabilities over the same pack library and SQLite catalog. Community listfile
+  data uses a global provider owner. Metadata publishes before archive indexes.
+- `NativePreparationContexts` retains each full preparation context until its
+  workspaces and inventory work have drained. Shared provider resources close last.
+- Preparation receipts live in versioned `builds_preparation_*` SQLite tables;
+  build metadata status remains distinct from FILES_READY / TABLES_READY readiness.
+- `UnifiedStorageAccounting` joins the existing catalog to physical object presence.
+  Derived cache hits attach build ownership and invalidate displayed figures. A
+  persistent read-only data-version watcher catches committed ownership changes;
+  relational SQLite data is excluded from object size accounting.
+- Unknown inventory lengths can be enriched by known lengths; conflicting known
+  lengths and role conflicts still fail. No duplicate presence projection is used.
+- Offline end-to-end fixtures cover full preparation and restart, typed research
+  handles, SQL readiness persistence, owner accounting and cached-object refresh.
+- Existing domain query indexes remain separate disposable projections. Moving
+  those relational tables into the unified DB and new provider UI are later work.
+- User permits starting from scratch. No live cache deletion is required by this
+  implementation; legacy reuse remains available.
+
 ## Current milestone — pack library and builds-only loading (2026-11-02)
 
 This section supersedes all all-SQLite payload plans below. The user selected the

@@ -27,6 +27,7 @@ public final class BuildLoadState implements BuildOpening.Observer {
     private final Map<String, BuildLoadSnapshot> snapshots = new ConcurrentHashMap<>();
     private final Map<String, BuildRegistry.LoadAttempt> attempts = new ConcurrentHashMap<>();
     private final Map<String, CompletableFuture<?>> active = new HashMap<>();
+    private final java.util.Set<String> pendingRefresh = new java.util.HashSet<>();
     private boolean closing;
 
     public BuildLoadState(
@@ -276,6 +277,23 @@ public final class BuildLoadState implements BuildOpening.Observer {
                                     });
                         })
                 .thenCompose(result -> result);
+    }
+
+    /** Retain a final refresh when a workspace changes while an older query is still running. */
+    public synchronized void invalidate(BuildInfo build) {
+        if (closing) return;
+        CompletableFuture<?> existing = active.get("figures:" + build.identity());
+        if (existing == null) {
+            refresh(build);
+        } else if (pendingRefresh.add(build.identity())) {
+            existing.whenComplete(
+                    (value, failure) -> {
+                        synchronized (BuildLoadState.this) {
+                            pendingRefresh.remove(build.identity());
+                            if (!closing) refresh(build);
+                        }
+                    });
+        }
     }
 
     public synchronized CompletableFuture<BuildLoadSnapshot> refresh(BuildInfo build) {

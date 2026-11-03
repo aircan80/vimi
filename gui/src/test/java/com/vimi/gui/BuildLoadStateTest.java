@@ -42,6 +42,7 @@ public final class BuildLoadStateTest {
         Path directory = Files.createTempDirectory("vimi-build-load-state-");
         try {
             loadedStatusPersistsWithoutWaitingForAccounting(directory);
+            workspaceChangeQueuesOneFreshAccountingQuery(directory.resolve("refresh"));
             failuresRemainDistinctFromLoaded(directory.resolve("failure"));
             duplicateCanonicalIndexReleasesOnlyDuplicateContext(directory.resolve("duplicate"));
             openedContextsReleaseOnCancellationOrReportingFailure(directory.resolve("release"));
@@ -53,6 +54,54 @@ public final class BuildLoadStateTest {
                 for (Path path : paths.sorted(java.util.Comparator.reverseOrder()).toList())
                     Files.delete(path);
             }
+        }
+    }
+
+    private static void workspaceChangeQueuesOneFreshAccountingQuery(Path directory)
+            throws Exception {
+        ObjectStore library = ObjectStore.openLibrary(directory.resolve("library")).join();
+        BuildRegistry registry = BuildRegistry.open(library.databasePath()).join();
+        var first = new CompletableFuture<LibraryCatalog.Figures>();
+        var started = new java.util.concurrent.CountDownLatch(1);
+        var repeated = new java.util.concurrent.CountDownLatch(1);
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var state =
+                new BuildLoadState(
+                        registry,
+                        (info, build) -> CompletableFuture.completedFuture(null),
+                        identity -> {
+                            if (calls.incrementAndGet() == 1) {
+                                started.countDown();
+                                return first;
+                            }
+                            repeated.countDown();
+                            return CompletableFuture.completedFuture(figures());
+                        });
+        try {
+            var ref =
+                    new BuildTypes.BuildRef(
+                            INFO.product(), INFO.config(), US.cdnConfig(), US.region());
+            var attempt =
+                    registry.beginLoad(
+                                    INFO.identity(), ref, INFO.version(), "enUS", Cancellation.NONE)
+                            .join();
+            registry.loaded(attempt, Cancellation.NONE).join();
+            state.refresh(INFO);
+            require(started.await(5, TimeUnit.SECONDS), "First accounting query starts");
+            state.invalidate(INFO);
+            state.invalidate(INFO);
+            state.invalidate(INFO);
+            first.complete(figures());
+            require(
+                    repeated.await(5, TimeUnit.SECONDS),
+                    "Workspace change is measured after stale query completes");
+            state.closeAsync().get(5, TimeUnit.SECONDS);
+            require(calls.get() == 2, "Repeated changes coalesce into one final refresh");
+        } finally {
+            first.complete(figures());
+            state.closeAsync().join();
+            registry.closeAsync().join();
+            library.closeAsync().join();
         }
     }
 

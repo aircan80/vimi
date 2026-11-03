@@ -106,7 +106,7 @@ final class BuildUsageAccounting {
 
     synchronized BuildAccounting view() {
         var current = published;
-        if (!closed.get() && current != null && current.items() != null) {
+        if (!accounting.unified() && !closed.get() && current != null && current.items() != null) {
             var paths = current.items().savedDatabaseFiles();
             if (!observedDatabaseFiles.equals(paths)) {
                 observedDatabaseFiles = List.copyOf(paths);
@@ -189,8 +189,10 @@ final class BuildUsageAccounting {
         token.check();
         var index = accounting.index;
         index.retain(info.identity(), false, "encoding", Role.BLIZZARD_ENCODED).join();
-        for (String producer : List.of("assets", "provider-dependencies")) {
-            index.retain(info.identity(), false, producer, Role.DERIVED).join();
+        if (!accounting.unified()) {
+            for (String producer : List.of("assets", "provider-dependencies")) {
+                index.retain(info.identity(), false, producer, Role.DERIVED).join();
+            }
         }
         originals();
         var catalog = files;
@@ -220,6 +222,10 @@ final class BuildUsageAccounting {
     }
 
     private void originals() {
+        if (accounting.unified()) {
+            accounting.indexBuild(info, opened).join();
+            return;
+        }
         String version = opened.metadata().encodingContentKey().hex();
         if (accounting.index.current(info.identity(), "encoding", version).join()) {
             return;
@@ -338,7 +344,7 @@ final class BuildUsageAccounting {
     }
 
     private void itemDatabase(TableInventory tables) {
-        if (tables.items() == null) {
+        if (accounting.unified() || tables.items() == null) {
             return;
         }
         var paths = tables.items().savedDatabaseFiles();
@@ -423,15 +429,14 @@ final class BuildUsageAccounting {
                                 token)
                         .join();
                 var keys = snapshot.artifactKeys();
+                String provider =
+                        accounting.unified() ? "provider:community-listfile" : "provider:listfile";
                 if (!keys.isEmpty()) {
-                    accounting
-                            .index
-                            .retain("provider:listfile", true, "index", Role.DERIVED)
-                            .join();
+                    accounting.index.retain(provider, true, "index", Role.DERIVED).join();
                     accounting
                             .index
                             .replace(
-                                    "provider:listfile",
+                                    provider,
                                     "index",
                                     fingerprint,
                                     OverviewAccounting.keys(keys),

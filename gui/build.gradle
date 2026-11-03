@@ -183,3 +183,24 @@ tasks.register('buildLoadingTest', JavaExec) {
     mainClass = 'com.vimi.gui.BuildLoadingIntegrationTest'
 }
 check.dependsOn buildLoadingTest
+
+tasks.register('fullPreparationLibraryTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.FullPreparationLibraryIntegrationTest'
+}
+check.dependsOn fullPreparationLibraryTest
+
+tasks.register('sqlPreparationReceiptsTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.SqlPreparationReceiptsTest'
+}
+check.dependsOn sqlPreparationReceiptsTest
+
+tasks.register('unifiedAccountingRevisionTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.UnifiedAccountingRevisionTest'
+}
+check.dependsOn unifiedAccountingRevisionTest

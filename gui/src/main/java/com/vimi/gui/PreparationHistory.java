@@ -6,6 +6,7 @@ import com.vibeminer.formats.internal.Json;
 import com.vibeminer.generated.GeneratedKey;
 import com.vibeminer.generated.GeneratedStore;
 import com.vibeminer.generated.GeneratedTypes;
+
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -18,6 +19,7 @@ public final class PreparationHistory {
             GeneratedKey.hash(FORMAT.getBytes(StandardCharsets.UTF_8));
     private static final int MAX_ENTRIES = 1024;
     private final GeneratedStore store;
+    private final SqlPreparationReceipts database;
     private volatile Map<String, Receipt> receipts = Map.of();
 
     public record Receipt(
@@ -35,9 +37,23 @@ public final class PreparationHistory {
 
     PreparationHistory(GeneratedStore store) {
         this.store = store;
+        this.database = null;
+    }
+
+    private PreparationHistory(SqlPreparationReceipts database) {
+        this.store = null;
+        this.database = database;
+    }
+
+    static PreparationHistory forLibrary(java.nio.file.Path path) {
+        return new PreparationHistory(new SqlPreparationReceipts(path));
     }
 
     synchronized void load() {
+        if (database != null) {
+            receipts = database.load();
+            return;
+        }
         try {
             var read = store.read(KEY).join();
             if (read.state() != GeneratedTypes.ReadState.PRESENT) return;
@@ -62,9 +78,13 @@ public final class PreparationHistory {
         }
     }
 
-    List<String> retainedIdentities() {return List.copyOf(receipts.keySet());}
+    List<String> retainedIdentities() {
+        return List.copyOf(receipts.keySet());
+    }
 
-    List<Receipt> retainedReceipts() { return List.copyOf(receipts.values()); }
+    List<Receipt> retainedReceipts() {
+        return List.copyOf(receipts.values());
+    }
 
     String summary(BuildInfo build) {
         var receipt = receipts.get(build.identity());
@@ -105,6 +125,11 @@ public final class PreparationHistory {
         next.put(build.identity(), receipt);
         while (next.size() > MAX_ENTRIES) next.remove(next.keySet().iterator().next());
         try {
+            if (database != null) {
+                database.save(receipt, receipts, next);
+                receipts = java.util.Collections.unmodifiableMap(next);
+                return;
+            }
             byte[] bytes =
                     Json.bytes(Map.of("Format", FORMAT, "Builds", List.copyOf(next.values())));
             // Replace only this small application-history pointer; a crash gap loses history,

@@ -25,7 +25,7 @@ public final class BuildApplicationIntegrationTest {
             String identity;
             var service = BuildApplication.open(directory).join();
             try {
-                require(service.preparation() == null, "Build loading must not construct table/item preparation");
+                require(service.preparation() != null, "Native composition wires the full preparation service");
                 var builds = service.listBuilds().get(20, java.util.concurrent.TimeUnit.SECONDS);
                 require(builds.size() == 1, "Offline discovery must find persisted future products");
                 var build = builds.getFirst();

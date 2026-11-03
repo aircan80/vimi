@@ -40,6 +40,15 @@ import java.util.function.Consumer;
 /** One retained build/locale workspace; public data methods never acquire media. */
 public final class NativePreparationWork implements BuildPreparation.Work {
     private BuildUsageAccounting usageAccounting;
+    private Runnable lifecycle = () -> {};
+
+    NativePreparationWork withLifecycle(Runnable value) {
+        if (closed.get()) {
+            throw new IllegalStateException("Workspace is already closed");
+        }
+        lifecycle = java.util.Objects.requireNonNull(value);
+        return this;
+    }
 
     NativePreparationWork withAccounting(OverviewAccounting value) {
         if (value != null)
@@ -59,6 +68,13 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         return this;
     }
 
+    private java.util.function.Consumer<BuildPreparation.Ready> assessment = ignored -> {};
+
+    NativePreparationWork withAssessment(java.util.function.Consumer<BuildPreparation.Ready> listener) {
+        assessment = java.util.Objects.requireNonNull(listener);
+        return this;
+    }
+
     @Override
     public void assessed(BuildPreparation.Ready ready) {
         if (history != null) history.record(info, ref, locale, ready);
@@ -66,6 +82,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             usageAccounting.retain();
         if (ready == BuildPreparation.Ready.TABLES_READY && usageAccounting != null)
             usageAccounting.workspace(published.tables(), published.items());
+        assessment.accept(ready);
     }
 
     private final java.nio.file.Path indexDirectory;
@@ -712,31 +729,50 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             if (!closed.compareAndSet(false, true)) return;
             waiting = List.copyOf(retirementJobs);
         }
-        if (usageAccounting != null) usageAccounting.close();
-        CompletableFuture.allOf(waiting.toArray(CompletableFuture[]::new)).join();
-        final List<Workspace> owned = new ArrayList<>();
-        synchronized (handlesGate) {
-            if (pending != null) owned.add(pending);
-            owned.add(published);
-            owned.addAll(retired);
-            pending = null;
-            published = new Workspace(null, null, null, null, null, published.revision());
-            retired.clear();
-            retirementJobs.clear();
-        }
         Throwable failure = null;
-        for (var workspace : owned)
+        try {
             try {
-                closeWorkspace(workspace);
+                if (usageAccounting != null) usageAccounting.close();
+            } catch (Throwable error) {
+                failure = error;
+            }
+            try {
+                CompletableFuture.allOf(waiting.toArray(CompletableFuture[]::new)).join();
             } catch (Throwable error) {
                 if (failure == null) failure = error;
                 else failure.addSuppressed(error);
             }
-        try {
-            closeResources(fileHandle);
-        } catch (Throwable error) {
-            if (failure == null) failure = error;
-            else failure.addSuppressed(error);
+            final List<Workspace> owned = new ArrayList<>();
+            synchronized (handlesGate) {
+                if (pending != null) owned.add(pending);
+                owned.add(published);
+                owned.addAll(retired);
+                pending = null;
+                published = new Workspace(null, null, null, null, null, published.revision());
+                retired.clear();
+                retirementJobs.clear();
+            }
+            for (var workspace : owned) {
+                try {
+                    closeWorkspace(workspace);
+                } catch (Throwable error) {
+                    if (failure == null) failure = error;
+                    else failure.addSuppressed(error);
+                }
+            }
+            try {
+                closeResources(fileHandle);
+            } catch (Throwable error) {
+                if (failure == null) failure = error;
+                else failure.addSuppressed(error);
+            }
+        } finally {
+            try {
+                lifecycle.run();
+            } catch (Throwable error) {
+                if (failure == null) failure = error;
+                else failure.addSuppressed(error);
+            }
         }
         if (failure != null) throw new java.util.concurrent.CompletionException(failure);
     }

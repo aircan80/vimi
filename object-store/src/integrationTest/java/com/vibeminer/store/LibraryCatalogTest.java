@@ -644,6 +644,78 @@ final class LibraryCatalogTest {
         }
     }
 
+    @Test
+    void unknownLengthsMergeWithKnownButDoNotHideConflictingPositiveSecondarySources() {
+        Path path = initialized();
+        try (var catalog = LibraryCatalog.open(path).join()) {
+            var target = original(19, 1);
+            var other = original(11, 2);
+            var last = original(13, 3);
+            expect(catalog, "build", "principal", LibraryCatalog.Role.ORIGINAL);
+            expect(catalog, "build", "known", LibraryCatalog.Role.ORIGINAL);
+            AtomicInteger page = new AtomicInteger();
+            catalog.replace(
+                            "build",
+                            "principal",
+                            "v1",
+                            (limit, token) ->
+                                    page.getAndIncrement() == 0
+                                            ? List.of(
+                                                    new LibraryCatalog.Reference(target.key(), 0),
+                                                    reference(other),
+                                                    reference(last))
+                                            : List.of(),
+                            Cancellation.NONE)
+                    .join();
+            replace(catalog, "build", "known", "v1", target);
+            assertEquals(
+                    43,
+                    catalog.figures("build", Cancellation.NONE).join().original().declaredBytes());
+            expect(catalog, "build", "conflict", LibraryCatalog.Role.ORIGINAL);
+            page.set(0);
+            catalog.replace(
+                            "build",
+                            "conflict",
+                            "v1",
+                            (limit, token) ->
+                                    page.getAndIncrement() == 0
+                                            ? List.of(
+                                                    new LibraryCatalog.Reference(target.key(), 20))
+                                            : List.of(),
+                            Cancellation.NONE)
+                    .join();
+            assertThrows(
+                    CompletionException.class,
+                    () -> catalog.figures("build", Cancellation.NONE).join());
+        }
+    }
+
+    @Test
+    void duplicateUnknownAndKnownLengthsCoalesceInsideOneInventory() {
+        Path path = initialized();
+        try (var catalog = LibraryCatalog.open(path).join()) {
+            var value = original(19, 1);
+            expect(catalog, "build", "encoding", LibraryCatalog.Role.ORIGINAL);
+            AtomicInteger page = new AtomicInteger();
+            catalog.replace(
+                            "build",
+                            "encoding",
+                            "v1",
+                            (limit, token) ->
+                                    page.getAndIncrement() == 0
+                                            ? List.of(
+                                                    new LibraryCatalog.Reference(value.key(), 0),
+                                                    reference(value),
+                                                    new LibraryCatalog.Reference(value.key(), 0))
+                                            : List.of(),
+                            Cancellation.NONE)
+                    .join();
+            assertEquals(
+                    19,
+                    catalog.figures("build", Cancellation.NONE).join().original().declaredBytes());
+        }
+    }
+
     private Path initialized() {
         Path path = directory.resolve("library.sqlite");
         SqliteObjectStore.open(path).join().closeAsync().join();

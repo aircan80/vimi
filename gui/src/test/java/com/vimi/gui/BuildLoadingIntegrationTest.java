@@ -74,8 +74,8 @@ public final class BuildLoadingIntegrationTest {
                                 .orElseThrow();
                 identity = build.identity();
                 require(
-                        service.preparation() == null,
-                        "No file/table/item preparation service is constructed");
+                        service.preparation() != null,
+                        "Full preparation is available while metadata-only opening remains independent");
                 var opened =
                         service.opening()
                                 .open(build, build.observations().getFirst())

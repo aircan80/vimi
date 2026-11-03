@@ -11,6 +11,11 @@ three preparation milestones:
    warmup complete. Every known table has an explicit outcome; protected, partial,
    missing or unsupported data does not masquerade as readable data.
 
+Original and derived objects share the pack library and its SQLite ownership
+catalog. Preparation readiness persists in `builds_preparation_*` tables alongside
+build statuses; relational query-index bytes are excluded from build object sizes.
+Cache hits update ownership and accounting even when no new bytes are stored.
+
 Files becomes usable at its milestone. Tables, Items and Creatures share one initial
 gate until the first table pass finishes. Overview and all four research areas now
 use the approved light/teal grid-and-inspector design with live data. Files has

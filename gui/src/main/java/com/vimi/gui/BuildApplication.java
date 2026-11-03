@@ -77,17 +77,7 @@ public final class BuildApplication {
                                 com.vibeminer.builds.BuildRegistry.open(library.databasePath())
                                         .join();
                         cleanup.addFirst(registry::closeAsync);
-                        var saved =
-                                new PreparationHistory(
-                                        new com.vibeminer.generated.PackGeneratedStore(
-                                                library,
-                                                library.forOwner(
-                                                        "library:saved-builds",
-                                                        com.vibeminer.store.LibraryCatalog.Scope
-                                                                .GLOBAL,
-                                                        "receipts",
-                                                        com.vibeminer.store.LibraryCatalog.Role
-                                                                .DERIVED)));
+                        var saved = PreparationHistory.forLibrary(library.databasePath());
                         saved.load();
                         for (var receipt : saved.retainedReceipts()) {
                             ownership
@@ -156,6 +146,9 @@ public final class BuildApplication {
                                                 token)
                                         .join();
                         cleanup.addFirst(catalog::closeAsync);
+                        var accounting =
+                                OverviewAccounting.openUnified(directory, ownership, library);
+                        cleanup.addFirst(accounting::closeAsync);
                         var contexts =
                                 new BuildMetadataContexts(
                                         library, ownership, network, migration.legacyObjects());
@@ -164,17 +157,27 @@ public final class BuildApplication {
                         var state =
                                 new BuildLoadState(
                                         registry,
-                                        (info, opened) ->
-                                                com.vibeminer.builds.BuildObjectInventory.index(
-                                                        ownership,
-                                                        info.identity(),
-                                                        opened,
-                                                        indexToken),
+                                        accounting::indexBuild,
                                         owner -> ownership.figures(owner, indexToken),
                                         contexts::release);
                         cleanup.addFirst(state::closeAsync);
+                        var fullContexts =
+                                new NativePreparationContexts(
+                                        library,
+                                        ownership,
+                                        registry,
+                                        network,
+                                        migration.legacyObjects(),
+                                        saved,
+                                        accounting,
+                                        directory.resolve("derived").resolve("grids"),
+                                        state::invalidate);
+                        cleanup.addFirst(fullContexts::closeAsync);
+                        var preparation = new BuildPreparation(fullContexts);
+                        cleanup.addFirst(preparation::closeAsync);
                         cleanup.addFirst(
                                 () -> {
+                                    accounting.cancelUpdates();
                                     indexToken.cancel();
                                     return CompletableFuture.completedFuture(null);
                                 });
@@ -188,6 +191,7 @@ public final class BuildApplication {
                                                         discoverProducts(source, cancellation),
                                                 () -> closeAll(cleanup))
                                         .withOpening(opening)
+                                        .withPreparation(preparation)
                                         .withLoadState(state)
                                         .withHistory(saved);
                         if (!result.complete(service)) service.closeAsync().join();
