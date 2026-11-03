@@ -228,10 +228,21 @@ public final class WorldFormats {
         return parseAdt(bytes, canceled, false).areas();
     }
 
-    private record ParsedAdt(Terrain terrain, AreaMetadata areas) {}
+    /** Native source samples through the same checked walker, never inferred from a mesh. */
+    public static TerrainGrid adtGrid(byte[] bytes, BooleanSupplier canceled) {
+        return parseAdt(bytes, canceled, false, true).grid();
+    }
+
+    private record ParsedAdt(Terrain terrain, AreaMetadata areas, TerrainGrid grid) {}
 
     private static ParsedAdt parseAdt(byte[] bytes, BooleanSupplier canceled, boolean geometry) {
+        return parseAdt(bytes, canceled, geometry, false);
+    }
+
+    private static ParsedAdt parseAdt(
+            byte[] bytes, BooleanSupplier canceled, boolean geometry, boolean captureGrid) {
         var input = input(bytes);
+        var grids = captureGrid ? new ArrayList<TerrainGrid.Chunk>() : null;
         var vertices = geometry ? new ArrayList<Float>() : null;
         var indices = geometry ? new ArrayList<Integer>() : null;
         var areas = new ArrayList<AreaChunk>();
@@ -262,7 +273,8 @@ public final class WorldFormats {
                 float px = input.getFloat(c.start + 104),
                         py = input.getFloat(c.start + 108),
                         pz = input.getFloat(c.start + 112);
-                int height = -1;
+                int height = -1, color = -1;
+                boolean badColors = false;
                 input.position(c.start + 128);
                 while (input.position() < c.end) {
                     var sub = chunk(input, c.end);
@@ -271,6 +283,13 @@ public final class WorldFormats {
                             throw invalid("ADT heights");
                         }
                         height = sub.start;
+                    } else if (captureGrid && sub.tag == 0x4d434356) {
+                        if (sub.size != 580 || color != -1 || badColors) {
+                            badColors = true;
+                            color = -1;
+                        } else {
+                            color = sub.start;
+                        }
                     }
                     input.position(sub.end);
                 }
@@ -323,6 +342,47 @@ public final class WorldFormats {
                         }
                     }
                 }
+                if (captureGrid) {
+                    float[] heights = new float[145];
+                    for (int i = 0; i < heights.length; i++) {
+                        heights[i] = input.getFloat(height + i * 4);
+                    }
+                    long holes = 0;
+                    for (int row = 0; row < 8; row++) {
+                        for (int col = 0; col < 8; col++) {
+                            boolean hole =
+                                    (flags & 0x10000) != 0
+                                            ? ((high >>> (row * 8 + col)) & 1) != 0
+                                            : ((low >>> ((row / 2) * 4 + col / 2)) & 1) != 0;
+                            if (hole) {
+                                holes |= 1L << (row * 8 + col);
+                            }
+                        }
+                    }
+                    byte[] colors =
+                            color < 0
+                                    ? new byte[0]
+                                    : java.util.Arrays.copyOfRange(bytes, color, color + 580);
+                    var state =
+                            badColors
+                                    ? TerrainGrid.ColorState.UNSUPPORTED
+                                    : color < 0
+                                            ? TerrainGrid.ColorState.ABSENT
+                                            : TerrainGrid.ColorState.BGRA8;
+                    grids.add(
+                            new TerrainGrid.Chunk(
+                                    chunks,
+                                    x,
+                                    y,
+                                    Integer.toUnsignedLong(flags),
+                                    px,
+                                    py,
+                                    pz,
+                                    heights,
+                                    holes,
+                                    state,
+                                    colors));
+                }
                 areas.add(
                         new AreaChunk(
                                 x,
@@ -341,7 +401,7 @@ public final class WorldFormats {
         }
         var metadata = new AreaMetadata(areas);
         if (!geometry) {
-            return new ParsedAdt(null, metadata);
+            return new ParsedAdt(null, metadata, captureGrid ? new TerrainGrid(grids) : null);
         }
         float[] positions = new float[vertices.size()];
         for (int i = 0; i < positions.length; i++) {
@@ -350,7 +410,8 @@ public final class WorldFormats {
         return new ParsedAdt(
                 new Terrain(
                         positions, indices.stream().mapToInt(Integer::intValue).toArray(), chunks),
-                metadata);
+                metadata,
+                captureGrid ? new TerrainGrid(grids) : null);
     }
 
     private static void coordinate(float value) {
