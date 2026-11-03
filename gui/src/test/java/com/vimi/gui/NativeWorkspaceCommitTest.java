@@ -44,6 +44,17 @@ public final class NativeWorkspaceCommitTest {
                         }));
     }
 
+    private static <T> T drainingResource(Class<T> type, AtomicInteger closed, AtomicInteger tablesClosed) {
+        return type.cast(Proxy.newProxyInstance(type.getClassLoader(), new Class<?>[]{type}, (proxy, method, args) -> {
+            if (method.getName().equals("close")) {
+                require(tablesClosed.get() == 0, type.getSimpleName() + " drains before borrowed tables close");
+                closed.incrementAndGet();
+                return null;
+            }
+            throw new AssertionError("Projection remains cold during publication: " + method);
+        }));
+    }
+
     private static Object workspace(
             BuildTables tables,
             BuildItems items,
@@ -74,6 +85,14 @@ public final class NativeWorkspaceCommitTest {
     private static Object workspace(BuildTables tables,BuildItems items,BuildCreatures creatures,
             BuildItemEffects effects,com.vibeminer.concepts.talents.BuildTalents talents,
             com.vibeminer.concepts.races.BuildRaces races,com.vibeminer.concepts.world.BuildWorld world,long revision) throws Exception {
+        return workspace(tables, items, creatures, effects, talents, races, world, null, null, revision);
+    }
+
+    private static Object workspace(BuildTables tables, BuildItems items, BuildCreatures creatures,
+            BuildItemEffects effects, com.vibeminer.concepts.talents.BuildTalents talents,
+            com.vibeminer.concepts.races.BuildRaces races, com.vibeminer.concepts.world.BuildWorld world,
+            com.vibeminer.concepts.mounts.BuildMounts mounts,
+            com.vibeminer.concepts.professions.BuildProfessions professions, long revision) throws Exception {
         var type = Class.forName("com.vimi.gui.NativePreparationWork$Workspace");
         var constructor =
                 type.getDeclaredConstructor(
@@ -85,9 +104,11 @@ public final class NativeWorkspaceCommitTest {
                         com.vibeminer.concepts.talents.BuildTalents.class,
                         com.vibeminer.concepts.races.BuildRaces.class,
                         com.vibeminer.concepts.world.BuildWorld.class,
+                        com.vibeminer.concepts.mounts.BuildMounts.class,
+                        com.vibeminer.concepts.professions.BuildProfessions.class,
                         long.class);
         constructor.setAccessible(true);
-        return constructor.newInstance(tables, null, items, creatures, effects, talents, races, world, revision);
+        return constructor.newInstance(tables, null, items, creatures, effects, talents, races, world, mounts, professions, revision);
     }
 
     private static void set(NativePreparationWork work, String field, Object value)
@@ -175,7 +196,11 @@ public final class NativeWorkspaceCommitTest {
                 if(method.getName().equals("close")){require(oldClosed.get()==0,"World reads drain before borrowed tables close");worldClosed.incrementAndGet();return null;}
                 throw new AssertionError("World projection remains cold during publication");
             });
-        set(work, "published", workspace(oldTable, oldItem, null, null, oldTalents, oldRaces, oldWorld, 5));
+        var mountsClosed = new AtomicInteger();
+        var professionsClosed = new AtomicInteger();
+        var oldMounts = drainingResource(com.vibeminer.concepts.mounts.BuildMounts.class, mountsClosed, oldClosed);
+        var oldProfessions = drainingResource(com.vibeminer.concepts.professions.BuildProfessions.class, professionsClosed, oldClosed);
+        set(work, "published", workspace(oldTable, oldItem, null, null, oldTalents, oldRaces, oldWorld, oldMounts, oldProfessions, 5));
         var abandoned = resource(BuildTables.class, abandonedClosed);
         set(work, "pending", workspace(abandoned, null, null, null, 0));
         set(work, "pendingWarmed", true);
@@ -192,6 +217,8 @@ public final class NativeWorkspaceCommitTest {
                         && work.itemsHandle() == oldItem
                         && work.racesHandle() == oldRaces
                         && work.worldHandle() == oldWorld
+                        && work.mountsHandle() == oldMounts
+                        && work.professionsHandle() == oldProfessions
                         && work.revision() == 5,
                 "Canceled preparation preserves all published handles and revision");
         require(
@@ -235,6 +262,8 @@ public final class NativeWorkspaceCommitTest {
         require(talentsClosed.get() == 1, "The retired talent component closes exactly once");
         require(racesClosed.get() == 1, "The retired race component closes exactly once");
         require(worldClosed.get()==1,"The retired world component closes exactly once");
+        require(mountsClosed.get() == 1, "Retired mounts drain exactly once before tables");
+        require(professionsClosed.get() == 1, "Retired professions drain exactly once before tables");
         metadataListingDoesNotReadPayloads(info, evidence, online, local);
         System.out.println(
                 "Passed atomic workspace commit, cancellation, abort, retirement and metadata-only"

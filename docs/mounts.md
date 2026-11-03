@@ -96,3 +96,8 @@ Definitions:
 [MountXDisplay](https://github.com/wowdev/WoWDBDefs/blob/master/definitions/MountXDisplay.dbd),
 [CreatureDisplayInfo](https://github.com/wowdev/WoWDBDefs/blob/master/definitions/CreatureDisplayInfo.dbd),
 [CreatureModelData](https://github.com/wowdev/WoWDBDefs/blob/master/definitions/CreatureModelData.dbd).
+
+The build workspace now opens Mounts after Races. Its cold handle is published
+with the table generation and drained before borrowed tables close. Workspace
+revision changes invalidate catalogue/model selection; browsing other areas keeps
+asset acquisition lazy.
