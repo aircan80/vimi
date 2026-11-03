@@ -28,6 +28,7 @@ final class SettingsView extends BorderPane {
     private final Label status = label("", "muted");
     private final VBox controls = new VBox(16);
     private boolean busy;
+    private final ActivityIndicator saving = new ActivityIndicator("Saving product preferences…");
     private final Button reset = new Button("Restore defaults");
 
     SettingsView(SettingsService service, Runnable changed) {
@@ -76,6 +77,7 @@ final class SettingsView extends BorderPane {
                                         + " refresh. Stored data and existing downloads are kept.",
                                 "muted"),
                         status,
+                        saving,
                         controls);
         content.setPadding(new Insets(28));
         content.setMaxWidth(1000);
@@ -124,6 +126,7 @@ final class SettingsView extends BorderPane {
 
     private void command(CompletableFuture<Void> result) {
         busy = true;
+        saving.setBusy(true);
         controls.setDisable(true);
         reset.setDisable(true);
         status.setText("Saving product preferences…");
@@ -132,6 +135,7 @@ final class SettingsView extends BorderPane {
                         Platform.runLater(
                                 () -> {
                                     busy = false;
+                                    saving.setBusy(false);
                                     controls.setDisable(false);
                                     reset.setDisable(false);
                                     render();

@@ -67,6 +67,9 @@ public final class VimiApp extends Application {
     private VBox metadataOverviewMetrics;
     private BuildLoadSnapshot displayedLoadSnapshot;
     private String accountingSelection;
+    private String accountingPending, accountingFailure;
+    private long accountingGeneration;
+    private javafx.scene.layout.StackPane drainOverlay;
     private long catalogGeneration;
     private final Button issuesButton = new Button("Refresh issues");
     private final javafx.scene.control.ProgressIndicator catalogActivity = new javafx.scene.control.ProgressIndicator(-1);
@@ -557,13 +560,13 @@ public final class VimiApp extends Application {
         var view = comparisonView;
         comparisonView = null;
         if (view != null) view.close();
-        root.setDisable(true);
+        showDrainActivity("Closing comparison…");
         var comparisons = service == null ? null : service.comparisons();
         var drained = comparisons == null ? java.util.concurrent.CompletableFuture.<Void>completedFuture(null)
                 : comparisons.releaseCurrent();
         drained.whenComplete((ignored, error) -> Platform.runLater(() -> {
             if (closing) return;
-            root.setDisable(false);
+            hideDrainActivity();
             afterClose.run();
             if (error != null) status.setText("Comparison close failed: " + problem(error));
         }));
@@ -622,8 +625,14 @@ public final class VimiApp extends Application {
         BuildInfo b = selected;
         if (!mockMode() && service != null && !b.identity().equals(accountingSelection)) {
             accountingSelection = b.identity();
+            accountingPending = b.identity();
+            accountingFailure = null;
+            long accountingRequest = ++accountingGeneration;
             service.refreshLoadSnapshot(b).whenComplete((snapshot, failure) -> Platform.runLater(() -> {
-                if (!closing && selected != null && selected.identity().equals(b.identity())) {
+                if (closing || accountingRequest != accountingGeneration) return;
+                accountingPending = null;
+                accountingFailure = failure == null ? null : b.identity();
+                if (selected != null && selected.identity().equals(b.identity())) {
                     table.refresh();
                     inspect();
                 }
@@ -633,6 +642,13 @@ public final class VimiApp extends Application {
                 label("World of Warcraft · " + b.edition(), "muted"));
         if (!table.getItems().contains(b)) {
             inspector.getChildren().add(notice("Selection hidden by filters", "Clear filters to see this build in the list."));
+        }
+        if (b.identity().equals(accountingPending)) {
+            var activity = new ActivityIndicator("Refreshing size accounting…");
+            activity.setBusy(true);
+            inspector.getChildren().add(activity);
+        } else if (b.identity().equals(accountingFailure)) {
+            inspector.getChildren().add(label("Size accounting could not be refreshed.", "muted"));
         }
         var sourceBadge = label(b.source().label(), "build-source-badge");
         sourceBadge.setTooltip(new javafx.scene.control.Tooltip(b.source().description()));
@@ -830,15 +846,36 @@ public final class VimiApp extends Application {
         dialog.show(); updatePreparationActivity();
     }
 
+    private void showDrainActivity(String message) {
+        hideDrainActivity();
+        var activity = new ActivityIndicator(message);
+        activity.setBusy(true);
+        var card = new VBox(12, activity);
+        card.setPadding(new Insets(24));
+        card.setMaxSize(420, Region.USE_PREF_SIZE);
+        card.getStyleClass().add("source-panel");
+        drainOverlay = new javafx.scene.layout.StackPane(card);
+        drainOverlay.getStyleClass().add("preparation-overlay");
+        drainOverlay.setPadding(new Insets(18));
+        surface.getChildren().add(drainOverlay);
+        root.setDisable(true);
+    }
+
+    private void hideDrainActivity() {
+        if (drainOverlay != null) surface.getChildren().remove(drainOverlay);
+        drainOverlay = null;
+        root.setDisable(false);
+    }
+
     private void closePreparedBuild(BuildPreparation.Job job, Runnable afterClose) {
         viewedPreparation = null;
         var pane = preparationPane;
         preparationPane = null;
         if (pane != null) pane.close();
-        root.setDisable(true);
+        showDrainActivity("Closing build…");
         service.preparation().release(job).whenComplete((value, error) -> Platform.runLater(() -> {
             if (closing) return;
-            root.setDisable(false);
+            hideDrainActivity();
             if (error == null) closedPreparations.put(job.build().identity(),
                     PreparationStatus.closed(job.snapshot().ready(), job.locale()));
             if (preparationFocus == job) preparationFocus = null;
@@ -992,9 +1029,14 @@ public final class VimiApp extends Application {
         metadataOverviewMetrics = metrics;
         displayedLoadSnapshot = service.loadSnapshot(build);
         updateBuildMetrics(metrics, service.loadSnapshot(build));
+        var accountingActivity = new ActivityIndicator("Refreshing size accounting…");
+        accountingActivity.setBusy(true);
+        var accounting = new VBox(8, metrics, accountingActivity);
         service.refreshLoadSnapshot(build).whenComplete((snapshot, failure) -> Platform.runLater(() -> {
             if (closing || metrics.getScene() == null) return;
+            accountingActivity.setBusy(false);
             updateBuildMetrics(metrics, service.loadSnapshot(build));
+            if (failure != null) accounting.getChildren().add(label("Size accounting could not be refreshed.", "muted"));
         }));
         var content = new VBox(16, label("BUILD LOADED", "eyebrow"), label(build.version(), "h1"),
                 fact("Product", build.product()), fact("Source region", result.build().region()),
@@ -1002,7 +1044,7 @@ public final class VimiApp extends Application {
                 fact("Metadata build name", metadata.buildName()), fact("Files in ROOT", Integer.toString(metadata.fileCount())),
                 fact("Archives", Integer.toString(metadata.archiveCount())),
                 fact("Available locales", String.join(", ", metadata.locales())),
-                metrics,
+                accounting,
                 notice("Authenticated metadata is ready", "Build loading is complete. Size accounting refreshes independently; no tables, items or other research data are prepared."),
                 button("Close build", this::showBuilds));
         content.setPadding(new Insets(28));

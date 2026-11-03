@@ -30,6 +30,7 @@ public final class CompareUiTest {
         final AtomicBoolean failPage = new AtomicBoolean(true);
         CompletableFuture<Void> closeGate = CompletableFuture.completedFuture(null);
         boolean rawFacts, itemFacts, emptyFindings;
+        volatile CompletableFuture<ComparisonTypes.ResultPage> pageGate;
 
         public ComparisonTypes.Descriptor before() {
             return fixtureDescriptor("authored-before");
@@ -103,6 +104,7 @@ public final class CompareUiTest {
         }
 
         public CompletableFuture<ComparisonTypes.ResultPage> page(long offset, int limit) {
+            if (pageGate != null) return pageGate;
             if (failPage.getAndSet(false))
                 return CompletableFuture.failedFuture(
                         new IllegalStateException("authored transient page failure"));
@@ -393,6 +395,7 @@ public final class CompareUiTest {
                         locale(view, "After locale").setValue("enUS");
                         button(view, "Compare local data").fire();
                         require(starts.get() == 1, "Explicit start once");
+                        require(activity(view, "Comparing local data…"), "Opening has local animated activity");
                         return null;
                     });
             var captured = fx(() -> captured(view));
@@ -414,13 +417,24 @@ public final class CompareUiTest {
                         builds(view, "After build, exact product and version").setValue(after);
                         return null;
                     });
+            fixture.pageGate = new CompletableFuture<>();
             fixture.state.set(ComparisonTypes.RunState.COMPLETED);
+            await(() -> fxUnchecked(() -> activity(view, "Loading findings…")));
+            fx(() -> {
+                require(!activity(view, "Comparing local data…"), "Completed scan stops activity while paging stays busy");
+                return null;
+            });
+            var delayedPage = fixture.pageGate;
+            fixture.pageGate = null;
+            fixture.failPage.set(false);
+            delayedPage.completeExceptionally(new IllegalStateException("Authored delayed page failure"));
             await(() -> fxUnchecked(() -> button(view, "Retry page").isVisible()));
             fx(
                     () -> {
                         require(
                                 labels(view).contains("Findings page unavailable"),
                                 "Failed page exposes retry");
+                        require(!activity(view, "Loading findings…"), "Failed page clears activity and enables retry");
                         button(view, "Retry page").fire();
                         return null;
                     });
@@ -1115,6 +1129,13 @@ public final class CompareUiTest {
                                                 && button.getText().equals(name))
                         .findFirst()
                         .orElseThrow();
+    }
+
+    private static boolean activity(CompareView view, String message) {
+        return view.lookupAll(".local-activity").stream().anyMatch(node ->
+            node.isVisible() && node instanceof javafx.scene.Parent parent &&
+                parent.lookupAll(".label").stream().anyMatch(child ->
+                    child instanceof Label label && label.getText().equals(message)));
     }
 
     private static String labels(CompareView view) {

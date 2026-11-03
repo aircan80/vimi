@@ -109,6 +109,8 @@ final class CompareView extends BorderPane implements AutoCloseable {
     private final ScrollPane contentScroll = new ScrollPane(content);
     private final Label capturedPair = text("No captured comparison pair", "muted");
     private final Label pendingSelection = text("", "muted");
+    private final ActivityIndicator comparisonActivity = new ActivityIndicator("Comparing local data…");
+    private final ActivityIndicator pageActivity = new ActivityIndicator("Loading findings…");
     private final Label pageError = text("", "muted");
     private final Button retryPage = new Button("Retry page");
     private Request capturedRequest;
@@ -226,6 +228,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                     } else if (pending) {
                         generation++;
                         pending = false;
+                        comparisonActivity.setBusy(false);
                         cancel.setDisable(true);
                         status.setText("Canceled · inputs not assessed");
                         selectArea(selectedArea);
@@ -273,6 +276,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                         text("Compare builds", "h2"),
                         endpoints,
                         capturedPair,
+                        comparisonActivity,
                         pendingSelection,
                         new HBox(8, compare, cancel, close),
                         status);
@@ -474,6 +478,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                 results,
                                 new HBox(8, previous, next, retryPage),
                                 pageStatus,
+                                pageActivity,
                                 coverageDetails,
                                 pageError);
             else
@@ -529,6 +534,8 @@ final class CompareView extends BorderPane implements AutoCloseable {
             session = null;
         }
         pending = true;
+        comparisonActivity.setBusy(true);
+        pageActivity.setBusy(false);
         openingToken = new Cancellation();
         cancel.setDisable(false);
         compare.setDisable(true);
@@ -599,6 +606,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                         return;
                                     }
                                     pending = false;
+                                    comparisonActivity.setBusy(false);
                                     if (failure != null || value == null) {
                                         status.setText(
                                                 "Local comparison could not open: "
@@ -622,6 +630,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
         var progress = session.progress();
         if (progress == null) return;
         var running = progress.state() == ComparisonTypes.RunState.RUNNING;
+        comparisonActivity.setBusy(running);
         cancel.setDisable(!running);
         rawCompare.setDisable(running || pending || !selectedArea.equals("Tables"));
         compare.setDisable(
@@ -802,7 +811,14 @@ final class CompareView extends BorderPane implements AutoCloseable {
         retryPage.setVisible(false);
         retryPage.setManaged(false);
         pageError.setText("");
-        handle.page(offset, 100)
+        pageActivity.setBusy(true);
+        CompletableFuture<ComparisonTypes.ResultPage> loading;
+        try {
+            loading = Objects.requireNonNull(handle.page(offset, 100));
+        } catch (Throwable failure) {
+            loading = CompletableFuture.failedFuture(failure);
+        }
+        loading
                 .whenComplete(
                         (page, failure) ->
                                 Platform.runLater(
@@ -810,6 +826,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                             if (closed
                                                     || current != generation
                                                     || session != handle) return;
+                                            pageActivity.setBusy(false);
                                             if (failure != null || page == null) {
                                                 pageError.setText(
                                                         "Findings page unavailable. Existing"
@@ -1130,6 +1147,8 @@ final class CompareView extends BorderPane implements AutoCloseable {
 
     @Override
     public void close() {
+        comparisonActivity.setBusy(false);
+        pageActivity.setBusy(false);
         if (closed) return;
         closed = true;
         generation++;

@@ -12,6 +12,7 @@ final class QuestieMappingControls extends VBox {
     private final ComboBox<String> flavor = new ComboBox<>();
     private final Label resolved = new Label(), database = new Label(), problem = new Label();
     private boolean updating;
+    private final ActivityIndicator saving = new ActivityIndicator("Saving Questie mapping…");
 
     QuestieMappingControls(DataSourcesService sources, BuildInfo build) {
         super(10);
@@ -26,12 +27,14 @@ final class QuestieMappingControls extends VBox {
                 event -> {
                     if (updating || flavor.getValue() == null) return;
                     flavor.setDisable(true);
+                    saving.setBusy(true);
                     sources.setMapping(build, flavor.getValue())
                             .whenComplete(
                                     (value, error) ->
                                             Platform.runLater(
                                                     () -> {
                                                         flavor.setDisable(false);
+                                                        saving.setBusy(false);
                                                         problem.setText(
                                                                 error == null
                                                                         ? ""
@@ -44,7 +47,7 @@ final class QuestieMappingControls extends VBox {
             label.setWrapText(true);
             label.getStyleClass().add("muted");
         }
-        getChildren().addAll(new Label("Questie flavor"), flavor, resolved, database, problem);
+        getChildren().addAll(new Label("Questie flavor"), flavor, saving, resolved, database, problem);
         refresh();
     }
 
