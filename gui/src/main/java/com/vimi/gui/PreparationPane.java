@@ -28,6 +28,7 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
     private WorldView world;
     private MountsView mounts;
     private ProfessionsView professions;
+    private DungeonsView dungeons;
     private final DataSourcesService sources;
     private boolean closed;
     private long workspaceRevision;
@@ -48,7 +49,7 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         this.sources = sources;
         var navigation = new HBox(4);
         navigation.getStyleClass().add("area-navigation");
-        for (String area : List.of("Overview", "Files", "Tables", "Items", "Creatures", "NPCs", "Quests", "Talents", "Races", "Mounts", "Professions", "World")) {
+        for (String area : List.of("Overview", "Files", "Tables", "Items", "Creatures", "NPCs", "Quests", "Talents", "Races", "Dungeons", "Mounts", "Professions", "World")) {
             var button = new Button(area);
             button.getStyleClass().add("area-link");
             button.setOnAction(event -> show(area));
@@ -95,6 +96,7 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             if (world != null) world.invalidate();
             if (mounts != null) mounts.invalidate();
             if (professions != null) professions.invalidate();
+            if (dungeons != null) dungeons.invalidate();
             if (currentArea.equals("Races") && races != null) races.ensureLoaded();
             if (currentArea.equals("Talents") && talents != null) talents.ensureLoaded();
             var visible = browsers.get(currentArea);
@@ -103,6 +105,7 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         if (currentArea.equals("NPCs") && npcs != null) npcs.ensureLoaded();
         if (currentArea.equals("Quests") && quests != null) quests.ensureLoaded();
         if (currentArea.equals("World") && world != null) world.ensureLoaded();
+        if (currentArea.equals("Dungeons") && dungeons != null) dungeons.ensureLoaded();
         if (currentArea.equals("Mounts") && mounts != null) mounts.ensureLoaded();
         if (currentArea.equals("Professions") && professions != null) professions.ensureLoaded();
         liveOverview.update(snapshot, job.enrichingNames(), job.namesProblem());
@@ -147,6 +150,10 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             scroll.setFitToWidth(true);
             setCenter(scroll);
             return;
+        }
+        if (area.equals("Dungeons") && job.work() instanceof NativePreparationWork work) {
+            if (dungeons == null) dungeons = new DungeonsView(work::dungeonsHandle, work::revision, job.build().version() + " · " + job.locale(), work::icon);
+            setCenter(dungeons); dungeons.ensureLoaded(); return;
         }
         if (area.equals("Mounts") && job.work() instanceof NativePreparationWork work) {
             if (mounts == null) mounts = new MountsView(work::mountsHandle, work::revision, job.build().version() + " · " + job.locale());
@@ -199,6 +206,7 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         if (world != null) world.close();
         if (mounts != null) mounts.close();
         if (professions != null) professions.close();
+        if (dungeons != null) dungeons.close();
     }
 
     private void showSourceTable(String table) {

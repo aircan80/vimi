@@ -130,9 +130,10 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             com.vibeminer.concepts.world.BuildWorld world,
             com.vibeminer.concepts.mounts.BuildMounts mounts,
             com.vibeminer.concepts.professions.BuildProfessions professions,
+            com.vibeminer.concepts.dungeons.BuildDungeons dungeons,
             long revision) {}
 
-    private volatile Workspace published = new Workspace(null, null, null, null, null, null, null, null, null, null, 0);
+    private volatile Workspace published = new Workspace(null, null, null, null, null, null, null, null, null, null, null, 0);
     private Workspace pending;
     private boolean pendingWarmed;
     private boolean tablePassAttempted;
@@ -240,6 +241,8 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     public com.vibeminer.concepts.mounts.BuildMounts mountsHandle() { return published.mounts(); }
 
     public com.vibeminer.concepts.professions.BuildProfessions professionsHandle() { return published.professions(); }
+
+    public com.vibeminer.concepts.dungeons.BuildDungeons dungeonsHandle() { return published.dungeons(); }
 
     /** Resolve only a selected recipe's item reference using prepared item data. */
     public CompletableFuture<String> itemName(long id, Cancellation token) {
@@ -505,7 +508,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             synchronized (handlesGate) {
                 token.check();
                 if (closed.get()) throw new java.util.concurrent.CancellationException();
-                pending = new Workspace(next, localService, null, null, null, new com.vibeminer.concepts.talents.TalentsService(next,info.version()), new com.vibeminer.concepts.races.RacesService(next, fileHandle, generated), new com.vibeminer.concepts.world.WorldService(next,fileHandle), new com.vibeminer.concepts.mounts.MountsService(next,fileHandle,generated), new com.vibeminer.concepts.professions.ProfessionsService(next), 0);
+                pending = new Workspace(next, localService, null, null, null, new com.vibeminer.concepts.talents.TalentsService(next,info.version()), new com.vibeminer.concepts.races.RacesService(next, fileHandle, generated), new com.vibeminer.concepts.world.WorldService(next,fileHandle), new com.vibeminer.concepts.mounts.MountsService(next,fileHandle,generated), new com.vibeminer.concepts.professions.ProfessionsService(next), new com.vibeminer.concepts.dungeons.DungeonsService(next), 0);
                 pendingWarmed = false;
                 staged = true;
             }
@@ -626,6 +629,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                                 staged.world(),
                                 staged.mounts(),
                                 staged.professions(),
+                                staged.dungeons(),
                                 0);
                 pendingWarmed = true;
                 ownedByPending = true;
@@ -633,7 +637,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             return List.copyOf(issues);
         } catch (Throwable failure) {
             if (!ownedByPending) {
-                var loose = new Workspace(null, null, nextItems, nextCreatures, nextEffects, null, null, null, null, null, 0);
+                var loose = new Workspace(null, null, nextItems, nextCreatures, nextEffects, null, null, null, null, null, null, 0);
                 try {
                     closeWorkspace(loose);
                 } catch (Throwable cleanupFailure) {
@@ -672,6 +676,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                             pending.world(),
                             pending.mounts(),
                             pending.professions(),
+                            pending.dungeons(),
                             published.revision() + 1);
             if (published.tables() != null) retired.add(published);
             published = next;
@@ -750,6 +755,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                     workspace.world(),
                     workspace.mounts(),
                     workspace.professions(),
+                    workspace.dungeons(),
                     workspace.items(),
                     workspace.creatures(),
                     workspace.effects(),
@@ -837,7 +843,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                 owned.add(published);
                 owned.addAll(retired);
                 pending = null;
-                published = new Workspace(null, null, null, null, null, null, null, null, null, null, published.revision());
+                published = new Workspace(null, null, null, null, null, null, null, null, null, null, null, published.revision());
                 retired.clear();
                 retirementJobs.clear();
             }

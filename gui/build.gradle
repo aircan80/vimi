@@ -47,6 +47,7 @@ dependencies {
     implementation project(':rendering-models')
     implementation project(':rendering-world')
     implementation project(':concepts-world')
+    implementation project(':concepts-dungeons')
     implementation project(':concepts-effects')
     testImplementation testFixtures(project(':builds'))
     testImplementation testFixtures(project(':polestar'))
@@ -327,5 +328,13 @@ tasks.register('professionsUiTest', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.ProfessionsUiTest'
+    systemProperty 'vimi.uiReviewDirectory', layout.buildDirectory.dir('ui-review').get().asFile.absolutePath
+}
+
+// Authored dungeon UI checks require a working display and no live data.
+tasks.register('dungeonsUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.DungeonsUiTest'
     systemProperty 'vimi.uiReviewDirectory', layout.buildDirectory.dir('ui-review').get().asFile.absolutePath
 }

@@ -79,6 +79,7 @@ public final class FullPreparationLibraryIntegrationTest {
                     require(
                             work.filesHandle() != null
                                     && work.tablesHandle() != null
+                                    && work.dungeonsHandle() != null
                                     && work.itemsHandle() != null
                                     && work.creaturesHandle() != null
                                     && work.effectsHandle() != null,
