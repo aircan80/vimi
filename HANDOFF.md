@@ -1,5 +1,16 @@
 # vimi development handoff
 
+## Mac transfer checkpoint (2026-11-03)
+
+The reboot recovery and Mac transfer are documented in
+[docs/mac-handoff-2026-11-03.md](docs/mac-handoff-2026-11-03.md).
+Read that checkpoint before the older running notes below. Alpha.9 is now
+published (18 assets, explicit prerelease), rather than still packaging.
+The native certificate integration branch contains only a partial implementation;
+its committed state is preserved separately from main. Temporary worktrees and
+any uncommitted edits in them did not survive the reboot. No certificate
+implementation acceptance or new test pass is claimed by this transfer.
+
 ## Active autonomous roadmap and decisions
 
 Keep working without waiting for user input; retain questions/follow-ups here.
