@@ -44,8 +44,10 @@ Items increment A has independent full integration approval through0323833,
 154 comparison tests, pure projector/full GUI/authored FX checks and a native
 SQLite/pack proof. Live Forever70707 selfcomparison completed31982 IDs from
 partial Item(31982 readable)/Sparse(19267 readable), with unknown channels/halves
-retained; scratch ~383.2MiB, all reclaimed onclose. Finish Items PR native CI,
-FF merge andalpha.9 prerelease. Do notclaim complete membership/effects/persistence.
+retained; scratch ~383.2MiB, all reclaimed onclose. Items PR #136 is FF-merged
+at2920ff0 after all platform CI; alpha.9 tag is pushed and prerelease packaging is
+running. Verify18assets/prerelease flag afterworkflowcompletes. Do notclaim
+complete membership/effects/persistence.
 Items integration worktree: /tmp/vimi-items-integration, branch feature/items-comparison.
 Source adapter, compact snapshot/codec and final 12 MiB candidate reader are delegated
 in isolated worktrees; root owns streaming joins and app integration. Metadata must
@@ -55,7 +57,13 @@ Future native text-issue certificates: existing cached graphs cannot prove that 
 issue list is issue-free. Keep these UNKNOWN. A future explicit audited native producer
 policy must be bound to graph identity and receipt, with old/custom graphs unchanged;
 no global null normalization or automatic local-only cache repair is authorized by
-that research finding.
+that research finding. The concrete native certificate contract09533d5 now has both
+independent design approvals before implementation; see integration worktree
+/tmp/vimi-native-issue-integration (feature/native-issue-certificates). Producer/source,
+generated graph and capture boundary implementations run in isolated agent worktrees.
+Proof must include real reader→factory→store→reopen→capture, actual scoped/unscoped
+identity, old/custom UNKNOWN channels, unchanged C#goldens and no field-admission
+fingerprint changes from certificates alone. No implementation approval yet.
 
 Questions/follow-ups for the user's return: Windows MSI installation and deferred
 native Windows filesystem acceptance #24–#26 remain. Native macOS development
