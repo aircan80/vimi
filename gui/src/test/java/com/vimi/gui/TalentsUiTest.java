@@ -79,6 +79,46 @@ public final class TalentsUiTest {
                 .toList();
     }
 
+    private static long renderedIcons(Scene scene) {
+        return scene.getRoot().lookupAll(".talent-node").stream()
+                .map(
+                        node ->
+                                (javafx.scene.layout.StackPane)
+                                        ((javafx.scene.control.Button) node).getGraphic())
+                .flatMap(graphic -> graphic.getChildren().stream())
+                .filter(javafx.scene.image.ImageView.class::isInstance)
+                .map(javafx.scene.image.ImageView.class::cast)
+                .filter(icon -> icon.getImage().getPixelReader().getArgb(0, 0) == 0xff12aabb)
+                .count();
+    }
+
+    private static void awaitFx(
+            String phase,
+            java.util.function.BooleanSupplier condition,
+            Runnable action,
+            CompletableFuture<Void> ready) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        new javafx.animation.AnimationTimer() {
+            public void handle(long now) {
+                try {
+                    if (ready.isDone()) {
+                        stop();
+                        return;
+                    }
+                    if (condition.getAsBoolean()) {
+                        stop();
+                        action.run();
+                    } else if (System.nanoTime() >= deadline)
+                        throw new AssertionError("Timed out waiting for " + phase);
+                } catch (Throwable failure) {
+                    stop();
+                    ready.completeExceptionally(failure);
+                    Platform.exit();
+                }
+            }
+        }.start();
+    }
+
     public static void main(String[] args) throws Exception {
         var ready = new CompletableFuture<Void>();
         Platform.startup(
@@ -102,7 +142,7 @@ public final class TalentsUiTest {
                                                                 List.of(player),
                                                                 "TALENTS_PARTIAL",
                                                                 "Authored layout fixture · not a"
-                                                                    + " real build"));
+                                                                        + " real build"));
                                     }
 
                                     public CompletableFuture<TalentTypes.ClassTrees> trees(
@@ -189,7 +229,7 @@ public final class TalentsUiTest {
                                                                                       + " rises by"
                                                                                       + " $s1%."
                                                                                 : "Authored $d"
-                                                                                      + " text",
+                                                                                        + " text",
                                                                         resolved
                                                                                 ? "Authored chance"
                                                                                       + " rises by"
@@ -291,11 +331,8 @@ public final class TalentsUiTest {
                                         Platform.exit();
                                     }
                                 });
-                        var selectPause =
-                                new javafx.animation.PauseTransition(
-                                        javafx.util.Duration.millis(300));
-                        selectPause.setOnFinished(
-                                event -> {
+                        Runnable selectAction =
+                                () -> {
                                     try {
                                         talent(scene, 2).fire();
                                         if (!tooltipText(scene)
@@ -339,7 +376,7 @@ public final class TalentsUiTest {
                                                                 .isVisible())
                                                             throw new AssertionError(
                                                                     "Delayed description has"
-                                                                        + " activity");
+                                                                            + " activity");
                                                         if (scene
                                                                 .getRoot()
                                                                 .lookupAll(".progress-indicator")
@@ -354,7 +391,7 @@ public final class TalentsUiTest {
                                                                                                 .isVisible()))
                                                             throw new AssertionError(
                                                                     "Delayed icon has pending"
-                                                                        + " state");
+                                                                            + " state");
                                                         descriptionGate.complete(null);
                                                         iconGate.complete(authoredIcon());
                                                     } catch (Throwable failure) {
@@ -366,13 +403,14 @@ public final class TalentsUiTest {
                                         ready.completeExceptionally(failure);
                                         Platform.exit();
                                     }
-                                });
-                        selectPause.play();
-                        var pause =
-                                new javafx.animation.PauseTransition(
-                                        javafx.util.Duration.millis(500));
-                        pause.setOnFinished(
-                                event -> {
+                                };
+                        awaitFx(
+                                "Talent trees",
+                                () -> !scene.getRoot().lookupAll(".talent-node").isEmpty(),
+                                selectAction,
+                                ready);
+                        Runnable inspect =
+                                () -> {
                                     try {
                                         var staleMenu =
                                                 (javafx.scene.control.ListView<?>)
@@ -512,14 +550,21 @@ public final class TalentsUiTest {
                                     } finally {
                                         Platform.exit();
                                     }
-                                });
-                        pause.play();
+                                };
+                        awaitFx(
+                                "Decoded icon and selected description",
+                                () ->
+                                        renderedIcons(scene) == 1
+                                                && tooltipText(scene)
+                                                        .contains("Authored chance rises by 5%."),
+                                inspect,
+                                ready);
                     } catch (Throwable error) {
                         ready.completeExceptionally(error);
                         Platform.exit();
                     }
                 });
-        ready.get(20, TimeUnit.SECONDS);
+        ready.get(30, TimeUnit.SECONDS);
         System.out.println("Talents layout fixture rendered to system temporary directory");
     }
 }
