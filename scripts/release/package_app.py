@@ -108,8 +108,9 @@ def main():
     shutil.copy2(ROOT / "LICENSE", legal / "LICENSE-vimi")
     shutil.copy2(ROOT / "docs/prereleases.md", legal / "PRERELEASES.md")
     shutil.copy2(ROOT / "docs/third-party-runtime.md", legal / "THIRD-PARTY.md")
-    if args.javafx_legal:
-        shutil.copytree(args.javafx_legal, legal / "openjfx-sdk")
+    if not args.javafx_legal or not args.javafx_legal.is_dir():
+        raise ValueError("Verified platform OpenJFX legal notices are required")
+    shutil.copytree(args.javafx_legal, legal / "openjfx-sdk")
     java_home = Path(os.environ["JAVA_HOME"])
     jpackage = java_home / "bin" / ("jpackage.exe" if system == "windows" else "jpackage")
     images = ROOT / "gui/build/package-images"

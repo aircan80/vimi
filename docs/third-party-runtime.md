@@ -10,8 +10,10 @@ GPL-3.0-or-later artwork from VibeMiner; hashes/provenance are in
   Temurin builds/source: https://github.com/adoptium/temurin25-binaries and
   https://github.com/openjdk/jdk25u .
 - OpenJFX25.0.1: GPLv2 with the Classpath Exception and third-party notices.
-  Source: https://github.com/openjdk/jfx . The original JAR notices remain intact;
-  the Linux ARM64 SDK legal files are copied beside the application notices.
+  Source: https://github.com/openjdk/jfx . The matching, checksum-verified SDK legal files for base, graphics and controls
+  are copied beside the application notices on every platform, including all
+  component notices. Maven JARs do not supply these legal files; SDK_SOURCE.txt
+  records the exact SDK URL and SHA-256 used.
 - SQLite: public-domain SQLite library. Version/hash is recorded per package.
   Source and license: https://github.com/sqlite/sqlite and https://sqlite.org/copyright.html .
 - OkHttp4.12.0, Okio3.6.0, Kotlin1.9.10: Apache-2.0 notices retained in their JARs.

@@ -26,7 +26,7 @@ storage format; each release notes any such change.
 ## Build and publication
 
 The Desktop prereleases workflow runs on prerelease tag pushes. A manual dispatch
-can build/test artifacts without publishing, using `publish=false`. It runs checks
+can build/test artifacts without publishing, using `manual dispatch always validates without publishing`. It runs checks
 on native platform runners, bundles the architecture-matched SQLite library, then
 smoke-tests the actual packaged launcher, JavaFX startup, a temporary object-store
 library and the bundled child JVM. It never opens the user's library or downloads
@@ -58,3 +58,7 @@ python scripts/release/package_app.py --tag v0.1.0-alpha.1 \
 Linux ARM64 first runs scripts/ci/javafx_sdk.py, passes its artifacts directory as
 `-PjavafxSdkRepository=...` to Gradle, and passes --javafx-native/--javafx-legal to the
 packager. Those are build inputs; end users receive the files in the package.
+
+The packaged application image is launched on every platform. Installer creation is
+checked, but installing/uninstalling the MSI/DMG/DEB/RPM is not automated yet.
+Windows installation is the next manual validation on the user’s Windows machine.
