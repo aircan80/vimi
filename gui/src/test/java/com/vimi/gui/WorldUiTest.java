@@ -402,6 +402,7 @@ public final class WorldUiTest {
                                 map, new WorldFormats.World(List.of(tile, other), false), null));
             }
 
+            @SuppressWarnings("try")
             public CompletableFuture<WorldAreaNavigation.Result> findArea(
                     WorldAreaNavigation.Request request,
                     Cancellation token,
@@ -414,6 +415,18 @@ public final class WorldUiTest {
                 progress.add(observer);
                 var future = new CompletableFuture<WorldAreaNavigation.Result>();
                 scans.add(future);
+                if (scans.size() == 1) {
+                    var canceled = new java.util.concurrent.CountDownLatch(1);
+                    try (var registration = token.onCancel(canceled::countDown)) {
+                        require(
+                                canceled.await(5, TimeUnit.SECONDS),
+                                "Synchronous provider receives cancellation while invocation is"
+                                    + " still blocked");
+                    } catch (InterruptedException failure) {
+                        Thread.currentThread().interrupt();
+                        throw new AssertionError(failure);
+                    }
+                }
                 return future;
             }
 

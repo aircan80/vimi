@@ -52,7 +52,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final Label areaStatus =
             new Label("Select an area, then Find terrain. Missing files may be downloaded.");
     private final ProgressIndicator areaActivity = activity("world-area-activity", 18);
-    private final ThreadPoolExecutor areaRequests = worker("world-area-requests");
+    private final ThreadPoolExecutor areaRequests = worker("world-area-requests"),
+            areaCancellation = worker("world-area-cancellation");
     private Cancellation areaToken;
     private CompletableFuture<WorldAreaNavigation.Result> areaFuture;
     private CompletableFuture<Void> areaDrain = CompletableFuture.completedFuture(null);
@@ -645,7 +646,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             areaDrainMessage = true;
             areaStatus.setText(
                     "Previous area scan is stopping; waiting for its current file before another"
-                        + " scan.");
+                            + " scan.");
         } else if (!areaScanning && areaDrainMessage) {
             areaDrainMessage = false;
             areaStatus.setText(areaHint());
@@ -667,7 +668,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         + " incomplete");
         areaButtons();
         areaDrain =
-                CompletableFuture.runAsync(cancel::cancel, areaRequests)
+                CompletableFuture.runAsync(cancel::cancel, areaCancellation)
                         .thenCompose(ignored -> pending.handle((result, error) -> (Void) null));
         areaDrain.whenComplete((result, error) -> Platform.runLater(this::areaButtons));
     }
@@ -684,7 +685,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (cancel != null) {
             try {
                 areaDrain =
-                        CompletableFuture.runAsync(cancel::cancel, areaRequests)
+                        CompletableFuture.runAsync(cancel::cancel, areaCancellation)
                                 .thenCompose(
                                         ignored ->
                                                 pending == null
@@ -1195,6 +1196,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         invalidate();
         requests.shutdownNow();
         areaRequests.shutdown();
+        areaCancellation.shutdown();
         preparation.shutdownNow();
     }
 }
