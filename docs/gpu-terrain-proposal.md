@@ -60,7 +60,12 @@ exactly equal depth retains the first submitted surface. For zero-to-one clip
 depth use clipZ=near, clipW=positiveEyeDepth; for homogeneous-minus-one-to-one
 use clipZ=2*near-positiveEyeDepth with the same clipW. This preserves the near
 plane while leaving far distance unbounded. It is terrain-specific; do not alter
-model framebuffer state. Gate D32F framebuffer support and actual reversed-depth
+model framebuffer state. A homogeneous-minus-one-to-one clip backend may lose
+precision before its viewport mapping: D32F plus reversed comparison alone does
+not qualify that backend. Initially decline `homogeneousDepth` backends unless
+a separately reviewed zero-to-one clip-control/depth strategy passes the same
+actual overlap probes. Offline GLSL compilation is not OpenGL qualification.
+Gate D32F framebuffer support and actual reversed-depth
 behavior at runtime; unsupported terrain rendering uses CPU fallback.
 
 This is an explicit implementation feasibility gate, not a completed proof.
@@ -306,3 +311,29 @@ camera; provide an explicit retry choice or retry only on a new scene/source.
    independently review implementation. Linux x64/ARM64, macOS Intel/ARM and
    Windows x64 remain capability/fallback targets; compile success does not prove
    native execution on untested hardware/platforms. Keep such limitations visible.
+
+## Authored feasibility checkpoint
+
+The test-only `GpuTerrainSpike` harness uploads persistent 48-byte triangle
+instances, uses a separate non-instanced sky program and renders into a reversed
+D32F offscreen target. It does not load ADTs, start an application session, change
+WorldView or replace a running application. Its initial native check covers sky
+rows, opaque output, one authored triangle and camera reuse without re-upload.
+Independent depth/color/geometry acceptance remains separately owned.
+
+Explicit commands:
+
+```sh
+python scripts/rendering/compile_bgfx_terrain_spike.py
+# Generate DX11 on the pinned Windows host, then import its authored-spike artifact.
+python scripts/rendering/compile_bgfx_terrain_spike.py --verify
+./gradlew :rendering-bgfx:nativeGpuTerrainSpike
+```
+
+Terrain and sky each have four offline shader profiles and their own manifest;
+production model resources remain independent. The shader workflow retains the
+separate `bgfx-terrain-spike-shaders` artifact. The native harness currently
+qualifies only actual headless Vulkan with zero-to-one clip depth and renderable
+D32F. Metal, DX11 and homogeneous-depth/OpenGL execution are not inferred from
+successful offline compilation. No production GUI integration is authorized by
+this test-only checkpoint without independent feasibility review.

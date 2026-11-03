@@ -6,12 +6,16 @@ on:
     paths:
       - 'rendering-bgfx/src/main/shaders/**'
       - 'rendering-bgfx/src/main/resources/com/vibeminer/rendering/bgfx/shaders/**'
+      - 'rendering-bgfx/src/test/shaders/terrain-spike/**'
+      - 'rendering-bgfx/src/test/resources/com/vibeminer/rendering/bgfx/terrain-spike/**'
       - 'scripts/rendering/**'
       - '.github/workflows/bgfx-shaders.yml'
   pull_request:
     paths:
       - 'rendering-bgfx/src/main/shaders/**'
       - 'rendering-bgfx/src/main/resources/com/vibeminer/rendering/bgfx/shaders/**'
+      - 'rendering-bgfx/src/test/shaders/terrain-spike/**'
+      - 'rendering-bgfx/src/test/resources/com/vibeminer/rendering/bgfx/terrain-spike/**'
       - 'scripts/rendering/**'
       - '.github/workflows/bgfx-shaders.yml'
 
@@ -40,5 +44,18 @@ jobs:
         with:
           name: bgfx-shaders-with-dx11
           path: rendering-bgfx/src/main/resources/com/vibeminer/rendering/bgfx/shaders/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Compile and verify authored terrain feasibility shaders
+        shell: bash
+        run: |
+          python scripts/rendering/compile_bgfx_terrain_spike.py --profile dx11
+          python scripts/rendering/compile_bgfx_terrain_spike.py --verify
+      - name: Retain authored terrain feasibility shaders
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bgfx-terrain-spike-shaders
+          path: rendering-bgfx/src/test/resources/com/vibeminer/rendering/bgfx/terrain-spike/
           if-no-files-found: error
           retention-days: 14
