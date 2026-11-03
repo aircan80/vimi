@@ -42,6 +42,7 @@ dependencies {
     implementation project(':concepts-quests')
     implementation project(':concepts-talents')
     implementation project(':concepts-races')
+    implementation project(':concepts-mounts')
     implementation project(':rendering-models')
     implementation project(':rendering-world')
     implementation project(':concepts-world')
@@ -310,4 +311,12 @@ tasks.named('jar') {
         attributes 'Main-Class': application.mainClass.get(),
                 'Class-Path': configurations.runtimeClasspath.files.collect { it.name }.join(' ')
     }
+}
+
+// Authored mount UI and cancellation/lifetime checks; opt-in display requirement.
+tasks.register('mountsUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.MountsUiTest'
+    systemProperty 'vimi.uiReviewDirectory', layout.buildDirectory.dir('ui-review').get().asFile.absolutePath
 }
