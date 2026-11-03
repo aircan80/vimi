@@ -1,6 +1,15 @@
 package com.vimi.gui;
 
 import com.vibeminer.concepts.comparison.ComparisonTypes;
+
+import javafx.application.Platform;
+import javafx.scene.Scene;
+import javafx.scene.control.Button;
+import javafx.scene.control.ComboBox;
+import javafx.scene.control.Label;
+import javafx.scene.control.ListView;
+import javafx.stage.Stage;
+
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -9,13 +18,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
-import javafx.application.Platform;
-import javafx.scene.Scene;
-import javafx.scene.control.Button;
-import javafx.scene.control.ComboBox;
-import javafx.scene.control.Label;
-import javafx.scene.control.ListView;
-import javafx.stage.Stage;
 
 /** Authored-only comparison identity, evidence, paging, cancellation and responsive checks. */
 public final class CompareUiTest {
@@ -27,7 +29,7 @@ public final class CompareUiTest {
                 new AtomicReference<>(ComparisonTypes.RunState.RUNNING);
         final AtomicBoolean failPage = new AtomicBoolean(true);
         CompletableFuture<Void> closeGate = CompletableFuture.completedFuture(null);
-        boolean rawFacts;
+        boolean rawFacts, itemFacts;
 
         public ComparisonTypes.Descriptor before() {
             return descriptor("authored-before");
@@ -40,22 +42,41 @@ public final class CompareUiTest {
         public ComparisonTypes.Progress progress() {
             return new ComparisonTypes.Progress(
                     state.get(),
-                    1200,
+                    itemFacts ? 1 : 1200,
                     0,
                     new ComparisonTypes.Coverage(
-                            rawFacts
+                            rawFacts || itemFacts
                                     ? ComparisonTypes.Completeness.UNKNOWN
                                     : ComparisonTypes.Completeness.PARTIAL,
-                            rawFacts ? "raw-verified-cells-v1:" + "a".repeat(64) : "Authored files",
-                            rawFacts ? rawReasons() : List.of("Protected rows")),
-                    new ComparisonTypes.Coverage(
                             rawFacts
-                                    ? ComparisonTypes.Completeness.PARTIAL
-                                    : ComparisonTypes.Completeness.COMPLETE,
-                            rawFacts ? "raw-verified-cells-v1:" + "b".repeat(64) : "Authored files",
-                            rawFacts ? rawReasons() : List.of()),
+                                    ? "raw-verified-cells-v1:" + "a".repeat(64)
+                                    : itemFacts ? "authored-items-qualified-v1" : "Authored files",
+                            rawFacts
+                                    ? rawReasons()
+                                    : itemFacts
+                                            ? List.of(
+                                                    "Name issue channel unavailable; membership"
+                                                        + " uncertified")
+                                            : List.of("Protected rows")),
+                    new ComparisonTypes.Coverage(
+                            itemFacts
+                                    ? ComparisonTypes.Completeness.UNKNOWN
+                                    : rawFacts
+                                            ? ComparisonTypes.Completeness.PARTIAL
+                                            : ComparisonTypes.Completeness.COMPLETE,
+                            rawFacts
+                                    ? "raw-verified-cells-v1:" + "b".repeat(64)
+                                    : itemFacts ? "authored-items-qualified-v1" : "Authored files",
+                            rawFacts
+                                    ? rawReasons()
+                                    : itemFacts
+                                            ? List.of(
+                                                    "Name issue channel unavailable; membership"
+                                                        + " uncertified")
+                                            : List.of()),
                     rawFacts
-                            ? "Session-only findings; known-equal rows omitted; no persistent report; findings-only, known-equal rows omitted"
+                            ? "Session-only findings; known-equal rows omitted; no persistent"
+                                    + " report; findings-only, known-equal rows omitted"
                             : "Findings only");
         }
 
@@ -63,6 +84,74 @@ public final class CompareUiTest {
             if (failPage.getAndSet(false))
                 return CompletableFuture.failedFuture(
                         new IllegalStateException("authored transient page failure"));
+            if (itemFacts) {
+                var oldQuality =
+                        new ComparisonTypes.Field(
+                                "recorded-quality-id-v1",
+                                ComparisonTypes.ValueKind.INTEGER,
+                                ComparisonTypes.ValueState.VALUE,
+                                "2",
+                                ComparisonTypes.Aspect.CONTENT,
+                                List.of());
+                var newQuality =
+                        new ComparisonTypes.Field(
+                                "recorded-quality-id-v1",
+                                ComparisonTypes.ValueKind.INTEGER,
+                                ComparisonTypes.ValueState.VALUE,
+                                "3",
+                                ComparisonTypes.Aspect.CONTENT,
+                                List.of());
+                var unavailable =
+                        new ComparisonTypes.Field(
+                                "recorded-name-v1",
+                                ComparisonTypes.ValueKind.TEXT,
+                                ComparisonTypes.ValueState.UNKNOWN,
+                                null,
+                                ComparisonTypes.Aspect.CONTENT,
+                                List.of(
+                                        new ComparisonTypes.Evidence(
+                                                "ItemSparse",
+                                                "authored-source",
+                                                "Name",
+                                                "Invented example item; issue channel"
+                                                        + " unavailable")));
+                String quality = "item.ITEM_SPARSE.QUALITY.5175616c697479.scalar";
+                String name = "item.ITEM_SPARSE.NAME.4e616d65.scalar";
+                var before =
+                        new ComparisonTypes.Record(
+                                "00000000000000910001",
+                                Map.of(quality, oldQuality, name, unavailable),
+                                List.of());
+                var after =
+                        new ComparisonTypes.Record(
+                                before.key(),
+                                Map.of(quality, newQuality, name, unavailable),
+                                List.of());
+                return CompletableFuture.completedFuture(
+                        new ComparisonTypes.ResultPage(
+                                offset,
+                                List.of(
+                                        new ComparisonTypes.Result(
+                                                before.key(),
+                                                ComparisonTypes.Membership.BOTH,
+                                                before,
+                                                after,
+                                                List.of(
+                                                        new ComparisonTypes.FieldDelta(
+                                                                quality,
+                                                                oldQuality,
+                                                                newQuality,
+                                                                ComparisonTypes.Difference.CHANGED,
+                                                                ComparisonTypes.Aspect.CONTENT),
+                                                        new ComparisonTypes.FieldDelta(
+                                                                name,
+                                                                unavailable,
+                                                                unavailable,
+                                                                ComparisonTypes.Difference.UNKNOWN,
+                                                                ComparisonTypes.Aspect.CONTENT)))),
+                                null,
+                                progress()));
+            }
             if (rawFacts) {
                 var equal = field("0");
                 var unknown =
@@ -264,7 +353,7 @@ public final class CompareUiTest {
                         require(
                                 !view.buildLabel(before).equals(view.buildLabel(after)),
                                 "Same-version build configs must be distinguishable");
-                        area(view, "Items");
+                        area(view, "Spells");
                         require(
                                 labels(view).contains("Not implemented"),
                                 "Unsupported area honest");
@@ -335,7 +424,8 @@ public final class CompareUiTest {
                         require(
                                 labels(view)
                                         .contains(
-                                                "Search and status filter apply only to the current findings page"),
+                                                "Search and status filter apply only to the current"
+                                                        + " findings page"),
                                 "Both filters explicitly page-scoped");
                         button(view, "Swap").fire();
                         require(
@@ -423,8 +513,11 @@ public final class CompareUiTest {
             require(stale.cancels.get() == 1, "Late session canceled and drained after close");
             require(tokenRef.get().isCanceled(), "Opening canceled on close");
             rawRowsControls(before, after);
+            itemsControls(before, after);
             System.out.println(
-                    "Comparison UI: captured pair on running/completed edits, distinguishing configs, coverage reasons, page retry/cursors, responsive drawer and stale close passed");
+                    "Comparison UI: captured pair on running/completed edits, distinguishing"
+                        + " configs, coverage reasons, page retry/cursors, responsive drawer and"
+                        + " stale close passed");
         } finally {
             fx(
                     () -> {
@@ -433,6 +526,76 @@ public final class CompareUiTest {
                         return null;
                     });
             Platform.exit();
+        }
+    }
+
+    private static void itemsControls(BuildInfo before, BuildInfo after) throws Exception {
+        var fixture = new Fixture();
+        fixture.itemFacts = true;
+        fixture.state.set(ComparisonTypes.RunState.COMPLETED);
+        fixture.failPage.set(false);
+        var requests = new java.util.concurrent.CopyOnWriteArrayList<CompareView.Request>();
+        var view =
+                fx(
+                        () ->
+                                new CompareView(
+                                        () -> List.of(before, after),
+                                        List.of("enUS"),
+                                        (request, token) -> {
+                                            requests.add(request);
+                                            return CompletableFuture.completedFuture(fixture);
+                                        },
+                                        () -> {}));
+        var window =
+                fx(
+                        () -> {
+                            var stage = new Stage();
+                            var scene = new Scene(view, 1320, 940);
+                            var css = CompareUiTest.class.getResource("/vimi.css");
+                            if (css != null) scene.getStylesheets().add(css.toExternalForm());
+                            stage.setScene(scene);
+                            stage.show();
+                            view.applyCss();
+                            view.layout();
+                            area(view, "Items");
+                            require(
+                                    requests.isEmpty(),
+                                    "Selecting Items does not start acquisition or scanning");
+                            require(
+                                    !button(view, "Compare local data").isDisabled(),
+                                    "Items supports explicit local comparison");
+                            button(view, "Compare local data").fire();
+                            return stage;
+                        });
+        try {
+            await(() -> fxUnchecked(() -> resultKeys(view).contains("910001")));
+            fx(
+                    () -> {
+                        require(
+                                requests.size() == 1
+                                        && requests.getFirst().area().equals("Items")
+                                        && requests.getFirst().tableId() == null,
+                                "Items request does not become raw-table mode");
+                        findings(view).getSelectionModel().select(0);
+                        view.applyCss();
+                        view.layout();
+                        require(
+                                labels(view).contains("ItemSparse · Quality")
+                                        && labels(view).contains("Unknown"),
+                                "Items detail names source-qualified facts and uncertainty");
+                        require(
+                                labels(view).contains("effects and assets are unassessed"),
+                                "Items scope excludes effects and assets");
+                        screenshot(view.getScene(), "comparison-items-authored");
+                        return null;
+                    });
+        } finally {
+            fx(
+                    () -> {
+                        view.close();
+                        window.close();
+                        return null;
+                    });
         }
     }
 
@@ -655,7 +818,8 @@ public final class CompareUiTest {
                                         node instanceof Label label
                                                 && label.getText()
                                                         .startsWith(
-                                                                "Before: Unknown · Prepared table rows"))
+                                                                "Before: Unknown · Prepared table"
+                                                                        + " rows"))
                         .map(Label.class::cast)
                         .findFirst()
                         .orElseThrow();
@@ -794,7 +958,8 @@ public final class CompareUiTest {
                 "Before prefers prepared history hint, else first catalogue choice");
         require(
                 builds(view, "After build, exact product and version").getValue() == expectedAfter,
-                "After prefers different same-product prepared hint, then same-product alternative, then Before");
+                "After prefers different same-product prepared hint, then same-product alternative,"
+                        + " then Before");
         require(
                 builds(view, "Before build, exact product and version").getItems().equals(choices)
                         && builds(view, "After build, exact product and version")
