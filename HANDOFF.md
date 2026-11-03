@@ -1,5 +1,25 @@
 # vimi development handoff
 
+## Build reopen cache (#83)
+
+BuildOpener now optionally borrows an application/library-scoped BuildResolutionCache.
+Immutable archive-location projections persist as build-owned DERIVED objects in the
+unified store, using 8 MiB content-checked chunks and a manifest published last.
+A fresh process restores these instead of re-reading/parsing the raw archive indexes.
+Metadata/config/encoding/root validation still runs. Invalid/missing projections fall
+back to authenticated originals and can be repaired. Cache identity includes build,
+CDN configuration, route and decode limits; projections validate archive ordering.
+One background save, no save queue, maximum 512 MiB projection; memory reuse keeps
+at most two builds within a 1 GiB estimated budget. Shutdown drains accepted saves.
+No table/workspace/source handles are retained. Leaving a prepared build releases
+its workspace; both controls are now labeled Close build. Existing derived file and
+table inventories continue to persist through their existing store paths.
+
+Validation includes persisted restore across library restart with raw index sources
+removed, invalid-projection fallback/repair, unsigned offsets/sizes, cancellation,
+and bounded memory. Run :builds:check :gui:check. Real full-build timing remains to
+be measured; research service initialization is a separate remaining reopen cost.
+
 ## External source management and product settings (2026-11-02)
 
 Stories #77/#78 replace source mock settings with real application services. The

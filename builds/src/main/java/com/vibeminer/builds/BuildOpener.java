@@ -71,6 +71,8 @@ public final class BuildOpener implements Builds {
 
     private final ObjectSource source;
     private final Options options;
+    private final BuildResolutionCache resolutionCache;
+    private final BuildResolutionCache.Storage resolutionStorage;
     private final OpenCache cache;
     private final MetadataCache<MetadataContext> metadataCache;
     private CompletableFuture<Void> closeResult;
@@ -83,6 +85,16 @@ public final class BuildOpener implements Builds {
     }
 
     public BuildOpener(ObjectSource source, Options options) {
+        this(source, options, null, null);
+    }
+
+    public BuildOpener(
+            ObjectSource source,
+            Options options,
+            BuildResolutionCache resolutionCache,
+            BuildResolutionCache.Storage resolutionStorage) {
+        this.resolutionCache = resolutionCache;
+        this.resolutionStorage = resolutionStorage;
         this.source = Objects.requireNonNull(source);
         this.options = Objects.requireNonNull(options);
         cache =
@@ -229,7 +241,24 @@ public final class BuildOpener implements Builds {
                         .open(build, cancellation -> readMetadata(build, cancellation), token)
                         .join();
         token.check();
-        ArchiveLocations locations = readIndexes(context.config(), context.cdn(), token);
+        ArchiveLocations locations =
+                resolutionCache == null ? null : resolutionCache.memory(build, options);
+        if (locations == null && resolutionCache != null) {
+            locations =
+                    resolutionCache.restore(
+                            build, options, context.config().archives(), resolutionStorage, token);
+        }
+        if (locations == null) {
+            locations = readIndexes(context.config(), context.cdn(), token);
+            if (resolutionCache != null) {
+                resolutionCache.save(
+                        build, options, context.config().archives(), locations, resolutionStorage);
+            }
+        }
+        token.check();
+        if (resolutionCache != null) {
+            resolutionCache.remember(build, options, locations);
+        }
         return new OpenedBuild(
                 build,
                 context.metadata(),

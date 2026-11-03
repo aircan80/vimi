@@ -407,6 +407,7 @@ public final class VimiApp extends Application {
     }
 
     private void showBuilds() {
+        if (viewedPreparation != null) { closePreparedBuild(viewedPreparation, this::showBuilds); return; }
         viewedPreparation = null;
         if (preparationPane != null) { preparationPane.close(); preparationPane = null; }
         navigationGeneration++;
@@ -469,6 +470,7 @@ public final class VimiApp extends Application {
     }
 
     private void showSettings() {
+        if (viewedPreparation != null) { closePreparedBuild(viewedPreparation, this::showSettings); return; }
         if (service == null || service.settings() == null) {
             showApplicationArea("Settings", "Settings are unavailable", "Open the local library to manage products."); return;
         }
@@ -483,6 +485,7 @@ public final class VimiApp extends Application {
     }
 
     private void showDataSources() {
+        if (viewedPreparation != null) { closePreparedBuild(viewedPreparation, this::showDataSources); return; }
         viewedPreparation = null;
         if (preparationPane != null) { preparationPane.close(); preparationPane = null; }
         navigationGeneration++;
@@ -712,24 +715,28 @@ public final class VimiApp extends Application {
         dialog.show(); updatePreparationActivity();
     }
 
+    private void closePreparedBuild(BuildPreparation.Job job, Runnable afterClose) {
+        viewedPreparation = null;
+        var pane = preparationPane;
+        preparationPane = null;
+        if (pane != null) pane.close();
+        root.setDisable(true);
+        service.preparation().release(job).whenComplete((value, error) -> Platform.runLater(() -> {
+            if (closing) return;
+            root.setDisable(false);
+            if (error == null) closedPreparations.put(job.build().identity(),
+                    PreparationStatus.closed(job.snapshot().ready(), job.locale()));
+            if (preparationFocus == job) preparationFocus = null;
+            afterClose.run();
+            if (error != null) status.setText("Close failed: " + problem(error));
+        }));
+    }
+
     private void showPreparedWorkspace(BuildPreparation.Job job) {
         if (closing) return;
         navigationGeneration++;
         if (preparationPane != null) preparationPane.close();
-        preparationPane = new PreparationPane(job,this::showBuilds,() -> {
-            var pane = preparationPane;
-            if (pane != null) pane.close();
-            root.setDisable(true);
-            service.preparation().release(job).whenComplete((value,error) -> Platform.runLater(() -> {
-                if (closing) return;
-                root.setDisable(false); preparationPane = null;
-                if (error == null) closedPreparations.put(job.build().identity(),
-                        PreparationStatus.closed(job.snapshot().ready(), job.locale()));
-                if (preparationFocus == job) preparationFocus = null;
-                showBuilds();
-                if (error != null) status.setText("Close failed: " + problem(error));
-            }));
-        },() -> {
+        preparationPane = new PreparationPane(job,this::showBuilds,() -> closePreparedBuild(job, this::showBuilds),() -> {
             try {
                 var enriched = service.preparation().enrich(job.build(),job.source(),job.locale());
                 preparationFocus = enriched; showPreparedWorkspace(enriched);
@@ -882,7 +889,7 @@ public final class VimiApp extends Application {
                 fact("Available locales", String.join(", ", metadata.locales())),
                 metrics,
                 notice("Authenticated metadata is ready", "Build loading is complete. Size accounting refreshes independently; no tables, items or other research data are prepared."),
-                button("Choose build", this::showBuilds));
+                button("Close build", this::showBuilds));
         content.setPadding(new Insets(28));
         root.setCenter(scroll(content));
     }
@@ -1246,7 +1253,7 @@ public final class VimiApp extends Application {
                 headerField("RETAINED",label("Not measured","retained-value")));
         fields.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
         HBox.setHgrow(fields,Priority.ALWAYS);
-        Button choose = button("← Choose build",this::showBuilds);
+        Button choose = button("Close build",this::showBuilds);
         choose.getStyleClass().add("header-menu");
         choose.setMinWidth(Region.USE_PREF_SIZE);
         bar.setSpacing(16);bar.getChildren().addAll(fields,choose);
@@ -1267,7 +1274,7 @@ public final class VimiApp extends Application {
         fields.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
         fields.setMinWidth(Region.USE_PREF_SIZE);
         HBox.setHgrow(fields, Priority.ALWAYS);
-        Button choose = button("← Choose build", this::showBuilds);
+        Button choose = button("Close build", this::showBuilds);
         choose.getStyleClass().add("header-menu");
         choose.setMinWidth(Region.USE_PREF_SIZE);
         bar.setSpacing(16);

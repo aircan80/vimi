@@ -27,6 +27,7 @@ import java.util.function.Consumer;
 
 /** Owns immutable per-workspace storage capabilities and their full preparation lifetime. */
 final class NativePreparationContexts implements BuildPreparation.Factory {
+    private final com.vibeminer.builds.BuildResolutionCache resolutionCache = new com.vibeminer.builds.BuildResolutionCache();
     private final ObjectStore library;
     private final LibraryCatalog ownership;
     private final BuildRegistry registry;
@@ -169,7 +170,10 @@ final class NativePreparationContexts implements BuildPreparation.Factory {
                     new CachingObjectSource(
                             original, original, original, legacy, network, List.of());
             localSource = CachingObjectSource.localOnly(original, original);
-            opener = new BuildOpener(source);
+            var indexes = library.forOwner(info.identity(), LibraryCatalog.Scope.BUILD,
+                    "build-indexes", LibraryCatalog.Role.DERIVED);
+            opener = new BuildOpener(source, new BuildOpener.Options(), resolutionCache,
+                    new com.vibeminer.builds.BuildResolutionCache.Storage(indexes, indexes));
         }
 
         @Override
@@ -341,6 +345,7 @@ final class NativePreparationContexts implements BuildPreparation.Factory {
             draining.add(context.closeAsync());
         }
         CompletableFuture.allOf(draining.toArray(CompletableFuture[]::new))
+                .whenComplete((ignored, failure) -> resolutionCache.close())
                 .handle(
                         (ignored, failure) ->
                                 nameSource
