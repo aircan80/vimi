@@ -507,3 +507,5 @@ NPC and quest source precedence, snapshot policy and checks: [catalogue guide](d
 Mount and profession screen proposals: [reviewed design](docs/mounts-professions-design.md).
 
 The [World explorer](docs/world.md) supports terrain selection, free flight and nearby tile streaming.
+
+Installable preview builds and release validation are documented in [Prereleases](docs/prereleases.md).

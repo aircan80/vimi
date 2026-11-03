@@ -12,3 +12,9 @@ SHA-256: `69b356899ca6bb3bb15c5af265cb91abb21cf141389908aa92e3316ffc356daf`
 JavaFX renders the original PNG at 36×36 logical pixels in both screen headers
 and uses it as the stage icon. The wordmark is text: dark “Vibe”, teal “Miner”,
 22px bold, enlarged from the C# screenshot's branding for this prototype.
+
+Desktop packaging also uses the unchanged original `vibeminer.ico` and
+`vibeminer.icns` exports from that same public GPL-3.0-or-later artwork.
+
+- ICO SHA-256: `8aa4c8c50bd25ccbe20a6e6c2ac14ec5f614598536ebeab8f395d7b31d756d1e`
+- ICNS SHA-256: `2f7756f3bb12298833112f19e72fd0b31603a7aa0627384526e9863d97ebcaab`

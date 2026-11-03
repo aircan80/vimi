@@ -4,8 +4,10 @@
 
 User asked to keep working without waiting for input and retain questions for
 their return. No unresolved user question currently blocks implementation.
-World #115 is the current feature: source terrain, continent/map/area browser,
+World #115 is merged: source terrain, continent/map/area browser,
 free-fly camera and bounded neighborhood streaming; see docs/world.md.
+Current work is #22: five-target native prerelease packaging; local ARM64
+app-image passed the bundled Java/SQLite/JavaFX GUI smoke test.
 After World is ready, publish installable GitHub PRERELEASES for Linux/macOS/Windows,
 then after each major feature. These are all prereleases, never stable/official
 releases. Windows testing will be through the GitHub installer; bundle Java and
@@ -27,10 +29,11 @@ search/paging and workspace/source revision invalidation are preserved. See
 docs/npcs-quests.md for exact snapshot selection and focused checks.
 Dungeons is queued as #108. Mounts (#111) and Professions/Recipes (#112) have
 WoW-data/UI-reviewed designs and authored SVG mockups in
-docs/mounts-professions-design.md; production implementation has not started.
+docs/mounts-professions-design.md; standalone implementations are ready in PRs #119 and #118 respectively, awaiting
+workspace/navigation integration.
 
 Static race models and recorded voices (#105/#107) are merged; textured class
-appearance remains active separately under #104.
+appearance #104 is merged, including physical-layout compatibility fixes.
 
 ## Unified source refresh (#103)
 

@@ -247,7 +247,9 @@ public final class VimiApp extends Application {
             }
         });
         scene.getStylesheets().add(getClass().getResource("/vimi.css").toExternalForm());
-        stage.setTitle(getParameters().getRaw().contains("--mock") ? "VibeMiner · Design preview" : "VibeMiner · Builds");
+        String version = System.getProperty("vimi.version", "");
+        stage.setTitle((getParameters().getRaw().contains("--mock") ? "VibeMiner · Design preview" : "VibeMiner · Builds")
+                + (version.isBlank() ? "" : " · " + version));
         stage.getIcons().add(brandImage());
         stage.setMinWidth(1000);
         stage.setMinHeight(680);

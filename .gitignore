@@ -48,3 +48,7 @@ replay_pid*
 
 /generated-store/src/interopTest/csharp/bin/
 /generated-store/src/interopTest/csharp/obj/
+
+# Native prerelease output and helper bytecode
+/dist/
+/scripts/release/__pycache__/

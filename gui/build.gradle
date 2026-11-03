@@ -4,7 +4,23 @@ plugins {
 
 group = 'com.vibeminer'
 version = '0.1.0-SNAPSHOT'
-repositories { mavenCentral() }
+repositories {
+    def sdkRepository = providers.gradleProperty('javafxSdkRepository').orNull
+    if (sdkRepository) {
+        exclusiveContent {
+            forRepository {
+                ivy {
+                    name = 'verifiedJavafxSdk'
+                    url = uri(sdkRepository)
+                    patternLayout { artifact '[artifact]-[revision]-[classifier].[ext]' }
+                    metadataSources { artifact() }
+                }
+            }
+            filter { includeGroup 'org.openjfx' }
+        }
+    }
+    mavenCentral()
+}
 dependencyLocking { lockAllConfigurations() }
 java { toolchain { languageVersion = JavaLanguageVersion.of(25) } }
 
@@ -286,4 +302,12 @@ tasks.register('worldUiTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldUiTest'
     def screenshot = providers.gradleProperty('worldScreenshot')
     if (screenshot.isPresent()) systemProperty 'vimi.world.screenshot', screenshot.get()
+}
+
+// jpackage launches the main JAR; retain a relative dependency classpath in the distribution.
+tasks.named('jar') {
+    manifest {
+        attributes 'Main-Class': application.mainClass.get(),
+                'Class-Path': configurations.runtimeClasspath.files.collect { it.name }.join(' ')
+    }
 }
