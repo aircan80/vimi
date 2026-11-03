@@ -34,6 +34,8 @@ import java.util.Map;
 /** Read-only, build-derived Classic trees; domain queries and media never block JavaFX. */
 final class TalentsView extends BorderPane implements AutoCloseable {
     private static final double ICON = 44, PITCH = 62, PADDING = 24;
+    private static final java.util.regex.Pattern UNRESOLVED_TEXT =
+            java.util.regex.Pattern.compile("\\$[A-Za-z0-9@?{]|\\|[A-Za-z0-9]");
     private final java.util.function.Supplier<com.vibeminer.concepts.talents.BuildTalents>
             handleSupplier;
     private final java.util.function.LongSupplier workspaceRevision;
@@ -48,7 +50,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
             new javafx.animation.PauseTransition(javafx.util.Duration.millis(20));
     private final Runnable afterLayout = this::requestVisibleIcons;
     private final ListView<TalentTypes.PlayerClass> classes = new ListView<>();
-    private final VBox content = new VBox(18), selection = new VBox(10);
+    private final VBox content = new VBox(18), selection = new VBox(8), evidence = new VBox(12);
     private final HBox treePanels = new HBox(16);
     private final Label status = text("Loading talent tables…", "muted"),
             classTitle = text("Talents", "h1");
@@ -130,22 +132,37 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                 });
         HBox state = new HBox(12, status, space(), reload);
         state.setAlignment(Pos.CENTER_LEFT);
-        selection.getStyleClass().add("card");
-        selection.setVisible(false);
-        selection.setManaged(false);
-        content.getChildren()
-                .addAll(
+        selection.getStyleClass().addAll("wow-item-tooltip", "talent-tooltip");
+        selection.setAccessibleText("Selected talent tooltip");
+        clearSelection();
+        VBox detailRail = new VBox(14, text("TALENT DETAILS", "eyebrow"), selection, evidence);
+        detailRail.setPadding(new Insets(24, 16, 24, 16));
+        detailRail.getStyleClass().add("talent-detail-rail");
+        ScrollPane detailsScroll = new ScrollPane(detailRail);
+        detailsScroll.setFitToWidth(true);
+        detailsScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        detailsScroll.setMinWidth(320);
+        detailsScroll.setPrefWidth(320);
+        detailsScroll.setMaxWidth(320);
+        setRight(detailsScroll);
+        VBox header =
+                new VBox(
+                        18,
                         heading,
                         state,
                         text(
                                 "Rank badges show recorded maximum ranks. This view does not"
                                         + " allocate character talent points.",
-                                "muted"),
-                        treePanels,
-                        selection);
+                                "muted"));
+        header.setPadding(new Insets(24));
+        content.setPadding(new Insets(0, 24, 24, 24));
+        content.getChildren().add(treePanels);
         scroll = new ScrollPane(content);
         scroll.setFitToWidth(true);
-        setCenter(scroll);
+        BorderPane main = new BorderPane(scroll);
+        main.setTop(header);
+        main.setMinWidth(0);
+        setCenter(main);
         scroll.viewportBoundsProperty().addListener((o, b, a) -> iconPulse.playFromStart());
         scroll.vvalueProperty().addListener((o, b, a) -> iconPulse.playFromStart());
         scroll.hvalueProperty().addListener((o, b, a) -> iconPulse.playFromStart());
@@ -165,6 +182,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
         token = new Cancellation();
         icons.clear();
         waitingIcons.clear();
+        clearSelection();
     }
 
     void ensureLoaded() {
@@ -237,8 +255,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
         long request = ++generation;
         treePanels.getChildren().clear();
         nodeButtons.clear();
-        selection.setVisible(false);
-        selection.setManaged(false);
+        clearSelection();
         icons.retain(java.util.Set.of());
         status.setText("Loading " + player.name() + " talent trees…");
         var handle = boundHandle;
@@ -425,16 +442,20 @@ final class TalentsView extends BorderPane implements AutoCloseable {
             Button button) {
         nodeButtons.values().forEach(node -> node.getStyleClass().remove("talent-selected"));
         button.getStyleClass().add("talent-selected");
+        StackPane art = new StackPane(text("?", "talent-placeholder"));
+        art.setMinSize(ICON, ICON);
+        art.setPrefSize(ICON, ICON);
+        art.setMaxSize(ICON, ICON);
+        HBox title = new HBox(10, art, text(talent.name(), "wow-item-name"));
+        title.setAlignment(Pos.CENTER_LEFT);
         selection
                 .getChildren()
                 .setAll(
-                        text(talent.name(), "h2"),
-                        text(
-                                tree.name()
-                                        + " · "
-                                        + talent.rankSpells().size()
-                                        + " recorded ranks",
-                                "value"));
+                        title,
+                        text(tree.name(), "talent-tooltip-context"),
+                        text("Rank 1/" + talent.rankSpells().size(), "wow-line"));
+        if (talent.iconFileDataId() != null)
+            loadImage(talent.iconFileDataId(), art, ICON, generation, true);
         for (var edge : talent.prerequisites())
             selection
                     .getChildren()
@@ -446,17 +467,24 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                                                     : "unavailable talent #" + edge.talentId())
                                             + " · rank "
                                             + (edge.rankIndex() + 1),
-                                    "muted"));
+                                    "wow-line"));
         selection
                 .getChildren()
                 .add(
                         text(
                                 talent.description() == null || talent.description().isEmpty()
-                                        ? "Spell description is unavailable in the readable table"
-                                                + " data."
-                                        : "Raw spell description: " + talent.description(),
+                                        ? "Description unavailable in the readable data."
+                                        : talent.description(),
+                                "wow-level"));
+        evidence.getChildren()
+                .setAll(
+                        text(
+                                "Previewing the first recorded rank, not character talent points.",
                                 "muted"));
-        var evidence =
+        if (talent.description() != null && UNRESOLVED_TEXT.matcher(talent.description()).find())
+            evidence.getChildren()
+                    .add(text("Raw client spell text; substitutions are not evaluated.", "muted"));
+        var sourceDetails =
                 new TitledPane(
                         "Source details",
                         new VBox(
@@ -470,10 +498,19 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                                                 + (talent.column() + 1),
                                         "muted"),
                                 text("Rank spell IDs: " + talent.rankSpells(), "muted")));
-        evidence.setExpanded(false);
-        selection.getChildren().add(evidence);
-        selection.setVisible(true);
-        selection.setManaged(true);
+        sourceDetails.setExpanded(false);
+        evidence.getChildren().add(sourceDetails);
+    }
+
+    private void clearSelection() {
+        selection
+                .getChildren()
+                .setAll(
+                        text("Select a talent", "wow-item-name"),
+                        text(
+                                "Choose a tree icon to inspect its recorded rank and description.",
+                                "wow-line"));
+        evidence.getChildren().clear();
     }
 
     private void queueImage(long id, StackPane target, double size, long request, boolean guarded) {

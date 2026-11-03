@@ -21,6 +21,9 @@ import javax.imageio.ImageIO;
 
 /** Optional authored layout review. Does not open a native store or acquire any game data. */
 public final class TalentsUiTest {
+    private static final String TOKEN_WARNING =
+            "Raw client spell text; substitutions are not evaluated.";
+
     private TalentsUiTest() {}
 
     private static Long fixtureIconId(long id) {
@@ -108,9 +111,22 @@ public final class TalentsUiTest {
                                                                         row,
                                                                         column,
                                                                         ranks,
-                                                                        prerequisites,
+                                                                        id == 2
+                                                                                ? List.of(
+                                                                                        new TalentTypes
+                                                                                                .Prerequisite(
+                                                                                                999,
+                                                                                                0))
+                                                                                : prerequisites,
                                                                         "Fixture talent " + id,
-                                                                        "Authored spell text",
+                                                                        id == 2
+                                                                                ? null
+                                                                                : id == 4
+                                                                                        ? "Authored"
+                                                                                              + " $s1 text"
+                                                                                        : "Authored"
+                                                                                              + " spell"
+                                                                                              + " text",
                                                                         fixtureIconId(id)));
                                                     }
                                             trees.add(
@@ -185,13 +201,97 @@ public final class TalentsUiTest {
                                                 + " build data");
                         heading.setStyle("-fx-padding: 12; -fx-text-fill: #88611f;");
                         page.setTop(heading);
-                        var scene = new Scene(page, 1320, 850);
+                        var scene =
+                                new Scene(
+                                        page,
+                                        args.length == 0 ? 1600 : Double.parseDouble(args[0]),
+                                        950);
                         scene.getStylesheets()
                                 .add(TalentsUiTest.class.getResource("/vimi.css").toExternalForm());
                         var stage = new Stage();
                         stage.setScene(scene);
                         stage.show();
                         view.ensureLoaded();
+                        var selectPause =
+                                new javafx.animation.PauseTransition(
+                                        javafx.util.Duration.millis(300));
+                        selectPause.setOnFinished(
+                                event -> {
+                                    var unavailable =
+                                            scene.getRoot().lookupAll(".talent-node").stream()
+                                                    .map(
+                                                            value ->
+                                                                    (javafx.scene.control.Button)
+                                                                            value)
+                                                    .filter(
+                                                            value ->
+                                                                    value.getAccessibleText()
+                                                                            .startsWith(
+                                                                                    "Fixture talent"
+                                                                                        + " 2,"))
+                                                    .findFirst()
+                                                    .orElseThrow();
+                                    unavailable.fire();
+                                    var missingText =
+                                            scene
+                                                    .getRoot()
+                                                    .lookup(".talent-tooltip")
+                                                    .lookupAll(".label")
+                                                    .stream()
+                                                    .map(
+                                                            value ->
+                                                                    ((javafx.scene.control.Label)
+                                                                                    value)
+                                                                            .getText())
+                                                    .toList();
+                                    if (!missingText.contains(
+                                                    "Description unavailable in the readable data.")
+                                            || !missingText.contains(
+                                                    "Requires unavailable talent #999 · rank 1"))
+                                        throw new AssertionError(
+                                                "Unreadable talent metadata must remain explicit in"
+                                                        + " the tooltip");
+                                    var tokenNode =
+                                            scene.getRoot().lookupAll(".talent-node").stream()
+                                                    .map(
+                                                            value ->
+                                                                    (javafx.scene.control.Button)
+                                                                            value)
+                                                    .filter(
+                                                            value ->
+                                                                    value.getAccessibleText()
+                                                                            .startsWith(
+                                                                                    "Fixture talent"
+                                                                                        + " 4,"))
+                                                    .findFirst()
+                                                    .orElseThrow();
+                                    tokenNode.fire();
+                                    if (scene.getRoot().lookupAll(".label").stream()
+                                            .map(
+                                                    value ->
+                                                            ((javafx.scene.control.Label) value)
+                                                                    .getText())
+                                            .noneMatch(TOKEN_WARNING::equals))
+                                        throw new AssertionError(
+                                                "Unresolved client substitutions need a warning"
+                                                    + " outside the tooltip");
+                                    var node =
+                                            scene.getRoot().lookupAll(".talent-node").stream()
+                                                    .map(
+                                                            value ->
+                                                                    (javafx.scene.control.Button)
+                                                                            value)
+                                                    .filter(
+                                                            value ->
+                                                                    value.getAccessibleText()
+                                                                            .startsWith(
+                                                                                    "Fixture talent"
+                                                                                        + " 1,"))
+                                                    .findFirst()
+                                                    .orElseThrow();
+                                    node.fire();
+                                });
+                        selectPause.play();
                         var pause =
                                 new javafx.animation.PauseTransition(
                                         javafx.util.Duration.millis(500));
@@ -255,6 +355,45 @@ public final class TalentsUiTest {
                                             throw new AssertionError(
                                                     "Decoded RGBA icon did not render; unavailable"
                                                             + " icons must remain placeholders");
+                                        var tooltip = scene.getRoot().lookup(".talent-tooltip");
+                                        var tooltipText =
+                                                tooltip.lookupAll(".label").stream()
+                                                        .map(
+                                                                value ->
+                                                                        ((javafx.scene.control
+                                                                                                .Label)
+                                                                                        value)
+                                                                                .getText())
+                                                        .toList();
+                                        if (!tooltipText.contains("Fixture talent 1")
+                                                || !tooltipText.contains("Rank 1/3")
+                                                || !tooltipText.contains("Authored spell text"))
+                                            throw new AssertionError(
+                                                    "Selected talent details did not reach the"
+                                                            + " right tooltip");
+                                        if (scene.getRoot().lookupAll(".label").stream()
+                                                .map(
+                                                        value ->
+                                                                ((javafx.scene.control.Label) value)
+                                                                        .getText())
+                                                .anyMatch(TOKEN_WARNING::equals))
+                                            throw new AssertionError(
+                                                    "Plain descriptions must not show an"
+                                                        + " unresolved-token warning");
+                                        var right = view.getRight();
+                                        if (right.getBoundsInParent().getMinX()
+                                                        <= view.getCenter()
+                                                                .getBoundsInParent()
+                                                                .getMinX()
+                                                || right.getBoundsInParent().getWidth() != 320)
+                                            throw new AssertionError(
+                                                    "Tooltip must remain in the fixed right detail"
+                                                            + " rail");
+                                        for (var canvas :
+                                                scene.getRoot().lookupAll(".talent-canvas"))
+                                            if (canvas.getBoundsInLocal().getWidth() < 280)
+                                                throw new AssertionError(
+                                                        "Talent trees must retain readable width");
                                         var image = scene.snapshot(null);
                                         var out =
                                                 new BufferedImage(
@@ -268,8 +407,26 @@ public final class TalentsUiTest {
                                         Path path =
                                                 Path.of(
                                                         System.getProperty("java.io.tmpdir"),
-                                                        "vimi-talents.png");
+                                                        "vimi-talents-tooltip"
+                                                                + (args.length == 0
+                                                                        ? ""
+                                                                        : "-" + args[0])
+                                                                + ".png");
                                         ImageIO.write(out, "png", path.toFile());
+                                        view.invalidate();
+                                        if (scene
+                                                .getRoot()
+                                                .lookup(".talent-tooltip")
+                                                .lookupAll(".label")
+                                                .stream()
+                                                .map(
+                                                        value ->
+                                                                ((javafx.scene.control.Label) value)
+                                                                        .getText())
+                                                .noneMatch("Select a talent"::equals))
+                                            throw new AssertionError(
+                                                    "Workspace invalidation must clear the old"
+                                                            + " selected talent");
                                         view.close();
                                         stage.close();
                                         ready.complete(null);

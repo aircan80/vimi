@@ -6,7 +6,12 @@ client tables show all readable classes, trees and talents with an incomplete
 data warning; protected records do not hide the readable records. A missing
 prerequisite keeps its source ID in details and omits the unresolved connector.
 Select a talent to inspect rank spell IDs, prerequisites and any readable spell
-text. Arrow keys move focus to the nearest node along a row or column.
+text in a fixed right-hand WoW-style tooltip. Its rank label previews the first
+recorded rank's spell text; it does not represent learned character points.
+Unreadable descriptions and prerequisite names stay explicitly unavailable.
+Technical source details remain collapsed outside the tooltip. Arrow keys move
+focus to the nearest node along a row or column; Enter selects it. The tree strip
+scrolls horizontally when the detail rail leaves less room.
 
 Class names, trees, positions and ranks come from the selected build's verified
 client tables. Rank badges show recorded maximum ranks. The browser does not
@@ -25,4 +30,4 @@ Component contract and checks: [concepts-talents](../concepts-talents/README.md)
 This screenshot uses authored fixture nodes and placeholder icons to review the
 layout. It does not represent a real build's talent data or a character's points.
 
-![Authored three-tree talent layout](images/talents-authored.png)
+![Authored three-tree talent layout](images/talents-tooltip-authored.png)

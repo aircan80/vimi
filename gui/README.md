@@ -336,4 +336,7 @@ opens three trees derived from the selected build's verified client tables. Rank
 badges mean recorded maximum ranks; this is a reference view, not a character
 planner. Missing/protected data and unsupported Retail/Mists layouts are explicit.
 No talent-domain projection or media fetch is added to initial preparation.
-See [Talents](../docs/talents.md) for scope and checks.
+The selected talent appears in a fixed right-hand WoW-style tooltip; source
+provenance stays collapsed outside the card. Its rank label previews the first
+recorded rank, without allocating character talent points. See
+[Talents](../docs/talents.md) for scope and checks.

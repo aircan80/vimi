@@ -41,7 +41,7 @@ bounded on-demand image path and shared library accounting.
 ```sh
 ./gradlew :concepts-talents:check
 ./gradlew :gui:check
-# Optional authored screenshot, requires a display; writes /tmp/vimi-talents.png:
+# Optional authored screenshot, requires a display; writes /tmp/vimi-talents-tooltip.png:
 ./gradlew :gui:talentsUiTest
 ```
 

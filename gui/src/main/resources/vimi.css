@@ -171,3 +171,6 @@
 .talent-placeholder { -fx-text-fill: #b9c0b1; -fx-font-size: 23px; }
 .talent-rank { -fx-background-color: #15221f; -fx-text-fill: #ead993; -fx-font-size: 11px; -fx-min-height: 18px; -fx-padding: 1 4; -fx-background-radius: 2; }
 .talent-class-initial { -fx-text-fill: #175e57; -fx-background-color: #d8e7dd; -fx-background-radius: 4; -fx-padding: 3 7; -fx-font-weight: bold; }
+
+.talent-tooltip .wow-item-name { -fx-text-fill: #ffd100; }
+.talent-tooltip .talent-tooltip-context { -fx-text-fill: #abb4c7; -fx-font-size: 12px; }
