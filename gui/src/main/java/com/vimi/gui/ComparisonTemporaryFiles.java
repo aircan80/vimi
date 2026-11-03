@@ -18,16 +18,25 @@ final class ComparisonTemporaryFiles {
             for (var directory : directories) {
                 if (!Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS)) continue;
                 boolean sorted = directory.getFileName().toString().startsWith("comparison-sort-");
+                boolean items = directory.getFileName().toString().startsWith("comparison-items-");
                 var children = new ArrayList<Path>();
                 boolean recognized = true;
                 try (var entries = Files.newDirectoryStream(directory)) {
                     for (var child : entries) {
-                        if (!(sorted
-                                        ? child.getFileName().toString().matches("run-[0-9]+\\.tmp")
-                                        : (child.getFileName().toString().equals("results.tmp")
-                                                || child.getFileName()
+                        if (!(items
+                                        ? child.getFileName()
+                                                .toString()
+                                                .matches("candidates-[0-9]+\\.tmp")
+                                        : sorted
+                                                ? child.getFileName()
                                                         .toString()
-                                                        .matches("results[0-9]+\\.tmp")))
+                                                        .matches("run-[0-9]+\\.tmp")
+                                                : (child.getFileName()
+                                                                .toString()
+                                                                .equals("results.tmp")
+                                                        || child.getFileName()
+                                                                .toString()
+                                                                .matches("results[0-9]+\\.tmp")))
                                 || children.size() >= 2048
                                 || !Files.isRegularFile(child, LinkOption.NOFOLLOW_LINKS)) {
                             recognized = false;

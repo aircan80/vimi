@@ -33,6 +33,8 @@ public final class ComparisonCoordinatorTest {
             staleCleanup(directory);
             sourceHint();
             rawPairAdmission(directory);
+            preparedScopeAdmission(directory, false);
+            preparedScopeAdmission(directory, true);
             System.out.println(
                     "Comparison composition: pair ownership, opening/read cancellation, rejection,"
                             + " failure drain, stale staging and source context passed");
@@ -84,6 +86,7 @@ public final class ComparisonCoordinatorTest {
 
     private static final class Input implements ComparisonInput {
         final String value;
+        String scope = "authored-scope";
         final AtomicInteger closed = new AtomicInteger(), active = new AtomicInteger();
         final CountDownLatch entered;
         final boolean closeFails;
@@ -96,7 +99,7 @@ public final class ComparisonCoordinatorTest {
 
         public ComparisonTypes.Descriptor descriptor() {
             return new ComparisonTypes.Descriptor(
-                    value, "wowf", "enUS", "authored", "authored-scope", Map.of());
+                    value, "wowf", "enUS", "authored", scope, Map.of());
         }
 
         public CompletableFuture<ComparisonTypes.InputPage> read(
@@ -130,9 +133,7 @@ public final class ComparisonCoordinatorTest {
                                             "1", Map.of("value", field), List.of())),
                             null,
                             new ComparisonTypes.Coverage(
-                                    ComparisonTypes.Completeness.COMPLETE,
-                                    "authored-scope",
-                                    List.of())));
+                                    ComparisonTypes.Completeness.COMPLETE, scope, List.of())));
         }
 
         public CompletableFuture<Void> closeAsync() {
@@ -283,6 +284,55 @@ public final class ComparisonCoordinatorTest {
         failure(manager.start(request, new Cancellation()));
         manager.closeAsync().get(10, TimeUnit.SECONDS);
         require(captures.get() == 0, "Incompatible locale rejects before acquiring contexts");
+    }
+
+    private static void preparedScopeAdmission(Path directory, boolean incompatible)
+            throws Exception {
+        var inputs = new ArrayList<Input>();
+        var contexts = new AtomicInteger();
+        var manager =
+                new ComparisonCoordinator(
+                        (request, token) ->
+                                new ComparisonCoordinator.EndpointOpener() {
+                                    public ComparisonCoordinator.Opened open(
+                                            BuildInfo build,
+                                            String locale,
+                                            String area,
+                                            Cancellation cancel) {
+                                        var input = new Input(build.config(), null, false);
+                                        inputs.add(input);
+                                        return opened(input, contexts);
+                                    }
+
+                                    public void prepare(
+                                            ComparisonCoordinator.Opened before,
+                                            ComparisonCoordinator.Opened after,
+                                            Cancellation cancel) {
+                                        inputs.get(0).scope = "final-paired-fields";
+                                        inputs.get(1).scope =
+                                                incompatible
+                                                        ? "different-fields"
+                                                        : "final-paired-fields";
+                                    }
+                                },
+                        directory);
+        try {
+            var request =
+                    new BuildComparisons.Request(build("a"), "enUS", build("b"), "enUS", "Items");
+            if (incompatible) {
+                failure(manager.start(request, new Cancellation()));
+            } else {
+                var session = manager.start(request, new Cancellation()).get(10, TimeUnit.SECONDS);
+                terminal(session);
+                require(
+                        session.before().scope().equals("final-paired-fields"),
+                        "Session must expose final paired scope after preparation");
+                session.closeAsync().get(10, TimeUnit.SECONDS);
+            }
+        } finally {
+            manager.closeAsync().get(10, TimeUnit.SECONDS);
+        }
+        require(contexts.get() == 2, "Prepared scope admission closes both contexts");
     }
 
     private static void rejectedCoreAdmission(Path directory) throws Exception {
@@ -505,7 +555,14 @@ public final class ComparisonCoordinatorTest {
         Files.writeString(generated.resolve("results123.tmp"), "authored framed results");
         var protectedSort = Files.createDirectory(parent.resolve("comparison-sort-foreign"));
         Files.writeString(protectedSort.resolve("notes.txt"), "retain foreign file");
+        var items = Files.createDirectory(parent.resolve("comparison-items-123"));
+        Files.writeString(items.resolve("candidates-789.tmp"), "authored candidate");
+        var protectedItems = Files.createDirectory(parent.resolve("comparison-items-foreign"));
+        Files.writeString(protectedItems.resolve("notes.txt"), "retain foreign file");
         ComparisonTemporaryFiles.cleanStale(parent);
+        require(
+                !Files.exists(items) && Files.exists(protectedItems.resolve("notes.txt")),
+                "Recognized Items candidates are reclaimed without deleting foreign files");
         require(
                 !Files.exists(sorted)
                         && !Files.exists(generated)
