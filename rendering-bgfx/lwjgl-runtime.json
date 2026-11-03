@@ -10,10 +10,6 @@
     "lwjgl-bgfx": {
       "sha256": "dc6f1df4d8d4310f31b89cdb073c1bfcdb83fe81ec7ec66e80f57453bdc948e5",
       "url": "https://repo.maven.apache.org/maven2/org/lwjgl/lwjgl-bgfx/3.4.3/lwjgl-bgfx-3.4.3.jar"
-    },
-    "lwjgl-glfw": {
-      "sha256": "2a60dbe93711632129a2ce6aa7e073aa58fa5450a88cde48a6af0a4dfeed606d",
-      "url": "https://repo.maven.apache.org/maven2/org/lwjgl/lwjgl-glfw/3.4.3/lwjgl-glfw-3.4.3.jar"
     }
   },
   "lwjglVersion": "3.4.3",
@@ -28,11 +24,6 @@
         "classifier": "natives-linux-arm64",
         "sha256": "ccce7af09d2448a61b93b3640df1563a35dfcb8b56ca295dfe066351983bc0e9",
         "url": "https://repo.maven.apache.org/maven2/org/lwjgl/lwjgl-bgfx/3.4.3/lwjgl-bgfx-3.4.3-natives-linux-arm64.jar"
-      },
-      "lwjgl-glfw": {
-        "classifier": "natives-linux-arm64",
-        "sha256": "df031b5b97bcb589f8bbd66714c752460ed9965caf659916be69c44138c32ee5",
-        "url": "https://repo.maven.apache.org/maven2/org/lwjgl/lwjgl-glfw/3.4.3/lwjgl-glfw-3.4.3-natives-linux-arm64.jar"
       }
     },
     "linux-x64": {
@@ -45,11 +36,6 @@
         "classifier": "natives-linux",
         "sha256": "6aa00e8b07d3f6d0c15abafba54df2fe492b52f3cf411d7365ab8432027cd52d",
         "url": "https://repo.maven.apache.org/maven2/org/lwjgl/lwjgl-bgfx/3.4.3/lwjgl-bgfx-3.4.3-natives-linux.jar"
-      },
-      "lwjgl-glfw": {
-        "classifier": "natives-linux",
-        "sha256": "aa25296d8fc96355acf0b69eb39083e98c881a204950a708a0c47ab1be34a5d4",
-        "url": "https://repo.maven.apache.org/maven2/org/lwjgl/lwjgl-glfw/3.4.3/lwjgl-glfw-3.4.3-natives-linux.jar"
       }
     },
     "macos-arm64": {
@@ -62,11 +48,6 @@
         "classifier": "natives-macos-arm64",
         "sha256": "a80c812e564bdeda6e98745c1488e6a652dd911a2da921dcea1fa29ce8b89496",
         "url": "https://repo.maven.apache.org/maven2/org/lwjgl/lwjgl-bgfx/3.4.3/lwjgl-bgfx-3.4.3-natives-macos-arm64.jar"
-      },
-      "lwjgl-glfw": {
-        "classifier": "natives-macos-arm64",
-        "sha256": "0ded43fd421c832e7ec6fbb4f63b6860c3760fa4385d58e2a17778e59a951ace",
-        "url": "https://repo.maven.apache.org/maven2/org/lwjgl/lwjgl-glfw/3.4.3/lwjgl-glfw-3.4.3-natives-macos-arm64.jar"
       }
     },
     "macos-x64": {
@@ -79,11 +60,6 @@
         "classifier": "natives-macos",
         "sha256": "51c89de4d34f9c857946e61d6c869d04b7edccc82bda6494c51fec7a05b32937",
         "url": "https://repo.maven.apache.org/maven2/org/lwjgl/lwjgl-bgfx/3.4.3/lwjgl-bgfx-3.4.3-natives-macos.jar"
-      },
-      "lwjgl-glfw": {
-        "classifier": "natives-macos",
-        "sha256": "8ac6cda49aa08b528452fa45c71ed49762a83b1924b2cb1278065b463c236fe1",
-        "url": "https://repo.maven.apache.org/maven2/org/lwjgl/lwjgl-glfw/3.4.3/lwjgl-glfw-3.4.3-natives-macos.jar"
       }
     },
     "windows-x64": {
@@ -96,11 +72,6 @@
         "classifier": "natives-windows",
         "sha256": "b44c0baa766716f6fab5839783c887b2db991ce934b2bb4e92dc827153f04679",
         "url": "https://repo.maven.apache.org/maven2/org/lwjgl/lwjgl-bgfx/3.4.3/lwjgl-bgfx-3.4.3-natives-windows.jar"
-      },
-      "lwjgl-glfw": {
-        "classifier": "natives-windows",
-        "sha256": "de2826d6bc8e73127b42250a282cbfcf91b3c3435edf7f9fd16afcabc25e88ec",
-        "url": "https://repo.maven.apache.org/maven2/org/lwjgl/lwjgl-glfw/3.4.3/lwjgl-glfw-3.4.3-natives-windows.jar"
       }
     }
   }

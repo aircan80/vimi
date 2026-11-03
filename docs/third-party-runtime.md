@@ -28,13 +28,13 @@ GPL-3.0-or-later artwork from VibeMiner; hashes/provenance are in
   This software is based on or using the J-Ogg library available from
   http://www.j-ogg.de and copyrighted by Tor-Einar Jarnbjo.
 
-- LWJGL3.4.3: BSD-3-Clause; bgfx API156: BSD-2-Clause; GLFW3.5.1: zlib/libpng.
+- LWJGL3.4.3: BSD-3-Clause; bgfx API156: BSD-2-Clause.
   Explicit notices are bundled in `rendering-bgfx` resources under
   `com/vibeminer/rendering/bgfx/legal/`; Maven runtime JARs do not contain them.
   Sources: https://github.com/LWJGL/lwjgl3/tree/3.4.3 ,
-  https://github.com/LWJGL-CI/bgfx/tree/780f7bf00a29573473b90dcfab9f92a7d8687702 ,
-  and https://github.com/glfw/glfw . Runtime artifact classifiers, pinned URLs and
-  SHA-256 values are recorded in `rendering-bgfx/lwjgl-runtime.json`.
+  https://github.com/LWJGL-CI/bgfx/tree/780f7bf00a29573473b90dcfab9f92a7d8687702 .
+  Runtime artifact classifiers, pinned URLs and SHA-256 values are recorded in
+  `rendering-bgfx/lwjgl-runtime.json`.
   The build-only bgfx shader compiler is not installed or downloaded by the app.
 
 The package contains no downloaded game databases, CDN payloads, player data,

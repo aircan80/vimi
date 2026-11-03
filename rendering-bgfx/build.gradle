@@ -60,7 +60,7 @@ application {
 
 dependencies {
     api project(':rendering-models')
-    ['lwjgl', 'lwjgl-bgfx', 'lwjgl-glfw'].each {
+    ['lwjgl', 'lwjgl-bgfx'].each {
         implementation "org.lwjgl:${it}:${lwjglVersion}"
         runtimeOnly "org.lwjgl:${it}:${lwjglVersion}:${supportedPlatforms[targetPlatform]}"
     }
@@ -157,3 +157,16 @@ tasks.register('nativeGpuMaterialProof', JavaExec) {
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args layout.buildDirectory.dir('native-material-proof').get().asFile.absolutePath
 }
+
+// Loads packaged bindings and native entry points without a display, GPU, or bgfx initialization.
+tasks.register('nativeRuntimeProbe', JavaExec) {
+    group = 'verification'
+    description = 'Loads LWJGL/bgfx natives and verifies backend and shader availability without a GPU.'
+    dependsOn classes, tasks.named('verifyShaders')
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.GpuRuntimeProbe'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    if (hostSystem == 'macos') jvmArgs '-XstartOnFirstThread'
+    onlyIf { targetPlatform == hostSystem + '-' + hostArch }
+}
+tasks.named('check') { dependsOn tasks.named('nativeRuntimeProbe') }

@@ -43,7 +43,6 @@ org.junit.platform:junit-platform-engine:1.13.4=testRuntimeClasspath
 org.junit.platform:junit-platform-launcher:1.13.4=testRuntimeClasspath
 org.junit:junit-bom:5.13.4=testCompileClasspath,testRuntimeClasspath
 org.lwjgl:lwjgl-bgfx:3.4.3=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
-org.lwjgl:lwjgl-glfw:3.4.3=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 org.lwjgl:lwjgl:3.4.3=compileClasspath,runtimeClasspath,testCompileClasspath,testRuntimeClasspath
 org.opentest4j:opentest4j:1.3.0=testCompileClasspath,testRuntimeClasspath
 org.reflections:reflections:0.10.2=checkstyle
