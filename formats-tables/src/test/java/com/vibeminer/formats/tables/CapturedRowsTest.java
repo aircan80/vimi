@@ -72,6 +72,26 @@ final class CapturedRowsTest {
                 boolean keyed,
                 String initialKey,
                 String replacement) {
+            this(
+                    seed,
+                    legacy,
+                    keyed,
+                    initialKey,
+                    replacement,
+                    false,
+                    Db2Fixture.definition("int ID\nint Value", "$id,noninline$ID<u32>\nValue<u32>"),
+                    Db2Fixture.numeric("WDC5", 0, 32, 9, new long[0], true));
+        }
+
+        Fixture(
+                boolean seed,
+                boolean legacy,
+                boolean keyed,
+                String initialKey,
+                String replacement,
+                boolean certified,
+                com.vibeminer.formats.definitions.DbdDocument document,
+                byte[] bytes) {
             keyValue.set(initialKey);
             var base = new Db2Types.Limits();
             var limits =
@@ -93,8 +113,6 @@ final class CapturedRowsTest {
                             base.maxRelationshipEntries(),
                             base.definitionSha256(),
                             base.verifiedRawIntegerRules());
-            var document =
-                    Db2Fixture.definition("int ID\nint Value", "$id,noninline$ID<u32>\nValue<u32>");
             var provider =
                     BundledDefinitions.of(
                             List.of(
@@ -115,7 +133,6 @@ final class CapturedRowsTest {
                             256,
                             1000000,
                             true);
-            var bytes = Db2Fixture.numeric("WDC5", 0, 32, 9, new long[0], true);
             var decoded =
                     Db2Reader.open(
                                     Db2ByteSource.memory(bytes),
@@ -129,13 +146,18 @@ final class CapturedRowsTest {
                             .blocks()
                             .getFirst();
             var build = TablesContract.BUILD;
-            source =
+            var legacySource =
                     GeneratedTableSource.forBlock(
                             block,
                             "enUS",
                             CKEY,
                             limits,
                             build.product() + " " + build.buildConfig() + " " + build.cdnConfig());
+            source =
+                    certified
+                            ? GeneratedTableSource.forNativeBlock(
+                                    block, "enUS", CKEY, limits, legacySource.encodingScope())
+                            : legacySource;
             if (seed) {
                 var content =
                         new GeneratedTableContent(
@@ -179,7 +201,11 @@ final class CapturedRowsTest {
                         writable.store(
                                         source,
                                         keyed ? name -> keyValue.get() : TactKeyStatus.NONE,
-                                        content,
+                                        certified
+                                                ? GeneratedTableContent.nativeDb2(
+                                                        source, decoded, List.of(), () -> {},
+                                                        List.of(), List.of())
+                                                : content,
                                         Cancellation.NONE)
                                 .join();
                 node = table.identity();
@@ -308,6 +334,217 @@ final class CapturedRowsTest {
                     options,
                     new BackgroundBuilds(),
                     new ProtectedIds());
+        }
+    }
+
+    @Test
+    void auditedReaderStoreReopenCaptureNormalizesOnlyCertifiedRowsIncludingCopies() {
+        var fixture =
+                new Fixture(
+                        true,
+                        false,
+                        false,
+                        "before",
+                        null,
+                        true,
+                        Db2Fixture.definition(
+                                "int ID\nint Value", "$id,noninline$ID<u32>\nValue<u32>"),
+                        Db2Fixture.numeric("WDC5", 0, 32, 9, new long[0], true));
+        var saved =
+                fixture.readonly
+                        .openPreparedLocal(fixture.source, TactKeyStatus.NONE, Cancellation.NONE)
+                        .join();
+        assertNotNull(saved.issueCertificate());
+        assertNull(saved.readPage(0, 1, Cancellation.NONE).join().getFirst().textIssues());
+        try (var tables = fixture.open();
+                var captured = tables.capturePreparedLocal(REF, Cancellation.NONE).join().rows()) {
+            assertEquals(
+                    CapturedRowsTypes.IssueChannelState.VERIFIED_NATIVE,
+                    captured.receipt().issueChannelEvidence().state());
+            assertEquals(
+                    CapturedRowsTypes.Membership.NOT_CERTIFIED, captured.receipt().membership());
+            for (int ordinal = 0; ordinal < 2; ordinal++) {
+                var page = captured.readOrdinalPage(ordinal, 1, Cancellation.NONE).join();
+                assertEquals(CapturedRowsTypes.ReadState.READ, page.state());
+                assertEquals(List.of(), page.rows().getFirst().row().textIssues());
+            }
+        }
+    }
+
+    @Test
+    void certifiedSparseTextPreservesInvalidIssuesAndNumericSibling() {
+        for (boolean invalid : List.of(false, true)) {
+            var bytes = Db2Fixture.sparse();
+            if (invalid) {
+                bytes[300] = (byte) 0xff;
+            }
+            var fixture =
+                    new Fixture(
+                            true,
+                            false,
+                            false,
+                            "before",
+                            null,
+                            true,
+                            Db2Fixture.definition(
+                                    "int ID\nlocstring Name\nint Value",
+                                    "$id,noninline$ID<u32>\nName\nValue<u32>"),
+                            bytes);
+            try (var tables = fixture.open();
+                    var captured =
+                            tables.capturePreparedLocal(REF, Cancellation.NONE).join().rows()) {
+                var page = captured.readOrdinalPage(0, 1, Cancellation.NONE).join();
+                assertEquals(CapturedRowsTypes.ReadState.READ, page.state());
+                var row = page.rows().getFirst().row();
+                assertEquals("123", row.values().getLast());
+                if (invalid) {
+                    assertEquals("DB2_TEXT_ENCODING_INVALID", row.textIssues().getFirst().code());
+                    assertTrue(row.textIssues().getFirst().rawBytesHex().startsWith("ff"));
+                } else {
+                    assertEquals("café", row.values().get(1));
+                    assertEquals(List.of(), row.textIssues());
+                }
+            }
+        }
+    }
+
+    @Test
+    void nativeCorruptionCannotFallBackToAnOtherwiseReadableLegacyGraph() {
+        var fixture =
+                new Fixture(
+                        true,
+                        false,
+                        false,
+                        "before",
+                        null,
+                        true,
+                        Db2Fixture.definition(
+                                "int ID\nint Value", "$id,noninline$ID<u32>\nValue<u32>"),
+                        Db2Fixture.numeric("WDC5", 0, 32, 9, new long[0], true));
+        var nativeTable =
+                fixture.writable
+                        .openPreparedLocal(fixture.source, TactKeyStatus.NONE, Cancellation.NONE)
+                        .join();
+        fixture.writable
+                .store(
+                        fixture.source.legacy(),
+                        TactKeyStatus.NONE,
+                        new GeneratedTableContent(
+                                nativeTable.header(),
+                                nativeTable.sections(),
+                                nativeTable.completion(),
+                                nativeTable.keysUsed(),
+                                nativeTable::readPage,
+                                () -> {},
+                                List.of(),
+                                List.of()),
+                        Cancellation.NONE)
+                .join();
+        fixture.memory.damage(GeneratedKey.parse(nativeTable.identity()));
+        int puts = fixture.memory.puts();
+        try (var tables = fixture.open()) {
+            var result = tables.capturePreparedLocal(REF, Cancellation.NONE).join();
+            assertEquals(CapturedRowsTypes.CaptureState.CORRUPT, result.state());
+            assertNull(result.rows());
+        }
+        assertEquals(puts, fixture.memory.puts());
+        assertNotNull(
+                fixture.writable
+                        .openPreparedLocal(
+                                fixture.source.legacy(), TactKeyStatus.NONE, Cancellation.NONE)
+                        .join());
+    }
+
+    @Test
+    void certifiedKnownEmptyTextIsExplicitlyIssueFreeAtCaptureOnly() {
+        var original = Db2Fixture.sparse();
+        var bytes = new byte[original.length - 4];
+        System.arraycopy(original, 0, bytes, 0, 300);
+        System.arraycopy(original, 312, bytes, 308, 14);
+        var buffer = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        buffer.putInt(224, 308);
+        buffer.putShort(316, (short) 8);
+        buffer.putInt(301, 123);
+        var fixture =
+                new Fixture(
+                        true,
+                        false,
+                        false,
+                        "before",
+                        null,
+                        true,
+                        Db2Fixture.definition(
+                                "int ID\nlocstring Name\nint Value",
+                                "$id,noninline$ID<u32>\nName\nValue<u32>"),
+                        bytes);
+        try (var tables = fixture.open();
+                var captured = tables.capturePreparedLocal(REF, Cancellation.NONE).join().rows()) {
+            var row =
+                    captured.readOrdinalPage(0, 1, Cancellation.NONE)
+                            .join()
+                            .rows()
+                            .getFirst()
+                            .row();
+            assertEquals("", row.values().get(1));
+            assertEquals("123", row.values().getLast());
+            assertEquals(List.of(), row.textIssues());
+        }
+    }
+
+    private static byte[] sparseText(byte[] text) {
+        var original = Db2Fixture.sparse();
+        int width = (text.length + 1 + 4 + 3) & ~3;
+        var bytes = new byte[300 + width + 14];
+        System.arraycopy(original, 0, bytes, 0, 300);
+        System.arraycopy(text, 0, bytes, 300, text.length);
+        System.arraycopy(original, 312, bytes, 300 + width, 14);
+        var buffer = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        buffer.putInt(184, 1);
+        buffer.putInt(224, 300 + width);
+        buffer.putShort(308 + width, (short) width);
+        buffer.putInt(301 + text.length, 123);
+        return bytes;
+    }
+
+    @Test
+    void
+            nativeIssueBudgetRetainsInvalidPrefixAndLimitsUnaccountedChannelWithoutLosingNumericSibling() {
+        for (int length : List.of(8000, 8171, 8172)) {
+            var invalid = new byte[length];
+            java.util.Arrays.fill(invalid, (byte) 0xff);
+            var fixture =
+                    new Fixture(
+                            true,
+                            false,
+                            false,
+                            "before",
+                            null,
+                            true,
+                            Db2Fixture.definition(
+                                    "int ID\nlocstring Name\nint Value\nint Parent",
+                                    "$id,noninline$ID<u32>\nName\nValue<u32>\n$noninline,relation$Parent<u32>"),
+                            sparseText(invalid));
+            try (var tables = fixture.open();
+                    var captured =
+                            tables.capturePreparedLocal(REF, Cancellation.NONE).join().rows()) {
+                var page = captured.readOrdinalPage(0, 1, Cancellation.NONE).join();
+                assertEquals(CapturedRowsTypes.ReadState.READ, page.state());
+                assertEquals(
+                        CapturedRowsTypes.IssueChannelState.VERIFIED_NATIVE,
+                        captured.receipt().issueChannelEvidence().state());
+                assertEquals("123", page.rows().getFirst().row().values().get(2));
+                var issues = page.rows().getFirst().row().textIssues();
+                if (length == 8000) {
+                    assertEquals(2, issues.size());
+                    assertEquals("DB2_RELATION_ABSENT", issues.getLast().code());
+                    assertEquals(List.of(), page.cellIssues());
+                } else {
+                    assertEquals(length == 8171 ? 1 : 0, issues.size());
+                    assertEquals(-1, page.cellIssues().getFirst().columnIndex());
+                    assertEquals(
+                            "CAPTURE_ISSUE_CHANNEL_LIMIT", page.cellIssues().getFirst().code());
+                }
+            }
         }
     }
 

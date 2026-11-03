@@ -63,6 +63,49 @@ public final class GeneratedTables implements GeneratedTableStore {
         }
     }
 
+    public record NativeIdentity(
+            String format,
+            String policyId,
+            String producerId,
+            String locale,
+            String contentKey,
+            String definition,
+            String readerOptions,
+            String reader,
+            String rows,
+            String encodingIn) {}
+
+    public record NativeNode(String format, NativeIdentity identity, List<String> keys) {
+        public NativeNode {
+            keys = List.copyOf(keys);
+        }
+    }
+
+    public record NativeMetadata(
+            String format,
+            NativeIdentity identity,
+            Db2Types.Header header,
+            List<Db2Types.Section> sections,
+            Db2Types.Completion completion,
+            List<String> keysUsed,
+            List<String> holeKeys,
+            NativeIssueCertificate issueCertificate) {
+        public NativeMetadata {
+            java.util.Objects.requireNonNull(identity);
+            java.util.Objects.requireNonNull(header);
+            java.util.Objects.requireNonNull(completion);
+            java.util.Objects.requireNonNull(issueCertificate);
+            sections = List.copyOf(sections);
+            keysUsed = List.copyOf(keysUsed);
+            holeKeys = List.copyOf(holeKeys);
+        }
+    }
+
+    private record OpenedGraph(Metadata metadata, NativeIssueCertificate certificate) {}
+
+    private static final String NATIVE_NODE = "vibeminer-generated-table-native-node v1";
+    private static final String NATIVE_META = "vibeminer-generated-table-native-metadata v1";
+
     public record Layout(String format, String contentKey, String layout) {}
 
     private final GeneratedStore store;
@@ -115,6 +158,25 @@ public final class GeneratedTables implements GeneratedTableStore {
                     GeneratedTableSource.READER_REVISION,
                     GeneratedTableSource.ROW_ENCODING,
                     scoped ? source.encodingScope() : null);
+        }
+
+        boolean nativePolicy() {
+            return source.issuePolicy() == GeneratedTableSource.IssuePolicy.NATIVE_V1;
+        }
+
+        NativeIdentity nativeEcho() {
+            var legacy = echo();
+            return new NativeIdentity(
+                    GeneratedTableSource.NATIVE_IDENTITY_FORMAT,
+                    com.vibeminer.formats.db2.NativeRowIssueOrigin.POLICY_ID,
+                    com.vibeminer.formats.db2.NativeRowIssueOrigin.PRODUCER_ID,
+                    legacy.locale(),
+                    legacy.contentKey(),
+                    legacy.definition(),
+                    legacy.readerOptions(),
+                    legacy.reader(),
+                    legacy.rows(),
+                    legacy.encodingIn());
         }
 
         GeneratedKey node(List<String> used) {
@@ -204,14 +266,22 @@ public final class GeneratedTables implements GeneratedTableStore {
                                                         t);
                                     }
                                     if (result == null) {
-                                        throw new IllegalStateException(
-                                                "Saved table graph unavailable");
+                                        throw new GeneratedTableAbsentException();
                                     }
                                     return result;
                                 }));
     }
 
     private List<GeneratedKey> inventory(
+            Lookup lookup, com.vibeminer.generated.Cancellation token) {
+        try {
+            return inventoryCore(lookup, token);
+        } catch (IllegalArgumentException | NullPointerException | IllegalStateException failure) {
+            throw corruptCapture("Invalid saved graph inventory");
+        }
+    }
+
+    private List<GeneratedKey> inventoryCore(
             Lookup lookup, com.vibeminer.generated.Cancellation token) {
         List<String> set = List.of();
         var objects = new java.util.LinkedHashSet<GeneratedKey>();
@@ -226,28 +296,14 @@ public final class GeneratedTables implements GeneratedTableStore {
             if (read.state() != GeneratedTypes.ReadState.PRESENT) {
                 throw new IllegalStateException("Unreadable saved node");
             }
-            var node = Json.convert(Json.parse(read.bytes(), 1 << 20), Node.class);
-            if (!NODE.equals(node.format())
-                    || !lookup.echo().equals(node.identity())
-                    || !used(node.keys()).equals(node.keys())) {
-                throw new IllegalStateException("Invalid saved node");
-            }
+            var node = parseNode(read.bytes(), lookup);
             objects.add(key);
             if (node.keys().equals(set)) {
                 var file = RecordFile.open(store, manifest(key), token).join();
                 if (file.file() == null || file.state() != GeneratedTypes.ReadState.PRESENT) {
                     throw new IllegalStateException("Unreadable saved manifest");
                 }
-                var metadata =
-                        Json.convert(Json.parse(file.file().metadata(), 16 << 20), Metadata.class);
-                if (!META.equals(metadata.format())
-                        || !lookup.echo().equals(metadata.identity())
-                        || !metadata.keysUsed().equals(set)
-                        || !used(metadata.holeKeys()).equals(metadata.holeKeys())
-                        || !set.containsAll(metadata.holeKeys())
-                        || !metadata.holeKeys().isEmpty() && !lookup.scoped()) {
-                    throw new IllegalStateException("Invalid saved graph metadata");
-                }
+                parseMetadata(file.file(), lookup, key, set);
                 objects.addAll(file.file().keys());
                 return List.copyOf(objects);
             }
@@ -306,12 +362,7 @@ public final class GeneratedTables implements GeneratedTableStore {
             if (read.state() != GeneratedTypes.ReadState.PRESENT) {
                 throw new IllegalArgumentException();
             }
-            var node = Json.convert(Json.parse(read.bytes(), 1 << 20), Node.class);
-            if (!NODE.equals(node.format())
-                    || !lookup.echo().equals(node.identity())
-                    || !used(node.keys()).equals(node.keys())) {
-                throw new IllegalArgumentException();
-            }
+            var node = parseNode(read.bytes(), lookup);
             return node;
         } catch (IllegalArgumentException | NullPointerException e) {
             if (!repair) {
@@ -352,17 +403,9 @@ public final class GeneratedTables implements GeneratedTableStore {
             return null;
         }
         var file = open.file();
-        Metadata metadata;
+        OpenedGraph opened;
         try {
-            metadata = Json.convert(Json.parse(file.metadata(), 16 << 20), Metadata.class);
-            if (!META.equals(metadata.format())
-                    || !lookup.echo().equals(metadata.identity())
-                    || !metadata.keysUsed().equals(keys)
-                    || !used(metadata.holeKeys()).equals(metadata.holeKeys())
-                    || !keys.containsAll(metadata.holeKeys())
-                    || !metadata.holeKeys().isEmpty() && !lookup.scoped()) {
-                throw new IllegalArgumentException();
-            }
+            opened = parseMetadata(file, lookup, node, keys);
         } catch (IllegalArgumentException | NullPointerException e) {
             if (!repair) {
                 throw corruptCapture("Invalid saved graph metadata");
@@ -383,7 +426,8 @@ public final class GeneratedTables implements GeneratedTableStore {
         return new GeneratedTable(
                 lookup.source(),
                 node,
-                metadata,
+                opened.metadata(),
+                opened.certificate(),
                 file,
                 !repair
                         ? null
@@ -396,6 +440,68 @@ public final class GeneratedTables implements GeneratedTableStore {
                                                             discard(node, file, t);
                                                             return null;
                                                         })));
+    }
+
+    private static Node parseNode(byte[] bytes, Lookup lookup) {
+        Object parsed = Json.parse(bytes, 1 << 20);
+        Node node;
+        if (lookup.nativePolicy()) {
+            var nativeNode = Json.convert(parsed, NativeNode.class);
+            if (!NATIVE_NODE.equals(nativeNode.format())
+                    || !lookup.nativeEcho().equals(nativeNode.identity())) {
+                throw new IllegalArgumentException("Invalid native node");
+            }
+            node = new Node(NODE, lookup.echo(), nativeNode.keys());
+        } else {
+            node = Json.convert(parsed, Node.class);
+        }
+        if (!NODE.equals(node.format())
+                || !lookup.echo().equals(node.identity())
+                || !used(node.keys()).equals(node.keys())) {
+            throw new IllegalArgumentException("Invalid saved node");
+        }
+        return node;
+    }
+
+    private static OpenedGraph parseMetadata(
+            RecordFile file, Lookup lookup, GeneratedKey node, List<String> keys) {
+        Object parsed = Json.parse(file.metadata(), 16 << 20);
+        Metadata metadata;
+        NativeIssueCertificate certificate = null;
+        if (lookup.nativePolicy()) {
+            var nativeMetadata = Json.convert(parsed, NativeMetadata.class);
+            if (!NATIVE_META.equals(nativeMetadata.format())
+                    || !lookup.nativeEcho().equals(nativeMetadata.identity())) {
+                throw new IllegalArgumentException("Invalid native metadata");
+            }
+            certificate = nativeMetadata.issueCertificate();
+            certificate.validate(
+                    lookup.source(),
+                    lookup.scoped(),
+                    node.hex(),
+                    nativeMetadata.header(),
+                    file.count());
+            metadata =
+                    new Metadata(
+                            META,
+                            lookup.echo(),
+                            nativeMetadata.header(),
+                            nativeMetadata.sections(),
+                            nativeMetadata.completion(),
+                            nativeMetadata.keysUsed(),
+                            nativeMetadata.holeKeys());
+        } else {
+            metadata = Json.convert(parsed, Metadata.class);
+        }
+        if (!META.equals(metadata.format())
+                || !lookup.echo().equals(metadata.identity())
+                || !metadata.keysUsed().equals(keys)
+                || !used(metadata.holeKeys()).equals(metadata.holeKeys())
+                || !keys.containsAll(metadata.holeKeys())
+                || !metadata.holeKeys().isEmpty() && !lookup.scoped()) {
+            throw new IllegalArgumentException("Invalid saved graph metadata");
+        }
+        return new OpenedGraph(metadata, certificate);
     }
 
     private static com.vibeminer.generated.GeneratedStoreException corruptCapture(String message) {
@@ -443,6 +549,7 @@ public final class GeneratedTables implements GeneratedTableStore {
             GeneratedTableContent content,
             Cancellation token,
             com.vibeminer.generated.Cancellation lower) {
+        content.validateSource(source);
         var used = used(content.keysUsed());
         var holes = used(content.holeKeys());
         if (!used.containsAll(holes)
@@ -490,6 +597,7 @@ public final class GeneratedTables implements GeneratedTableStore {
                     break;
                 }
                 for (var row : rows) {
+                    content.validateRow(row);
                     for (var issue :
                             row.textIssues() == null
                                     ? List.<Db2Types.TextIssue>of()
@@ -507,9 +615,31 @@ public final class GeneratedTables implements GeneratedTableStore {
                 }
                 first += rows.size();
             }
-            writer.complete(manifest(node), Json.bytes(metadata), lower).join();
+            Object published = metadata;
+            if (lookup.nativePolicy()) {
+                published =
+                        new NativeMetadata(
+                                NATIVE_META,
+                                lookup.nativeEcho(),
+                                content.header(),
+                                content.sections(),
+                                content.completion(),
+                                used,
+                                holes,
+                                NativeIssueCertificate.create(
+                                        source,
+                                        lookup.scoped(),
+                                        node.hex(),
+                                        content.header(),
+                                        first));
+            }
+            writer.complete(manifest(node), Json.bytes(published), lower).join();
         }
-        byte[] nodeBytes = Json.bytes(new Node(NODE, lookup.echo(), used));
+        byte[] nodeBytes =
+                Json.bytes(
+                        lookup.nativePolicy()
+                                ? new NativeNode(NATIVE_NODE, lookup.nativeEcho(), used)
+                                : new Node(NODE, lookup.echo(), used));
         store.put(List.of(new GeneratedTypes.Put(node, nodeBytes)), lower).join();
         if (content.header().layoutHash().matches("[0-9a-fA-F]{8}")) {
             store.put(

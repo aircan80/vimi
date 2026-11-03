@@ -40,10 +40,15 @@ public final class Db2Table {
     private final List<Resolution> resolutions;
     private final Map<Long, Integer> copyIndex, protectedIds;
     private final Db2Types.Header header;
+    private final NativeRowIssueOrigin nativeIssueOrigin;
     private final List<Db2Types.Section> sectionInfo;
     private final Db2Types.Completion completion;
     private final int unresolvedCopies;
     private final int[] ordinalCopies;
+
+    public NativeRowIssueOrigin nativeIssueOrigin() {
+        return nativeIssueOrigin;
+    }
 
     Db2Table(
             Db2Input input,
@@ -68,7 +73,8 @@ public final class Db2Table {
             Db2Types.Header header,
             List<Db2Types.Section> sectionInfo,
             Db2Types.Completion completion,
-            int unresolvedCopies) {
+            int unresolvedCopies,
+            NativeRowIssueOrigin nativeIssueOrigin) {
         this.input = input;
         this.sparse = sparse;
         this.alignment = alignment;
@@ -89,6 +95,7 @@ public final class Db2Table {
         this.protectedIds = Map.copyOf(protectedIds);
         this.partial = partial;
         this.header = header;
+        this.nativeIssueOrigin = java.util.Objects.requireNonNull(nativeIssueOrigin);
         this.sectionInfo = List.copyOf(sectionInfo);
         this.completion = completion;
         this.unresolvedCopies = unresolvedCopies;

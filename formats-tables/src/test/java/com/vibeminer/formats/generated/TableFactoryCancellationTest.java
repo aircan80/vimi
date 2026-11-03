@@ -19,7 +19,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -63,7 +62,7 @@ final class TableFactoryCancellationTest {
                 };
         var reading = new CompletableFuture<Void>();
         var release = new CompletableFuture<Void>();
-        var closed = new AtomicInteger();
+        var retained = new java.util.concurrent.atomic.AtomicReference<GeneratedTableContent>();
         GeneratedTableStore generated =
                 new GeneratedTableStore() {
                     @Override
@@ -93,38 +92,16 @@ final class TableFactoryCancellationTest {
                                 keys,
                                 shared ->
                                         factory.apply(shared)
-                                                .thenApply(
-                                                        content ->
-                                                                new GeneratedTableContent(
-                                                                        content.header(),
-                                                                        content.sections(),
-                                                                        content.completion(),
-                                                                        content.keysUsed(),
-                                                                        (first,
-                                                                                count,
-                                                                                readToken) -> {
-                                                                            reading.complete(null);
-                                                                            return release
-                                                                                    .thenCompose(
-                                                                                            ignored -> {
-                                                                                                shared
-                                                                                                        .check();
-                                                                                                readToken
-                                                                                                        .check();
-                                                                                                return content.rows()
-                                                                                                        .read(
-                                                                                                                first,
-                                                                                                                count,
-                                                                                                                readToken);
-                                                                                            });
-                                                                        },
-                                                                        () -> {
-                                                                            closed
-                                                                                    .incrementAndGet();
-                                                                            content.owner().close();
-                                                                        },
-                                                                        content.holeKeys(),
-                                                                        content.chunkKeys())),
+                                                .thenCompose(
+                                                        content -> {
+                                                            retained.set(content);
+                                                            reading.complete(null);
+                                                            return release.thenApply(
+                                                                    ignored -> {
+                                                                        shared.check();
+                                                                        return content;
+                                                                    });
+                                                        }),
                                 token);
                     }
 
@@ -153,18 +130,24 @@ final class TableFactoryCancellationTest {
         var second = service.forBuild(build, "enUS", Cancellation.NONE).join().tables();
         var canceled = new Cancellation();
         var one = first.check(TableTypes.Ref.id(100), TableTypes.Priority.INTERACTIVE, canceled);
-        reading.join();
+        reading.orTimeout(10, java.util.concurrent.TimeUnit.SECONDS).join();
         var two =
                 second.check(
                         TableTypes.Ref.id(100), TableTypes.Priority.INTERACTIVE, Cancellation.NONE);
-        both.join();
+        both.orTimeout(10, java.util.concurrent.TimeUnit.SECONDS).join();
         canceled.cancel();
         assertThrows(CompletionException.class, one::join);
         first.closeAsync().join();
-        assertEquals(0, closed.get());
+        assertEquals(
+                1,
+                retained.get().rows().read(0, 1, Cancellation.NONE).join().size(),
+                "Shared native source stays readable after the first waiter closes");
         release.complete(null);
         assertEquals(TableTypes.State.READY, two.join().state());
-        assertEquals(1, closed.get());
+        assertThrows(
+                RuntimeException.class,
+                () -> retained.get().rows().read(0, 1, Cancellation.NONE).join(),
+                "Store closes the native source owner after publication");
         assertTrue(
                 second.page(
                                         new TableTypes.PageRequest(TableTypes.Ref.id(100)),

@@ -17,19 +17,26 @@ public final class GeneratedTable {
     private final GeneratedKey node;
     private final GeneratedTables.Metadata metadata;
     private final RecordFile file;
+    private final NativeIssueCertificate issueCertificate;
     private final Function<Cancellation, CompletableFuture<Void>> discard;
 
     GeneratedTable(
             GeneratedTableSource source,
             GeneratedKey node,
             GeneratedTables.Metadata metadata,
+            NativeIssueCertificate issueCertificate,
             RecordFile file,
             Function<Cancellation, CompletableFuture<Void>> discard) {
         this.source = source;
         this.node = node;
         this.metadata = metadata;
+        this.issueCertificate = issueCertificate;
         this.file = file;
         this.discard = discard;
+    }
+
+    public NativeIssueCertificate issueCertificate() {
+        return issueCertificate;
     }
 
     public GeneratedTableSource source() {

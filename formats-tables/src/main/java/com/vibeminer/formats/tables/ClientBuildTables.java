@@ -324,7 +324,7 @@ final class ClientBuildTables implements BuildTables {
             var selection = definition.definition().document().selectFile(version, layout, token);
             if (selection.blocks().size() == 1) {
                 source =
-                        GeneratedTableSource.forBlock(
+                        GeneratedTableSource.forNativeBlock(
                                 selection.blocks().getFirst(),
                                 locale(),
                                 content,
@@ -334,7 +334,7 @@ final class ClientBuildTables implements BuildTables {
                         || !definitions
                                 .refreshDue(manifest.get(id).tableId(), version, layout, token)
                                 .join()) {
-                    var hit = generated.open(source, keys, token).join();
+                    var hit = openPreferred(source, keys, token, false);
                     if (hit != null) {
                         backgroundBuilds.stored(source);
                         return checked(id, content, definition, hit, null, null, hit.identity());
@@ -430,12 +430,17 @@ final class ClientBuildTables implements BuildTables {
                                 .document()
                                 .selectFile(version, table.header().layoutHash(), token);
                 source =
-                        GeneratedTableSource.forBlock(
+                        GeneratedTableSource.forNativeBlock(
                                 selected.blocks().getFirst(),
                                 locale(),
                                 content,
                                 limits,
                                 encodingScope());
+                var saved = openPreferred(source, keys, token, false);
+                if (saved != null) {
+                    backgroundBuilds.stored(source);
+                    return checked(id, content, definition, saved, null, null, saved.identity());
+                }
                 var used = new java.util.TreeSet<String>(owner.chunkKeys());
                 for (var s : table.sections()) {
                     if (s.isEncrypted()) {
@@ -464,13 +469,16 @@ final class ClientBuildTables implements BuildTables {
                     return result;
                 }
                 final var chosen = definition;
+                final var chosenSource = source;
                 slot.close();
                 var hit =
                         generated
                                 .getOrBuild(
                                         source,
                                         keys,
-                                        cancel -> buildContent(id, chosen, priority, cancel),
+                                        cancel ->
+                                                buildContent(
+                                                        id, chosen, chosenSource, priority, cancel),
                                         token)
                                 .join();
                 backgroundBuilds.stored(source);
@@ -532,9 +540,43 @@ final class ClientBuildTables implements BuildTables {
         }
     }
 
+    private GeneratedTable openPreferred(
+            GeneratedTableSource source, KeyStatus keys, Cancellation token, boolean local) {
+        var hit =
+                (local
+                                ? generated.openPreparedLocal(source, keys, token)
+                                : generated.open(source, keys, token))
+                        .join();
+        if (hit == null) {
+            hit =
+                    (local
+                                    ? generated.openPreparedLocal(source.legacy(), keys, token)
+                                    : generated.open(source.legacy(), keys, token))
+                            .join();
+        }
+        return hit;
+    }
+
+    private static CapturedRowsTypes.IssueChannelEvidence issueEvidence(GeneratedTable table) {
+        var c = table.issueCertificate();
+        if (c == null) {
+            return CapturedRowsTypes.IssueChannelEvidence.unknown();
+        }
+        return new CapturedRowsTypes.IssueChannelEvidence(
+                CapturedRowsTypes.IssueChannelState.VERIFIED_NATIVE,
+                c.policyId(),
+                c.producerId(),
+                c.graphIdentity(),
+                c.sourceIdentitySha256(),
+                c.resolvedBlockSha256(),
+                c.readerOptionsSha256(),
+                c.actualColumnsSha256());
+    }
+
     private CompletableFuture<GeneratedTableContent> buildContent(
             long id,
             TableDefinitions.Resolution definition,
+            GeneratedTableSource generatedSource,
             TableTypes.Priority priority,
             Cancellation token) {
         return CompletableFuture.supplyAsync(
@@ -581,12 +623,10 @@ final class ClientBuildTables implements BuildTables {
                                         .sorted()
                                         .toList();
                         final var owner = source;
-                        return new GeneratedTableContent(
-                                table.header(),
-                                table.sections(),
-                                table.completion(),
+                        return GeneratedTableContent.nativeDb2(
+                                generatedSource,
+                                table,
                                 List.copyOf(used),
-                                table::readOrdinals,
                                 () -> {
                                     try {
                                         owner.close();
@@ -878,7 +918,7 @@ final class ClientBuildTables implements BuildTables {
                         }
                         var block = selection.blocks().getFirst();
                         var source =
-                                GeneratedTableSource.forBlock(
+                                GeneratedTableSource.forNativeBlock(
                                         block, locale(), content, limits, encodingScope());
                         var answers = new java.util.LinkedHashMap<String, String>();
                         var supplied = options.keys().apply(build());
@@ -889,18 +929,20 @@ final class ClientBuildTables implements BuildTables {
                                     }
                                     return answers.get(name);
                                 };
-                        var table = generated.openPreparedLocal(source, fixed, t).join();
+                        var table = openPreferred(source, fixed, t, true);
                         if (table == null) {
                             return captureFailure(
                                     CapturedRowsTypes.CaptureState.NOT_PREPARED,
                                     "CAPTURE_NO_SAVED_GRAPH");
                         }
                         if (!layout.equalsIgnoreCase(table.header().layoutHash())
-                                || !source.equals(table.source())) {
+                                || !(source.equals(table.source())
+                                        || source.legacy().equals(table.source()))) {
                             return captureFailure(
                                     CapturedRowsTypes.CaptureState.CORRUPT,
                                     "CAPTURE_GRAPH_IDENTITY_MISMATCH");
                         }
+                        source = table.source();
                         var prepared =
                                 checked(
                                         tableId,
@@ -932,11 +974,13 @@ final class ClientBuildTables implements BuildTables {
                                         com.vibeminer.formats.generated.ResolvedDefinition.hash(
                                                 block),
                                         table.identity(),
-                                        source.identityText(),
+                                        table.scoped()
+                                                ? source.scopedIdentityText()
+                                                : source.identityText(),
                                         source.readerOptions(),
                                         GeneratedTableSource.READER_REVISION,
                                         GeneratedTableSource.ROW_ENCODING,
-                                        source.encodingScope(),
+                                        table.scoped() ? source.encodingScope() : null,
                                         table.rowCount(),
                                         table.header(),
                                         table.completion(),
@@ -944,7 +988,8 @@ final class ClientBuildTables implements BuildTables {
                                         table.holeKeys(),
                                         keys,
                                         CapturedRowsTypes.Retention.BEST_EFFORT_INVALIDATING,
-                                        CapturedRowsTypes.Membership.NOT_CERTIFIED);
+                                        CapturedRowsTypes.Membership.NOT_CERTIFIED,
+                                        issueEvidence(table));
                         t.check();
                         synchronized (gate) {
                             if (closed) {
@@ -1128,15 +1173,23 @@ final class ClientBuildTables implements BuildTables {
                         throw new IllegalStateException("Ambiguous saved table definition");
                     }
                     var source =
-                            GeneratedTableSource.forBlock(
+                            GeneratedTableSource.forNativeBlock(
                                     selection.blocks().getFirst(),
                                     locale(),
                                     content,
                                     limits,
                                     encodingScope());
-                    return generated
-                            .savedArtifacts(source, options.keys().apply(build()), t)
-                            .join();
+                    var keys = options.keys().apply(build());
+                    try {
+                        return generated.savedArtifacts(source, keys, t).join();
+                    } catch (java.util.concurrent.CompletionException failure) {
+                        if (!(unwrap(failure)
+                                instanceof
+                                com.vibeminer.formats.generated.GeneratedTableAbsentException)) {
+                            throw failure;
+                        }
+                        return generated.savedArtifacts(source.legacy(), keys, t).join();
+                    }
                 });
     }
 

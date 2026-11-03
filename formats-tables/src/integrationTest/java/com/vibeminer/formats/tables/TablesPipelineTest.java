@@ -126,8 +126,10 @@ final class TablesPipelineTest {
                                 new TableDefinitions(provider, null, null),
                                 new GeneratedTables(generated),
                                 new TablesOptions(
-                                        (build, token) ->
-                                                CompletableFuture.completedFuture("1.2.3.4")));
+                                                (build, token) ->
+                                                        CompletableFuture.completedFuture(
+                                                                "1.2.3.4"))
+                                        .withLocalDefinitionsOnly());
                 var open = service.forBuild(FilesScenario.REF, "enUS", Cancellation.NONE).join();
                 assertNotNull(open.tables());
                 try (var tables = open.tables()) {
@@ -204,6 +206,35 @@ final class TablesPipelineTest {
                             true,
                             artifacts.contains(
                                     com.vibeminer.generated.GeneratedKey.parse(page.identity())));
+
+                    var captured =
+                            tables.capturePreparedLocal(TableTypes.Ref.id(100), Cancellation.NONE)
+                                    .join();
+                    assertEquals(
+                            CapturedRowsTypes.CaptureState.CAPTURED,
+                            captured.state(),
+                            captured.code());
+                    try (var capture = captured.rows()) {
+                        assertNotNull(capture);
+                        assertEquals(
+                                CapturedRowsTypes.IssueChannelState.VERIFIED_NATIVE,
+                                capture.receipt().issueChannelEvidence().state());
+                        assertEquals(
+                                CapturedRowsTypes.Membership.NOT_CERTIFIED,
+                                capture.receipt().membership());
+                        assertEquals(
+                                List.of(),
+                                capture.readOrdinalPage(0, 1, Cancellation.NONE)
+                                        .join()
+                                        .rows()
+                                        .getFirst()
+                                        .row()
+                                        .textIssues());
+                        assertEquals(
+                                null,
+                                page.rows().getFirst().row().textIssues(),
+                                "Ordinary row reads preserve nullable channels");
+                    }
 
                     assertEquals(2, page.rows().size());
                     assertEquals(List.of("7", "9"), page.rows().getFirst().row().values());

@@ -36,6 +36,61 @@ class PreparedItemRowsSourceTest {
     @TempDir Path directory;
 
     @Test
+    void issuePolicyChangesEvidenceButNotItemsIdentityOrFieldAdmission() throws Exception {
+        try (var budget = new TempBudget();
+                var snapshot =
+                        new ItemsSnapshot(budget, Selection.defaults(), new Cancellation())) {
+            var before = new Fake(List.of(row(7, "Name", "1", null)));
+            var after = new Fake(List.of(row(7, "Name", "2", List.of())));
+            after.evidence =
+                    new CapturedRowsTypes.IssueChannelEvidence(
+                            CapturedRowsTypes.IssueChannelState.VERIFIED_NATIVE,
+                            "native-row-issues-v1",
+                            "java-db2-native-producer-v1",
+                            "e".repeat(32),
+                            "1".repeat(64),
+                            "2".repeat(64),
+                            "3".repeat(64),
+                            "4".repeat(64));
+            var a = source(before, snapshot, budget);
+            var b =
+                    new PreparedItemRowsSource(
+                            after,
+                            ItemsSnapshot.Side.B,
+                            Map.of(),
+                            snapshot,
+                            budget,
+                            new Cancellation());
+            try {
+                assertEquals(a.descriptor().scope(), b.descriptor().scope());
+                assertFalse(a.descriptor().identity().equals(b.descriptor().identity()));
+                assertEquals(
+                        "UNKNOWN", a.descriptor().dependencies().get("items.issueEvidence.state"));
+                assertEquals(
+                        "VERIFIED_NATIVE",
+                        b.descriptor().dependencies().get("items.issueEvidence.state"));
+                for (var input : List.of(a, b)) {
+                    var metadata = new java.util.TreeMap<String, String>();
+                    input.descriptor()
+                            .dependencies()
+                            .forEach(
+                                    (key, value) -> {
+                                        if (key.startsWith("items.issueEvidence.")) {
+                                            metadata.put(key, value);
+                                        }
+                                    });
+                    snapshot.registerSourceMetadata(input.sourceRef(), metadata);
+                }
+                assertTrue(budget.snapshot().memory() <= 32L << 20);
+            } finally {
+                a.closeAsync().join();
+                b.closeAsync().join();
+            }
+            assertEquals(ItemsSnapshot.METADATA_BYTES, budget.snapshot().memory());
+        }
+    }
+
+    @Test
     void realSorterReleasesHeavySourceAndKeepsExternalMetadataForDecode() throws Exception {
         try (var budget = new TempBudget();
                 var snapshot =
@@ -411,6 +466,8 @@ class PreparedItemRowsSourceTest {
         String comment;
         CompletableFuture<CapturedRowsTypes.Page> pending;
         List<CapturedRowsTypes.CellIssue> limits = List.of();
+        CapturedRowsTypes.IssueChannelEvidence evidence =
+                CapturedRowsTypes.IssueChannelEvidence.unknown();
 
         Fake(List<Db2Types.Row> rows) {
             this.rows = List.copyOf(rows);
@@ -474,7 +531,8 @@ class PreparedItemRowsSourceTest {
                     List.of(),
                     List.of(new CapturedRowsTypes.KeyFingerprint("unknown", null)),
                     CapturedRowsTypes.Retention.BEST_EFFORT_INVALIDATING,
-                    CapturedRowsTypes.Membership.NOT_CERTIFIED);
+                    CapturedRowsTypes.Membership.NOT_CERTIFIED,
+                    evidence);
         }
 
         public CompletableFuture<CapturedRowsTypes.Page> readOrdinalPage(

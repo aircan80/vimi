@@ -766,6 +766,17 @@ public final class Db2Reader {
                             unresolved[si],
                             s.key != 0 && !s.hidden));
         }
+        var decodedHeader =
+                new Db2Types.Header(
+                        schema,
+                        hex(tableHash),
+                        hex(layoutHash),
+                        records,
+                        copies,
+                        recordSize,
+                        columns,
+                        format);
+        var origin = new NativeRowIssueOrigin(selected.blocks().getFirst(), limits, decodedHeader);
         return new Db2Table(
                 input,
                 sparse,
@@ -786,15 +797,7 @@ public final class Db2Reader {
                 copyStart,
                 protectedIds,
                 excludedSections > 0,
-                new Db2Types.Header(
-                        schema,
-                        hex(tableHash),
-                        hex(layoutHash),
-                        records,
-                        copies,
-                        recordSize,
-                        columns,
-                        format),
+                decodedHeader,
                 infos,
                 new Db2Types.Completion(
                         records,
@@ -808,7 +811,8 @@ public final class Db2Reader {
                                 : "unencryptedSections",
                         input.length,
                         0),
-                java.util.Arrays.stream(unresolved).sum());
+                java.util.Arrays.stream(unresolved).sum(),
+                origin);
     }
 
     static boolean isString(Field f) {

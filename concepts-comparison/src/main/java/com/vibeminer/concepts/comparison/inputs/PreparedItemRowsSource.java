@@ -182,6 +182,7 @@ public final class PreparedItemRowsSource implements SortedComparisonInput.Sourc
             dependencies.put("items.source.side", side.name());
             dependencies.put("items.graph", graphIdentity);
             dependencies.put("items.graph.source", receipt.sourceIdentity());
+            IssueEvidenceMetadata.put(dependencies, "items.issueEvidence", receipt);
             dependencies.put(
                     "items.encoding.scope", Objects.toString(receipt.encodingScope(), "unknown"));
             dependencies.put("items.readable.rows", Long.toString(rowCount));

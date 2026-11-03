@@ -21,9 +21,37 @@ final class CapturedRowsHandle implements CapturedRows {
             CapturedRowsTypes.Receipt receipt,
             GeneratedTable table,
             Consumer<CapturedRowsHandle> released) {
+        validateEvidence(receipt, table);
         this.receipt = receipt;
         this.table = table;
         this.released = released;
+    }
+
+    private static void validateEvidence(CapturedRowsTypes.Receipt receipt, GeneratedTable table) {
+        var evidence = receipt.issueChannelEvidence();
+        var certificate = table.issueCertificate();
+        if (!receipt.graphIdentity().equals(table.identity())
+                || !receipt.columns().equals(table.header().columns())
+                || receipt.rowCount() != table.rowCount()) {
+            throw new IllegalArgumentException("Captured graph disagrees with receipt");
+        }
+        if (evidence.state() == CapturedRowsTypes.IssueChannelState.VERIFIED_NATIVE
+                && (certificate == null
+                        || !evidence.graphIdentity().equals(table.identity())
+                        || !evidence.sourceIdentitySha256()
+                                .equals(certificate.sourceIdentitySha256())
+                        || !evidence.resolvedBlockSha256().equals(receipt.blockIdentity())
+                        || !evidence.resolvedBlockSha256().equals(certificate.resolvedBlockSha256())
+                        || !evidence.readerOptionsSha256().equals(receipt.readerOptions())
+                        || !evidence.readerOptionsSha256().equals(certificate.readerOptionsSha256())
+                        || !evidence.actualColumnsSha256().equals(certificate.actualColumnsSha256())
+                        || !receipt.sourceIdentity()
+                                .equals(
+                                        (table.scoped()
+                                                ? table.source().scopedIdentityText()
+                                                : table.source().identityText())))) {
+            throw new IllegalArgumentException("Native capture evidence disagrees with graph");
+        }
     }
 
     @Override
@@ -90,8 +118,22 @@ final class CapturedRowsHandle implements CapturedRows {
             var cellIssues = new java.util.ArrayList<CapturedRowsTypes.CellIssue>();
             for (int i = 0; i < rows.size(); i++) {
                 var row = rows.get(i);
-                if (row.id() < 0 || row.id() > 0xffffffffL) {
+                if (row.id() < 0
+                        || row.id() > 0xffffffffL
+                        || row.isCopy() != (row.copySourceId() != null)
+                        || row.copySourceId() != null
+                                && (row.copySourceId() < 0 || row.copySourceId() > 0xffffffffL)) {
                     throw new IllegalStateException("Invalid captured unsigned row ID");
+                }
+                if (row.values().size() != receipt.columns().size()) {
+                    throw new IllegalStateException("Captured row width disagrees");
+                }
+                if (row.textIssues() != null) {
+                    for (var issue : row.textIssues()) {
+                        if (issue.columnIndex() < 0 || issue.columnIndex() >= row.values().size()) {
+                            throw new IllegalStateException("Captured issue location disagrees");
+                        }
+                    }
                 }
                 result.add(new TableTypes.Row(first + i, bound(row, first + i, cellIssues)));
             }
@@ -126,7 +168,7 @@ final class CapturedRowsHandle implements CapturedRows {
         }
     }
 
-    private static com.vibeminer.formats.db2.Db2Types.Row bound(
+    private com.vibeminer.formats.db2.Db2Types.Row bound(
             com.vibeminer.formats.db2.Db2Types.Row row,
             long ordinal,
             List<CapturedRowsTypes.CellIssue> limitations) {
@@ -156,6 +198,11 @@ final class CapturedRowsHandle implements CapturedRows {
             }
         }
         List<com.vibeminer.formats.db2.Db2Types.TextIssue> issues = null;
+        if (row.textIssues() == null
+                && receipt.issueChannelEvidence().state()
+                        == CapturedRowsTypes.IssueChannelState.VERIFIED_NATIVE) {
+            issues = List.of();
+        }
         if (row.textIssues() != null) {
             var kept = new java.util.ArrayList<com.vibeminer.formats.db2.Db2Types.TextIssue>();
             long issueBytes = 0;

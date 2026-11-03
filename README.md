@@ -503,6 +503,21 @@ design with `--args='--mock'`.
 ./gradlew :gui:run -PsqliteLibrary=/absolute/path/to/sqlite-library
 ```
 
+When developing while using the app, launch a fixed distribution copy. Rebuilding
+JARs underneath `:gui:run` can cause late `ClassNotFoundException` or
+`NoClassDefFoundError` failures in the running JVM. On Linux:
+
+```sh
+./gradlew :gui:installDist
+mkdir -p .local/apps
+vimi_snapshot=$(mktemp -d "$PWD/.local/apps/run.XXXXXX")
+cp -a gui/build/install/vimi-gui-prototype/. "$vimi_snapshot/"
+"$vimi_snapshot/bin/vimi-gui-prototype"
+```
+
+The copy uses the same default application data directory. Keep that copy intact
+until its app has closed; later builds can safely use the repository's build output.
+
 Default startup is offline. Refresh persists observations in the application data
 directory, documented in the GUI README; it does not download game content.
 

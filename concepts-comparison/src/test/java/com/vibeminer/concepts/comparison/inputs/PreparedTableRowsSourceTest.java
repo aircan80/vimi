@@ -78,6 +78,62 @@ class PreparedTableRowsSourceTest {
     }
 
     @Test
+    void issueEvidenceChangesProvenanceWithoutExcludingNumericFactsOrInventingNameChanges()
+            throws Exception {
+        try (var budget = new TempBudget()) {
+            var before =
+                    new Fake(
+                            "a".repeat(32),
+                            List.of(new Db2Types.Row(7, false, null, List.of("Name", "1"), null)));
+            var after = new Fake("b".repeat(32), List.of(row(7, "Name", "2")));
+            after.evidence =
+                    new CapturedRowsTypes.IssueChannelEvidence(
+                            CapturedRowsTypes.IssueChannelState.VERIFIED_NATIVE,
+                            "native-row-issues-v1",
+                            "java-db2-native-producer-v1",
+                            after.graph,
+                            "1".repeat(64),
+                            "2".repeat(64),
+                            "3".repeat(64),
+                            "4".repeat(64));
+            var left = source(before, budget);
+            var right = source(after, budget);
+            assertEquals(left.descriptor().scope(), right.descriptor().scope());
+            assertNotEquals(
+                    left.descriptor().dependencies().get("raw.issueEvidence.digest"),
+                    right.descriptor().dependencies().get("raw.issueEvidence.digest"));
+            var a =
+                    SortedComparisonInput.capture(left, directory, budget, new Cancellation())
+                            .join();
+            var b =
+                    SortedComparisonInput.capture(right, directory, budget, new Cancellation())
+                            .join();
+            try (var service = new ComparisonService(directory, budget)) {
+                assertEquals(
+                        ComparisonTypes.RunState.COMPLETED, service.start(a, b).join().state());
+                var facts = service.page(0, 100).join().rows().getFirst().fields();
+                assertTrue(
+                        facts.stream()
+                                .anyMatch(
+                                        f ->
+                                                f.key().equals("cell.Count")
+                                                        && f.difference()
+                                                                == ComparisonTypes.Difference
+                                                                        .CHANGED));
+                assertTrue(
+                        facts.stream()
+                                .anyMatch(
+                                        f ->
+                                                f.key().equals("cell.Name")
+                                                        && f.difference()
+                                                                == ComparisonTypes.Difference
+                                                                        .UNKNOWN));
+            }
+            assertEquals(0, budget.snapshot().reservations());
+        }
+    }
+
+    @Test
     void pinnedSchemaScopeIsSeparateFromEndpointGraphIdentity() throws Exception {
         try (var budget = new TempBudget()) {
             var a = source(new Fake("graph-a", List.of()), budget);
@@ -285,6 +341,8 @@ class PreparedTableRowsSourceTest {
         volatile CompletableFuture<CapturedRowsTypes.Page> held;
         CapturedRowsTypes.Page bad;
         List<CapturedRowsTypes.CellIssue> issues = List.of();
+        CapturedRowsTypes.IssueChannelEvidence evidence =
+                CapturedRowsTypes.IssueChannelEvidence.unknown();
 
         Fake(String graph, List<Db2Types.Row> rows) {
             this.graph = graph;
@@ -364,7 +422,8 @@ class PreparedTableRowsSourceTest {
                     List.of("key-name"),
                     List.of(new CapturedRowsTypes.KeyFingerprint("key-name", null)),
                     CapturedRowsTypes.Retention.BEST_EFFORT_INVALIDATING,
-                    CapturedRowsTypes.Membership.NOT_CERTIFIED);
+                    CapturedRowsTypes.Membership.NOT_CERTIFIED,
+                    evidence);
         }
 
         public CompletableFuture<CapturedRowsTypes.Page> readOrdinalPage(

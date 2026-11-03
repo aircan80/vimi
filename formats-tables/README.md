@@ -242,3 +242,53 @@ no partially conflict-checked usable keys.
 Both captured handles close/drain on cancellation, failure or success. Canceling
 the returned delivery future requests worker cancellation without detaching private
 cleanup. The borrowed BuildTables and shared library remain application-owned.
+
+## Native row-issue evidence
+
+New native preparation uses `GeneratedTableSource.forNativeBlock` and the audited
+`GeneratedTableContent.nativeDb2` factory. `Db2Reader` mints the package-private
+origin capability from its actual selected block, effective options and flattened
+columns. Generic callbacks cannot obtain that seal. The existing eight-argument
+content constructor and accessors remain available, with UNKNOWN issue evidence.
+`GeneratedTableContent` is now a final value class rather than a Java record;
+record reflection consumers must adapt. Its generic equality/hash semantics are
+preserved. `GeneratedTableSource` adds an issue-policy record component and keeps
+the existing five-argument UNKNOWN constructor.
+
+Native graphs use separate identity/node/metadata formats. Identity tuples encode
+strings as a null tag (0), or a present tag (1), unsigned32 big-endian UTF-8 length
+and bytes. Fixed order is format, policy, producer, locale, content key, resolved
+block digest, options digest, reader revision, row codec and actual encoding scope
+(null for unscoped graphs). Column digests include ordered indices/names/kinds,
+ID flags and all interpretation/narrowing fields; integer fields are big-endian
+and nullable structures have explicit presence tags. The fixed native identity
+fixture is independent of the unchanged legacy C# identity/row fixtures.
+
+`GeneratedTable.issueCertificate()` returns verified native evidence, or null for
+UNKNOWN legacy/custom graphs. Publication counts actual emitted rows and validates
+native row shape/IDs/issue locations. Both prepared opening and artifact inventory
+validate certificates against the final graph, actual scoped/unscoped source,
+header columns and saved row count. Inventory does not read row segments.
+
+Native capture normalizes a null issue list to an explicit empty list only after
+validating the graph-bound receipt. Direct parser reads, ordinary generated reads
+and saved row bytes retain null. Explicit invalid/unknown issues and capture limits
+remain visible. A limited issue channel never becomes known issue-free; safe
+numeric siblings remain independently usable. No membership certificate is added.
+
+Normal preparation and capture prefer native graphs, then exact legacy graphs only
+on absence. Legacy graphs stay UNKNOWN and are not rebuilt solely to upgrade this
+evidence. Prepared capture never repairs or acquires data; native corruption does
+not fall back to a legacy graph. Comparison records compact evidence provenance
+without changing raw semantic or Items field-admission fingerprints.
+
+Focused checks are `NativeIssueCertificateTest`, `CapturedRowsTest`, the native
+SQLite/pack `TablesPipelineTest`, and raw/Items source adapter regressions. Run:
+
+```sh
+./gradlew :formats-tables:check :concepts-comparison:check :gui:check
+./gradlew :formats-tables:interopTest -Pdotnet=/absolute/path/to/dotnet
+```
+
+Independent implementation acceptance is still required; design approval alone is
+not implementation approval. See the [reviewed contract](../docs/comparison/native-issue-certificates-proposal.md).

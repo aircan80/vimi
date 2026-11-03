@@ -123,6 +123,7 @@ public final class PreparedTableRowsSource implements SortedComparisonInput.Sour
             dependencies.put("raw.schema.fingerprint", profile.fingerprint());
             dependencies.put("raw.graph.identity", graphIdentity);
             dependencies.put("raw.graph.source", receipt.sourceIdentity());
+            IssueEvidenceMetadata.put(dependencies, "raw.issueEvidence", receipt);
             dependencies.put("raw.reader.options", receipt.readerOptions());
             dependencies.put("raw.reader.revision", receipt.readerRevision());
             dependencies.put("raw.row.encoding", receipt.rowEncoding());

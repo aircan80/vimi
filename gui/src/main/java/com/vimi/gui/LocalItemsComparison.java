@@ -206,7 +206,11 @@ final class LocalItemsComparison {
                             "items.excluded.physical",
                             "items.excluded.copies",
                             "items.encoding.scope",
-                            "items.unknown-key-status-count")) {
+                            "items.unknown-key-status-count",
+                            "items.issueEvidence.state",
+                            "items.issueEvidence.policy",
+                            "items.issueEvidence.producer",
+                            "items.issueEvidence.digest")) {
                 sourceMetadata.put(key, sourceDependencies.get(key));
             }
             snapshot.registerSourceMetadata(source.sourceRef(), sourceMetadata);
