@@ -390,6 +390,39 @@ snapshot reservation drain when the comparison session closes, including failed
 capture, rejected capability and result-paging cancellation. No native row/cache
 repair or comparison report is published.
 
+## Application composition checkpoint
+
+The pending and prepared provider namespace is always
+`item-effects.parent-own-link.v1`. Positive relation mode remains bound by the
+paired field-scope hash, exact source profiles and B/D key prefix; mixed modes
+are refused before core admission. The application coordinator's existing
+before/after namespace invariant is preserved.
+
+Reserve1MiB pending metadata before building either endpoint's compact maps.
+After both dedicated local contexts are open, admit the actual EffectsSnapshot
+while that reservation is still live (a conservative transient2MiB metadata
+handoff, before any capture/heavy-profile/read allowance). Release the pending
+owner immediately; retain only the actual snapshot1MiB through core paging.
+Early-open/failed-prepare cleanup drains both owners, candidates and contexts.
+
+Capture ItemEffect once per endpoint. Test direct and retail physical admission
+against the same held receipt, releasing the failed compiler's heavy reservation
+before its successor. A positively qualified direct profile never probes a
+bridge. A missing/unsupported target can still produce a qualified bridge-only
+comparison; an unsupported future target's text/layout must not be subjected to
+numeric-profile native-source assumptions. Native issue authority is validated
+only for an admitted physical profile; unassessed source provenance stays explicit.
+No source is recaptured for mode detection, no ordinary schema/get call is added,
+and cancellation after capture delivery already has an owner to close that handle.
+
+Capture/stage A then B, seal paired scope, and refuse incompatible or wholly
+unassessable scope before creating the core. Adopt final candidates into the
+existing12MiB borrowed-input path with the live snapshot1MiB owner. Scope metadata
+exposes assessed fields, globally unassessed target families, concrete dependency
+outcomes and bounded counted omissions even when findings are empty. Selecting
+**Item effects** alone starts no work. Display parent/link IDs clearly while
+retaining canonical keys and original field/source evidence in details.
+
 ## Implementation sequence and independent acceptance
 
 1. Independently approve this exact source matrix, identity, issue precedence,

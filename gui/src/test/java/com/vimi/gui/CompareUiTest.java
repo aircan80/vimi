@@ -556,6 +556,7 @@ public final class CompareUiTest {
             rawRowsControls(before, after);
             itemsControls(before, after, false);
             itemsControls(before, after, true);
+            effectsControls(before, after);
             System.out.println(
                     "Comparison UI: captured pair on running/completed edits, distinguishing"
                         + " configs, coverage reasons, page retry/cursors, responsive drawer and"
@@ -569,6 +570,103 @@ public final class CompareUiTest {
                     });
             Platform.exit();
         }
+    }
+
+    private static CompareView.Session effectsSession(AtomicInteger closes) {
+        return new CompareView.Session() {
+            private ComparisonTypes.Descriptor endpoint(String id) {
+                return new ComparisonTypes.Descriptor(id, "wowf", "enUS",
+                        "item-effects.parent-own-link.v1", "authored-qualified-effects",
+                        Map.of("effects.RETAIL_EFFECT.state", "PARTIAL"));
+            }
+            public ComparisonTypes.Descriptor before() { return endpoint("effects-before"); }
+            public ComparisonTypes.Descriptor after() { return endpoint("effects-after"); }
+            public ComparisonTypes.Progress progress() {
+                var coverage = new ComparisonTypes.Coverage(ComparisonTypes.Completeness.UNKNOWN,
+                        "authored-qualified-effects", List.of("Relation membership is not certified; names and descriptions unassessed"));
+                return new ComparisonTypes.Progress(ComparisonTypes.RunState.COMPLETED, 1, 0, coverage, coverage, "Findings only");
+            }
+            public CompletableFuture<ComparisonTypes.ResultPage> page(long offset, int limit) {
+                String key = "B" + String.format(java.util.Locale.ROOT, "%020d%020d", 123, 456);
+                var old = new ComparisonTypes.Field("recorded-effect-spell-reference-v1", ComparisonTypes.ValueKind.INTEGER,
+                        ComparisonTypes.ValueState.VALUE, "77", ComparisonTypes.Aspect.CONTENT, List.of());
+                var current = new ComparisonTypes.Field(old.semantics(), old.kind(), old.state(), "78", old.aspect(), List.of());
+                var row = new ComparisonTypes.Result(key, ComparisonTypes.Membership.BOTH,
+                        new ComparisonTypes.Record(key, Map.of("effect.RETAIL_EFFECT.SpellID", old), List.of()),
+                        new ComparisonTypes.Record(key, Map.of("effect.RETAIL_EFFECT.SpellID", current), List.of()),
+                        List.of(new ComparisonTypes.FieldDelta("effect.RETAIL_EFFECT.SpellID", old, current,
+                                ComparisonTypes.Difference.CHANGED, ComparisonTypes.Aspect.CONTENT)));
+                return CompletableFuture.completedFuture(new ComparisonTypes.ResultPage(offset, List.of(row), null, progress()));
+            }
+            public void cancel() { }
+            public CompletableFuture<Void> closeAsync() { closes.incrementAndGet(); return CompletableFuture.completedFuture(null); }
+        };
+    }
+
+    private static void effectsControls(BuildInfo before, BuildInfo after) throws Exception {
+        var pending = new CompletableFuture<CompareView.Session>();
+        var requests = new java.util.concurrent.CopyOnWriteArrayList<CompareView.Request>();
+        var closes = new AtomicInteger();
+        var view = fx(() -> new CompareView(() -> List.of(before, after), List.of("enUS"),
+                (request, token) -> { requests.add(request); return pending; }, () -> {}));
+        var window = fx(() -> {
+            var stage = new Stage();
+            var scene = new Scene(view, 1320, 940);
+            var css = CompareUiTest.class.getResource("/vimi.css");
+            if (css != null) scene.getStylesheets().add(css.toExternalForm());
+            stage.setScene(scene); stage.show(); view.applyCss(); view.layout();
+            area(view, "Item effects");
+            require(requests.isEmpty(), "Choosing Item effects does not capture or acquire data");
+            require(!button(view, "Compare local data").isDisabled(), "Item effects has an explicit local action");
+            button(view, "Compare local data").fire();
+            return stage;
+        });
+        try {
+            fx(() -> {
+                require(activity(view, "Comparing local data…"), "Effects setup retains animated local activity");
+                require(requests.size() == 1 && requests.getFirst().area().equals("Item effects")
+                        && requests.getFirst().tableId() == null, "Effects mode is not raw table mode");
+                return null; // This FX heartbeat completes while setup remains deliberately pending.
+            });
+            pending.complete(effectsSession(closes));
+            await(() -> fxUnchecked(() -> resultKeys(view).contains("B0000000000000000012300000000000000000456")));
+            fx(() -> {
+                findings(view).getSelectionModel().selectFirst(); view.applyCss(); view.layout();
+                require(labels(view).contains("Item 123 · bridge link 456"), "Composite identity is friendly and exact");
+                require(labels(view).contains("ItemEffect · SpellID"), "Effects fields retain source-qualified labels");
+                var search = (javafx.scene.control.TextField) view.lookupAll(".text-field").stream()
+                        .filter(node -> "Search current findings page".equals(node.getAccessibleText())).findFirst().orElseThrow();
+                search.setText("bridge link 456");
+                require(!resultKeys(view).isEmpty(), "Friendly effect identity is searchable on the current page");
+                search.clear();
+                require(labels(view).contains("spell names, descriptions and gameplay calculations are unassessed"),
+                        "Recorded input scope excludes spell resolution and gameplay calculations");
+                require(!activity(view, "Comparing local data…"), "Terminal effects setup stops local activity");
+                screenshot(view.getScene(), "comparison-item-effects-authored");
+                return null;
+            });
+        } finally { fx(() -> { view.close(); window.close(); return null; }); }
+        require(closes.get() == 1, "Accepted effects session closes once");
+
+        var late = new CompletableFuture<CompareView.Session>();
+        var lateCloses = new AtomicInteger();
+        var canceledToken = new AtomicReference<com.vibeminer.access.Cancellation>();
+        var canceled = fx(() -> new CompareView(() -> List.of(before, after), List.of("enUS"),
+                (request, token) -> { canceledToken.set(token); return late; }, () -> {}));
+        var canceledWindow = fx(() -> {
+            var stage = new Stage(); stage.setScene(new Scene(canceled, 1000, 700)); stage.show();
+            canceled.applyCss(); canceled.layout(); area(canceled, "Item effects");
+            button(canceled, "Compare local data").fire(); button(canceled, "Cancel comparison").fire();
+            require(canceledToken.get().isCanceled() && !activity(canceled, "Comparing local data…"),
+                    "Effects cancellation retires setup activity");
+            return stage;
+        });
+        late.complete(effectsSession(lateCloses));
+        await(() -> lateCloses.get() == 1);
+        fx(() -> {
+            require(resultKeys(canceled).isEmpty(), "Late canceled effects cannot replace current findings");
+            canceled.close(); canceledWindow.close(); return null;
+        });
     }
 
     private static void itemsControls(BuildInfo before, BuildInfo after, boolean empty)

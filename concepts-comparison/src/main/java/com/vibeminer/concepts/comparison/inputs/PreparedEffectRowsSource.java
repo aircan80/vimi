@@ -122,11 +122,20 @@ public final class PreparedEffectRowsSource implements SortedComparisonInput.Sou
             var provenance = new TreeMap<String, String>();
             IssueEvidenceMetadata.put(provenance, "effects.issueEvidence", receipt);
             var nativeEvidence = receipt.issueChannelEvidence();
-            if (nativeEvidence.state() == CapturedRowsTypes.IssueChannelState.VERIFIED_NATIVE) {
+            boolean qualifiedPhysical =
+                    com.vibeminer.concepts.effects.ItemEffectProfiles.qualifies(
+                            kind.profile(),
+                            new TableTypes.SchemaResult(
+                                    receipt.table(), receipt.columns(), receipt.schema()));
+            if (qualifiedPhysical
+                    && nativeEvidence.state()
+                            == CapturedRowsTypes.IssueChannelState.VERIFIED_NATIVE) {
                 validateNativeEvidence(receipt);
             }
             var issueEvidence =
-                    nativeEvidence.state() == CapturedRowsTypes.IssueChannelState.VERIFIED_NATIVE
+                    qualifiedPhysical
+                                    && nativeEvidence.state()
+                                            == CapturedRowsTypes.IssueChannelState.VERIFIED_NATIVE
                             ? new PreparedItemEffectTypes.IssueEvidence(
                                     nativeEvidence.state().name(),
                                     nativeEvidence.policyId(),

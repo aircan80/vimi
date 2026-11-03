@@ -90,14 +90,14 @@ final class ComparisonCoordinator implements BuildComparisons {
                 || !request.before().product().equals(request.after().product())
                 || request.beforeLocale() == null
                 || !request.beforeLocale().equals(request.afterLocale())
-                || !java.util.Set.of("Files", "Tables", "Items").contains(request.area())
+                || !java.util.Set.of("Files", "Tables", "Items", "Item effects").contains(request.area())
                 || request.tableId() != null
                         && (!request.area().equals("Tables")
                                 || request.tableId() < 1
                                 || request.tableId() > 0xffffffffL)) {
             return CompletableFuture.failedFuture(
                     new IllegalArgumentException(
-                            "Choose the same product and locale, and Files, Tables or Items for"
+                            "Choose the same product and locale, and Files, Tables, Items or Item effects for"
                                 + " this inventory slice."));
         }
         var run = new Run(request, cancellation);
