@@ -393,6 +393,13 @@ tasks.register('gpuPreviewServiceTest', JavaExec) {
 check.dependsOn gpuPreviewServiceTest
 
 // Authored GPU window activity/fallback checks; no GPU child is launched, display required.
+tasks.register('terrainGpuPreviewTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.TerrainGpuPreviewTest'
+}
+check.dependsOn terrainGpuPreviewTest
+
 tasks.register('gpuPreviewUiTest', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath

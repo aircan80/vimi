@@ -133,6 +133,7 @@ final class TerrainGpuPreview implements AutoCloseable {
             return;
         }
         failed = scene;
+        frames.clear();
         running = false;
         ++generation;
         service.closeOwner(owner);
@@ -149,6 +150,7 @@ final class TerrainGpuPreview implements AutoCloseable {
     }
 
     void hide() {
+        frames.clear();
         ++generation;
         running = false;
         service.closeOwner(owner);
