@@ -2,6 +2,22 @@
   "bgfxApi": 156,
   "bgfxCommit": "780f7bf00a29573473b90dcfab9f92a7d8687702",
   "binaries": {
+    "dx11/fs_model.bin": {
+      "compilerHost": "windows-x64",
+      "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
+      "platform": "windows",
+      "profile": "s_5_0",
+      "sha256": "8a70740ee069f289d7b745749d6ac439559b9679a62ec30d02a4a802506478a1",
+      "stage": "fragment"
+    },
+    "dx11/vs_model.bin": {
+      "compilerHost": "windows-x64",
+      "compilerSha256": "d5eb81c22d68283bda50791242312e3a34f3b71ca25be883b0ff924633525a7a",
+      "platform": "windows",
+      "profile": "s_5_0",
+      "sha256": "980948e6bbb3aac462a11325adaef5a89dfe66bf13c4bd9e0099c0fa456605ef",
+      "stage": "vertex"
+    },
     "glsl/fs_model.bin": {
       "compilerHost": "linux-x64",
       "compilerSha256": "10539b3c641f6cf3da04638e150a3d3aa1b7caa9508a843cee41614f8e91f200",
