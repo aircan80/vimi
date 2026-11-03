@@ -16,3 +16,4 @@ include 'questie'
 include 'accounting'
 
 include 'concepts-talents'
+include 'concepts-races'

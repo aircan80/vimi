@@ -21,6 +21,7 @@ dependencies {
     implementation project(':concepts-items')
     implementation project(':concepts-creatures')
     implementation project(':concepts-talents')
+    implementation project(':concepts-races')
     implementation project(':concepts-effects')
     testImplementation testFixtures(project(':builds'))
     testImplementation testFixtures(project(':files'))
@@ -239,4 +240,12 @@ tasks.register('talentsUiTest', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.TalentsUiTest'
+}
+
+// Authored Races layout and stale/lifetime checks; opt in because this requires a display.
+tasks.register('racesUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.RacesUiTest'
+    systemProperty 'vimi.uiReviewDirectory', layout.buildDirectory.dir('ui-review').get().asFile.absolutePath
 }

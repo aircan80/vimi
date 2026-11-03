@@ -174,3 +174,11 @@
 
 .talent-tooltip .wow-item-name { -fx-text-fill: #ffd100; }
 .talent-tooltip .talent-tooltip-context { -fx-text-fill: #abb4c7; -fx-font-size: 12px; }
+
+.race-badge { -fx-background-color: #e1ebe4; -fx-background-radius: 12; -fx-border-color: #a0b6a9; -fx-border-radius: 12; }
+.race-initial { -fx-font-size: 36px; -fx-font-weight: bold; -fx-text-fill: #386657; }
+.race-faction { -fx-text-fill: #866e3e; -fx-font-size: 14px; }
+.race-lore { -fx-font-size: 14px; -fx-line-spacing: 5; -fx-text-fill: #384c46; }
+.race-ability-icon { -fx-background-color: #17231f; -fx-border-color: #9b8e64; -fx-border-width: 1; -fx-background-radius: 3; -fx-border-radius: 3; }
+
+.race-description { -fx-font-size: 13px; -fx-text-fill: #384c46; -fx-font-weight: normal; -fx-line-spacing: 3; }

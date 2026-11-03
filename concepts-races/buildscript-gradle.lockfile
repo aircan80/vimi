@@ -1,0 +1,28 @@
+# This is a Gradle generated file for dependency locking.
+# Manual edits can break the build and are not advised.
+# This file is expected to be part of source control.
+com.diffplug.durian:durian-collect:1.2.0=classpath
+com.diffplug.durian:durian-core:1.2.0=classpath
+com.diffplug.durian:durian-io:1.2.0=classpath
+com.diffplug.durian:durian-swt.os:4.3.0=classpath
+com.diffplug.spotless:com.diffplug.spotless.gradle.plugin:8.10.4=classpath
+com.diffplug.spotless:spotless-lib-extra:4.10.4=classpath
+com.diffplug.spotless:spotless-lib:4.10.4=classpath
+com.diffplug.spotless:spotless-plugin-gradle:8.10.4=classpath
+com.googlecode.concurrent-trees:concurrent-trees:2.6.1=classpath
+com.googlecode.javaewah:JavaEWAH:1.2.3=classpath
+com.squareup.okhttp3:okhttp:4.12.0=classpath
+com.squareup.okio:okio-jvm:3.6.0=classpath
+com.squareup.okio:okio:3.6.0=classpath
+commons-codec:commons-codec:1.22.1=classpath
+dev.equo.ide:solstice:1.8.2=classpath
+org.eclipse.jgit:org.eclipse.jgit:7.8.0.202609011348-r=classpath
+org.eclipse.platform:org.eclipse.osgi:3.24.300=classpath
+org.jetbrains.kotlin:kotlin-stdlib-common:1.9.10=classpath
+org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.10=classpath
+org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.10=classpath
+org.jetbrains.kotlin:kotlin-stdlib:1.9.10=classpath
+org.jetbrains:annotations:13.0=classpath
+org.slf4j:slf4j-api:2.0.18=classpath
+org.tukaani:xz:1.9=classpath
+empty=

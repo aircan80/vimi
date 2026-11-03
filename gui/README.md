@@ -341,3 +341,13 @@ The selected talent appears in a fixed right-hand WoW-style tooltip; source
 provenance stays collapsed outside the card. Its rank label previews the first
 recorded rank, without allocating character talent points. See
 [Talents](../docs/talents.md) for scope and checks.
+
+## Races
+
+Prepared builds expose **Races** after **Talents**. The sidebar defaults to races
+with recorded class combinations; Include other race records exposes internal or
+unlinked rows. The overview reads names, lore, verified faction relationships,
+classes and racial ability cards from this build and locale. Partial tables retain
+readable data; static combinations do not imply account/server availability.
+Icons are loaded asynchronously through the existing image path. Race portraits
+use an initial until atlas support exists. See [Races](../docs/races.md).

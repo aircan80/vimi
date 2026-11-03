@@ -22,6 +22,7 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
     private final Button retry, cancel;
     private final Node overview;
     private TalentsView talents;
+    private RacesView races;
     private boolean closed;
     private long workspaceRevision;
     private String currentArea = "Overview";
@@ -40,7 +41,7 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         this.job = job;
         var navigation = new HBox(4);
         navigation.getStyleClass().add("area-navigation");
-        for (String area : List.of("Overview", "Files", "Tables", "Items", "Creatures", "Talents")) {
+        for (String area : List.of("Overview", "Files", "Tables", "Items", "Creatures", "Talents", "Races")) {
             var button = new Button(area);
             button.getStyleClass().add("area-link");
             button.setOnAction(event -> show(area));
@@ -76,6 +77,8 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             workspaceRevision = work.revision();
             browsers.values().forEach(ResearchBrowser::invalidate);
             if (talents != null) talents.invalidate();
+            if (races != null) races.invalidate();
+            if (currentArea.equals("Races") && races != null) races.ensureLoaded();
             if (currentArea.equals("Talents") && talents != null) talents.ensureLoaded();
             var visible = browsers.get(currentArea);
             if (visible != null) visible.ensureLoaded();
@@ -128,6 +131,12 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             talents.ensureLoaded();
             return;
         }
+        if (area.equals("Races")) {
+            if (races == null) races = new RacesView(job);
+            setCenter(races);
+            races.ensureLoaded();
+            return;
+        }
         var browser =
                 browsers.computeIfAbsent(
                         area, name -> new ResearchBrowser(name, job, this::showSourceTable));
@@ -141,6 +150,7 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         clock.stop();
         browsers.values().forEach(ResearchBrowser::close);
         if (talents != null) talents.close();
+        if (races != null) races.close();
     }
 
     private void showSourceTable(String table) {

@@ -206,7 +206,7 @@ class AssetWorkflowWiringTest(unittest.TestCase):
 
 class ConceptWorkflowWiringTest(unittest.TestCase):
     PORTED_MODULES = ("concepts-core", "concepts-items", "concepts-creatures", "concepts-effects")
-    MODULES = PORTED_MODULES + ("concepts-talents",)
+    MODULES = PORTED_MODULES + ("concepts-talents", "concepts-races")
 
     def test_concepts_run_and_retain_reports_in_every_selected_suite(self):
         root = Path(__file__).resolve().parents[2]

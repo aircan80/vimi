@@ -1,5 +1,18 @@
 # vimi development handoff
 
+## Races browser (#95)
+
+New :concepts-races owns lazy bounded race projections over borrowed BuildTables.
+Races appears after Talents and defaults to CharBaseInfo-linked race records; an
+Include other race records toggle exposes internal/unlinked ChrRaces rows. Overview
+shows names/lore, FactionTemplate→Faction names, recorded classes and racial cards
+with async icons. Readable PARTIAL data is retained; absence or schema failure in
+optional tables does not discard race/class facts. Static records never claim
+server/account character-creation eligibility. Racial presentation cards have no
+inferred SpellID, and race badge initials avoid treating atlas IDs as FileDataIDs.
+Workspace retirement drains this handle before tables; GUI has stale query/image
+checks. CI tasks include the new component. See docs/races.md and authored fixture.
+
 ## Community TACT keys (#93)
 
 Data Sources includes wowdev/TACTKeys, default enabled/daily. The fixed bounded

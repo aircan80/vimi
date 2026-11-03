@@ -61,7 +61,7 @@ public final class PreparationStatus {
         return switch (area) {
             case "Overview" -> ready.ordinal() >= BuildPreparation.Ready.METADATA_READY.ordinal();
             case "Files" -> ready.ordinal() >= BuildPreparation.Ready.FILES_READY.ordinal();
-            case "Tables", "Items", "Creatures", "Talents" -> ready == BuildPreparation.Ready.TABLES_READY;
+            case "Tables", "Items", "Creatures", "Talents", "Races" -> ready == BuildPreparation.Ready.TABLES_READY;
             default -> false;
         };
     }
