@@ -536,6 +536,17 @@ public final class PolestarRepository implements AutoCloseable {
         return call(token, () -> query(sourceId, table, key, "", 0, 500, token).records());
     }
 
+    /**
+     * Local, paged key lookup; unlike lookup, reports totals and does not silently cap at 500 rows.
+     */
+    public CompletableFuture<Page> lookupPage(
+            String sourceId, Table table, String key, int offset, int limit, Cancellation token) {
+        if (key == null || key.length() > 256 || offset < 0 || limit < 1 || limit > 500) {
+            throw new IllegalArgumentException("Invalid record key/page");
+        }
+        return call(token, () -> query(sourceId, table, key, "", offset, limit, token));
+    }
+
     private Page query(
             String id,
             Table table,

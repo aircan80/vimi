@@ -26,3 +26,5 @@ include 'formats-audio'
 
 include 'concepts-npcs'
 include 'concepts-quests'
+
+include 'concepts-locations'

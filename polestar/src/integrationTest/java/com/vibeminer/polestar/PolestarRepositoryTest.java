@@ -105,6 +105,82 @@ final class PolestarRepositoryTest {
     }
 
     @Test
+    void pagedKeyLookupRetainsMoreThanFiveHundredSpawnRecordsOffline() throws Exception {
+        var client = new Client();
+        var data = new StringBuilder();
+        for (int i = 0; i < 501; i++) {
+            data.append("{\"id\":1,\"name\":\"Authored spawn ").append(i).append("\"}\n");
+        }
+        byte[] bytes = data.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        client.files.put("data/spawn.jsonl", bytes);
+        var index = Json.object(Json.parse(client.files.get("index.json"), 1 << 20));
+        Json.object(index.get("counts")).put("spawn", 501L);
+        client.files.put("index.json", Json.bytes(index));
+        var pack = Json.object(Json.parse(client.files.get("datapackage.json"), 1 << 20));
+        for (var value : Json.array(pack.get("resources"))) {
+            var row = Json.object(value);
+            if (row.get("name").equals("spawn")) {
+                row.put("bytes", (long) bytes.length);
+                row.put("hash", "sha256:" + PolestarRepository.hash(bytes));
+            }
+        }
+        client.files.put("datapackage.json", Json.bytes(pack));
+        try (var repository = new PolestarRepository(directory, client)) {
+            var catalog = repository.check(Cancellation.NONE).join();
+            var snapshot = repository.download(catalog, p -> {}, Cancellation.NONE).join();
+            repository.prepare(snapshot.id(), p -> {}, Cancellation.NONE).join();
+            client.offline = true;
+            int calls = client.calls.get();
+            var first =
+                    repository
+                            .lookupPage(
+                                    snapshot.id(),
+                                    PolestarTypes.Table.SPAWN,
+                                    "1",
+                                    0,
+                                    500,
+                                    Cancellation.NONE)
+                            .join();
+            var second =
+                    repository
+                            .lookupPage(
+                                    snapshot.id(),
+                                    PolestarTypes.Table.SPAWN,
+                                    "1",
+                                    500,
+                                    500,
+                                    Cancellation.NONE)
+                            .join();
+            assertEquals(501, first.total());
+            assertEquals(500, first.records().size());
+            assertEquals(501, second.total());
+            assertEquals(1, second.records().size());
+            assertEquals("Authored spawn 500", second.records().getFirst().name());
+            assertEquals(calls, client.calls.get());
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            repository.lookupPage(
+                                    snapshot.id(),
+                                    PolestarTypes.Table.SPAWN,
+                                    "1",
+                                    -1,
+                                    500,
+                                    Cancellation.NONE));
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            repository.lookupPage(
+                                    snapshot.id(),
+                                    PolestarTypes.Table.SPAWN,
+                                    "1",
+                                    0,
+                                    501,
+                                    Cancellation.NONE));
+        }
+    }
+
+    @Test
     void checksumFailureAndCancellationNeverPublishPartialDownload() throws Exception {
         var client = new Client();
         try (var repository = new PolestarRepository(directory, client)) {
