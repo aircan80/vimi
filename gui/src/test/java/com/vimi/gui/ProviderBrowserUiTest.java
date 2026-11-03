@@ -24,8 +24,20 @@ public final class ProviderBrowserUiTest {
     private ProviderBrowserUiTest() {}
 
     public static void main(String[] args) throws Exception {
+        var started = new CompletableFuture<Void>();
+        Platform.startup(() -> {
+            Platform.setImplicitExit(false);
+            started.complete(null);
+        });
+        started.get(15, TimeUnit.SECONDS);
+        try {
+            loadingFeedback();
+        } catch (Exception | Error failure) {
+            Platform.exit();
+            throw failure;
+        }
         var done = new CompletableFuture<Void>();
-        Platform.startup(() -> Platform.runLater(
+        Platform.runLater(
                 () -> {
                     var stage = new Stage();
                     try {
@@ -129,11 +141,148 @@ public final class ProviderBrowserUiTest {
                         stage.close();
                         Platform.exit();
                     }
-                }));
+                });
         done.get(30, TimeUnit.SECONDS);
         System.out.println(
                 "Provider browsers: paging, ID/text search, field precedence and source details"
                     + " passed");
+    }
+
+    private static void fx(Runnable action) throws Exception {
+        var done = new CompletableFuture<Void>();
+        Platform.runLater(() -> {
+            try { action.run(); done.complete(null); }
+            catch (Throwable failure) { done.completeExceptionally(failure); }
+        });
+        done.get(15, TimeUnit.SECONDS);
+    }
+
+    private static void awaitFx(java.util.function.BooleanSupplier condition) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        var ready = new java.util.concurrent.atomic.AtomicBoolean();
+        while (System.nanoTime() < deadline) {
+            fx(() -> ready.set(condition.getAsBoolean()));
+            if (ready.get()) { return; }
+            Thread.sleep(10);
+        }
+        throw new AssertionError("Timed out waiting for authored provider reply");
+    }
+
+    private static final class PendingBrowser extends ProviderBrowser<String> {
+        CompletableFuture<Void> searchGate;
+        final java.util.concurrent.CountDownLatch searching = new java.util.concurrent.CountDownLatch(1);
+        PendingBrowser() {
+            super(null, null, "NPCs", List.of(new ProviderBrowser.Column<>("Name", value -> value, 200)));
+        }
+        java.util.function.Supplier<Result<String>> request(NativePreparationWork work, Cancellation token) {
+            throw new UnsupportedOperationException();
+        }
+        long id(String row) { return Long.parseLong(row.split(" ")[0]); }
+        String searchable(String row) {
+            if (searchGate != null) {
+                require(!Platform.isFxApplicationThread(), "Large provider search must run off FX");
+                searching.countDown();
+                searchGate.join();
+            }
+            return row;
+        }
+        List<Fact> inspection(String row) { return List.of(new Fact(row, "muted")); }
+    }
+
+    private static void loadingFeedback() throws Exception {
+        var browser = new java.util.concurrent.atomic.AtomicReference<PendingBrowser>();
+        var first = new CompletableFuture<ProviderBrowser.Result<String>>();
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        fx(() -> {
+            var view = new PendingBrowser(); browser.set(view);
+            var scene = new Scene(view, 1200, 760);
+            scene.getStylesheets().add(VimiApp.class.getResource("/vimi.css").toExternalForm());
+            view.applyCss(); view.layout();
+            view.beginLoad(token -> () -> {
+                require(!Platform.isFxApplicationThread(), "Provider preparation must run off FX");
+                entered.countDown();
+                return first.join();
+            }, () -> true);
+            var table = (TableView<?>) view.lookup(".table-view");
+            require("provider-grid-loading".equals(table.getPlaceholder().getId()),
+                    "Initial empty provider area has centered loading");
+            require(!table.getPlaceholder().lookupAll(".progress-indicator").isEmpty(),
+                    "Loading area has an indeterminate spinner");
+            try { snapshot(scene, "npcs-loading.png"); }
+            catch (Exception failure) { throw new RuntimeException(failure); }
+        });
+        require(entered.await(5, TimeUnit.SECONDS), "Bounded provider worker accepted request");
+        fx(() -> {
+            ((TextField) browser.get().lookup(".text-field")).setText("First");
+            require("provider-grid-loading".equals(((TableView<?>) browser.get()
+                            .lookup(".table-view")).getPlaceholder().getId()),
+                    "Searching before first catalogue completion keeps loading visible and FX responsive");
+        });
+        first.complete(new ProviderBrowser.Result<>(List.of("1 First"), List.of("Authored ready catalogue")));
+        awaitFx(() -> ((TableView<?>) browser.get().lookup(".table-view")).getItems().size() == 1);
+        fx(() -> ((TextField) browser.get().lookup(".text-field")).clear());
+        var refresh = new CompletableFuture<ProviderBrowser.Result<String>>();
+        fx(() -> {
+            browser.get().beginLoad(token -> refresh::join, () -> true);
+            require(((TableView<?>) browser.get().lookup(".table-view")).getItems().size() == 1,
+                    "Refreshing a provider keeps previous rows available");
+            require(text(browser.get(), "Updating catalogue"), "Refresh is visibly marked Updating");
+        });
+        refresh.completeExceptionally(new IllegalStateException("Authored refresh failure"));
+        awaitFx(() -> !browser.get().lookup("#provider-activity").isVisible());
+        fx(() -> {
+            require(((TableView<?>) browser.get().lookup(".table-view")).getItems().size() == 1,
+                    "Provider error does not turn existing rows into empty results");
+            require(text(browser.get(), "Previous results are still shown"), "Failed update is explicit");
+        });
+        var stale = new CompletableFuture<ProviderBrowser.Result<String>>();
+        var current = new CompletableFuture<ProviderBrowser.Result<String>>();
+        fx(() -> browser.get().beginLoad(token -> stale::join, () -> true));
+        fx(() -> browser.get().beginLoad(token -> current::join, () -> true));
+        stale.complete(new ProviderBrowser.Result<>(List.of("2 Stale"), List.of()));
+        current.complete(new ProviderBrowser.Result<>(List.of("3 Current"), List.of()));
+        awaitFx(() -> ((TableView<?>) browser.get().lookup(".table-view")).getItems().equals(List.of("3 Current")));
+        var pending = new CompletableFuture<ProviderBrowser.Result<String>>();
+        var cancellation = new java.util.concurrent.atomic.AtomicReference<Cancellation>();
+        fx(() -> {
+            browser.get().beginLoad(token -> { cancellation.set(token); return pending::join; }, () -> true);
+            browser.get().close();
+            require(!browser.get().lookup("#provider-activity").isVisible(), "Closing stops provider activity feedback");
+        });
+        require(cancellation.get().isCanceled(), "Close cancels provider work");
+        pending.complete(new ProviderBrowser.Result<>(List.of("4 Late"), List.of()));
+        fx(() -> require(((TableView<?>) browser.get().lookup(".table-view")).getItems().equals(List.of("3 Current")),
+                "Closed provider rejects late completion"));
+
+        largeSearchFeedback();
+    }
+
+    private static void largeSearchFeedback() throws Exception {
+        var browser = new java.util.concurrent.atomic.AtomicReference<PendingBrowser>();
+        var values = java.util.stream.IntStream.rangeClosed(1, 2001)
+                .mapToObj(id -> id + (id == 2001 ? " Target" : " Candidate")).toList();
+        fx(() -> {
+            var view = new PendingBrowser(); browser.set(view);
+            new Scene(view, 1200, 760); view.applyCss(); view.layout();
+            view.present(new ProviderBrowser.Result<>(values, List.of("Authored large snapshot")));
+            view.searchGate = new CompletableFuture<>();
+            ((TextField) view.lookup(".text-field")).setText("Target");
+        });
+        require(browser.get().searching.await(5, TimeUnit.SECONDS), "Large query started on its worker");
+        fx(() -> {
+            require(((TableView<?>) browser.get().lookup(".table-view")).getItems().size() == 100,
+                    "Large pending search retains the previous bounded page");
+            require(text(browser.get(), "Updating matches"), "Large pending search is visibly marked Updating");
+            ((TextField) browser.get().lookup(".text-field")).setText("No such candidate");
+        });
+        browser.get().searchGate.complete(null);
+        awaitFx(() -> ((TableView<?>) browser.get().lookup(".table-view")).getItems().isEmpty());
+        fx(() -> {
+            require(!browser.get().lookup("#provider-activity").isVisible(), "Latest query retires activity");
+            require(((Label) ((TableView<?>) browser.get().lookup(".table-view")).getPlaceholder())
+                    .getText().contains("No matching"), "Latest empty query resets loading placeholder");
+            browser.get().close();
+        });
     }
 
     private static boolean text(javafx.scene.Parent root, String part) {

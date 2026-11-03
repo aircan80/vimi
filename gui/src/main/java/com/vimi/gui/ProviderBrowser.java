@@ -6,6 +6,7 @@ import javafx.application.Platform;
 import javafx.beans.property.ReadOnlyStringWrapper;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.SplitPane;
 import javafx.scene.control.TableColumn;
@@ -44,6 +45,13 @@ abstract class ProviderBrowser<T> extends BorderPane implements AutoCloseable {
     private final TableView<T> table = new TableView<>();
     private final TextField search = new TextField();
     private final Label status = new Label(), pageCount = new Label();
+    private final ProgressIndicator activity = new ProgressIndicator(-1);
+    private final java.util.concurrent.ThreadPoolExecutor loader = worker("provider-catalogue");
+    private final java.util.concurrent.ThreadPoolExecutor queries = worker("provider-search");
+    private CompletableFuture<Result<T>> operation;
+    private CompletableFuture<List<T>> query;
+    private long queryGeneration;
+    private String catalogueStatus = "Catalogue has not been loaded";
     private final VBox details = new VBox(12);
     private final Button previous = new Button("Previous"), next = new Button("Next");
     private Cancellation token = new Cancellation();
@@ -71,7 +79,15 @@ abstract class ProviderBrowser<T> extends BorderPane implements AutoCloseable {
                 });
         status.setText("Catalogue has not been loaded");
         status.setWrapText(true);
-        setTop(new VBox(10, new HBox(10, search, reload), status));
+        activity.setPrefSize(16, 16);
+        activity.setMaxSize(16, 16);
+        activity.setAccessibleText("Loading " + area);
+        activity.setId("provider-activity");
+        activity.setVisible(false);
+        activity.setManaged(false);
+        var feedback = new HBox(8, activity, status);
+        feedback.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+        setTop(new VBox(10, new HBox(10, search, reload), feedback));
         for (var definition : columns) {
             var column = new TableColumn<T, String>(definition.name());
             column.setCellValueFactory(
@@ -124,44 +140,65 @@ abstract class ProviderBrowser<T> extends BorderPane implements AutoCloseable {
             return;
         long wr = work.revision(), sr = sources == null ? 0 : sources.revision();
         if ((loaded || loading) && workRevision == wr && sourceRevision == sr) return;
+        workRevision = wr;
+        sourceRevision = sr;
+        beginLoad(cancel -> request(work, cancel), () -> wr == work.revision()
+                && sr == (sources == null ? 0 : sources.revision()));
+    }
+
+    /** Freezes borrowed source choices on FX; catalogue work runs on one bounded worker. */
+    final void beginLoad(Function<Cancellation, Supplier<Result<T>>> request,
+            java.util.function.BooleanSupplier current) {
+        if (closed) { return; }
         invalidate();
         loading = true;
         long requestId = generation;
         var cancel = token;
-        workRevision = wr;
-        sourceRevision = sr;
-        status.setText("Loading Blizzard and prepared external data…");
-        // Freeze borrowed handles and provider choices before dispatch.
-        Supplier<Result<T>> request = request(work, cancel);
-        CompletableFuture.supplyAsync(request, command -> Thread.startVirtualThread(command))
-                .whenComplete(
-                        (snapshot, error) ->
-                                Platform.runLater(
-                                        () -> {
-                                            if (closed
-                                                    || requestId != generation
-                                                    || wr != work.revision()) return;
-                                            loading = false;
-                                            if (error != null) {
-                                                status.setText(
-                                                        "Catalogue unavailable. Reload to retry.");
-                                                return;
-                                            }
-                                            loaded = true;
-                                            present(snapshot);
-                                        }));
+        setActivity(true, table.getItems().isEmpty()
+                ? "Loading Blizzard and prepared external data…"
+                : "Updating catalogue… Previous results remain available.");
+        if (table.getItems().isEmpty()) { table.setPlaceholder(loadingPlaceholder()); }
+        try {
+            Supplier<Result<T>> frozen = request.apply(cancel);
+            operation = CompletableFuture.supplyAsync(() -> {
+                cancel.check();
+                return frozen.get();
+            }, loader);
+        } catch (RuntimeException failure) {
+            operation = CompletableFuture.failedFuture(failure);
+        }
+        operation.whenComplete((snapshot, error) -> Platform.runLater(() -> {
+            if (closed || requestId != generation) { return; }
+            loading = false;
+            if (!current.getAsBoolean()) {
+                setActivity(false, "Prepared data changed. Reload to update the catalogue.");
+                if (table.getItems().isEmpty()) { table.setPlaceholder(new Label("Reload to update prepared data")); }
+                return;
+            }
+            if (error != null || snapshot == null) {
+                setActivity(false, table.getItems().isEmpty()
+                        ? "Catalogue unavailable. Reload to retry."
+                        : "Update unavailable. Previous results are still shown. Reload to retry.");
+                if (table.getItems().isEmpty()) { table.setPlaceholder(new Label("Catalogue unavailable · Reload to retry")); }
+                return;
+            }
+            loaded = true;
+            present(snapshot);
+        }));
     }
 
     void present(Result<T> snapshot) {
+        if (closed) { return; }
         all = snapshot.rows();
-        filter();
-        status.setText(
+        loaded = true;
+        catalogueStatus = (
                 all.size()
                         + " "
                         + area.toLowerCase(Locale.ROOT)
                         + " · "
                         + String.join(" · ", snapshot.diagnostics())
                         + " · Coverage may be partial");
+        filter();
     }
 
     void invalidate() {
@@ -170,23 +207,96 @@ abstract class ProviderBrowser<T> extends BorderPane implements AutoCloseable {
         token = new Cancellation();
         loaded = false;
         loading = false;
-        all = List.of();
-        filter();
+        if (operation != null) { operation.cancel(false); }
+        loader.getQueue().clear();
+        cancelQuery();
+        setActivity(false, table.getItems().isEmpty()
+                ? "Catalogue has not been loaded" : "Prepared data changed. Reload to update the catalogue.");
     }
 
     private void filter() {
+        if (closed) { return; }
+        cancelQuery();
         String term = search.getText().strip().toLowerCase(Locale.ROOT);
         Long exact = com.vibeminer.concepts.core.ConceptQueries.tryParseId(term);
-        filtered = all.stream().filter(n -> exact != null ? id(n) == exact
-                : term.isEmpty() || searchable(n).toLowerCase(Locale.ROOT).contains(term)).toList();
-        offset = 0;
-        page();
+        var values = all;
+        if (term.isEmpty()) {
+            filtered = values;
+            offset = 0;
+            page();
+            setActivity(loading, loading ? "Updating catalogue… Previous results remain available." : catalogueStatus);
+            return;
+        }
+        java.util.function.Predicate<T> matches = row -> exact != null ? id(row) == exact
+                : searchable(row).toLowerCase(Locale.ROOT).contains(term);
+        // Only a small bounded catalogue can be filtered synchronously. Larger source snapshots
+        // retain the old page while the single bounded search worker computes new matches.
+        if (values.size() <= 1000) {
+            filtered = values.stream().filter(matches).toList();
+            offset = 0;
+            page();
+            setActivity(loading, loading ? "Updating catalogue… Previous results remain available." : catalogueStatus);
+            return;
+        }
+        long requestId = queryGeneration;
+        setActivity(true, "Updating matches… Previous results remain available.");
+        if (table.getItems().isEmpty()) { table.setPlaceholder(loadingPlaceholder()); }
+        query = CompletableFuture.supplyAsync(() -> values.stream().filter(matches).toList(), queries);
+        query.whenComplete((result, error) -> Platform.runLater(() -> {
+            if (closed || requestId != queryGeneration) { return; }
+            if (error != null) {
+                setActivity(loading, "Search unavailable. Previous results are still shown.");
+                if (table.getItems().isEmpty()) { table.setPlaceholder(new Label("Search unavailable · Try again")); }
+                return;
+            }
+            filtered = result;
+            offset = 0;
+            page();
+            setActivity(loading, loading ? "Updating catalogue… Previous results remain available." : catalogueStatus);
+        }));
+    }
+
+    private void cancelQuery() {
+        queryGeneration++;
+        if (query != null) { query.cancel(false); }
+        queries.getQueue().clear();
+    }
+
+    private void setActivity(boolean pending, String message) {
+        activity.setVisible(pending && !table.getItems().isEmpty());
+        activity.setManaged(activity.isVisible());
+        activity.setAccessibleText(message);
+        status.setText(message);
+        if (pending && table.getItems().isEmpty()) { table.setPlaceholder(loadingPlaceholder()); }
+    }
+
+    private VBox loadingPlaceholder() {
+        var spinner = new ProgressIndicator(-1);
+        spinner.setPrefSize(30, 30);
+        spinner.setMaxSize(30, 30);
+        spinner.setAccessibleText("Loading " + area);
+        var message = new Label("Loading " + area + "…");
+        message.getStyleClass().add("muted");
+        var content = new VBox(12, spinner, message);
+        content.setAlignment(javafx.geometry.Pos.CENTER);
+        content.setId("provider-grid-loading");
+        content.setAccessibleText(message.getText());
+        return content;
+    }
+
+    private static java.util.concurrent.ThreadPoolExecutor worker(String name) {
+        return new java.util.concurrent.ThreadPoolExecutor(1, 1, 0,
+                java.util.concurrent.TimeUnit.MILLISECONDS,
+                new java.util.concurrent.ArrayBlockingQueue<>(1),
+                Thread.ofPlatform().daemon().name(name).factory(),
+                new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
     }
 
     private void page() {
         int end = Math.min(filtered.size(), offset + 100);
         offset = Math.min(offset, end);
         table.getItems().setAll(filtered.subList(offset, end));
+        table.setPlaceholder(new Label("No matching " + area.toLowerCase(Locale.ROOT)));
         previous.setDisable(offset == 0);
         next.setDisable(end >= filtered.size());
         pageCount.setText(
@@ -247,5 +357,11 @@ abstract class ProviderBrowser<T> extends BorderPane implements AutoCloseable {
         if (locationMap != null) locationMap.close();
         token.cancel();
         generation++;
+        cancelQuery();
+        if (operation != null) { operation.cancel(false); }
+        loader.shutdownNow();
+        queries.shutdownNow();
+        setActivity(false, "Catalogue closed");
+        if (table.getItems().isEmpty()) { table.setPlaceholder(new Label("Catalogue closed")); }
     }
 }

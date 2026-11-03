@@ -47,6 +47,14 @@ import javafx.util.Duration;
 /** Live browser using approved compact grids and inspectors. All acquisition is asynchronous. */
 public final class ResearchBrowser extends BorderPane implements AutoCloseable {
     private final AsyncIconRequests iconRequests;
+    private record IconPixels(int width, int height, int[] argb) {}
+    private final java.util.concurrent.ThreadPoolExecutor iconPixelsWorker =
+            new java.util.concurrent.ThreadPoolExecutor(1, 1, 0,
+                    java.util.concurrent.TimeUnit.MILLISECONDS,
+                    new java.util.concurrent.ArrayBlockingQueue<>(256),
+                    Thread.ofPlatform().daemon().name("browser-icon-pixels").factory(),
+                    new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
+    private final Map<Long, CompletableFuture<IconPixels>> preparedIcons = new LinkedHashMap<>();
     private final java.util.Set<Long> failedIcons = new java.util.HashSet<>();
     private final String area;
     private final ResearchDataSource source;
@@ -73,8 +81,7 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
     private final List<String> history = new ArrayList<>();
     private final PauseTransition debounce = new PauseTransition(Duration.millis(300));
     private final PauseTransition iconPulse = new PauseTransition(Duration.millis(16));
-    private final Map<Long, CompletableFuture<com.vibeminer.formats.images.BlpImageTypes.Result>>
-            iconWaiters = new LinkedHashMap<>();
+    private final Map<Long, CompletableFuture<IconPixels>> iconWaiters = new LinkedHashMap<>();
     private Cancellation pageToken = new Cancellation(),
             detailToken = new Cancellation(),
             mediaToken = new Cancellation();
@@ -313,6 +320,8 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
             filter(toolbar, 5, "Slot");
         }
         if (area.equals("Creatures")) filter(toolbar, 3, "Name status");
+        activity.setAccessibleText("Updating " + area);
+        activity.setId("research-page-activity");
         activity.setPrefSize(16, 16);
         activity.setMaxSize(16, 16);
         var paging = new HBox(10, previous, next, activity, count);
@@ -533,6 +542,9 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
         cancelMedia();
         icons.clear();
         iconRequests.clear();
+        preparedIcons.values().forEach(future -> future.cancel(false));
+        preparedIcons.clear();
+        iconPixelsWorker.getQueue().clear();
         tableContent.getChildren().clear();
         tableContent.setManaged(false);
         tableContent.setVisible(false);
@@ -553,25 +565,32 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
         loaded = true;
         failedIcons.clear();
         invalidated = false;
-        currentCursor = cursor;
         pageToken.cancel();
         pageToken = new Cancellation();
         long request = ++pageGeneration;
         next.setDisable(true);
         previous.setDisable(true);
-        activity.setVisible(true);
-        activity.setManaged(true);
-        status.setText("Loading prepared data…");
+        activity.setVisible(!rows.isEmpty());
+        activity.setManaged(!rows.isEmpty());
+        if (rows.isEmpty()) {
+            grid.setPlaceholder(loading("Loading " + area.toLowerCase(java.util.Locale.ROOT) + "…",
+                    true, "research-grid-loading"));
+            status.setText("Loading prepared data…");
+        } else {
+            status.setText("Updating " + area.toLowerCase(java.util.Locale.ROOT)
+                    + "… Previous results remain available.");
+        }
         CompletableFuture<ResearchPresentation.Page> result;
         try {
             result =
                     area.equals("Items")
                             ? source.items(itemQuery(cursor), pageToken)
                             : source.page(area, search.getText().strip(), cursor, pageToken);
+            java.util.Objects.requireNonNull(result, "No page request returned");
         } catch (RuntimeException invalid) {
             activity.setVisible(false);
             activity.setManaged(false);
-            status.setText("Query unavailable: " + errorMessage(invalid));
+            pageFailed(invalid);
             return;
         }
         result.whenComplete(
@@ -581,21 +600,11 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                                     if (disposed || request != pageGeneration) return;
                                     activity.setVisible(false);
                                     activity.setManaged(false);
-                                    if (error != null) {
-                                        status.setText("Unavailable: " + errorMessage(error));
-                                        filtering = true;
-                                        rows.clear();
-                                        filtering = false;
-                                        grid.setPlaceholder(
-                                                text(
-                                                        "Unable to load "
-                                                                + area
-                                                                + "\n"
-                                                                + errorMessage(error),
-                                                        "muted"));
-                                        count.setText("Request failed");
+                                    if (error != null || page == null) {
+                                        pageFailed(error == null ? new IllegalStateException("No result returned") : error);
                                         return;
                                     }
+                                    currentCursor = cursor;
                                     nextCursor = page.next();
                                     filtering = true;
                                     updatingRows = true;
@@ -636,6 +645,108 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                                 }));
     }
 
+    private void pageFailed(Throwable failure) {
+        activity.setVisible(false);
+        activity.setManaged(false);
+        if (rows.isEmpty()) {
+            loaded = false;
+            nextCursor = null;
+            grid.setPlaceholder(text("Unable to load " + area + "\n" + errorMessage(failure), "muted"));
+            count.setText("Request failed");
+        }
+        status.setText("Unavailable: " + errorMessage(failure)
+                + (rows.isEmpty() ? "" : " · Previous results are still shown. Refresh to retry."));
+        next.setDisable(nextCursor == null);
+        previous.setDisable(history.isEmpty());
+    }
+
+    private CompletableFuture<IconPixels> icon(long fileDataId) {
+        var existing = preparedIcons.get(fileDataId);
+        if (existing != null) {
+            if (!existing.isDone() || (!existing.isCompletedExceptionally() && existing.getNow(null) != null)) {
+                return existing;
+            }
+            preparedIcons.remove(fileDataId);
+        }
+        if (preparedIcons.size() >= 256) {
+            var iterator = preparedIcons.entrySet().iterator();
+            while (iterator.hasNext()) {
+                if (iterator.next().getValue().isDone()) { iterator.remove(); break; }
+            }
+            if (preparedIcons.size() >= 256) {
+                return CompletableFuture.failedFuture(new IllegalStateException("Icon queue full"));
+            }
+        }
+        var future = iconRequests.request(fileDataId).thenApplyAsync(result -> {
+            if (result == null || result.image() == null
+                    || result.state() != com.vibeminer.formats.images.BlpImageTypes.State.READY) {
+                return null;
+            }
+            var value = result.image();
+            int width = value.width(), height = value.height(), stride = value.rowStride();
+            if (width < 1 || height < 1 || width > 64 || height > 64
+                    || stride < width * 4 || stride > 256) {
+                throw new IllegalArgumentException("Icon pixels exceed preview bounds");
+            }
+            var rgba = value.rgba();
+            if (rgba.length != stride * height) {
+                throw new IllegalArgumentException("Icon pixel length disagrees");
+            }
+            var argb = new int[width * height];
+            for (int y = 0; y < height; y++) {
+                for (int x = 0; x < width; x++) {
+                    int at = y * stride + x * 4;
+                    argb[y * width + x] = (rgba[at + 3] & 255) << 24
+                            | (rgba[at] & 255) << 16 | (rgba[at + 1] & 255) << 8
+                            | (rgba[at + 2] & 255);
+                }
+            }
+            return new IconPixels(width, height, argb);
+        }, iconPixelsWorker);
+        preparedIcons.put(fileDataId, future);
+        return future;
+    }
+
+    private static javafx.scene.image.WritableImage image(IconPixels value) {
+        var image = new javafx.scene.image.WritableImage(value.width(), value.height());
+        image.getPixelWriter().setPixels(0, 0, value.width(), value.height(),
+                javafx.scene.image.PixelFormat.getIntArgbInstance(), value.argb(), 0, value.width());
+        return image;
+    }
+
+    private static javafx.scene.Node iconMessage(String message, boolean pending) {
+        javafx.scene.Node icon;
+        if (pending) {
+            var spinner = new ProgressIndicator(-1);
+            spinner.setPrefSize(22, 22);
+            spinner.setMaxSize(22, 22);
+            spinner.setAccessibleText(message);
+            icon = spinner;
+        } else {
+            var label = text("—", "muted");
+            label.setAccessibleText(message);
+            icon = label;
+        }
+        icon.setId("research-inspector-icon");
+        javafx.scene.control.Tooltip.install(icon, new javafx.scene.control.Tooltip(message));
+        return icon;
+    }
+
+    private static javafx.scene.Node loading(String message, boolean centered, String id) {
+        var spinner = new ProgressIndicator(-1);
+        spinner.setPrefSize(centered ? 30 : 18, centered ? 30 : 18);
+        spinner.setMaxSize(centered ? 30 : 18, centered ? 30 : 18);
+        spinner.setAccessibleText(message);
+        var label = text(message, "muted");
+        javafx.scene.layout.Pane result = centered
+                ? new VBox(12, spinner, label) : new HBox(8, spinner, label);
+        if (result instanceof VBox box) { box.setAlignment(javafx.geometry.Pos.CENTER); }
+        if (result instanceof HBox box) { box.setAlignment(javafx.geometry.Pos.CENTER_LEFT); }
+        result.setId(id);
+        result.setAccessibleText(message);
+        return result;
+    }
+
     private static Long rowIconId(Row row) {
         if (row.source() instanceof com.vibeminer.concepts.items.ItemGridRow item)
             return item.iconFileDataId();
@@ -670,7 +781,7 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                     || icons.containsKey(row.id())
                     || failedIcons.contains(row.id())
                     || iconWaiters.containsKey(row.id())) continue;
-            var future = iconRequests.request(rowIconId(row));
+            var future = icon(rowIconId(row));
             iconWaiters.put(row.id(), future);
             future.whenComplete(
                     (result, error) ->
@@ -687,33 +798,12 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                                         if (cause
                                                 instanceof
                                                 java.util.concurrent.CancellationException) return;
-                                        if (error != null
-                                                || result == null
-                                                || result.image() == null
-                                                || result.state()
-                                                        != com.vibeminer.formats.images
-                                                                .BlpImageTypes.State.READY) {
+                                        if (error != null || result == null) {
                                             failedIcons.add(row.id());
                                             grid.refresh();
                                             return;
                                         }
-                                        var decoded = result.image();
-                                        var rgba = decoded.rgba();
-                                        var image =
-                                                new javafx.scene.image.WritableImage(
-                                                        decoded.width(), decoded.height());
-                                        for (int y = 0; y < decoded.height(); y++)
-                                            for (int x = 0; x < decoded.width(); x++) {
-                                                int i = y * decoded.rowStride() + x * 4;
-                                                image.getPixelWriter()
-                                                        .setArgb(
-                                                                x,
-                                                                y,
-                                                                (rgba[i + 3] & 255) << 24
-                                                                        | (rgba[i] & 255) << 16
-                                                                        | (rgba[i + 1] & 255) << 8
-                                                                        | (rgba[i + 2] & 255));
-                                            }
+                                        var image = image(result);
                                         if (icons.size() >= 100)
                                             icons.remove(icons.keySet().iterator().next());
                                         icons.put(row.id(), image);
@@ -742,8 +832,8 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                         text(area.equals("Items") ? "ITEM DETAILS" : "SELECTED RECORD", "eyebrow"),
                         hidden,
                         text(row.name(), "h2"),
-                        text("Loading local data…", "muted"));
-        source.detail(area, row, detailToken)
+                        loading("Loading local data…", false, "research-detail-loading"));
+        guarded(() -> source.detail(area, row, detailToken))
                 .whenComplete(
                         (value, error) ->
                                 javafx.application.Platform.runLater(
@@ -848,6 +938,9 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                     "Direct base source values");
         } else if (value instanceof CreatureTypes.CreatureResult creature) {
             showCreature(row, creature);
+        } else {
+            inspector.getChildren().addAll(text(row.name(), "h2"),
+                    text("Local details are unavailable for this record.", "muted"));
         }
         if (area.equals("Items") || area.equals("Creatures")) {
             media.setDisable(false);
@@ -888,9 +981,15 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
         var art = new javafx.scene.image.ImageView();
         art.setFitWidth(44);
         art.setFitHeight(44);
+        art.setAccessibleText("Item icon for " + row.name());
         art.setVisible(false);
         art.setManaged(false);
-        var top = new HBox(12, art, name);
+        var iconRegion = new javafx.scene.layout.StackPane();
+        iconRegion.setMinSize(44, 44);
+        iconRegion.setPrefSize(44, 44);
+        iconRegion.setMaxSize(44, 44);
+        iconRegion.getChildren().setAll(iconMessage("No icon recorded", false));
+        var top = new HBox(12, iconRegion, name);
         top.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
         tooltip.getChildren().add(top);
         if (detail != null && detail.summary().iconFileDataId() != null) {
@@ -902,42 +1001,21 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                 art.setImage(cached);
                 art.setVisible(true);
                 art.setManaged(true);
-            } else
-                iconRequests
-                        .request(detail.summary().iconFileDataId())
+                iconRegion.getChildren().setAll(art);
+            } else {
+                iconRegion.getChildren().setAll(iconMessage("Loading item icon", true));
+                icon(detail.summary().iconFileDataId())
                         .whenComplete(
                                 (image, error) ->
                                         javafx.application.Platform.runLater(
                                                 () -> {
                                                     if (disposed || request != detailGeneration)
                                                         return;
-                                                    if (error != null
-                                                            || image.state()
-                                                                    != com.vibeminer.formats.images
-                                                                            .BlpImageTypes.State
-                                                                            .READY
-                                                            || image.image() == null) {
-                                                        art.setAccessibleText("Icon unavailable");
+                                                    if (error != null || image == null) {
+                                                        iconRegion.getChildren().setAll(iconMessage("Icon unavailable", false));
                                                         return;
                                                     }
-                                                    var decoded = image.image();
-                                                    var rgba = decoded.rgba();
-                                                    var output =
-                                                            new javafx.scene.image.WritableImage(
-                                                                    decoded.width(),
-                                                                    decoded.height());
-                                                    for (int y = 0; y < decoded.height(); y++)
-                                                        for (int x = 0; x < decoded.width(); x++) {
-                                                            int i = y * decoded.rowStride() + x * 4;
-                                                            int argb =
-                                                                    (rgba[i + 3] & 255) << 24
-                                                                            | (rgba[i] & 255) << 16
-                                                                            | (rgba[i + 1] & 255)
-                                                                                    << 8
-                                                                            | (rgba[i + 2] & 255);
-                                                            output.getPixelWriter()
-                                                                    .setArgb(x, y, argb);
-                                                        }
+                                                    var output = image(image);
                                                     if (icons.size() >= 100)
                                                         icons.remove(
                                                                 icons.keySet().iterator().next());
@@ -945,8 +1023,10 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                                                     art.setImage(output);
                                                     art.setVisible(true);
                                                     art.setManaged(true);
+                                                    iconRegion.getChildren().setAll(art);
                                                     grid.refresh();
                                                 }));
+            }
         }
         if (!row.cell(6).equals("Unknown"))
             tooltip.getChildren().add(text("Base item level " + row.cell(6), "wow-level"));
@@ -1090,21 +1170,24 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
         tableToken.cancel();
         tableToken = new Cancellation();
         long request = ++tableGeneration;
-        tableContent.getChildren().setAll(text("Loading table rows…", "muted"));
-        source.tableRows(row.id(), tableAfter, tableIdentity, tableToken)
+        tableContent.getChildren().setAll(loading("Loading table rows…", false,
+                "research-table-loading"));
+        guarded(() -> source.tableRows(row.id(), tableAfter, tableIdentity, tableToken))
                 .whenComplete(
                         (result, error) ->
                                 javafx.application.Platform.runLater(
                                         () -> {
                                             if (disposed || request != tableGeneration) return;
-                                            if (error != null) {
+                                            if (error != null || result == null) {
                                                 tableContent
                                                         .getChildren()
                                                         .setAll(
                                                                 text(
                                                                         "Unavailable: "
                                                                                 + errorMessage(
-                                                                                        error),
+                                                                                        error == null
+                                                                                                ? new IllegalStateException("No table rows returned")
+                                                                                                : error),
                                                                         "muted"));
                                                 return;
                                             }
@@ -1171,8 +1254,9 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
         mediaToken = new Cancellation();
         long request = ++mediaGeneration;
         media.setDisable(true);
-        mediaPanel.getChildren().setAll(text("Loading media independently…", "muted"));
-        source.media(area, row, mediaToken)
+        mediaPanel.getChildren().setAll(loading("Loading media independently…", false,
+                "research-media-loading"));
+        guarded(() -> source.media(area, row, mediaToken))
                 .whenComplete(
                         (value, error) ->
                                 javafx.application.Platform.runLater(
@@ -1269,6 +1353,15 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
         return grid;
     }
 
+    private static <T> CompletableFuture<T> guarded(
+            java.util.function.Supplier<CompletableFuture<T>> operation) {
+        try {
+            return java.util.Objects.requireNonNull(operation.get(), "No request returned");
+        } catch (RuntimeException failure) {
+            return CompletableFuture.failedFuture(failure);
+        }
+    }
+
     private static String safe(Object value) {
         return value == null ? "Unknown" : value.toString();
     }
@@ -1300,6 +1393,16 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
     public void close() {
         disposed = true;
         iconRequests.close();
+        preparedIcons.values().forEach(future -> future.cancel(false));
+        preparedIcons.clear();
+        iconPixelsWorker.shutdownNow();
+        activity.setVisible(false);
+        activity.setManaged(false);
+        if (rows.isEmpty()) { grid.setPlaceholder(text("Browser closed", "muted")); }
+        inspector.getChildren().setAll(text("Browser closed", "muted"));
+        tableContent.getChildren().clear();
+        tableContent.setVisible(false);
+        tableContent.setManaged(false);
         debounce.stop();
         iconPulse.stop();
         iconWaiters.clear();

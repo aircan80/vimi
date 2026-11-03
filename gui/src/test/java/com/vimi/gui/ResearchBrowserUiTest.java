@@ -72,7 +72,7 @@ public final class ResearchBrowserUiTest {
         return new ItemFactValue("ItemSparse", column, 0, 100, value, null);
     }
 
-    private static final class Fixture implements ResearchDataSource {
+    private static class Fixture implements ResearchDataSource {
         public String locale() {
             return "deDE";
         }
@@ -578,6 +578,7 @@ public final class ResearchBrowserUiTest {
                 }
                 fx(() -> browser.get().close());
             }
+            loadingFeedback(output);
             dropdownContrast();
             staleReplies();
             System.out.println(
@@ -585,6 +586,180 @@ public final class ResearchBrowserUiTest {
         } finally {
             Platform.exit();
         }
+    }
+
+    private static final class PendingFixture extends Fixture {
+        CompletableFuture<ResearchPresentation.Page> pageRequest;
+        CompletableFuture<Object> detailRequest;
+        CompletableFuture<BlpImageTypes.Result> iconRequest;
+        CompletableFuture<Object> mediaRequest;
+        CompletableFuture<ResearchSource.TableRows> tableRequest;
+
+        @Override
+        public CompletableFuture<ResearchPresentation.Page> page(String area, String term,
+                String after, Cancellation token) {
+            return pageRequest == null ? super.page(area, term, after, token) : pageRequest;
+        }
+
+        @Override
+        public CompletableFuture<?> detail(String area, ResearchPresentation.Row row,
+                Cancellation token) {
+            return detailRequest == null ? super.detail(area, row, token) : detailRequest;
+        }
+
+        @Override
+        public CompletableFuture<?> media(String area, ResearchPresentation.Row row, Cancellation token) {
+            return mediaRequest == null ? super.media(area, row, token) : mediaRequest;
+        }
+
+        @Override
+        public CompletableFuture<ResearchSource.TableRows> tableRows(long id, Long after,
+                String identity, Cancellation token) {
+            return tableRequest == null ? super.tableRows(id, after, identity, token) : tableRequest;
+        }
+
+        @Override
+        public CompletableFuture<BlpImageTypes.Result> icon(long id, Cancellation token) {
+            return iconRequest == null ? super.icon(id, token) : iconRequest;
+        }
+    }
+
+    private static void loadingFeedback(Path output) throws Exception {
+        for (String area : List.of("Files", "Tables", "Items", "Creatures")) {
+            var fixture = new PendingFixture();
+            fixture.pageRequest = new CompletableFuture<>();
+            fixture.detailRequest = new CompletableFuture<>();
+            fixture.iconRequest = new CompletableFuture<>();
+            var browser = new AtomicReference<ResearchBrowser>();
+            fx(() -> {
+                var view = new ResearchBrowser(area, fixture, name -> {});
+                browser.set(view);
+                var scene = new Scene(view, 1320, 850);
+                scene.getStylesheets().add(ResearchBrowser.class.getResource("/vimi.css").toExternalForm());
+                view.applyCss(); view.layout(); view.ensureLoaded();
+                var pending = grid(view).getPlaceholder();
+                if (!"research-grid-loading".equals(pending.getId())
+                        || pending.lookupAll(".progress-indicator").isEmpty()) {
+                    throw new AssertionError(area + " initial empty grid did not show centered loading");
+                }
+                if (((javafx.scene.control.ProgressIndicator) view.lookup("#research-page-activity")).isVisible()) {
+                    throw new AssertionError("Initial page must use one centered spinner instead of duplicate indicators");
+                }
+                if (area.equals("Files")) {
+                    try { writeSnapshot(scene, output.resolve("research-files-loading.png")); }
+                    catch (Exception failure) { throw new RuntimeException(failure); }
+                }
+            });
+            var baseline = new Fixture();
+            var page = baseline.page(area, "", null, Cancellation.NONE).join();
+            fixture.pageRequest.complete(page);
+            flush();
+            fx(() -> {
+                if (browser.get().lookup("#research-detail-loading") == null) {
+                    throw new AssertionError(area + " selected-record pending details were not visible");
+                }
+            });
+            fixture.detailRequest.complete(baseline.detail(area, page.rows().getFirst(), Cancellation.NONE).join());
+            flush();
+            if (area.equals("Items")) {
+                fx(() -> {
+                    var icon = browser.get().lookup("#research-inspector-icon");
+                    if (!(icon instanceof javafx.scene.control.ProgressIndicator) || !icon.isVisible()) {
+                        throw new AssertionError("Inspector icon acquisition must remain visibly pending");
+                    }
+                });
+                fixture.iconRequest.completeExceptionally(new IllegalStateException("authored icon unavailable"));
+                flush();
+                fx(() -> {
+                    var icon = browser.get().lookup("#research-inspector-icon");
+                    if (!(icon instanceof javafx.scene.control.Label)
+                            || !"Icon unavailable".equals(icon.getAccessibleText())) {
+                        throw new AssertionError("Inspector icon failure remained invisible");
+                    }
+                });
+            }
+            if (area.equals("Tables")) {
+                fixture.tableRequest = new CompletableFuture<>();
+                fx(() -> {
+                    button(browser.get(), "Browse table rows").fire();
+                    if (browser.get().lookup("#research-table-loading") == null) {
+                        throw new AssertionError("Table row query needs region-local loading feedback");
+                    }
+                });
+                fixture.tableRequest.completeExceptionally(new IllegalStateException("authored table failure"));
+                flush();
+                fx(() -> {
+                    if (browser.get().lookup("#research-table-loading") != null
+                            || !labelContains(browser.get(), "authored table failure")) {
+                        throw new AssertionError("Table row failure did not retire its loading state");
+                    }
+                });
+            }
+            if (area.equals("Items") || area.equals("Creatures")) {
+                fixture.mediaRequest = new CompletableFuture<>();
+                fx(() -> {
+                    button(browser.get(), "Load media details").fire();
+                    if (browser.get().lookup("#research-media-loading") == null) {
+                        throw new AssertionError("Media query needs region-local loading feedback");
+                    }
+                });
+                fixture.mediaRequest.completeExceptionally(new IllegalStateException("authored media failure"));
+                flush();
+                fx(() -> {
+                    if (browser.get().lookup("#research-media-loading") != null
+                            || !labelContains(browser.get(), "Media unavailable")) {
+                        throw new AssertionError("Media failure did not retire its loading state");
+                    }
+                });
+            }
+            fixture.pageRequest = new CompletableFuture<>();
+            fx(() -> {
+                button(browser.get(), "Refresh").fire();
+                if (grid(browser.get()).getItems().isEmpty()) {
+                    throw new AssertionError("Refresh removed the previously loaded page");
+                }
+                if (!labelContains(browser.get(), "Updating ")) {
+                    throw new AssertionError("Refresh must distinguish pending updates from empty results");
+                }
+            });
+            fixture.pageRequest.completeExceptionally(new IllegalStateException("authored update failure"));
+            flush();
+            fx(() -> {
+                if (grid(browser.get()).getItems().isEmpty() || !labelContains(browser.get(), "Previous results")) {
+                    throw new AssertionError("Failed refresh discarded still-useful previous rows");
+                }
+                if (browser.get().lookup("#research-page-activity").isVisible()) {
+                    throw new AssertionError("Failed page kept its spinner running");
+                }
+            });
+            fixture.pageRequest = new CompletableFuture<>();
+            fx(() -> button(browser.get(), "Refresh").fire());
+            fixture.pageRequest.complete(new ResearchPresentation.Page(List.of(), null, "Authored empty page"));
+            flush();
+            fx(() -> {
+                if (!grid(browser.get()).getItems().isEmpty()
+                        || !((javafx.scene.control.Label) grid(browser.get()).getPlaceholder()).getText().contains("No records returned")) {
+                    throw new AssertionError("Successful empty retry retained an error or loading placeholder");
+                }
+                browser.get().close();
+            });
+        }
+    }
+
+    private static boolean labelContains(ResearchBrowser browser, String part) {
+        return browser.lookupAll(".label").stream().anyMatch(node ->
+                node instanceof javafx.scene.control.Label label && label.getText().contains(part));
+    }
+
+    private static void writeSnapshot(Scene scene, Path path) throws Exception {
+        scene.getRoot().applyCss(); scene.getRoot().layout();
+        var snapshot = scene.snapshot(null);
+        int width = (int) snapshot.getWidth(), height = (int) snapshot.getHeight();
+        var pixels = new int[width * height];
+        snapshot.getPixelReader().getPixels(0, 0, width, height, PixelFormat.getIntArgbInstance(), pixels, 0, width);
+        var bitmap = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+        bitmap.setRGB(0, 0, width, height, pixels, 0, width);
+        ImageIO.write(bitmap, "png", path.toFile());
     }
 
     private static void dropdownContrast() throws Exception {
