@@ -96,9 +96,9 @@ The Polestar page checks the GitHub publication, downloads its published JSONL
 package, and explicitly prepares a provider-local SQLite database. It lists retained
 source versions, exact source client builds, original/database byte counts and record
 counts. Selected versions expose per-table licenses and published coverage. The
-source is enabled by default, with manual periodic metadata checks like Questie;
-the application can invoke its separate full sync operation for startup or a global
-Refresh Sources action. Checking, downloading and preparing remain available as
+source is enabled by default and participates in startup and **Refresh sources**.
+Its optional additional scheduled checks are disabled by default, like Questie.
+Checking, downloading and preparing remain available as
 individual controls.
 
 All acquisition stays on GitHub: the fixed `fitzforge/polestar` branch reference is

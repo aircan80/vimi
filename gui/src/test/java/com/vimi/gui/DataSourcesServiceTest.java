@@ -71,6 +71,10 @@ public final class DataSourcesServiceTest {
                 require(service.polestar().snapshots().size()==1 && service.polestar().snapshots().getFirst().preparedAt()==null,"Download and preparation are distinct states");
                 service.preparePolestar(service.polestar().snapshots().getFirst().id()).join();
                 require(service.polestar().snapshots().getFirst().records()==15,"Preparation publishes indexed local records");
+                int beforeSync = calls.get();
+                service.sync(DataSourcesService.Id.POLESTAR).join();
+                require(calls.get() == beforeSync + 1 && service.polestar().snapshots().getFirst().records() == 15,
+                        "Global Polestar sync checks one head and reuses prepared records");
                 service.setEnabled(DataSourcesService.Id.POLESTAR,false).join();
                 expectFailure(() -> service.syncPolestar().join());
                 require(service.polestar().snapshots().size()==1,"Disabling retains completed source data");
