@@ -13,14 +13,31 @@ final class GpuParentWatchdog implements AutoCloseable {
     private final CompletableFuture<Void> deadlineDrained = new CompletableFuture<>();
     private final long graceMillis;
     private final Runnable forcedExit;
-    private final InputStream control;
+    private final java.util.function.Consumer<String> commands;
 
     GpuParentWatchdog(
             CompletableFuture<?> parentExit,
             InputStream control,
             Duration grace,
             Runnable forcedExit) {
-        this.control = java.util.Objects.requireNonNull(control);
+        this(
+                parentExit,
+                control,
+                grace,
+                forcedExit,
+                ignored -> {
+                    throw new IllegalArgumentException("Unknown GPU control command");
+                });
+    }
+
+    GpuParentWatchdog(
+            CompletableFuture<?> parentExit,
+            InputStream control,
+            Duration grace,
+            Runnable forcedExit,
+            java.util.function.Consumer<String> commands) {
+        this.commands = java.util.Objects.requireNonNull(commands);
+        java.util.Objects.requireNonNull(control);
         graceMillis = grace.toMillis();
         if (graceMillis < 1) {
             throw new IllegalArgumentException("Positive GPU shutdown grace required");
@@ -57,14 +74,27 @@ final class GpuParentWatchdog implements AutoCloseable {
 
     private void readControl(InputStream input) {
         try {
-            int length = 0;
-            while (true) {
-                int value = input.read();
-                if (value == -1 || value == '\n' || ++length > 64) {
+            var line = new StringBuilder();
+            int value;
+            while (!finished.get() && (value = input.read()) != -1) {
+                if (finished.get()) {
                     break;
                 }
+                if (value == '\n') {
+                    String command = line.toString().strip();
+                    if (command.equals("CLOSE")) {
+                        break;
+                    }
+                    commands.accept(command);
+                    line.setLength(0);
+                } else if (value != '\r') {
+                    if (value > 127 || line.length() >= 256) {
+                        throw new IOException("Invalid GPU control line");
+                    }
+                    line.append((char) value);
+                }
             }
-        } catch (IOException ignored) {
+        } catch (IOException | RuntimeException ignored) {
             // Any lost or invalid private control channel terminates this renderer.
         } finally {
             requestStop();
@@ -78,11 +108,8 @@ final class GpuParentWatchdog implements AutoCloseable {
     @Override
     public void close() {
         finished.set(true);
-        try {
-            control.close();
-        } catch (IOException ignored) {
-            /* Child is already terminating. */
-        }
+        // The control reader is virtual/daemon. Do not close System.in here: a blocked
+        // buffered read may hold its close lock and delay process failure delivery.
         if (!stopping.get()) {
             deadlineDrained.complete(null);
         }
