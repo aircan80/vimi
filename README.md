@@ -223,6 +223,7 @@ consumed with `testImplementation testFixtures(project(':object-store'))`.
 - `concepts-talents/`: layer 6 read-only Classic talent trees and prerequisite facts.
 - `concepts-npcs/`: merged NPC identities, names, titles, levels and provider evidence.
 - `concepts-quests/`: merged quest identities, titles, levels and provider evidence.
+- `concepts-locations/`: layer 6 prepared-source NPC/object locations, explicit quest starters and coordinate provenance; see [location contracts](docs/locations.md).
 - `concepts-races/`: layer 6 race metadata, recorded class combinations, racial cards and static model projections.
 - `concepts-professions/`: layer 6 build-local profession abilities, recipe results, reagent/tool slots and raw skill facts; see [Professions](docs/professions.md).
 - `formats-audio/`: bounded isolated Vorbis-to-PCM voice decoding and persisted PCM codec.
