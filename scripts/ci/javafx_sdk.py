@@ -10,9 +10,9 @@ import zipfile
 VERSION = "25.0.1"
 TARGETS = {
     "linux-arm64": ("linux-aarch64", "08415556b12bafce11e22f1ec35cb305f1d6b3a8eeef95b02b5b1007dd2f76e3"),
-    "linux-x64": ("linux", "a205615de1deb345bf5ca93da32dad23a5f535c9ff59661656b8cee6da469496"),
-    "windows-x64": ("windows", "39e5bf08c51578d55cce4832fc61c0faa477dded0e31bb85393a4049e6c62f48"),
-    "macos-x64": ("osx", "5156912b15a702f831a30b8ca58caa56c3ff7426a0537205a2bec6c86fb1c749"),
+    "linux-x64": ("linux-x64", "a205615de1deb345bf5ca93da32dad23a5f535c9ff59661656b8cee6da469496"),
+    "windows-x64": ("windows-x64", "39e5bf08c51578d55cce4832fc61c0faa477dded0e31bb85393a4049e6c62f48"),
+    "macos-x64": ("osx-x64", "5156912b15a702f831a30b8ca58caa56c3ff7426a0537205a2bec6c86fb1c749"),
     "macos-arm64": ("osx-aarch64", "d16571cf466dbdb9a7c985a150df8a5bdc5af75ae0715c6865350c723ca33696"),
 }
 REQUIRED_NOTICES = ("LICENSE", "ASSEMBLY_EXCEPTION", "ADDITIONAL_LICENSE_INFO")

@@ -10,6 +10,13 @@ import javafx_sdk
 
 
 class JavafxSdkTest(unittest.TestCase):
+    def test_pinned_sdk_urls_include_architecture(self):
+        for platform in javafx_sdk.TARGETS:
+            url, checksum = javafx_sdk.sdk_source(platform)
+            architecture = 'aarch64' if platform.endswith('arm64') else 'x64'
+            self.assertIn('-' + architecture + '_bin-sdk.zip', url)
+            self.assertEqual(64, len(checksum))
+
     def archive(self, entries):
         stream = io.BytesIO()
         with zipfile.ZipFile(stream, 'w') as archive:

@@ -26,7 +26,7 @@ storage format; each release notes any such change.
 ## Build and publication
 
 The Desktop prereleases workflow runs on prerelease tag pushes. A manual dispatch
-can build/test artifacts without publishing, using `manual dispatch always validates without publishing`. It runs checks
+always builds/tests artifacts without publishing. It runs checks
 on native platform runners, bundles the architecture-matched SQLite library, then
 smoke-tests the actual packaged launcher, JavaFX startup, a temporary object-store
 library and the bundled child JVM. It never opens the user's library or downloads
@@ -52,10 +52,12 @@ SQLite path):
 ```sh
 ./gradlew :gui:installDist
 python scripts/release/package_app.py --tag v0.1.0-alpha.1 \
-  --sqlite /absolute/path/to/sqlite-library --output build/prerelease-test --image-only
+  --sqlite /absolute/path/to/sqlite-library --javafx-legal /path/to/verified-sdk/legal \
+  --output build/prerelease-test --image-only
 ```
 
-Linux ARM64 first runs scripts/ci/javafx_sdk.py, passes its artifacts directory as
+Every target first runs scripts/ci/javafx_sdk.py with --platform to obtain matching
+verified OpenJFX legal notices. Linux ARM64 also passes its artifacts directory as
 `-PjavafxSdkRepository=...` to Gradle, and passes --javafx-native/--javafx-legal to the
 packager. Those are build inputs; end users receive the files in the package.
 
