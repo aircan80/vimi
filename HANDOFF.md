@@ -28,9 +28,10 @@ request-to-copied-frame p50 30.65 ms / p95 39.09 ms, sampled 31.17 fps and copy 
 These are machine/fixture-specific observations, not end-to-end live-build or
 cross-platform performance claims. The GUI proof covers camera changes, hidden
 viewport shutdown/restart and failure fallback, but independent review has found
-two delivery races still being corrected. **Final GPU implementation approval is
-pending.** Full fresh checks are also in progress; do not infer a final pass from
-older logs. No actual Metal/D3D hardware rendering or new release is claimed.
+two delivery races which are now corrected and covered by deterministic
+regressions. Independent scoped approval and full local checks pass at `2f19c4c`;
+see [GPU review](docs/gpu-preview-review.md). Hosted and packaged checks remain
+separate gates. No actual Metal/D3D hardware rendering or new release is claimed.
 
 The default native runtime probe loads core/bgfx, enumerates native backends,
 constructs native init parameters and checks eight packaged shader hashes without
