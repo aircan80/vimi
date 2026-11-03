@@ -11,6 +11,8 @@ import com.vibeminer.rendering.world.TerrainCamera;
 
 import javafx.animation.AnimationTimer;
 import javafx.application.Platform;
+import javafx.geometry.Insets;
+import javafx.geometry.Pos;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.control.Button;
 import javafx.scene.control.CheckBox;
@@ -73,6 +75,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final BorderPane content = new BorderPane();
     private final ImageView image = new ImageView();
     private final StackPane viewport = new StackPane(image);
+    private final WorldMinimap minimap = new WorldMinimap();
     private final TerrainGpuPreview gpu;
     private final CheckBox gpuEnabled = new CheckBox("GPU terrain");
     private final Button retryGpu = new Button("Retry GPU");
@@ -248,7 +251,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         localLoading.setVisible(false);
         localLoading.setManaged(false);
         firstFrameActivity.setMouseTransparent(true);
-        viewport.getChildren().add(firstFrameActivity);
+        viewport.getChildren().addAll(firstFrameActivity, minimap);
+        StackPane.setAlignment(minimap, Pos.TOP_RIGHT);
+        StackPane.setMargin(minimap, new Insets(12));
         VBox.setVgrow(maps, Priority.ALWAYS);
         heading.getStyleClass().add("h2");
         status.setWrapText(true);
@@ -427,6 +432,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     public void handle(long now) {
                         if (!active || !explorer || camera == null) return;
                         if (gpu != null && !viewportActive()) {
+                            minimap.hide();
                             if (gpuVisible) {
                                 gpu.hide();
                                 gpuVisible = false;
@@ -590,6 +596,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void cancelRequests() {
+        minimap.hide();
         retireGpu();
         stopArea(false);
         selection++;
@@ -930,6 +937,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void showInventory() {
+        minimap.hide();
         retireGpu();
         explorer = false;
         timer.stop();
@@ -1211,6 +1219,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     private void requestFrame() {
         if (!active || !explorer || camera == null || terrainScene == null || closed) return;
+        if (stale(selection) || !viewportActive()) {
+            minimap.hide();
+            return;
+        }
+        minimap.update(handle, inventory, origin, originX, originY,
+                camera.x(), camera.y(), camera.yaw());
         double targetWidth = Math.max(1, viewport.getWidth()),
                 targetHeight = Math.max(1, viewport.getHeight());
         double scale = Math.min(1, Math.min(800 / targetWidth, 500 / targetHeight));
@@ -1357,6 +1371,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     @Override
     public void close() {
         closed = true;
+        minimap.close();
         if (gpu != null) gpu.close();
         invalidate();
         requests.shutdownNow();

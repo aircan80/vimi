@@ -1,5 +1,19 @@
 # vimi development handoff
 
+## Delivery steering — latest user instruction
+
+Group almost-ready parallel features into a single prerelease when integrated
+checks pass; the previous one-item-per-release policy is superseded. Prioritize
+terrain textures and buildings/doodads/water above packaged GPU diagnostics.
+Diagnostics checkpoints remain preserved; do not spend further implementation
+work there ahead of world appearance. Current integration worktree is
+`/tmp/vimi-world-release-bundle`, branch`feature/world-release-bundle`: World
+navigation/empty-map/Space, reviewed Dwarf and item-effects changes plus minimap
+service/component. Root is wiring minimap hooks and integrated tests. No combined
+release is published yet. Existing PR146/147/148 are superseded once the combined
+PR is concrete. Texture/source and world placement designs are now parallel agent
+priorities, alongside the bounded view-distance spike.
+
 ## Current World reliability and parallel work — 2026-11-03
 
 Alpha.15 is verified published at8616b49 (run41723765100, explicit prerelease,
@@ -40,7 +54,7 @@ hardware qualification remains outstanding. Keep every roadmap release separate.
 ## Continuous parallel delivery instruction
 
 The user explicitly says keep going without stopping, develop independent items
-in parallel, and make each roadmap item a separate GitHub prerelease. See
+in parallel, and group almost-ready items into prereleases under the latest delivery policy. See
 [delivery policy](docs/prereleases.md#roadmap-delivery-policy). Active agents own
 GPU terrain feasibility and independent acceptance, plus a parallel item-effects
 comparison design. Root owns packaging/integration and verified zone-navigation

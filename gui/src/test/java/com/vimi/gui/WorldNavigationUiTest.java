@@ -46,9 +46,11 @@ public final class WorldNavigationUiTest {
         final List<WorldFormats.Tile> tiles = new ArrayList<>();
         final AtomicReference<Set<String>> allowed = new AtomicReference<>();
         final AtomicReference<AssertionError> failure = new AtomicReference<>();
+        final java.util.concurrent.atomic.AtomicLong revision = new java.util.concurrent.atomic.AtomicLong(1);
+        final java.util.concurrent.atomic.AtomicInteger minimapCalls = new java.util.concurrent.atomic.AtomicInteger();
         Fixture() {
             for(int x=X-3;x<=X+3;x++) for(int y=Y-3;y<=Y+3;y++)
-                tiles.add(new WorldFormats.Tile(x,y,10000+x*64+y,0,0));
+                tiles.add(new WorldFormats.Tile(x,y,10000+x*64+y,0,20000+x*64+y));
         }
         public CompletableFuture<WorldService.Catalog> catalog(Cancellation token) {
             return CompletableFuture.completedFuture(new WorldService.Catalog(List.of(map),List.of(),List.of()));
@@ -64,6 +66,10 @@ public final class WorldNavigationUiTest {
             var terrain=new WorldFormats.Terrain(new float[]{maxX,maxY,0,(float)(maxX-SIZE),maxY,0,maxX,(float)(maxY-SIZE),0},new int[]{0,1,2},1);
             return CompletableFuture.completedFuture(new WorldService.LoadedTile(tile,terrain,null));
         }
+        public CompletableFuture<WorldService.Minimap> minimap(WorldFormats.Tile tile, Cancellation token) {
+            minimapCalls.incrementAndGet();
+            return CompletableFuture.completedFuture(WorldService.Minimap.unavailable("Authored missing artwork"));
+        }
         public CompletableFuture<Void> closeAsync() { throw new AssertionError("View borrows fixture"); }
     }
 
@@ -71,7 +77,7 @@ public final class WorldNavigationUiTest {
         Platform.startup(() -> {
             Platform.setImplicitExit(false);
             var fixture=new Fixture();
-            var view=new WorldView(() -> fixture,() -> 1);
+            var view=new WorldView(() -> fixture,fixture.revision::get);
             var stage=new Stage();
             stage.setScene(new Scene(view,1000,750)); stage.show();
             DONE.whenComplete((value,error) -> Platform.runLater(() -> {view.close();stage.close();}));
@@ -104,7 +110,22 @@ public final class WorldNavigationUiTest {
     }
 
     private static void move(WorldView view,Fixture fixture,int index) {
-        if(index==MOVES.length) { controls(view); DONE.complete(null); return; }
+        if(index==MOVES.length) {
+            controls(view);
+            invoke(view,"requestFrame");
+            await(fixture,() -> !view.lookup("#world-minimap-activity").isVisible(),() -> {
+                int before = fixture.minimapCalls.get();
+                fixture.revision.incrementAndGet();
+                invoke(view,"requestFrame");
+                var viewport = (javafx.scene.layout.StackPane)view.lookup("#world-viewport");
+                viewport.resize(viewport.getWidth()+17,viewport.getHeight()+11);
+                invoke(view,"requestFrame");
+                require(!view.lookup("#world-minimap").isVisible(),"Retired source cannot reveal minimap after resize");
+                require(fixture.minimapCalls.get()==before,"Retired source cannot request artwork after resize");
+                DONE.complete(null);
+            });
+            return;
+        }
         int dx=MOVES[index][0],dy=MOVES[index][1];
         var expected=keys(dx,dy);
         fixture.allowed.set(expected);

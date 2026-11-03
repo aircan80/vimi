@@ -298,7 +298,10 @@ public final class WorldUiTest {
                                                                                         + " retires"
                                                                                         + " initial"
                                                                                         + " activity");
+                                                                            assertMountedMinimap(view);
                                                                             view.deactivate();
+                                                                            require(!view.lookup("#world-minimap").isVisible(),
+                                                                                    "Leaving World hides minimap and retires artwork work");
                                                                             require(
                                                                                     !view.lookup(
                                                                                                     "#world-local-activity")
@@ -1413,6 +1416,23 @@ public final class WorldUiTest {
         } catch (java.io.IOException failure) {
             throw new java.io.UncheckedIOException(failure);
         }
+    }
+
+    private static void assertMountedMinimap(WorldView view) {
+        var minimap = view.lookup("#world-minimap");
+        var viewport = view.lookup("#world-viewport");
+        require(minimap != null && minimap.isVisible(), "Explorer shows mounted minimap");
+        view.applyCss();
+        view.layout();
+        var mapBounds = minimap.localToScene(minimap.getBoundsInLocal());
+        var viewBounds = viewport.localToScene(viewport.getBoundsInLocal());
+        require(Math.abs(viewBounds.getMaxX() - mapBounds.getMaxX() - 12) < 1,
+                "Minimap stays in viewport right corner");
+        require(Math.abs(mapBounds.getMinY() - viewBounds.getMinY() - 12) < 1,
+                "Minimap stays in viewport top corner");
+        require(((javafx.scene.control.Label) view.lookup("#world-minimap-message"))
+                        .getText().contains("unavailable"),
+                "Missing recorded artwork explains fallback in mounted minimap");
     }
 
     private static void require(boolean condition, String message) {

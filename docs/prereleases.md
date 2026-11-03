@@ -26,28 +26,25 @@ storage format; each release notes any such change.
 
 ## Roadmap delivery policy
 
-The user explicitly requests one GitHub prerelease per completed roadmap item,
-with independent items developed in parallel. Do not combine completed roadmap
-items into one release to wait for unrelated work. Allocate the next unused
-alpha sequence at delivery time, after integration checks; never reserve a number
-by publishing a tag early or replace an existing tag.
+The user authorizes grouping independently reviewed features that finish close
+together into one GitHub prerelease. Work continues in parallel; do not hold an
+urgent fix for unrelated unfinished work. Allocate the next unused alpha sequence
+at delivery time after integration checks; never replace an existing tag.
 
-Current independent tracks:
+Current priorities:
 
-| Track | Next release boundary |
+| Priority | Track |
 | --- | --- |
-| World rendering | Inline GPU height-shaded terrain, preserving camera, holes and CPU fallback |
-| Comparison | Reviewed item-effect link/input comparisons, then separately scoped additional areas |
-| World navigation | Verified area/zone-to-terrain navigation with explicit discovery coverage |
-| Native qualification | Actual Metal/D3D rendering acceptance and resulting platform fixes |
-| Races | Additional reviewed appearance profiles |
-| Animation | Reviewed animated model playback |
-| Equipment | Reviewed held/equipped model composition |
+| Immediate delivery | World navigation fix, Space ascent and map feedback; include ready Dwarf appearances, item-effects comparison and minimap after integrated checks |
+| World exploration | Finish minimap and bounded greater view distance |
+| World appearance | Terrain textures, then buildings/doodads and water |
+| Further features | Animation, equipment and additional reviewed comparison/race profiles |
+| Deferred tooling | Packaged GPU diagnostics; preserve reviewed checkpoints while world appearance takes priority |
 
-Each boundary requires its own review, meaningful validation, release notes and
-successful packaged checks. Native hardware acceptance cannot be claimed from
-cross-compilation alone. Package jobs may overlap development on another track;
-keep source/tag identities and release notes exact.
+Every included feature still requires independent review, meaningful validation,
+clear release notes and successful packaged checks. Actual Metal/D3D hardware
+qualification remains outstanding and cannot be claimed from cross-compilation
+alone. Keep source/tag identities and release notes exact.
 
 ## Build and publication
 

@@ -449,3 +449,10 @@ tasks.register('worldNavigationUiTest', JavaExec) {
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.WorldNavigationUiTest'
 }
+
+// Authored JavaFX artwork/lifecycle proof; requires a desktop display.
+tasks.register('worldMinimapUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldMinimapUiTest'
+}
