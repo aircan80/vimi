@@ -141,6 +141,16 @@ subtractive blending, arbitrary priority planes or layered/translucent materials
 The first source admission permits the observed single additive pass per model;
 new blended combinations require separate fixtures/review.
 
+**Textures OFF is a geometry diagnostic**, not a different source-material
+qualification. Override every material, including rich ENV/unlit/additive ones,
+to the existing lit-flat neutral opaque draw with LESS and depth write: no
+texture sampling/alpha cutout, blending or unlit override. Keep the same section
+qualification and all admitted card transforms. Shade transformed card face
+normals against the legacy headlight expressed in eye space; ordinary legacy
+geometry retains its established result. `PreviewCamera.lightingEye` provides the
+same operation to the CPU. This avoids opaque-white additive rectangles while
+preserving the old texture-off mode. All/raw visibility is an independent control.
+
 GPU additive state uses separate RGB/alpha factors: SRC_ALPHA, ONE for RGB and
 ZERO, ONE for alpha, or disables alpha writes while retaining the cleared opaque
 alpha. CPU uses the same equations. Neither path may let additive geometry write
@@ -283,6 +293,10 @@ renderer files or use live application data as generated-test output.
   conservative bounds at several yaw/pitch values for card-only and mixed meshes,
   near clipping and depth preservation. Reject multiple weights, palette disagreement, nonleaf,
   own TRS, external bones and unreviewed billboard/inheritance modes.
+- Textures OFF: ENV, unlit and additive examples all become neutral opaque
+  LESS/depth-writing diagnostic geometry; alpha zero no longer punches a hole or
+  contributes an additive blend in this diagnostic. Qualification and card
+  transforms still apply, with eye-space flat-light checks for rotated cards.
 - Confirm decoded old v2 output and existing Races/qualified/raw diagnostic modes
   are unchanged. CPU/GPU pixel agreement is necessary but is not the only oracle.
 
