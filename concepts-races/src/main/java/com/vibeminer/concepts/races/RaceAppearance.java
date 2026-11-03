@@ -323,13 +323,7 @@ final class RaceAppearance {
                 if (mapped == null || !seen.add(batch.sectionIndex())) {
                     continue;
                 }
-                bindings.add(
-                        new MeshAppearance.Surface(
-                                batch.sectionIndex(),
-                                mapped,
-                                (texture.flags() & 1) != 0,
-                                (texture.flags() & 2) != 0,
-                                material.blendMode() == 1));
+                bindings.add(RaceAppearanceProfiles.surface(batch, material, texture, mapped));
             }
             if (bindings.isEmpty()) {
                 return failed(
