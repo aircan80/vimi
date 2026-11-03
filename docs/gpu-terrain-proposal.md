@@ -337,3 +337,15 @@ qualifies only actual headless Vulkan with zero-to-one clip depth and renderable
 D32F. Metal, DX11 and homogeneous-depth/OpenGL execution are not inferred from
 successful offline compilation. No production GUI integration is authorized by
 this test-only checkpoint without independent feasibility review.
+
+The separately authored `TerrainSpikeAcceptance` runner verifies 27 actual Vulkan
+frames, including 0.01/0.1-unit overlaps near depth2000, surviving far portions
+near depth95333 in both orders, exact coplanar first-wins, original-corner fog,
+near/far rules, native axes/yaw/pitch, +/-999000 coordinate rebasing, integer-row
+sky, opaque output and persistent camera reuse. This qualifies the tested Vulkan
+feasibility cases; it is not production integration, maximum-memory, or other
+backend runtime approval. Run it explicitly after complete shader verification:
+
+```sh
+./gradlew :rendering-bgfx:nativeGpuTerrainAcceptance
+```
