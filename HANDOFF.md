@@ -1,5 +1,33 @@
 # vimi development handoff
 
+## Verified alpha.16 publication and active world appearance work
+
+Alpha.16 is verified published at46ad728 (Desktop prereleases run41732978969):
+explicit prerelease, not a draft,18 assets, all five packaged platforms passed.
+PR149 is FF-merged; superseded PR146/147/148 are closed. Includes navigation-axis
+fix, Space ascent, map explanations, top-right minimap, Wolf105/Ram94 reflective
+sections, Dwarf profiles and item-effects comparison. Immutable local launcher:
+`.local/apps/world-46ad728/bin/vimi-gui-prototype` (UI/native24-shader smoke passed).
+Never overwrite an existing frozen distribution or published tag.
+
+Continue in `/tmp/vimi-world-appearance-integration`, branch
+`feature/world-appearance-integration` (through09178d4, not released): reviewed
+MAID/placement parser, bounded provenance source service plus all-helper close
+failure drain, test-only LOD design/spike, SD/HD investigation and strict opt-in
+handmade BC2 decoder. Integrated checks and Java/C# image interop pass. The
+placement and texture source work is not yet connected to visible rendering.
+
+Parallel agents are advancing texture source/atlas APIs, placement transform
+proof/design and water source/design. Test-only exact LOD error reference517979e
+awaits root review. Terrain textures, buildings/doodads and water take priority
+over preserved GPU diagnostics. Group almost-ready features when useful.
+
+SD/HD exploration proves the exact70755 client UI uses C_GameRules APIs, but no
+verified local pairing was found in current qualified tables or sampled ROOT
+entries. Do not equate fallback, sex, LOD or mip links with SD/HD. Proposal is in
+the appearance integration branch; actual client model-ID observation is a future
+mapping gate. No game settings/account/addon writes were performed.
+
 ## Current combined delivery checkpoint
 
 Combined PR149, branch`feature/world-release-bundle`, worktree
