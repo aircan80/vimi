@@ -116,9 +116,10 @@ final class BgfxModelRenderer implements AutoCloseable {
                 bgfx_vertex_layout_add(
                         layout, BGFX_ATTRIB_TEXCOORD1, 4, BGFX_ATTRIB_TYPE_FLOAT, false, false);
                 bgfx_vertex_layout_end(layout);
-                if (layout.stride() != GpuModelScene.VERTEX_BYTES)
+                if (layout.stride() != GpuModelScene.VERTEX_BYTES) {
                     throw new IllegalStateException(
                             "GPU vertex layout disagrees with packed scene");
+                }
                 FloatBuffer raw = MemoryUtil.memAllocFloat(scene.vertexData().remaining());
                 try {
                     raw.put(scene.vertexData()).flip();
@@ -218,15 +219,18 @@ final class BgfxModelRenderer implements AutoCloseable {
                 for (var draw : scene.draws()) {
                     if (!draw.visible(view.parts(), qualifiedMaterialsOnly)
                             || draw.indexCount() == 0
-                            || draw.additive(textured) != (phase == 1)) continue;
+                            || draw.additive(textured) != (phase == 1)) {
+                        continue;
+                    }
                     submit(draw, eye, projection, light, material, flags, textured, false);
                 }
             }
             if (view.wireframe()) {
                 for (var draw : scene.draws()) {
                     if (draw.visible(view.parts(), qualifiedMaterialsOnly)
-                            && draw.indexCount() != 0)
+                            && draw.indexCount() != 0) {
                         submit(draw, eye, projection, light, material, flags, textured, true);
+                    }
                 }
             }
         }
@@ -271,8 +275,9 @@ final class BgfxModelRenderer implements AutoCloseable {
                 draw.firstIndex() * (edgePass ? 2 : 1),
                 draw.indexCount() * (edgePass ? 2 : 1));
         long state = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A;
-        if (edgePass) state |= BGFX_STATE_DEPTH_TEST_LEQUAL | BGFX_STATE_PT_LINES;
-        else if (draw.additive(textured)) {
+        if (edgePass) {
+            state |= BGFX_STATE_DEPTH_TEST_LEQUAL | BGFX_STATE_PT_LINES;
+        } else if (draw.additive(textured)) {
             state |=
                     BGFX_STATE_DEPTH_TEST_LEQUAL
                             | BGFX_STATE_BLEND_FUNC_SEPARATE(
@@ -280,15 +285,21 @@ final class BgfxModelRenderer implements AutoCloseable {
                                     BGFX_STATE_BLEND_ONE,
                                     BGFX_STATE_BLEND_ZERO,
                                     BGFX_STATE_BLEND_ONE);
-        } else state |= BGFX_STATE_DEPTH_TEST_LESS | BGFX_STATE_WRITE_Z;
+        } else {
+            state |= BGFX_STATE_DEPTH_TEST_LESS | BGFX_STATE_WRITE_Z;
+        }
         bgfx_set_state(state, 0);
         bgfx_submit(0, program, 0, BGFX_DISCARD_ALL);
     }
 
     private void bind(int slot, short uniform, MeshAppearance.TextureStage stage) {
         int flags = BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT | BGFX_SAMPLER_MIP_POINT;
-        if (stage == null || !stage.wrapU()) flags |= BGFX_SAMPLER_U_CLAMP;
-        if (stage == null || !stage.wrapV()) flags |= BGFX_SAMPLER_V_CLAMP;
+        if (stage == null || !stage.wrapU()) {
+            flags |= BGFX_SAMPLER_U_CLAMP;
+        }
+        if (stage == null || !stage.wrapV()) {
+            flags |= BGFX_SAMPLER_V_CLAMP;
+        }
         bgfx_set_texture(
                 slot, uniform, stage == null ? white : textures.get(stage.textureIndex()), flags);
     }

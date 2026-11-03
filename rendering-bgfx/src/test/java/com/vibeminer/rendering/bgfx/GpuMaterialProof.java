@@ -405,8 +405,11 @@ public final class GpuMaterialProof {
                             List.of(new PreviewMesh.Part(0, 0, 3)));
             float h = (float) Math.sqrt(.5);
             int[] gradient = new int[256 * 256];
-            for (int y = 0; y < 256; y++)
-                for (int x = 0; x < 256; x++) gradient[y * 256 + x] = (x << 16) | (y << 8) | 31;
+            for (int y = 0; y < 256; y++) {
+                for (int x = 0; x < 256; x++) {
+                    gradient[y * 256 + x] = (x << 16) | (y << 8) | 31;
+                }
+            }
             var environment =
                     new MeshAppearance.Material(
                             MeshAppearance.Combiner.OPAQUE_MOD2X_NA,
@@ -526,13 +529,14 @@ public final class GpuMaterialProof {
                             card,
                             new StaticMeshRenderer.View(-1.1, -.5, 1, false, Set.of()),
                             true);
-            for (int y : new int[] {115, 155})
+            for (int y : new int[] {115, 155}) {
                 for (int x : new int[] {115, 140}) {
                     require(
                             first[y * WIDTH + x] == turned[y * WIDTH + x]
                                     && first[y * WIDTH + x] == reversed[y * WIDTH + x],
                             "Rigid card UV corners remain screen aligned around nonorigin pivot");
                 }
+            }
             // Textures OFF overrides source ADD/unlit/alpha with flat neutral opaque diagnostic.
             int[] neutral = render(card.mesh(), card, VIEW, false);
             assertPixel(
@@ -547,7 +551,11 @@ public final class GpuMaterialProof {
             var depth = rigidCard(.5f);
             int[] shifted = render(depth.mesh(), depth, VIEW, true);
             int count = 0;
-            for (int x = 0; x < WIDTH; x++) if (shifted[128 * WIDTH + x] != CLEAR) count++;
+            for (int x = 0; x < WIDTH; x++) {
+                if (shifted[128 * WIDTH + x] != CLEAR) {
+                    count++;
+                }
+            }
             // Radius = sqrt(3)*sqrt(.25^2+.5^2+.5^2), depth=radius*3.2+.5.
             // Projected full width is about34.36px; flattening offsetX gives about38.49px.
             require(
