@@ -341,6 +341,47 @@ final class HttpProtocolTest {
     }
 
     @Test
+    void egLinkIsCommitPinnedAndGithubOnly() throws Exception {
+        String revision = "a".repeat(40);
+        assertThrows(
+                IllegalArgumentException.class, () -> SourceUrls.egLink("main", "data/index.json"));
+        assertThrows(
+                IllegalArgumentException.class, () -> SourceUrls.egLink(revision, "../../secrets"));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> SourceUrls.egLink(revision, "https://efficient.games/data.json"));
+        try (LoopbackSources fixture =
+                new LoopbackSources(
+                        new NetworkOptions(),
+                        answer(request -> new MockResponse().setBody("{}")))) {
+            var reply =
+                    fixture.clients()
+                            .fetchEgLinkFile(
+                                    revision,
+                                    "data/wowf/1.60.1.70707/hotfixes.enUS.json",
+                                    Cancellation.NONE)
+                            .join();
+            assertEquals("raw.githubusercontent.com", reply.url().getHost());
+            assertTrue(reply.url().getPath().contains("/" + revision + "/data/"));
+        }
+        try (LoopbackSources fixture =
+                new LoopbackSources(
+                        new NetworkOptions(),
+                        answer(
+                                request ->
+                                        new MockResponse()
+                                                .setResponseCode(302)
+                                                .addHeader(
+                                                        "Location",
+                                                        "https://efficient.games/data.json")))) {
+            assertEquals(
+                    Failure.PROTOCOL,
+                    failed(() -> fixture.clients().fetchEgLinkHead(Cancellation.NONE)).overall());
+            assertEquals(1, fixture.requestCount());
+        }
+    }
+
+    @Test
     void tactKeysUseFixedBoundedPublicSourceAndRefuseRedirects() throws Exception {
         String body = "0123456789ABCDEF 00112233445566778899AABBCCDDEEFF\n";
         try (LoopbackSources fixture =

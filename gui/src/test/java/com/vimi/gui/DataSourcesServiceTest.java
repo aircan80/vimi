@@ -28,6 +28,7 @@ public final class DataSourcesServiceTest {
             futureSchemaIsReadOnly(directory.resolve("future"));
             mappingRules();
             communityKeys(directory.resolve("keys"));
+            egLink(directory.resolve("eg-link"));
             System.out.println(
                     "Data sources: persisted policy, mapping, empty/invalid inventories and future"
                             + " schema passed");
@@ -87,6 +88,53 @@ public final class DataSourcesServiceTest {
             try {
                 int before = calls.get();
                 require(service.tactKeysForBuild(com.vibeminer.access.Cancellation.NONE).count() == 2 && calls.get() == before + 1, "Overdue daily update runs after restart");
+            } finally { service.closeAsync().join(); access.closeAsync().join(); }
+        } finally { library.closeAsync().join(); }
+    }
+
+    private static void egLink(Path directory) throws Exception {
+        var library = ObjectStore.openLibrary(directory.resolve("library")).join();
+        try (var catalog = LibraryCatalog.open(library.databasePath()).join()) {
+            var owner = library.forOwner("provider:test-eg", LibraryCatalog.Scope.GLOBAL, "source", LibraryCatalog.Role.ORIGINAL);
+            var access = CachingObjectSource.localOnly(owner, owner);
+            var generated = new PackGeneratedStore(library, library.forOwner("provider:test-eg", LibraryCatalog.Scope.GLOBAL, "index", LibraryCatalog.Role.DERIVED));
+            var names = new CommunityFileNames(access, generated, token -> java.util.concurrent.CompletableFuture.completedFuture(true));
+            var requests = new java.util.concurrent.atomic.AtomicInteger();
+            com.vibeminer.network.EgLinkClient client = new com.vibeminer.network.EgLinkClient() {
+                public java.util.concurrent.CompletableFuture<com.vibeminer.network.NetworkTypes.EgLinkReply> fetchEgLinkHead(com.vibeminer.network.Cancellation token) {
+                    requests.incrementAndGet();
+                    return java.util.concurrent.CompletableFuture.completedFuture(new com.vibeminer.network.NetworkTypes.EgLinkReply(com.vibeminer.network.SourceUrls.EG_LINK_HEAD, java.time.Instant.EPOCH,
+                            ("{\"object\":{\"sha\":\"" + "a".repeat(40) + "\"}}").getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+                }
+                public java.util.concurrent.CompletableFuture<com.vibeminer.network.NetworkTypes.EgLinkReply> fetchEgLinkFile(String revision, String path, com.vibeminer.network.Cancellation token) {
+                    token.check(); requests.incrementAndGet();
+                    String credit = "\"license\":\"CC BY 4.0\",\"attribution\":\"" + com.vibeminer.eglink.EgLinkTypes.ATTRIBUTION + "\"";
+                    String body = path.equals("data/index.json")
+                            ? "{" + credit + ",\"products\":{\"wowf\":{\"1.60.1.70707\":{\"npcs\":{\"records\":1,\"sources\":1,\"lastCollectedOn\":\"2026-11-01\"}}}}}"
+                            : "{\"meta\":{" + credit + ",\"dataset\":\"npcs\",\"product\":\"wowf\",\"clientBuild\":\"1.60.1.70707\",\"schemaVersion\":1},\"npcs\":{\"197\":{\"name\":\"Authored NPC\"}}}";
+                    return java.util.concurrent.CompletableFuture.completedFuture(new com.vibeminer.network.NetworkTypes.EgLinkReply(com.vibeminer.network.SourceUrls.egLink(revision,path),java.time.Instant.EPOCH,body.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+                }
+            };
+            var service = DataSourcesService.open(library.databasePath(), directory.resolve("questie"), names, catalog, null, owner, owner, client);
+            try {
+                require(service.policy(DataSourcesService.Id.EG_LINK).checks() == DataSourcesService.Checks.MANUAL, "EG Link defaults to explicit snapshot acquisition");
+                require(requests.get() == 0 && service.egLink().snapshots().isEmpty(), "Local source opening performs no EG Link requests");
+                service.checkEgLink().join();
+                require(service.egLink().catalog().builds().size() == 1, "GitHub snapshot inventory is cached");
+                service.downloadEgLink(service.egLink().catalog().builds().getFirst()).join();
+                var snapshot = service.egLink().snapshots().getFirst();
+                require(snapshot.indexedRecords() == null, "Download and processing are separate actions");
+                service.prepareEgLink(snapshot.id()).join();
+                require(service.egLink().snapshots().getFirst().indexedRecords() == 1, "Prepared inventory shows actual local records");
+                service.setEnabled(DataSourcesService.Id.EG_LINK, false).join();
+                var current = service;
+                expectFailure(() -> current.checkEgLink().join());
+            } finally { service.closeAsync().join(); }
+            int previous = requests.get();
+            service = DataSourcesService.open(library.databasePath(), directory.resolve("questie"), names, catalog, null, owner, owner, client);
+            try {
+                require(!service.policy(DataSourcesService.Id.EG_LINK).enabled(), "EG Link enablement persists");
+                require(service.egLink().snapshots().getFirst().indexedRecords() == 1 && requests.get() == previous, "Prepared EG Link inventory restores offline");
             } finally { service.closeAsync().join(); access.closeAsync().join(); }
         } finally { library.closeAsync().join(); }
     }
@@ -151,6 +199,7 @@ public final class DataSourcesServiceTest {
                     sources.setEnabled(DataSourcesService.Id.DEFINITIONS, false).join();
                     sources.setEnabled(DataSourcesService.Id.QUESTIE, false).join();
                     sources.setEnabled(DataSourcesService.Id.TACT_KEYS, false).join();
+                    sources.setEnabled(DataSourcesService.Id.EG_LINK, false).join();
                     sources.setChecks(
                                     DataSourcesService.Id.QUESTIE, DataSourcesService.Checks.DAILY)
                             .join();

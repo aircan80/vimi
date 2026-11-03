@@ -1,7 +1,7 @@
 # External data sources
 
 Data Sources manages QuestieDB, the community listfile, bundled WoWDBDefs, and
-public wowdev/TACTKeys.
+public wowdev/TACTKeys and EG Link.
 Blizzard CDN acquisition remains in Builds. Native screens use cached typed service
 snapshots; persistence, provider calls and inventory work run off the JavaFX thread.
 The earlier illustrative source figures have been replaced with local measurements.
@@ -108,3 +108,7 @@ through `wowf`. It did not alter the user's application library.
 Source page rendered from an isolated live-test library (not the user library):
 
 ![Questie source management](images/data-sources-live.png)
+
+EG Link uses GitHub-only commit-pinned product/build snapshots with separate download
+and processing controls; see [EG Link workflow](eg-link.md). It defaults to manual
+checks and does not silently substitute beta/older data for a requested build.

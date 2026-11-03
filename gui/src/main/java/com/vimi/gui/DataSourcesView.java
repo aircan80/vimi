@@ -32,6 +32,7 @@ final class DataSourcesView extends BorderPane {
     private final DataSourcesService service;
     private Source selectedSource;
     private String selectedDatabase;
+    private String selectedEgBuild, selectedEgSource;
     private final Label activityLabel = text("", "muted");
     private final javafx.scene.control.ProgressBar progress =
             new javafx.scene.control.ProgressBar(-1);
@@ -79,7 +80,9 @@ final class DataSourcesView extends BorderPane {
                                 "github.com/wowdev/WoWDBDefs"),
                         new Source("TACTKeys", "Decryption keys",
                                 "Public WoW keys used to read encrypted files and table sections.",
-                                "github.com/wowdev/TACTKeys"));
+                                "github.com/wowdev/TACTKeys"),
+                        new Source("EG Link", "Observed game data", "Download GitHub snapshots and prepare searchable local data.",
+                                "github.com/JIVESCORP/eg-link-output-wowf"));
         sources.setAccessibleText("External data sources");
         sources.getStyleClass().add("product-menu");
         sources.setCellFactory(
@@ -135,6 +138,7 @@ final class DataSourcesView extends BorderPane {
                 : selectedSource.name().equals("Community listfile")
                         ? DataSourcesService.Id.LISTFILE
                         : selectedSource.name().equals("TACTKeys") ? DataSourcesService.Id.TACT_KEYS
+                        : selectedSource.name().equals("EG Link") ? DataSourcesService.Id.EG_LINK
                         : DataSourcesService.Id.DEFINITIONS;
     }
 
@@ -211,6 +215,7 @@ final class DataSourcesView extends BorderPane {
         if (id == DataSourcesService.Id.QUESTIE) liveQuestie(page);
         else if (id == DataSourcesService.Id.LISTFILE) liveListfile(page);
         else if (id == DataSourcesService.Id.TACT_KEYS) liveTactKeys(page);
+        else if (id == DataSourcesService.Id.EG_LINK) liveEgLink(page);
         else {
             var definitions = service.definitions();
             if (definitions != null)
@@ -266,7 +271,7 @@ final class DataSourcesView extends BorderPane {
                             settings(
                                     id == DataSourcesService.Id.LISTFILE
                                             ? "Automatic listfile updates"
-                                            : id == DataSourcesService.Id.TACT_KEYS ? "Automatic key updates" : "Release checks",
+                                            : id == DataSourcesService.Id.TACT_KEYS ? "Automatic key updates" : id == DataSourcesService.Id.EG_LINK ? "GitHub snapshot checks" : "Release checks",
                                     checks,
                                     "Last successful check: " + checkedDate(id)));
         }
@@ -282,6 +287,75 @@ final class DataSourcesView extends BorderPane {
         provenance.setExpanded(false);
         page.getChildren().add(provenance);
         return page;
+    }
+
+    private void liveEgLink(VBox page) {
+        var state = service.egLink();
+        boolean enabled = service.policy(DataSourcesService.Id.EG_LINK).enabled();
+        boolean busy = service.activity(DataSourcesService.Id.EG_LINK).busy();
+        long originals = state.snapshots().stream().mapToLong(com.vibeminer.eglink.EgLinkTypes.Snapshot::originalBytes).sum();
+        long prepared = state.snapshots().stream().filter(value -> value.databaseBytes() != null).mapToLong(value -> value.databaseBytes()).sum();
+        page.getChildren().addAll(metrics(
+                metric("GITHUB BUILDS", Integer.toString(state.catalog().builds().size()), "In the checked commit"),
+                metric("LOCAL SNAPSHOTS", Integer.toString(state.snapshots().size()), "Retained product / build versions"),
+                metric("LOCAL DATA", bytes(originals + prepared), bytes(originals) + " original · " + bytes(prepared) + " prepared")),
+                text(com.vibeminer.eglink.EgLinkTypes.ATTRIBUTION + " Prepared data is transformed into local indexed records.", "muted"),
+                text("License: https://creativecommons.org/licenses/by/4.0/", "muted"),
+                text("Snapshots cover exactly the recorded product and build. Dataset coverage varies; newer builds may contain only hotfix data. No older/beta snapshot is substituted automatically.", "muted"));
+        if (state.issue() != null) page.getChildren().add(text(state.issue(), "muted"));
+        Button check = new Button("Check GitHub for snapshots");
+        check.setDisable(!enabled || busy);
+        check.setOnAction(event -> command(service.checkEgLink()));
+        page.getChildren().add(check);
+        var available = new TableView<com.vibeminer.eglink.EgLinkTypes.Build>();
+        available.setAccessibleText("EG Link GitHub build snapshots");
+        available.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
+        column(available, "Product", value -> value.product(), 160);
+        column(available, "Build", value -> value.version(), 170);
+        column(available, "Datasets", value -> Integer.toString(value.datasets().size()), 90);
+        column(available, "Reported records", value -> Long.toString(value.declaredRecords()), 130);
+        available.getItems().setAll(state.catalog().builds().reversed());
+        available.setPrefHeight(230);
+        available.setPlaceholder(text("Check GitHub to discover the available build snapshots.", "muted"));
+        Label details = text("Select a build to review its datasets before downloading.", "muted");
+        Button download = new Button("Download selected snapshot");
+        download.setDisable(true);
+        available.getSelectionModel().selectedItemProperty().addListener((observable, before, after) -> {
+            selectedEgBuild = after == null ? null : after.product() + "/" + after.version();
+            download.setDisable(after == null || !enabled || busy);
+            details.setText(after == null ? "Select a build." : "Datasets: " + after.datasets().stream().map(com.vibeminer.eglink.EgLinkTypes.Dataset::name).collect(java.util.stream.Collectors.joining(", ")));
+        });
+        for (var build : available.getItems()) if ((build.product() + "/" + build.version()).equals(selectedEgBuild)) available.getSelectionModel().select(build);
+        download.setOnAction(event -> {
+            var selected = available.getSelectionModel().getSelectedItem();
+            if (selected != null) command(service.downloadEgLink(selected));
+        });
+        page.getChildren().addAll(text("Available on GitHub", "h2"), available, details, download);
+        var local = new TableView<com.vibeminer.eglink.EgLinkTypes.Snapshot>();
+        local.setAccessibleText("Downloaded EG Link snapshots");
+        local.setColumnResizePolicy(TableView.CONSTRAINED_RESIZE_POLICY_ALL_COLUMNS);
+        column(local, "Product / build", value -> value.build().product() + " · " + value.build().version(), 260);
+        column(local, "Commit", value -> value.build().revision().substring(0, 12), 120);
+        column(local, "State", value -> value.problem() != null ? "Unavailable" : value.indexedRecords() == null ? "Downloaded" : "Prepared", 115);
+        column(local, "Indexed records", value -> value.indexedRecords() == null ? "—" : Long.toString(value.indexedRecords()), 130);
+        column(local, "Locales", value -> value.build().datasets().stream().map(com.vibeminer.eglink.EgLinkTypes.Dataset::locale).filter(locale -> !locale.isEmpty()).distinct().collect(java.util.stream.Collectors.joining(", ")), 100);
+        local.getItems().setAll(state.snapshots().reversed()); local.setPrefHeight(Math.max(120, Math.min(240, 35 + state.snapshots().size() * 34)));
+        local.setPlaceholder(text("No EG Link snapshots downloaded.", "muted"));
+        Label localDetails = text("Preparation builds local query indexes and preserves each original dataset.", "muted");
+        Button prepare = new Button("Prepare selected snapshot"); prepare.setDisable(true);
+        local.getSelectionModel().selectedItemProperty().addListener((observable, before, after) -> {
+            selectedEgSource = after == null ? null : after.id();
+            prepare.setDisable(after == null || !enabled || busy);
+            localDetails.setText(after == null ? "Select a retained snapshot." : bytes(after.originalBytes()) + " original · "
+                    + (after.databaseBytes() == null ? "not prepared" : bytes(after.databaseBytes()) + " indexed database")
+                    + " · " + after.build().datasets().size() + " datasets" + (after.problem() == null ? "" : " · " + after.problem()));
+        });
+        for (var snapshot : local.getItems()) if (snapshot.id().equals(selectedEgSource)) local.getSelectionModel().select(snapshot);
+        prepare.setOnAction(event -> {
+            var selected = local.getSelectionModel().getSelectedItem();
+            if (selected != null) command(service.prepareEgLink(selected.id()));
+        });
+        page.getChildren().addAll(text("Downloaded snapshots", "h2"), local, localDetails, prepare);
     }
 
     private void liveTactKeys(VBox page) {

@@ -28,7 +28,8 @@ public final class DataSourcesService {
         QUESTIE,
         LISTFILE,
         DEFINITIONS,
-        TACT_KEYS
+        TACT_KEYS,
+        EG_LINK
     }
 
     public enum Checks {
@@ -69,6 +70,10 @@ public final class DataSourcesService {
     private final com.vibeminer.store.ObjectReader tactReader;
     private final com.vibeminer.store.ObjectWriter tactWriter;
     private final Map<Id, com.vibeminer.network.Cancellation> networkTokens = new java.util.EnumMap<>(Id.class);
+    public record EgLinkState(com.vibeminer.eglink.EgLinkTypes.Catalog catalog,
+            List<com.vibeminer.eglink.EgLinkTypes.Snapshot> snapshots, String issue) {}
+    private volatile EgLinkState egLinkState = new EgLinkState(new com.vibeminer.eglink.EgLinkTypes.Catalog(null, null, List.of()), List.of(), null);
+    private final com.vibeminer.eglink.EgLinkRepository egLink;
     private final SourcePreferences preferences;
     private final QuestieRepository questie;
     private final CommunityFileNames names;
@@ -110,13 +115,20 @@ public final class DataSourcesService {
     static DataSourcesService open(Path database, Path directory, CommunityFileNames names,
             LibraryCatalog catalog, com.vibeminer.network.TactKeyClient client,
             com.vibeminer.store.ObjectReader reader, com.vibeminer.store.ObjectWriter writer) throws Exception {
+        return open(database, directory, names, catalog, client, reader, writer, null);
+    }
+
+    static DataSourcesService open(Path database, Path directory, CommunityFileNames names,
+            LibraryCatalog catalog, com.vibeminer.network.TactKeyClient client,
+            com.vibeminer.store.ObjectReader reader, com.vibeminer.store.ObjectWriter writer,
+            com.vibeminer.network.EgLinkClient egClient) throws Exception {
         var settings = new SourcePreferences(database);
         var repository =
                 QuestieRepository.open(directory, com.vibeminer.generated.Cancellation.NONE).join();
         DataSourcesService service = null;
         try {
             catalog.retainOwner("provider:community-listfile", LibraryCatalog.Scope.GLOBAL).join();
-            service = new DataSourcesService(settings, repository, names, catalog, directory, client, reader, writer);
+            service = new DataSourcesService(settings, repository, names, catalog, directory, client, reader, writer, egClient);
             service.refreshLocal().join();
             var opened = service;
             service.timer.scheduleWithFixedDelay(opened::checkDue, 1, 60, TimeUnit.SECONDS);
@@ -134,7 +146,9 @@ public final class DataSourcesService {
             CommunityFileNames names,
             LibraryCatalog catalog,
             Path directory, com.vibeminer.network.TactKeyClient client,
-            com.vibeminer.store.ObjectReader reader, com.vibeminer.store.ObjectWriter writer) {
+            com.vibeminer.store.ObjectReader reader, com.vibeminer.store.ObjectWriter writer,
+            com.vibeminer.network.EgLinkClient egClient) throws java.io.IOException {
+        egLink = egClient == null ? null : new com.vibeminer.eglink.EgLinkRepository(directory.resolveSibling("eg-link"), egClient);
         tactClient = client; tactReader = reader; tactWriter = writer;
         this.preferences = preferences;
         this.questie = questie;
@@ -305,6 +319,7 @@ public final class DataSourcesService {
         return submit(
                 () -> {
                     loadQuestie();
+                    loadEgLink();
                     loadTactKeys();
                     try {
                         listfile = names.status(com.vibeminer.access.Cancellation.NONE).join();
@@ -504,6 +519,59 @@ public final class DataSourcesService {
                 });
     }
 
+    public EgLinkState egLink() { return egLinkState; }
+
+    private void loadEgLink() {
+        if (egLink == null) return;
+        try {
+            var token = com.vibeminer.network.Cancellation.NONE;
+            egLinkState = new EgLinkState(egLink.catalog(token).join(), egLink.snapshots(token).join(), null);
+        } catch (RuntimeException failure) {
+            var before = egLinkState;
+            egLinkState = new EgLinkState(before.catalog(), before.snapshots(), "EG Link local inventory unavailable: " + message(failure));
+        }
+    }
+
+    public CompletableFuture<Void> checkEgLink() {
+        return egLinkJob((token, progress) -> {
+            var catalog = egLink.check(token).join();
+            submit(() -> {
+                preferences.put("checked.EG_LINK", catalog.checkedAt().toString());
+                preferences.put("attempt.EG_LINK", Instant.now().toString());
+                loadEgLink(); revision.incrementAndGet();
+            }).join();
+        });
+    }
+
+    public CompletableFuture<Void> downloadEgLink(com.vibeminer.eglink.EgLinkTypes.Build build) {
+        return egLinkJob((token, progress) -> {
+            egLink.download(build, progress, token).join();
+            submit(() -> { loadEgLink(); revision.incrementAndGet(); }).join();
+        });
+    }
+
+    public CompletableFuture<Void> prepareEgLink(String sourceId) {
+        return egLinkJob((token, progress) -> {
+            egLink.prepare(sourceId, progress, token).join();
+            submit(() -> { loadEgLink(); revision.incrementAndGet(); }).join();
+        });
+    }
+
+    @FunctionalInterface private interface EgWork {
+        void run(com.vibeminer.network.Cancellation token, Consumer<com.vibeminer.eglink.EgLinkTypes.Progress> progress) throws Exception;
+    }
+    private CompletableFuture<Void> egLinkJob(EgWork work) {
+        return job(Id.EG_LINK, (generated, progress) -> {
+            if (egLink == null) throw new IllegalStateException("EG Link provider is unavailable");
+            var token = new com.vibeminer.network.Cancellation();
+            synchronized (this) { networkTokens.put(Id.EG_LINK, token); if (generated.isCanceled()) token.cancel(); }
+            try {
+                work.run(token, value -> progress.accept(new QuestieTypes.Progress(QuestieTypes.Stage.DOWNLOADING,
+                        value.done(), value.total(), "files", value.message())));
+            } finally { synchronized (this) { networkTokens.remove(Id.EG_LINK); } }
+        });
+    }
+
     public TactState tactState() { return tactState; }
 
     com.vibeminer.files.keys.TactKeys tactKeys() {
@@ -693,7 +761,7 @@ public final class DataSourcesService {
     private final java.util.Set<Id> startupChecked = ConcurrentHashMap.newKeySet();
 
     private void checkDue() {
-        for (Id id : List.of(Id.QUESTIE, Id.LISTFILE, Id.TACT_KEYS)) {
+        for (Id id : List.of(Id.QUESTIE, Id.LISTFILE, Id.TACT_KEYS, Id.EG_LINK)) {
             if (id == Id.TACT_KEYS) {
                 // The same reservation path serves startup and build preparation.
                 synchronized (this) {
@@ -722,6 +790,7 @@ public final class DataSourcesService {
                             () -> {
                                 if (id == Id.QUESTIE) checkQuestie();
                                 else if (id == Id.LISTFILE) updateListfile();
+                                else if (id == Id.EG_LINK) checkEgLink();
                                 else updateTactKeys();
                             });
         }
@@ -777,6 +846,7 @@ public final class DataSourcesService {
                     try {
                         CompletableFuture.allOf(accepted).handle((v, e) -> null).join();
                         while (!worker.awaitTermination(1, TimeUnit.SECONDS)) {}
+                        if (egLink != null) egLink.closeAsync().join();
                         questie.closeAsync().join();
                         closed.complete(null);
                     } catch (Throwable error) {

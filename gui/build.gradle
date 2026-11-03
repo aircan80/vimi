@@ -16,6 +16,7 @@ def classifier = platform + (arch in ['aarch64', 'arm64'] ? '-aarch64' : '')
 dependencies {
     implementation project(':builds')
     implementation project(':questie')
+    implementation project(':eg-link')
     implementation project(':accounting')
     implementation project(':formats-tables')
     implementation project(':concepts-items')

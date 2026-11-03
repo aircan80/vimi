@@ -20,6 +20,26 @@ public final class SourceUrls {
     public static final Set<String> ASSET_HOSTS =
             Set.of("release-assets.githubusercontent.com", "objects.githubusercontent.com");
 
+    public static final URI EG_LINK_HEAD =
+            URI.create(
+                    "https://api.github.com/repos/JIVESCORP/eg-link-output-wowf/git/ref/heads/main");
+
+    public static URI egLink(String revision, String path) {
+        if (revision == null
+                || !revision.matches("[0-9a-f]{40}")
+                || path == null
+                || !(path.equals("data/index.json")
+                        || path.matches(
+                                "data/[a-z0-9_]{1,40}/[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,10}/[a-z][a-z0-9_]{0,63}(\\.[a-z]{2}[A-Z]{2})?\\.json"))) {
+            throw new IllegalArgumentException("Invalid EG Link commit or dataset path");
+        }
+        return URI.create(
+                "https://raw.githubusercontent.com/JIVESCORP/eg-link-output-wowf/"
+                        + revision
+                        + "/"
+                        + path);
+    }
+
     private SourceUrls() {}
 
     public static URI version(String product, String region, DocumentKind kind) {
