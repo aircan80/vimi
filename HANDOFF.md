@@ -6,7 +6,7 @@ Keep working without waiting for user input; retain questions/follow-ups here.
 No blocking product question is outstanding.
 
 World #115, Mounts #111, Professions/Recipes #112, Dungeons #108 and NPC/Quest
-zone maps #116 are merged. Prereleases alpha.1 through alpha.6 are published for
+zone maps #116 are merged. Prereleases alpha.1 through alpha.7 are published for
 Linux x64/ARM64, macOS Intel/Apple Silicon and Windows x64, with bundled
 Java/JavaFX/SQLite, installers, portable archives and checksums. All are explicit
 GitHub prereleases, never stable/latest. #22 and CI epic #2 are complete. Continue
@@ -30,9 +30,22 @@ Files comparison avoids unused per-file storage presence/name queries. Keep
 prepared-local readers/key bootstrap, bounded ID sorting, shared quotas and explicit
 raw-table controls. Native SQLite/pack proof covers missing graphs, maximum IDs,
 zero acquisition/object writes; a live Forever70707 ChrRaces scan completes58rows.
-Finish native PR CI/FF merge and alpha.7 publication. Preserve uncertified membership
+PR #133 is FF-merged and alpha.7 is published with all 18 assets after successful release CI. Preserve uncertified membership
 and session-only results. The next Items direction proposal has independent approval;
-concrete pure-projector and bounded-join contracts still require review before code.
+concrete increment-A contract a5b9414 has both independent approvals. The pure projector fix 70bafa9 also has both approvals; staging, joins, native composition and UI remain under implementation and separately gated.
+
+Tauren static profiles have both independent approvals at b25fd1d. PR #134 carries
+those narrow profiles and alpha.8 scope; wait for native CI before FF merge and tag.
+Items integration worktree: /tmp/vimi-items-integration, branch feature/items-comparison.
+Source adapter, compact snapshot/codec and final 12 MiB candidate reader are delegated
+in isolated worktrees; root owns streaming joins and app integration. Metadata must
+remain charged through all scan and paging; do not pass 12 MiB to the 14 MiB sorter.
+
+Future native text-issue certificates: existing cached graphs cannot prove that a null
+issue list is issue-free. Keep these UNKNOWN. A future explicit audited native producer
+policy must be bound to graph identity and receipt, with old/custom graphs unchanged;
+no global null normalization or automatic local-only cache repair is authorized by
+that research finding.
 
 Questions/follow-ups for the user's return: Windows MSI installation and deferred
 native Windows filesystem acceptance #24–#26 remain. Native macOS development
