@@ -94,6 +94,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
             preparation = worker("world-preparation");
     private CompletableFuture<?> invocation, sceneTask;
     private long sceneGeneration;
+    private boolean scenePreparing, waveActive, waveDirty;
+    private PendingPrepared pendingPrepared;
+    private record PendingPrepared(Prepared value, long scene, long request, Runnable ready) {}
 
     private final Set<KeyCode> keys = new HashSet<>();
     private final LinkedHashMap<String, WorldService.LoadedTile> loaded = new LinkedHashMap<>();
@@ -195,6 +198,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     show(gpuActivity, update.busy());
                     gpuStatus.setText(update.message());
                     retryGpu.setDisable(update.busy() || update.ready());
+                    publishPrepared();
                 }, this::presentGpuFrame, this::requestFrame);
         gpuEnabled.setSelected(gpu != null);
         gpuEnabled.setDisable(gpu == null);
@@ -211,6 +215,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             } else if (gpu != null) {
                 gpu.retry();
             }
+            publishPrepared();
             requestFrame();
         });
         retryGpu.setOnAction(e -> {
@@ -1060,21 +1065,41 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                 if (!initial) loadNext();
                                                 return;
                                             }
+                                            if (!initial) {
+                                                int x = tileX(), y = tileY();
+                                                if (Math.abs(tile.x() - x) <= 1 && Math.abs(tile.y() - y) <= 1) {
+                                                    if (!loaded.containsKey(tile.key()) && loaded.size() == 9) {
+                                                        var outgoing = loaded.values().stream()
+                                                                .max(Comparator.comparingInt(t -> Math.abs(t.tile().x() - x) + Math.abs(t.tile().y() - y)))
+                                                                .orElseThrow();
+                                                        loaded.remove(outgoing.tile().key());
+                                                        attempted.remove(outgoing.tile().key());
+                                                    }
+                                                    loaded.put(tile.key(), data);
+                                                    waveDirty = true;
+                                                } else {
+                                                    attempted.remove(tile.key());
+                                                }
+                                                loadingTile = false;
+                                                loadNext();
+                                                return;
+                                            }
                                             loaded.put(tile.key(), data);
-                                            trimLoaded();
-                                            prepareScene(
-                                                    initial ? data.terrain() : null,
-                                                    () -> {
-                                                        loadingTile = false;
-                                                        busy(null);
-                                                        requestFrame();
-                                                        loadNext();
-                                                    });
+                                            prepareScene(data.terrain(), () -> {
+                                                loadingTile = false;
+                                                busy(null);
+                                                requestFrame();
+                                                loadNext();
+                                            });
                                         }));
     }
 
     private void cancelPreparation() {
         ++sceneGeneration;
+        pendingPrepared = null;
+        scenePreparing = false;
+        waveActive = false;
+        waveDirty = false;
         if (sceneTask != null) sceneTask.cancel(false);
         preparation.getQueue().clear();
         if (invocation != null) invocation.cancel(false);
@@ -1126,6 +1151,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     private void prepareScene(WorldFormats.Terrain initial, Runnable ready) {
         long scene = ++sceneGeneration, request = selection;
+        scenePreparing = true;
+        pendingPrepared = null;
         if (sceneTask != null) sceneTask.cancel(false);
         preparation.getQueue().clear();
         var snapshot = java.util.List.copyOf(loaded.values());
@@ -1146,6 +1173,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                     if (stale(request) || scene != sceneGeneration || !explorer)
                                         return;
                                     if (error != null) {
+                                        scenePreparing = false;
                                         loadingTile = false;
                                         busy(null);
                                         show(firstFrameActivity, false);
@@ -1154,19 +1182,32 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                         + " terrain retained.");
                                         return;
                                     }
-                                    terrainScene = prepared.scene();
-                                    gpuScene = prepared.gpuScene();
-                                    if (gpuScene == null && gpu != null) {
-                                        retireGpu();
-                                        gpuStatus.setText("Software terrain · no loaded nearby tiles");
-                                    }
-                                    if (prepared.camera() != null) {
-                                        camera = prepared.camera();
-                                        originX = prepared.x();
-                                        originY = prepared.y();
-                                    }
-                                    ready.run();
+                                    pendingPrepared = new PendingPrepared(prepared, scene, request, ready);
+                                    publishPrepared();
                                 }));
+    }
+
+    private boolean publishPrepared() {
+        var pending = pendingPrepared;
+        if (pending == null) return false;
+        if (stale(pending.request()) || pending.scene() != sceneGeneration || !explorer) return false;
+        if (gpu != null && gpuEnabled.isSelected() && !gpu.canReplaceScene()) return false;
+        pendingPrepared = null;
+        scenePreparing = false;
+        var prepared = pending.value();
+        terrainScene = prepared.scene();
+        gpuScene = prepared.gpuScene();
+        if (gpuScene == null && gpu != null) {
+            retireGpu();
+            gpuStatus.setText("Software terrain · no loaded nearby tiles");
+        }
+        if (prepared.camera() != null) {
+            camera = prepared.camera();
+            originX = prepared.x();
+            originY = prepared.y();
+        }
+        pending.ready().run();
+        return true;
     }
 
     private int tileX() {
@@ -1178,9 +1219,15 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void loadNext() {
-        if (!active || !explorer || loadingTile || camera == null || inventory == null) return;
+        if (!active || !explorer || loadingTile || scenePreparing || camera == null || inventory == null) return;
         int x = tileX(), y = tileY();
-        if (trimLoaded()) rebuildScene();
+        attempted.retainAll(inventory.world().tiles().stream()
+                .filter(t -> Math.abs(t.x() - x) <= 1 && Math.abs(t.y() - y) <= 1)
+                .map(WorldFormats.Tile::key).collect(java.util.stream.Collectors.toSet()));
+        if (!waveActive) {
+            waveActive = true;
+            waveDirty = false;
+        }
         var next =
                 inventory.world().tiles().stream()
                         .filter(
@@ -1193,32 +1240,29 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                 Comparator.comparingInt(
                                         t -> Math.abs(t.x() - x) + Math.abs(t.y() - y)))
                         .orElse(null);
-        if (next != null) loadTile(next, false);
-    }
-
-    private boolean trimLoaded() {
-        if (camera == null) return false;
-        int x = tileX(), y = tileY();
-        var removed = new ArrayList<String>();
-        loaded.forEach(
-                (key, value) -> {
-                    if (Math.abs(value.tile().x() - x) > 1 || Math.abs(value.tile().y() - y) > 1)
-                        removed.add(key);
-                });
-        removed.forEach(
-                key -> {
-                    loaded.remove(key);
-                    attempted.remove(key);
-                });
-        return !removed.isEmpty();
-    }
-
-    private void rebuildScene() {
-        prepareScene(null, this::requestFrame);
+        if (next != null) {
+            loadTile(next, false);
+        } else {
+            waveActive = false;
+            boolean useful = loaded.values().stream().anyMatch(t ->
+                    Math.abs(t.tile().x() - x) <= 1 && Math.abs(t.tile().y() - y) <= 1);
+            if (!useful && !loaded.isEmpty()) {
+                loaded.clear();
+                waveDirty = true;
+            }
+            if (waveDirty) {
+                waveDirty = false;
+                busy("Preparing nearby terrain…");
+                prepareScene(null, () -> { busy(null); requestFrame(); loadNext(); });
+            } else {
+                busy(null);
+            }
+        }
     }
 
     private void requestFrame() {
         if (!active || !explorer || camera == null || terrainScene == null || closed) return;
+        if (publishPrepared()) return;
         if (stale(selection) || !viewportActive()) {
             minimap.hide();
             return;

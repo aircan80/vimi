@@ -48,6 +48,9 @@ public final class WorldNavigationUiTest {
         final AtomicReference<AssertionError> failure = new AtomicReference<>();
         final java.util.concurrent.atomic.AtomicLong revision = new java.util.concurrent.atomic.AtomicLong(1);
         final java.util.concurrent.atomic.AtomicInteger minimapCalls = new java.util.concurrent.atomic.AtomicInteger();
+        volatile boolean hold, unavailable;
+        final java.util.concurrent.atomic.AtomicInteger unavailableCalls = new java.util.concurrent.atomic.AtomicInteger();
+        final java.util.concurrent.ConcurrentLinkedQueue<Runnable> releases = new java.util.concurrent.ConcurrentLinkedQueue<>();
         Fixture() {
             for(int x=X-3;x<=X+3;x++) for(int y=Y-3;y<=Y+3;y++)
                 tiles.add(new WorldFormats.Tile(x,y,10000+x*64+y,0,20000+x*64+y));
@@ -64,7 +67,17 @@ public final class WorldNavigationUiTest {
                 failure.compareAndSet(null,new AssertionError("Wrong native-axis request "+tile.key()+" expected "+expected));
             float maxX=(float)(10000-(tile.x()-X)*SIZE), maxY=(float)(20000-(tile.y()-Y)*SIZE);
             var terrain=new WorldFormats.Terrain(new float[]{maxX,maxY,0,(float)(maxX-SIZE),maxY,0,maxX,(float)(maxY-SIZE),0},new int[]{0,1,2},1);
-            return CompletableFuture.completedFuture(new WorldService.LoadedTile(tile,terrain,null));
+            if (unavailable) {
+                unavailableCalls.incrementAndGet();
+                return CompletableFuture.completedFuture(new WorldService.LoadedTile(tile,null,"Authored unavailable neighbor"));
+            }
+            var value = new WorldService.LoadedTile(tile,terrain,null);
+            if (hold) {
+                var result = new CompletableFuture<WorldService.LoadedTile>();
+                releases.add(() -> result.complete(value));
+                return result;
+            }
+            return CompletableFuture.completedFuture(value);
         }
         public CompletableFuture<WorldService.Minimap> minimap(WorldFormats.Tile tile, Cancellation token) {
             minimapCalls.incrementAndGet();
@@ -88,7 +101,7 @@ public final class WorldNavigationUiTest {
                     set(view,"selected",fixture.tiles.stream().filter(t -> t.x()==X&&t.y()==Y).findFirst().orElseThrow());
                     ((Button)view.lookup("#world-open")).fire();
                     ((AnimationTimer)get(view,"timer")).stop();
-                    await(fixture,() -> settled(view,keys(0,0)),() -> move(view,fixture,0));
+                    await(fixture,() -> settled(view,keys(0,0)) && !(boolean)get(view,"scenePreparing"),() -> heldBoundary(view,fixture));
                 });
             });
         });
@@ -106,11 +119,65 @@ public final class WorldNavigationUiTest {
     private static boolean settled(WorldView view,Set<String> expected) {
         @SuppressWarnings("unchecked")
         var loaded=(Map<String,WorldService.LoadedTile>)get(view,"loaded");
-        return !(boolean)get(view,"loadingTile") && loaded.keySet().equals(expected);
+        return !(boolean)get(view,"loadingTile") && !(boolean)get(view,"scenePreparing") && loaded.keySet().equals(expected);
+    }
+
+    private static void heldBoundary(WorldView view, Fixture fixture) {
+        var original = get(view, "terrainScene");
+        long generation = (long)get(view, "sceneGeneration");
+        fixture.hold = true;
+        fixture.allowed.set(keys(1,0));
+        set(view,"camera",new TerrainRenderer.Camera(10000-1.5*SIZE,20000-.5*SIZE,100,0,0));
+        invoke(view,"loadNext");
+        releaseBoundary(view, fixture, original, generation, 0);
+    }
+
+    private static void releaseBoundary(WorldView view, Fixture fixture, Object original, long generation, int count) {
+        await(fixture, () -> !fixture.releases.isEmpty(), () -> {
+            require(get(view,"terrainScene") == original, "Held arrivals retain readable scene");
+            require((long)get(view,"sceneGeneration") == generation, "No eager/per-arrival scene preparation");
+            fixture.releases.remove().run();
+            if (count < 2) {
+                releaseBoundary(view,fixture,original,generation,count+1);
+            } else {
+                fixture.hold=false;
+                await(fixture, () -> settled(view,keys(1,0)) && !(boolean)get(view,"scenePreparing"), () -> {
+                    require(get(view,"terrainScene") != original, "Completed wave publishes replacement");
+                    require((long)get(view,"sceneGeneration") == generation+1, "Three arrivals prepare exactly one replacement");
+                    move(view,fixture,0);
+                });
+            }
+        });
     }
 
     private static void move(WorldView view,Fixture fixture,int index) {
         if(index==MOVES.length) {
+            unavailableRetainsGeometry(view,fixture, () -> finish(view,fixture));
+            return;
+        }
+        int dx=MOVES[index][0],dy=MOVES[index][1];
+        var expected=keys(dx,dy);
+        fixture.allowed.set(expected);
+        set(view,"camera",new TerrainRenderer.Camera(10000-(dx+.5)*SIZE,20000-(dy+.5)*SIZE,100,0,0));
+        invoke(view,"loadNext");
+        await(fixture,() -> settled(view,expected),() -> move(view,fixture,index+1));
+    }
+
+    private static void unavailableRetainsGeometry(WorldView view, Fixture fixture, Runnable next) {
+        var original = get(view,"terrainScene");
+        fixture.unavailable=true;
+        fixture.allowed.set(keys(1,0));
+        set(view,"camera",new TerrainRenderer.Camera(10000-1.5*SIZE,20000-.5*SIZE,100,0,0));
+        invoke(view,"loadNext");
+        await(fixture, () -> fixture.unavailableCalls.get()==3 && !(boolean)get(view,"loadingTile"), () -> {
+            require(get(view,"terrainScene")==original,"Unavailable incoming strip retains readable old coverage");
+            require(!view.lookup("#world-local-activity").isVisible(),"Failed wave retires source activity");
+            fixture.unavailable=false;
+            next.run();
+        });
+    }
+
+    private static void finish(WorldView view, Fixture fixture) {
             controls(view);
             invoke(view,"requestFrame");
             await(fixture,() -> !view.lookup("#world-minimap-activity").isVisible(),() -> {
@@ -124,14 +191,6 @@ public final class WorldNavigationUiTest {
                 require(fixture.minimapCalls.get()==before,"Retired source cannot request artwork after resize");
                 DONE.complete(null);
             });
-            return;
-        }
-        int dx=MOVES[index][0],dy=MOVES[index][1];
-        var expected=keys(dx,dy);
-        fixture.allowed.set(expected);
-        set(view,"camera",new TerrainRenderer.Camera(10000-(dx+.5)*SIZE,20000-(dy+.5)*SIZE,100,0,0));
-        invoke(view,"loadNext");
-        await(fixture,() -> settled(view,expected),() -> move(view,fixture,index+1));
     }
 
     private static void controls(WorldView view) {

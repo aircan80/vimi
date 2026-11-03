@@ -46,6 +46,7 @@ public final class GpuPreviewServiceTest {
             latestFrameHandoffNeverRepublishesOlderWork();
             inlineFramesAndCoalescedControls(root);
             terrainAndModelsShareOwnerAndKeepControlsTyped(root);
+            terrainReplacementWaitsForAcceptedFrameButNotTerminalFailure(root);
             normalExitAndOwnerIsolation(root);
             cancelDuringPreparationDoesNotLaunch(root);
             canceledDeliveryStopsOnlyItsRequest(root);
@@ -153,6 +154,65 @@ public final class GpuPreviewServiceTest {
         }
         require(launches.get() == 2 && !terrainChild.isAlive() && !modelChild.isAlive(),
                 "One shared native lifecycle drains both renderer kinds");
+    }
+
+    private static void terrainReplacementWaitsForAcceptedFrameButNotTerminalFailure(Path root) throws Exception {
+        var scene = new com.vibeminer.rendering.world.TerrainScene(List.of(
+                com.vibeminer.rendering.world.TerrainScene.Tile.copyOf(17,21,
+                        new float[] {10,-1,0,10,1,0,10,0,1},new int[] {0,1,2},1)));
+        var child = new FakeProcess(true);
+        var queued = new ConcurrentLinkedQueue<Runnable>();
+        var available = new AtomicReference<GpuPreviewService.Frame>();
+        var accepted = new AtomicInteger();
+        var failed = new AtomicInteger();
+        var service = new GpuPreviewService(root, GpuPreviewServiceTest::write,
+                (file, frames) -> child, file -> new GpuPreviewService.Frames() {
+                    public GpuPreviewService.Frame readLatest(long after) {
+                        var value = available.get();
+                        return value != null && value.sequence() > after ? value : null;
+                    }
+                    public void close() {}
+                },Duration.ofSeconds(2),Duration.ofMillis(100));
+        var preview = new TerrainGpuPreview(service,queued::add, ignored -> {},
+                frame -> { accepted.incrementAndGet(); return true; },failed::incrementAndGet);
+        try {
+            require(preview.canReplaceScene(), "Unstarted native scene does not gate preparation");
+            preview.request(scene,new com.vibeminer.rendering.world.TerrainCamera(1,2,3,0,0),32,32);
+            await(child.started);
+            child.send("VIMI_GPU HELLO Vulkan\nVIMI_GPU READY Vulkan\n");
+            require(!preview.canReplaceScene(), "Starting scene retains first-frame opportunity");
+            available.set(new GpuPreviewService.Frame(1,1,32,32,java.nio.IntBuffer.wrap(new int[1024])));
+            pump(queued, () -> accepted.get() == 1);
+            require(preview.canReplaceScene(), "Only accepted frame releases replacement barrier");
+            preview.hide();
+            require(preview.canReplaceScene(), "Hidden/software scene never strands replacement");
+        } finally {
+            preview.close();
+            service.closeAsync().get(3,TimeUnit.SECONDS);
+        }
+        var errorChild = new FakeProcess(true);
+        var broken = service(root,GpuPreviewServiceTest::write, file -> errorChild);
+        var error = new TerrainGpuPreview(broken,queued::add,ignored -> {},frame -> false,failed::incrementAndGet);
+        try {
+            error.request(scene,new com.vibeminer.rendering.world.TerrainCamera(1,2,3,0,0),32,32);
+            await(errorChild.started);
+            errorChild.send("VIMI_GPU ERROR AUTHORED_FAILURE\n");
+            pump(queued, () -> failed.get() > 0);
+            require(error.canReplaceScene(), "Terminal failure releases barrier without a frame");
+        } finally {
+            error.close();
+            broken.closeAsync().get(3,TimeUnit.SECONDS);
+        }
+    }
+
+    private static void pump(ConcurrentLinkedQueue<Runnable> queued, java.util.function.BooleanSupplier condition) throws Exception {
+        long deadline = System.nanoTime()+TimeUnit.SECONDS.toNanos(3);
+        while (!condition.getAsBoolean()) {
+            Runnable next;
+            while ((next=queued.poll()) != null) next.run();
+            if (System.nanoTime()>deadline) throw new AssertionError("Scheduled lifecycle did not settle");
+            Thread.sleep(5);
+        }
     }
 
     private static PreviewMesh mesh() {

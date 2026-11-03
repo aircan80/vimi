@@ -141,6 +141,10 @@ final class TerrainGpuPreview implements AutoCloseable {
         fallback.run();
     }
 
+    boolean canReplaceScene() {
+        return !running || firstFrame;
+    }
+
     boolean ready() {
         return running && firstFrame;
     }
