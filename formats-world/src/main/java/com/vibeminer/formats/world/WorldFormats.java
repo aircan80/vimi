@@ -138,10 +138,72 @@ public final class WorldFormats {
         return new World(tiles, global);
     }
 
+    /** A source-derived point; no collision or walkability claim. */
+    public record AreaPoint(float x, float y, float z) {
+        public AreaPoint {
+            coordinate(x);
+            coordinate(y);
+            coordinate(z);
+        }
+    }
+
+    /** Raw MCNK origin Z is a base altitude, not the entry height. */
+    public record AreaChunk(
+            int x,
+            int y,
+            long areaId,
+            float originX,
+            float originY,
+            float originZ,
+            AreaPoint entryReference) {
+        public AreaChunk {
+            if (x < 0
+                    || x >= 16
+                    || y < 0
+                    || y >= 16
+                    || areaId < 0
+                    || areaId > 0xffff_ffffL
+                    || !Float.isFinite(originX)
+                    || !Float.isFinite(originY)
+                    || !Float.isFinite(originZ)) {
+                throw invalid("Invalid area chunk");
+            }
+        }
+    }
+
+    public record AreaMetadata(List<AreaChunk> chunks) {
+        public AreaMetadata {
+            chunks = List.copyOf(chunks);
+            if (chunks.isEmpty() || chunks.size() > 256) {
+                throw invalid("Invalid area metadata bounds");
+            }
+            boolean[] seen = new boolean[256];
+            for (var chunk : chunks) {
+                int at = chunk.y() * 16 + chunk.x();
+                if (seen[at]) {
+                    throw invalid("Duplicate area chunk");
+                }
+                seen[at] = true;
+            }
+        }
+    }
+
     public static Terrain adt(byte[] bytes, BooleanSupplier canceled) {
+        return parseAdt(bytes, canceled, true).terrain();
+    }
+
+    /** Metadata shares the geometry profile and validates every source height without a mesh. */
+    public static AreaMetadata adtAreas(byte[] bytes, BooleanSupplier canceled) {
+        return parseAdt(bytes, canceled, false).areas();
+    }
+
+    private record ParsedAdt(Terrain terrain, AreaMetadata areas) {}
+
+    private static ParsedAdt parseAdt(byte[] bytes, BooleanSupplier canceled, boolean geometry) {
         var input = input(bytes);
-        var vertices = new ArrayList<Float>();
-        var indices = new ArrayList<Integer>();
+        var vertices = geometry ? new ArrayList<Float>() : null;
+        var indices = geometry ? new ArrayList<Integer>() : null;
+        var areas = new ArrayList<AreaChunk>();
         boolean[] seen = new boolean[256];
         int chunks = 0;
         boolean version = false;
@@ -184,18 +246,27 @@ public final class WorldFormats {
                 if (height < 0) {
                     throw invalid("Terrain chunk has no height data");
                 }
-                int base = vertices.size() / 3;
+                int base = geometry ? vertices.size() / 3 : 0;
                 for (int row = 0, at = 0; row < 17; row++) {
                     for (int col = 0; col < (row % 2 == 0 ? 9 : 8); col++, at++) {
-                        vertices.add((float) (px - row * (TILE_SIZE / 256)));
-                        vertices.add(
+                        float vx = (float) (px - row * (TILE_SIZE / 256));
+                        float vy =
                                 (float)
                                         (py
                                                 - col * (TILE_SIZE / 128)
-                                                - (row % 2) * (TILE_SIZE / 256)));
-                        vertices.add(pz + input.getFloat(height + at * 4));
+                                                - (row % 2) * (TILE_SIZE / 256));
+                        float vz = pz + input.getFloat(height + at * 4);
+                        coordinate(vx);
+                        coordinate(vy);
+                        coordinate(vz);
+                        if (geometry) {
+                            vertices.add(vx);
+                            vertices.add(vy);
+                            vertices.add(vz);
+                        }
                     }
                 }
+                AreaPoint entry = null;
                 for (int row = 0; row < 8; row++) {
                     for (int col = 0; col < 8; col++) {
                         boolean hole =
@@ -205,12 +276,31 @@ public final class WorldFormats {
                         if (hole) {
                             continue;
                         }
+                        if (entry == null) {
+                            entry =
+                                    new AreaPoint(
+                                            (float) (px - (2 * row + 1) * (TILE_SIZE / 256)),
+                                            (float) (py - (col + .5) * (TILE_SIZE / 128)),
+                                            pz + input.getFloat(height + (row * 17 + col + 9) * 4));
+                        }
+                        if (!geometry) {
+                            continue;
+                        }
                         int a = base + row * 17 + col, b = a + 1, d = a + 17, e = d + 1, m = a + 9;
                         for (int index : new int[] {a, m, b, b, m, e, e, m, d, d, m, a}) {
                             indices.add(index);
                         }
                     }
                 }
+                areas.add(
+                        new AreaChunk(
+                                x,
+                                y,
+                                Integer.toUnsignedLong(input.getInt(c.start + 52)),
+                                px,
+                                py,
+                                pz,
+                                entry));
                 chunks++;
             }
             input.position(c.end);
@@ -218,12 +308,24 @@ public final class WorldFormats {
         if (!version || chunks == 0) {
             throw invalid("ADT has no readable terrain");
         }
+        var metadata = new AreaMetadata(areas);
+        if (!geometry) {
+            return new ParsedAdt(null, metadata);
+        }
         float[] positions = new float[vertices.size()];
         for (int i = 0; i < positions.length; i++) {
             positions[i] = vertices.get(i);
         }
-        return new Terrain(
-                positions, indices.stream().mapToInt(Integer::intValue).toArray(), chunks);
+        return new ParsedAdt(
+                new Terrain(
+                        positions, indices.stream().mapToInt(Integer::intValue).toArray(), chunks),
+                metadata);
+    }
+
+    private static void coordinate(float value) {
+        if (!Float.isFinite(value) || Math.abs(value) > 1_000_000) {
+            throw invalid("Invalid terrain coordinate");
+        }
     }
 
     private record Chunk(int tag, int start, int size, int end) {}
