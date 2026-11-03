@@ -454,6 +454,86 @@ final class BuildFilesHandle implements BuildFiles {
         return new Listing(opened(), Objects.requireNonNull(filter), token, false, true);
     }
 
+    @Override
+    public AsyncCursor<FileTypes.ContentFile> listContentInventory(
+            FileTypes.FileIdRange range, Cancellation token) {
+        return new ContentListing(
+                opened(), Objects.requireNonNull(range), Objects.requireNonNull(token));
+    }
+
+    /** Frozen content indexes only: intentionally does not call names(), storage() or format(). */
+    private final class ContentListing implements AsyncCursor<FileTypes.ContentFile> {
+        private final Build built;
+        private final FileTypes.FileIdRange range;
+        private final Cancellation token;
+        private final Iterator<Long> ids;
+        private final AtomicBoolean reading = new AtomicBoolean();
+        private volatile boolean closed;
+        private boolean ended;
+
+        ContentListing(Build built, FileTypes.FileIdRange range, Cancellation token) {
+            this.built = built;
+            this.range = range;
+            this.token = token;
+            ids = built.fileDataIds(locale, range.fromId()).iterator();
+            ended = range.fromId() > range.toId();
+        }
+
+        @Override
+        public CompletableFuture<List<FileTypes.ContentFile>> next(int limit, Cancellation call) {
+            Objects.requireNonNull(call);
+            if (limit < 1 || limit > 65536) {
+                throw new IllegalArgumentException("Invalid page limit");
+            }
+            if (closed) {
+                throw new IllegalStateException("Cursor closed");
+            }
+            if (!reading.compareAndSet(false, true)) {
+                throw new IllegalStateException("Concurrent next");
+            }
+            return Io.async(
+                            () -> {
+                                var result =
+                                        new ArrayList<FileTypes.ContentFile>(Math.min(limit, 4096));
+                                while (!ended && result.size() < limit) {
+                                    token.check();
+                                    call.check();
+                                    if (closed) {
+                                        throw new IllegalStateException("Cursor closed");
+                                    }
+                                    if (!ids.hasNext()) {
+                                        ended = true;
+                                        break;
+                                    }
+                                    long id = ids.next();
+                                    if (id > range.toId()) {
+                                        ended = true;
+                                        break;
+                                    }
+                                    var variant = pick(built.resolve(id).variants(), bit);
+                                    if (variant != null) {
+                                        result.add(
+                                                new FileTypes.ContentFile(
+                                                        id,
+                                                        variant.encodedKey() == null
+                                                                ? null
+                                                                : variant.decodedSize(),
+                                                        variant.contentKey().toString()));
+                                    }
+                                }
+                                token.check();
+                                call.check();
+                                return List.copyOf(result);
+                            })
+                    .whenComplete((value, failure) -> reading.set(false));
+        }
+
+        @Override
+        public void close() {
+            closed = true;
+        }
+    }
+
     private record Entry(long id, FileVariant variant, String path) {}
 
     private final class Listing implements AsyncCursor<BuildFile> {

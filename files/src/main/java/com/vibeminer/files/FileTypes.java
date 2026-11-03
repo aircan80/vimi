@@ -171,6 +171,20 @@ public final class FileTypes {
             String message,
             Instant observedAt) {}
 
+    /** Immutable root/encoding content facts; no name, presence, format or payload observation. */
+    public record ContentFile(long fileDataId, Long size, String contentKey) {}
+
+    /** FileDataID bounds only; an inverted range is empty, matching FileFilter semantics. */
+    public record FileIdRange(long fromId, long toId) {
+        public static final FileIdRange ALL = new FileIdRange(0, 0xffffffffL);
+
+        public FileIdRange {
+            if (fromId < 0 || fromId > 0xffffffffL || toId < 0 || toId > 0xffffffffL) {
+                throw new IllegalArgumentException("Invalid unsigned32 FileDataID range");
+            }
+        }
+    }
+
     public record BuildFile(
             long fileDataId,
             String path,

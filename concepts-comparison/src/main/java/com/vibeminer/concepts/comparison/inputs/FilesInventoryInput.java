@@ -14,10 +14,12 @@ import java.util.Objects;
 public final class FilesInventoryInput extends SerialInventoryInput {
     public static final String NAMESPACE = "files.FileDataID.v1";
     public static final String SCOPE = "selected-locale-root-file-inventory-v1";
-    private static final String SOURCE = "BuildFiles.listMetadata";
+    private String source = "BuildFiles.listMetadata";
     private final BuildFiles files;
     private final String pinnedNames;
     private AsyncCursor<FileTypes.BuildFile> cursor;
+    private AsyncCursor<FileTypes.ContentFile> contentCursor;
+    private boolean initialized;
     private long previous = -1;
 
     /** A supplied name identity certifies that the caller injected a frozen name publication. */
@@ -41,12 +43,18 @@ public final class FilesInventoryInput extends SerialInventoryInput {
                     "Files inventory descriptor or pinned names differ from the borrowed context");
         }
         var dependencies = new LinkedHashMap<>(descriptor.dependencies());
-        pin(dependencies, "inventory.adapter", "files-metadata-v1");
+        pin(dependencies, "inventory.adapter", "files-content-inventory-v2");
         pin(dependencies, "files.buildConfig", files.build().buildConfig());
         pin(dependencies, "files.cdnConfig", files.build().cdnConfig());
         pin(dependencies, "files.region", files.build().region());
         pin(dependencies, "files.names", names == null ? "unassessed-per-batch" : names);
         pin(dependencies, "files.storage", "unassessed-per-batch");
+        pin(
+                dependencies,
+                "files.cursor.policy",
+                names == null
+                        ? "prefer-content-inventory;explicit-unsupported-metadata-fallback"
+                        : "metadata-for-frozen-name-assessment");
         return new ComparisonTypes.Descriptor(
                 descriptor.identity(),
                 descriptor.product(),
@@ -65,10 +73,41 @@ public final class FilesInventoryInput extends SerialInventoryInput {
 
     @Override
     protected ComparisonTypes.InputPage page(int limit, Cancellation token) {
-        if (cursor == null) {
-            cursor = files.listMetadata(FileTypes.FileFilter.ALL, token);
+        if (!initialized) {
+            initialized = true;
+            if (pinnedNames == null) {
+                try {
+                    contentCursor =
+                            Objects.requireNonNull(
+                                    files.listContentInventory(FileTypes.FileIdRange.ALL, token));
+                    source = "BuildFiles.listContentInventory";
+                } catch (UnsupportedOperationException unavailable) {
+                    // Explicit legacy refusal only; no payload-reading fallback and no speed claim.
+                }
+            }
+            if (contentCursor == null) {
+                cursor = files.listMetadata(FileTypes.FileFilter.ALL, token);
+            }
         }
-        var batch = cursor.next(limit, token).join();
+        var names = new LinkedHashMap<Long, FileTypes.BuildFile>();
+        List<FileTypes.ContentFile> batch;
+        if (contentCursor != null) {
+            batch = contentCursor.next(limit, token).join();
+        } else {
+            var metadata = cursor.next(limit, token).join();
+            batch =
+                    metadata.stream()
+                            .map(
+                                    file ->
+                                            new FileTypes.ContentFile(
+                                                    file.fileDataId(),
+                                                    file.size(),
+                                                    file.contentKey()))
+                            .toList();
+            if (pinnedNames != null) {
+                metadata.forEach(file -> names.put(file.fileDataId(), file));
+            }
+        }
         token.check();
         if (batch.size() > limit) {
             throw new IllegalStateException("Files metadata page exceeds requested bound");
@@ -84,48 +123,46 @@ public final class FilesInventoryInput extends SerialInventoryInput {
             var fields = new LinkedHashMap<String, ComparisonTypes.Field>();
             String identity = descriptor().identity() + ":" + key;
             fields.put(
-                    "contentKey", InventoryFields.contentKey(file.contentKey(), SOURCE, identity));
+                    "contentKey", InventoryFields.contentKey(file.contentKey(), source, identity));
             fields.put(
                     "decodedSize",
                     InventoryFields.number(
                             "root-decoded-size-bytes-v1",
                             file.size(),
                             ComparisonTypes.Aspect.CONTENT,
-                            SOURCE,
+                            source,
                             identity,
                             "size"));
-            boolean pinned =
-                    pinnedNames != null && file.pathSource() == FileTypes.FilePathSource.LISTFILE;
             if (pinnedNames != null) {
+                var named = names.get(file.fileDataId());
+                boolean pinned = named.pathSource() == FileTypes.FilePathSource.LISTFILE;
                 fields.put(
                         "path",
                         InventoryFields.text(
                                 "pinned-listfile-path-v1",
-                                pinned ? file.path() : null,
+                                pinned ? named.path() : null,
                                 ComparisonTypes.Aspect.EXTERNAL_EVIDENCE,
-                                SOURCE,
+                                source,
                                 identity,
                                 "path"));
                 fields.put(
                         "pathSource",
                         InventoryFields.text(
                                 "file-name-origin-v1",
-                                pinnedNames == null || file.pathSource() == null
-                                        ? null
-                                        : file.pathSource().name(),
+                                named.pathSource() == null ? null : named.pathSource().name(),
                                 ComparisonTypes.Aspect.EXTERNAL_EVIDENCE,
-                                SOURCE,
+                                source,
                                 identity,
                                 "pathSource"));
                 boolean extension =
-                        pinned && file.formatSource() == FileTypes.FileFormatSource.EXTENSION;
+                        pinned && named.formatSource() == FileTypes.FileFormatSource.EXTENSION;
                 fields.put(
                         "format",
                         InventoryFields.text(
                                 "name-extension-format-v1",
-                                extension && file.format() != null ? file.format().name() : null,
+                                extension && named.format() != null ? named.format().name() : null,
                                 ComparisonTypes.Aspect.INTERPRETATION,
-                                SOURCE,
+                                source,
                                 identity,
                                 "format"));
             }
@@ -135,7 +172,7 @@ public final class FilesInventoryInput extends SerialInventoryInput {
                             fields,
                             List.of(
                                     new ComparisonTypes.Evidence(
-                                            SOURCE,
+                                            source,
                                             identity,
                                             "FileDataID",
                                             Long.toString(file.fileDataId())))));
@@ -160,6 +197,9 @@ public final class FilesInventoryInput extends SerialInventoryInput {
     protected void release() {
         if (cursor != null) {
             cursor.close();
+        }
+        if (contentCursor != null) {
+            contentCursor.close();
         }
     }
 }

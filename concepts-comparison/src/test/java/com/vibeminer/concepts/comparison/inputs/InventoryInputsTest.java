@@ -50,6 +50,9 @@ final class InventoryInputsTest {
                                 switch (method.getName()) {
                                     case "build" -> BUILD;
                                     case "locale" -> "enUS";
+                                    case "listContentInventory" ->
+                                            java.lang.reflect.InvocationHandler.invokeDefault(
+                                                    proxy, method, args);
                                     case "listMetadata" -> {
                                         assertEquals(FileTypes.FileFilter.ALL, args[0]);
                                         yield cursor;
@@ -169,6 +172,149 @@ final class InventoryInputsTest {
             assertEquals(1, progress.observed());
             assertTrue(service.page(0, 10).join().rows().isEmpty());
         }
+    }
+
+    private static BuildFiles contentOnlyFiles(Long size) {
+        return (BuildFiles)
+                Proxy.newProxyInstance(
+                        BuildFiles.class.getClassLoader(),
+                        new Class<?>[] {BuildFiles.class},
+                        (proxy, method, args) ->
+                                switch (method.getName()) {
+                                    case "build" -> BUILD;
+                                    case "locale" -> "enUS";
+                                    case "listContentInventory" ->
+                                            new AsyncCursor<FileTypes.ContentFile>() {
+                                                boolean sent;
+
+                                                @Override
+                                                public CompletableFuture<
+                                                                List<FileTypes.ContentFile>>
+                                                        next(int limit, Cancellation token) {
+                                                    var result =
+                                                            sent
+                                                                    ? List
+                                                                            .<FileTypes.ContentFile>
+                                                                                    of()
+                                                                    : List.of(
+                                                                            new FileTypes
+                                                                                    .ContentFile(
+                                                                                    1, size, CKEY));
+                                                    sent = true;
+                                                    return CompletableFuture.completedFuture(
+                                                            result);
+                                                }
+
+                                                @Override
+                                                public void close() {}
+                                            };
+                                    default ->
+                                            throw new AssertionError(
+                                                    "Only content capability is allowed: "
+                                                            + method.getName());
+                                });
+    }
+
+    @Test
+    void fastAndLegacyPathsCompareTheSameContentWhileUnknownSizeRemainsUncertain(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path temporary) throws Exception {
+        for (boolean unknown : List.of(false, true)) {
+            Long size = unknown ? null : 12L;
+            var legacy =
+                    new FileTypes.BuildFile(
+                            1,
+                            null,
+                            FileTypes.FilePathSource.NONE,
+                            size,
+                            CKEY,
+                            FileTypes.FileFormat.UNKNOWN,
+                            FileTypes.FileFormatSource.NONE,
+                            FileTypes.FileStorage.NOT_STORED,
+                            false);
+            var a =
+                    new FilesInventoryInput(
+                            files(pages(List.of(List.of(legacy)), new AtomicInteger())),
+                            descriptor(false),
+                            null);
+            var b = new FilesInventoryInput(contentOnlyFiles(size), descriptor(false), null);
+            try (var service = new com.vibeminer.concepts.comparison.ComparisonService(temporary)) {
+                var progress = service.start(a, b).join();
+                assertEquals(1, progress.observed());
+                var results = service.page(0, 10).join().rows();
+                assertEquals(unknown ? 1 : 0, results.size());
+                if (unknown) {
+                    assertEquals(ComparisonTypes.Membership.BOTH, results.getFirst().membership());
+                    assertTrue(
+                            results.getFirst().fields().stream()
+                                    .anyMatch(
+                                            delta ->
+                                                    delta.key().equals("decodedSize")
+                                                            && delta.difference()
+                                                                    == ComparisonTypes.Difference
+                                                                            .UNKNOWN));
+                    assertFalse(
+                            results.getFirst().fields().stream()
+                                    .anyMatch(
+                                            delta ->
+                                                    delta.difference()
+                                                            == ComparisonTypes.Difference.CHANGED));
+                }
+            }
+        }
+    }
+
+    @Test
+    void supportedContentCursorAvoidsLegacyPresenceListingAndKeepsUnknownCoverage() {
+        var reads = new AtomicInteger();
+        var closed = new AtomicInteger();
+        AsyncCursor<FileTypes.ContentFile> content =
+                new AsyncCursor<>() {
+                    @Override
+                    public CompletableFuture<List<FileTypes.ContentFile>> next(
+                            int limit, Cancellation token) {
+                        return CompletableFuture.completedFuture(
+                                reads.getAndIncrement() == 0
+                                        ? List.of(new FileTypes.ContentFile(1, 12L, CKEY))
+                                        : List.of());
+                    }
+
+                    @Override
+                    public void close() {
+                        closed.incrementAndGet();
+                    }
+                };
+        var borrowed =
+                (BuildFiles)
+                        Proxy.newProxyInstance(
+                                BuildFiles.class.getClassLoader(),
+                                new Class<?>[] {BuildFiles.class},
+                                (proxy, method, args) ->
+                                        switch (method.getName()) {
+                                            case "build" -> BUILD;
+                                            case "locale" -> "enUS";
+                                            case "listContentInventory" -> {
+                                                assertEquals(FileTypes.FileIdRange.ALL, args[0]);
+                                                yield content;
+                                            }
+                                            default ->
+                                                    throw new AssertionError(
+                                                            "Forbidden legacy/payload/borrowed-close call "
+                                                                    + method.getName());
+                                        });
+        var input = new FilesInventoryInput(borrowed, descriptor(false), null);
+        try {
+            var first = input.read(null, 1, Cancellation.NONE).join();
+            assertEquals(
+                    "BuildFiles.listContentInventory",
+                    first.rows().getFirst().evidence().getFirst().source());
+            assertEquals(CKEY, first.rows().getFirst().fields().get("contentKey").value());
+            assertFalse(first.rows().getFirst().fields().containsKey("storage"));
+            var end = input.read(first.nextCursor(), 1, Cancellation.NONE).join();
+            assertEquals(ComparisonTypes.Completeness.UNKNOWN, end.coverage().completeness());
+        } finally {
+            input.closeAsync().join();
+        }
+        assertEquals(1, closed.get());
     }
 
     @Test

@@ -26,8 +26,8 @@ For an explicit SQLite library (including the macOS Homebrew installation):
 
 Construct `FileSystem(Builds, ObjectSource)` or supply `FileSystemOptions`. Call
 `forBuild(buildRef, "enUS", cancellation)`; an OPEN result contains `BuildFiles`.
-Close each handle and stream. A handle captures immutable build lookups and checks
-current storage on every operation. An accepted listing or opened stream can outlive
+Close each handle and stream. A handle captures immutable build lookups. Normal listings include current storage
+observations; the content-only inventory described below does not. An accepted listing or opened stream can outlive
 its handle; subsequent handle operations fail after close. The composition root owns
 and closes the lower layers.
 
@@ -38,6 +38,26 @@ then low-violence, then a locale variant absent from ENCODING. Listings return
 ascending IDs through bounded `AsyncCursor.next(limit, cancellation)` pages; an empty
 page ends the walk. Criteria combine with AND. Names are snapshotted per internal
 presence batch and walked in ascending bounded pages.
+
+`listContentInventory(FileIdRange, cancellation)` returns only immutable
+`ContentFile(FileDataID, decodedSize, contentKey)` facts from those captured root/
+encoding lookups. It preserves locale selection, variant ranking, ascending IDs,
+ID-range filtering and bounded/cancelable pages. Decoded size stays unknown when
+no encoded variant supplies it. The native implementation never queries local
+object presence, community names, format detection or file payloads. Older
+implementations explicitly report `UnsupportedOperationException`; callers may
+choose an existing metadata-listing fallback without claiming the optimization.
+Neither inventory exhaustion nor this capability certifies complete selected-locale
+membership. It does not avoid scanning merely because two build identities match.
+
+An offline read-only Forever 1.60.1.70707 measurement found the same canonical
+ID/size/CKey digest for a 65,536-file prefix: existing metadata listing took
+13,238 ms and requested 65,536 object-presence checks, while the content-only cursor
+took 1,693 ms with zero presence/name calls. The full content cursor enumerated
+1,245,599 records in 33,800 ms. These are cursor measurements on one local machine,
+not an end-to-end comparison guarantee; metadata opening and result classification
+are separate work. Authored tests forbid all presence/name/payload clients, compare
+locale and variant results with metadata listing, and retain unknown sizes.
 
 `get` returns a whole decoded file up to `maxReadBytes` and checks its content MD5.
 `readRange` clamps to the declared decoded size before fetching and decodes only

@@ -32,6 +32,17 @@ public interface BuildFiles extends AutoCloseable {
         throw new UnsupportedOperationException("Metadata-only file listing is not implemented");
     }
 
+    /**
+     * Ordered selected-locale root content inventory. Reads only immutable root/encoding indexes;
+     * never queries local presence, names, formats or payload bytes. Size remains unknown when no
+     * encoded variant supplies it. Exhaustion alone does not certify locale membership coverage.
+     * Older implementations explicitly refuse, allowing callers to choose a truthful slower path.
+     */
+    default AsyncCursor<FileTypes.ContentFile> listContentInventory(
+            FileTypes.FileIdRange range, Cancellation cancellation) {
+        throw new UnsupportedOperationException("Content-only file inventory is not implemented");
+    }
+
     CompletableFuture<FileStat> stat(FileRef file, Cancellation cancellation);
 
     CompletableFuture<Boolean> exists(FileRef file, Cancellation cancellation);

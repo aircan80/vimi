@@ -64,3 +64,14 @@ Offline tests cover exhaustive versus partial membership, known/unknown fields,
 incompatible semantics/endpoints, stale/duplicate/order failures, quotas and field
 limits, sparse paging, two in-flight reads, bounded command rejection and close
 ordering/cleanup. No live credentials, network or application-library writes.
+
+
+Files inputs prefer the public content-only file cursor when names are unassessed.
+That cursor projects only the same CKey/decoded-size fields without performing the
+unused per-key object-presence queries. An explicit unsupported capability falls
+back to the metadata-only cursor; the descriptor declares this fallback policy and
+record evidence identifies the actual source API. Pinned-name assessment continues
+to use metadata listing. Both paths keep membership completeness UNKNOWN, omit
+unpinned names/live storage, preserve genuinely unknown sizes as uncertain findings,
+and compare identical known content equally even when source API annotations differ.
+No same-build shortcut or comparison-classification change is introduced.
