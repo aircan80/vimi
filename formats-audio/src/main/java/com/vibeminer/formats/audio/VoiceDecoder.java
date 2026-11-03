@@ -41,6 +41,24 @@ public final class VoiceDecoder {
                                 VorbisWorker.class.getName())
                         .redirectError(ProcessBuilder.Redirect.DISCARD)
                         .start();
+        return runWorker(process, encoded, canceled, TimeUnit.SECONDS.toNanos(8));
+    }
+
+    /** Deadline covers both input/output pipes as well as codec execution. */
+    static PcmClip runWorker(
+            Process process, byte[] encoded, BooleanSupplier canceled, long timeoutNanos)
+            throws IOException {
+        long deadline = System.nanoTime() + timeoutNanos;
+        var written = new CompletableFuture<Void>();
+        Thread.startVirtualThread(
+                () -> {
+                    try (var input = process.getOutputStream()) {
+                        input.write(encoded);
+                        written.complete(null);
+                    } catch (IOException failure) {
+                        written.completeExceptionally(failure);
+                    }
+                });
         CompletableFuture<byte[]> output = new CompletableFuture<>();
         Thread.startVirtualThread(
                 () -> {
@@ -51,10 +69,6 @@ public final class VoiceDecoder {
                     }
                 });
         try {
-            try (var input = process.getOutputStream()) {
-                input.write(encoded);
-            }
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
             while (!process.waitFor(50, TimeUnit.MILLISECONDS)) {
                 check(canceled);
                 if (System.nanoTime() > deadline) {
@@ -62,7 +76,16 @@ public final class VoiceDecoder {
                 }
             }
             check(canceled);
-            byte[] bytes = output.get(1, TimeUnit.SECONDS);
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) {
+                throw new IOException("Voice decoder exceeded its time bound");
+            }
+            written.get(remaining, TimeUnit.NANOSECONDS);
+            remaining = deadline - System.nanoTime();
+            if (remaining <= 0) {
+                throw new IOException("Voice decoder exceeded its time bound");
+            }
+            byte[] bytes = output.get(remaining, TimeUnit.NANOSECONDS);
             if (process.exitValue() != 0
                     || bytes.length < 16
                     || bytes.length > PcmClip.MAX_BYTES + 16) {
