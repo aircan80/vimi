@@ -23,10 +23,14 @@ filtering does not establish full appearance support. After materials: GPU
 terrain, verified zone-to-terrain navigation, native platform acceptance, broader
 comparison, and race animation/equipment.
 
-Alpha.12 packaging run `41699368086` passed four targets; the macOS ARM runner was
-canceled before starting any steps. No release was published. A failed-job rerun
-was requested; verify completion and all18assets before claiming publication.
-Alpha.11 remains the verified published prerelease.
+Alpha.12 packaging run `41699368086` succeeded after retrying the macOS ARM
+runner, which was canceled before starting any steps on its first attempt.
+The release is verified published as an explicit prerelease with all 18 assets.
+Current fixes are PR #141 at `f10febd`; all hosted integration and compatibility
+checks passed, with macOS unit runners still queued at this checkpoint.
+The full-material integration branch is `feature/model-material-profiles`,
+worktree `/tmp/vimi-model-materials-integration`, based on those fixes. Proposal
+`1109b52` is undergoing domain/root review before implementation.
 
 ## GUI activity continuation — 2026-11-03
 
