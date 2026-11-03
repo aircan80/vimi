@@ -4,11 +4,7 @@ import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.races.BuildRaces;
 import com.vibeminer.concepts.races.RaceTypes;
 import com.vibeminer.formats.images.BlpImageTypes;
-import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.function.BiFunction;
-import java.util.function.LongSupplier;
-import java.util.function.Supplier;
+
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -17,6 +13,7 @@ import javafx.scene.control.CheckBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
+import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TitledPane;
 import javafx.scene.image.ImageView;
@@ -28,6 +25,12 @@ import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
+
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.BiFunction;
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 /** Race/class records and client racial cards; no character-creation eligibility is inferred. */
 final class RacesView extends BorderPane implements AutoCloseable {
@@ -44,7 +47,42 @@ final class RacesView extends BorderPane implements AutoCloseable {
     private Cancellation token = new Cancellation();
     private long generation, revision = -1;
     private Long selected;
-    private boolean loaded, closed;
+    private boolean loaded, closed, catalogLoading;
+    private final java.util.concurrent.ThreadPoolExecutor iconWorker =
+            new java.util.concurrent.ThreadPoolExecutor(
+                    1,
+                    1,
+                    0,
+                    java.util.concurrent.TimeUnit.MILLISECONDS,
+                    new java.util.concurrent.ArrayBlockingQueue<>(64),
+                    runnable -> {
+                        var thread = new Thread(runnable, "race-icon-pixels");
+                        thread.setDaemon(true);
+                        return thread;
+                    },
+                    new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
+
+    private record IconPixels(int width, int height, int[] argb) {}
+
+    private static VBox activity(String message) {
+        var spinner = new ProgressIndicator(-1);
+        spinner.setPrefSize(28, 28);
+        spinner.setMaxSize(28, 28);
+        spinner.setAccessibleText(message);
+        var box = new VBox(12, spinner, text(message, "muted"));
+        box.setAlignment(Pos.CENTER);
+        box.setPadding(new Insets(24));
+        box.setAccessibleText(message);
+        return box;
+    }
+
+    private static <T> CompletableFuture<T> request(Supplier<CompletableFuture<T>> action) {
+        try {
+            return action.get();
+        } catch (RuntimeException error) {
+            return CompletableFuture.failedFuture(error);
+        }
+    }
 
     RacesView(BuildPreparation.Job job) {
         this(
@@ -144,6 +182,7 @@ final class RacesView extends BorderPane implements AutoCloseable {
     void invalidate() {
         if (closed) return;
         loaded = false;
+        catalogLoading = false;
         generation++;
         token.cancel();
         token = new Cancellation();
@@ -162,22 +201,50 @@ final class RacesView extends BorderPane implements AutoCloseable {
             bound = handle;
             revision = current;
         }
-        if (loaded || handle == null) return;
+        if (loaded) return;
+        if (handle == null) {
+            races.setPlaceholder(text("Race records are unavailable.", "muted"));
+            status.setText("Race records are unavailable. Prepare a build to continue.");
+            return;
+        }
         loaded = true;
         long request = ++generation;
         status.setText("Loading race records…");
-        handle.catalog(token)
+        catalogLoading = true;
+        races.setPlaceholder(activity("Loading race records…"));
+        details.getChildren().setAll(activity("Loading race catalog…"));
+        racialRail
+                .getChildren()
+                .setAll(text("Racial abilities", "h2"), text("Waiting for race records…", "muted"));
+        request(() -> handle.catalog(token))
                 .whenComplete(
                         (result, error) ->
                                 Platform.runLater(
                                         () -> {
                                             if (stale(request)) return;
+                                            catalogLoading = false;
                                             if (error != null || result == null) {
                                                 loaded = false;
+                                                clear();
+                                                races.setPlaceholder(
+                                                        text(
+                                                                "Race records are unavailable."
+                                                                    + " Reload to retry.",
+                                                                "muted"));
+                                                details.getChildren()
+                                                        .setAll(
+                                                                text(
+                                                                        "Race records are"
+                                                                            + " unavailable. Reload"
+                                                                            + " to retry.",
+                                                                        "muted"));
                                                 status.setText(
-                                                        "Race records are unavailable. Reload to retry.");
+                                                        "Race records are unavailable. Reload to"
+                                                            + " retry.");
                                                 return;
                                             }
+                                            races.setPlaceholder(
+                                                    text("No race records are readable.", "muted"));
                                             catalog = result.races();
                                             status.setText(
                                                     result.message() != null
@@ -185,13 +252,17 @@ final class RacesView extends BorderPane implements AutoCloseable {
                                                             : result.state()
                                                                             == RaceTypes.State
                                                                                     .PARTIAL
-                                                                    ? "Partial client data · readable records are shown"
-                                                                    : "Recorded client data · choose a race");
+                                                                    ? "Partial client data ·"
+                                                                          + " readable records are"
+                                                                          + " shown"
+                                                                    : "Recorded client data ·"
+                                                                          + " choose a race");
                                             filter();
                                         }));
     }
 
     private void filter() {
+        if (catalogLoading) return;
         var visible =
                 catalog.stream()
                         .filter(race -> otherRecords.isSelected() || race.recordedClasses() > 0)
@@ -216,16 +287,15 @@ final class RacesView extends BorderPane implements AutoCloseable {
             modelPanel.close();
             modelPanel = null;
         }
-        racialRail.getChildren().setAll(text("Loading racial abilities…", "muted"));
+        racialRail.getChildren().setAll(activity("Loading racial abilities…"));
         selected = race.id();
         token.cancel();
         token = new Cancellation();
         long request = ++generation;
-        details.getChildren()
-                .setAll(text(race.name(), "h1"), text("Loading race overview…", "muted"));
+        details.getChildren().setAll(text(race.name(), "h1"), activity("Loading race overview…"));
         icons.retain(java.util.Set.of());
         var handle = bound;
-        handle.overview(race.id(), token)
+        request(() -> handle.overview(race.id(), token))
                 .whenComplete(
                         (result, error) ->
                                 Platform.runLater(
@@ -234,6 +304,13 @@ final class RacesView extends BorderPane implements AutoCloseable {
                                             if (error != null
                                                     || result == null
                                                     || result.race() == null) {
+                                                racialRail
+                                                        .getChildren()
+                                                        .setAll(
+                                                                text(
+                                                                        "Racial ability records are"
+                                                                            + " unavailable.",
+                                                                        "muted"));
                                                 details.getChildren()
                                                         .setAll(
                                                                 text(race.name(), "h1"),
@@ -243,7 +320,8 @@ final class RacesView extends BorderPane implements AutoCloseable {
                                                                                                         .message()
                                                                                                 != null
                                                                                 ? result.message()
-                                                                                : "Race overview is unavailable.",
+                                                                                : "Race overview is"
+                                                                                      + " unavailable.",
                                                                         "muted"));
                                                 return;
                                             }
@@ -288,7 +366,8 @@ final class RacesView extends BorderPane implements AutoCloseable {
                                     "muted"));
         var wanted = new java.util.HashSet<Long>();
         for (var ability : result.abilities()) {
-            StackPane art = new StackPane(text("?", "talent-placeholder"));
+            StackPane art = new StackPane(text("—", "talent-placeholder"));
+            art.setAccessibleText("Racial icon reference unavailable");
             art.setMinSize(30, 30);
             art.setPrefSize(30, 30);
             art.setMaxSize(30, 30);
@@ -320,7 +399,8 @@ final class RacesView extends BorderPane implements AutoCloseable {
                         text("ChrRaces ID " + race.id(), "muted"),
                         text("Class links: CharBaseInfo → ChrClasses", "muted"),
                         text(
-                                "Racial cards: ChrRaceRacialAbility. Cards are not inferred SpellID links.",
+                                "Racial cards: ChrRaceRacialAbility. Cards are not inferred SpellID"
+                                    + " links.",
                                 "muted"));
         for (var issue : result.issues()) evidence.getChildren().add(text(issue, "muted"));
         TitledPane source = new TitledPane("Source details", evidence);
@@ -336,24 +416,57 @@ final class RacesView extends BorderPane implements AutoCloseable {
     }
 
     private void loadIcon(long id, StackPane target, long request) {
+        var spinner = new ProgressIndicator(-1);
+        spinner.setPrefSize(18, 18);
+        spinner.setMaxSize(18, 18);
+        spinner.setAccessibleText("Loading racial icon");
+        target.setAccessibleText("Loading racial icon");
+        target.getChildren().setAll(spinner);
         icons.request(id)
+                .thenApplyAsync(
+                        result -> {
+                            if (result == null
+                                    || result.state() != BlpImageTypes.State.READY
+                                    || result.image() == null) return null;
+                            var pixels = result.image();
+                            int width = pixels.width(),
+                                    height = pixels.height(),
+                                    stride = pixels.rowStride();
+                            if (width < 1
+                                    || height < 1
+                                    || width > 64
+                                    || height > 64
+                                    || stride < width * 4
+                                    || stride > 256)
+                                throw new IllegalArgumentException(
+                                        "Icon dimensions exceed preview bounds");
+                            byte[] rgba = pixels.rgba();
+                            if (rgba.length != stride * height)
+                                throw new IllegalArgumentException("Icon pixel length disagrees");
+                            int[] argb = new int[width * height];
+                            for (int y = 0; y < height; y++)
+                                for (int x = 0; x < width; x++) {
+                                    int at = y * stride + x * 4;
+                                    argb[y * width + x] =
+                                            (rgba[at + 3] & 255) << 24
+                                                    | (rgba[at] & 255) << 16
+                                                    | (rgba[at + 1] & 255) << 8
+                                                    | (rgba[at + 2] & 255);
+                                }
+                            return new IconPixels(width, height, argb);
+                        },
+                        iconWorker)
                 .whenComplete(
-                        (result, error) ->
+                        (pixels, error) ->
                                 Platform.runLater(
                                         () -> {
-                                            if (stale(request)
-                                                    || error != null
-                                                    || result == null
-                                                    || result.state() != BlpImageTypes.State.READY)
+                                            if (stale(request)) return;
+                                            if (error != null || pixels == null) {
+                                                target.setAccessibleText("Racial icon unavailable");
+                                                target.getChildren().setAll(text("—", "muted"));
                                                 return;
-                                            var pixels = result.image();
-                                            byte[] rgba = pixels.rgba();
-                                            for (int at = 0; at < rgba.length; at += 4) {
-                                                byte red = rgba[at];
-                                                rgba[at] = rgba[at + 2];
-                                                rgba[at + 2] = red;
                                             }
-                                            WritableImage bitmap =
+                                            var bitmap =
                                                     new WritableImage(
                                                             pixels.width(), pixels.height());
                                             bitmap.getPixelWriter()
@@ -362,14 +475,15 @@ final class RacesView extends BorderPane implements AutoCloseable {
                                                             0,
                                                             pixels.width(),
                                                             pixels.height(),
-                                                            PixelFormat.getByteBgraInstance(),
-                                                            rgba,
+                                                            PixelFormat.getIntArgbInstance(),
+                                                            pixels.argb(),
                                                             0,
-                                                            pixels.width() * 4);
-                                            ImageView image = new ImageView(bitmap);
+                                                            pixels.width());
+                                            var image = new ImageView(bitmap);
                                             image.setFitWidth(30);
                                             image.setFitHeight(30);
                                             image.setPreserveRatio(true);
+                                            target.setAccessibleText("Racial ability icon");
                                             target.getChildren().setAll(image);
                                         }));
     }
@@ -395,7 +509,8 @@ final class RacesView extends BorderPane implements AutoCloseable {
                 .setAll(
                         text("Choose a race", "h2"),
                         text(
-                                "Recorded race/class entries appear in the sidebar. Include other records to inspect internal or unlinked race data.",
+                                "Recorded race/class entries appear in the sidebar. Include other"
+                                    + " records to inspect internal or unlinked race data.",
                                 "muted"));
     }
 
@@ -405,6 +520,9 @@ final class RacesView extends BorderPane implements AutoCloseable {
         generation++;
         token.cancel();
         icons.close();
+        iconWorker.shutdownNow();
+        clear();
+        races.setPlaceholder(text("Race browser closed.", "muted"));
         if (modelPanel != null) modelPanel.close();
     }
 

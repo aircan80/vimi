@@ -3,12 +3,7 @@ package com.vimi.gui;
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.races.BuildRaces;
 import com.vibeminer.concepts.races.RaceTypes;
-import java.awt.image.BufferedImage;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
+
 import javafx.application.Platform;
 import javafx.scene.Scene;
 import javafx.scene.control.CheckBox;
@@ -17,6 +12,14 @@ import javafx.scene.control.ListView;
 import javafx.scene.image.ImageView;
 import javafx.scene.layout.BorderPane;
 import javafx.stage.Stage;
+
+import java.awt.image.BufferedImage;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+
 import javax.imageio.ImageIO;
 
 /**
@@ -25,15 +28,20 @@ import javax.imageio.ImageIO;
 public final class RacesUiTest {
     private RacesUiTest() {}
 
+    private static final CompletableFuture<Void> loadingChecks = new CompletableFuture<>();
+
     public static void main(String[] args) throws Exception {
         var done = new CompletableFuture<Void>();
         Platform.startup(
                 () -> {
                     try {
+                        loadingFeedback();
                         var human = new RaceTypes.Race(1, "Authored Human", 1, 2);
                         var internal = new RaceTypes.Race(99, "Internal record", 99, 0);
                         var pending = new CompletableFuture<RaceTypes.Overview>();
                         var closes = new java.util.concurrent.atomic.AtomicInteger();
+                        var authoredView =
+                                new java.util.concurrent.atomic.AtomicReference<RacesView>();
                         BuildRaces handle =
                                 new BuildRaces() {
                                     public CompletableFuture<RaceTypes.Catalog> catalog(
@@ -53,7 +61,9 @@ public final class RacesUiTest {
                                                 new RaceTypes.Overview(
                                                         RaceTypes.State.PARTIAL,
                                                         human,
-                                                        "An authored lore paragraph used to review layout. This screen does not contain real game build data.",
+                                                        "An authored lore paragraph used to review"
+                                                            + " layout. This screen does not"
+                                                            + " contain real game build data.",
                                                         10L,
                                                         "Authored faction",
                                                         List.of(
@@ -65,13 +75,18 @@ public final class RacesUiTest {
                                                                 new RaceTypes.Ability(
                                                                         101,
                                                                         "Authored Diplomacy",
-                                                                        "Recorded racial description remains usable when another section is protected.",
+                                                                        "Recorded racial"
+                                                                            + " description remains"
+                                                                            + " usable when another"
+                                                                            + " section is"
+                                                                            + " protected.",
                                                                         900L,
                                                                         0),
                                                                 new RaceTypes.Ability(
                                                                         102,
                                                                         "Authored racial",
-                                                                        "A second recorded description.",
+                                                                        "A second recorded"
+                                                                            + " description.",
                                                                         null,
                                                                         1)),
                                                         List.of("Some source rows are protected."),
@@ -126,7 +141,8 @@ public final class RacesUiTest {
                                                         mesh,
                                                         java.util.Set.of(0),
                                                         List.of(
-                                                                "Authored renderer fixture; no game assets."),
+                                                                "Authored renderer fixture; no game"
+                                                                    + " assets."),
                                                         false,
                                                         null));
                                     }
@@ -153,7 +169,8 @@ public final class RacesUiTest {
                                                                         100,
                                                                         200)),
                                                         List.of(
-                                                                "Authored voice metadata; no recording."),
+                                                                "Authored voice metadata; no"
+                                                                    + " recording."),
                                                         null));
                                     }
 
@@ -198,7 +215,7 @@ public final class RacesUiTest {
                                                                             0xff43968a,
                                                                             0xffd8ac66
                                                                         })));
-                                        return CompletableFuture.completedFuture(
+                                        var appearance =
                                                 new com.vibeminer.concepts.races.RaceAppearanceTypes
                                                         .Result(
                                                         RaceTypes.State.PARTIAL,
@@ -209,9 +226,46 @@ public final class RacesUiTest {
                                                                         .RaceAppearanceTypes.Item(
                                                                         1001, 4, 2001)),
                                                         List.of(
-                                                                "Authored diffuse fixture; no game data."),
+                                                                "Authored diffuse fixture; no game"
+                                                                    + " data."),
                                                         true,
-                                                        null));
+                                                        null);
+                                        var future =
+                                                new CompletableFuture<
+                                                        com.vibeminer.concepts.races
+                                                                .RaceAppearanceTypes.Result>();
+                                        var delay =
+                                                new javafx.animation.PauseTransition(
+                                                        javafx.util.Duration.millis(100));
+                                        delay.setOnFinished(
+                                                event -> {
+                                                    try {
+                                                        require(
+                                                                labels(authoredView.get()).stream()
+                                                                        .anyMatch(
+                                                                                value ->
+                                                                                        value
+                                                                                                .contains(
+                                                                                                        "preparing"
+                                                                                                            + " textures"
+                                                                                                            + " and starting"
+                                                                                                            + " clothing")),
+                                                                "Pending appearance does not claim"
+                                                                    + " a completed textured"
+                                                                    + " sample");
+                                                        require(
+                                                                activityCount(authoredView.get())
+                                                                        > 0,
+                                                                "Pending appearance shows"
+                                                                    + " accessible local activity");
+                                                        future.complete(appearance);
+                                                    } catch (Throwable error) {
+                                                        future.completeExceptionally(error);
+                                                        done.completeExceptionally(error);
+                                                    }
+                                                });
+                                        delay.play();
+                                        return future;
                                     }
 
                                     public CompletableFuture<Void> closeAsync() {
@@ -249,10 +303,12 @@ public final class RacesUiTest {
                                         () -> handle,
                                         revision::get,
                                         (id, token) -> CompletableFuture.completedFuture(image));
+                        authoredView.set(view);
                         BorderPane root = new BorderPane(view);
                         root.setTop(
                                 new Label(
-                                        "AUTHORED RACES LAYOUT FIXTURE · no character or real build data"));
+                                        "AUTHORED RACES LAYOUT FIXTURE · no character or real build"
+                                            + " data"));
                         double width =
                                 Double.parseDouble(
                                         System.getProperty("vimi.racesReviewWidth", "1320"));
@@ -274,12 +330,15 @@ public final class RacesUiTest {
                                                             .anyMatch(
                                                                     value ->
                                                                             value.startsWith(
-                                                                                    "Static textured sample"))
+                                                                                    "Static"
+                                                                                        + " textured"
+                                                                                        + " sample"))
                                                     && labels(view).stream()
                                                             .anyMatch(
                                                                     value ->
                                                                             value.startsWith(
-                                                                                    "Drag to rotate"));
+                                                                                    "Drag to"
+                                                                                        + " rotate"));
                                     if (!ready && System.nanoTime() < readyDeadline) {
                                         pause.playFromStart();
                                         return;
@@ -301,7 +360,8 @@ public final class RacesUiTest {
                                                         .anyMatch(
                                                                 value ->
                                                                         value.startsWith(
-                                                                                "Static textured sample")),
+                                                                                "Static textured"
+                                                                                    + " sample")),
                                                 "Async textured sample reaches the view: "
                                                         + labels(view));
                                         var imageSnapshot = scene.snapshot(null);
@@ -352,7 +412,8 @@ public final class RacesUiTest {
                                                         require(
                                                                 !labels(view)
                                                                         .contains("STALE OVERVIEW"),
-                                                                "Stale overview cannot repopulate invalidated view");
+                                                                "Stale overview cannot repopulate"
+                                                                    + " invalidated view");
                                                         view.close();
                                                         require(
                                                                 closes.get() == 0,
@@ -374,11 +435,120 @@ public final class RacesUiTest {
                 });
         try {
             done.get(20, TimeUnit.SECONDS);
+            loadingChecks.get(5, TimeUnit.SECONDS);
             System.out.println(
-                    "Races UI: partial data, icons, internal-record filter, stale selection and borrowed lifetime passed");
+                    "Races UI: partial data, icons, internal-record filter, stale selection and"
+                        + " borrowed lifetime passed");
         } finally {
             Platform.exit();
         }
+    }
+
+    private static void loadingFeedback() {
+        var catalog = new CompletableFuture<RaceTypes.Catalog>();
+        var overview = new CompletableFuture<RaceTypes.Overview>();
+        var variants =
+                new CompletableFuture<com.vibeminer.concepts.races.RaceMediaTypes.Variants>();
+        var mesh = new CompletableFuture<com.vibeminer.concepts.races.RaceMediaTypes.Preview>();
+        var previewCalls = new java.util.concurrent.atomic.AtomicInteger();
+        var handle =
+                new BuildRaces() {
+                    public CompletableFuture<RaceTypes.Catalog> catalog(Cancellation token) {
+                        return catalog;
+                    }
+
+                    public CompletableFuture<RaceTypes.Overview> overview(
+                            long id, Cancellation token) {
+                        return overview;
+                    }
+
+                    public CompletableFuture<com.vibeminer.concepts.races.RaceMediaTypes.Variants>
+                            modelVariants(long id, Cancellation token) {
+                        return variants;
+                    }
+
+                    public CompletableFuture<com.vibeminer.concepts.races.RaceMediaTypes.Preview>
+                            preview(long race, long playerClass, long model, Cancellation token) {
+                        previewCalls.incrementAndGet();
+                        return mesh;
+                    }
+
+                    public CompletableFuture<Void> closeAsync() {
+                        return CompletableFuture.completedFuture(null);
+                    }
+                };
+        var view = new RacesView(() -> handle, () -> 1, (id, token) -> new CompletableFuture<>());
+        new Scene(view, 1000, 800);
+        view.ensureLoaded();
+        view.applyCss();
+        view.layout();
+        require(activityCount(view) > 0, "Pending catalog shows region activity immediately");
+        require(!catalog.isDone(), "Activity does not require catalog completion");
+        view.close();
+        catalog.complete(
+                new RaceTypes.Catalog(
+                        RaceTypes.State.READY,
+                        List.of(new RaceTypes.Race(1, "STALE RACE", 1, 1)),
+                        List.of(),
+                        null));
+        require(activityCount(view) == 0, "Closing removes all pending activity");
+        var panel = new RaceModelPanel(handle, () -> handle, () -> 1, 1, 1, List.of());
+        new Scene(panel, 800, 600);
+        panel.applyCss();
+        panel.layout();
+        require(activityCount(panel) > 0, "Model variants show central pending activity");
+        require(!variants.isDone(), "Variant acquisition stays asynchronous");
+        variants.complete(
+                new com.vibeminer.concepts.races.RaceMediaTypes.Variants(
+                        RaceTypes.State.READY,
+                        List.of(
+                                new com.vibeminer.concepts.races.RaceMediaTypes.Variant(
+                                        1, 0, 1, 1, 1)),
+                        List.of(),
+                        null));
+        Platform.runLater(
+                () -> {
+                    try {
+                        require(
+                                previewCalls.get() == 1,
+                                "Resolved variants start one mesh request");
+                        require(
+                                activityCount(panel) > 0,
+                                "Pending mesh keeps model activity visible");
+                        mesh.completeExceptionally(
+                                new IllegalStateException("Authored mesh failure"));
+                        Platform.runLater(
+                                () -> {
+                                    try {
+                                        require(
+                                                activityCount(panel) == 0,
+                                                "Failed mesh clears pending activity");
+                                        require(
+                                                labels(panel)
+                                                        .contains("Model surface is unavailable."),
+                                                "Failed mesh shows explicit unavailable state");
+                                        require(
+                                                !labels(view).contains("STALE RACE"),
+                                                "Closed catalog cannot repopulate view");
+                                        panel.close();
+                                        loadingChecks.complete(null);
+                                    } catch (Throwable error) {
+                                        loadingChecks.completeExceptionally(error);
+                                    }
+                                });
+                    } catch (Throwable error) {
+                        panel.close();
+                        loadingChecks.completeExceptionally(error);
+                    }
+                });
+    }
+
+    private static long activityCount(javafx.scene.Node node) {
+        if (!node.isVisible()) return 0;
+        long count = node instanceof javafx.scene.control.ProgressIndicator ? 1 : 0;
+        if (node instanceof javafx.scene.Parent parent)
+            for (var child : parent.getChildrenUnmodifiable()) count += activityCount(child);
+        return count;
     }
 
     private static boolean descendantsImage(javafx.scene.Node node) {
