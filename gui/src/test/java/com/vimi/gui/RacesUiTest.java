@@ -31,6 +31,8 @@ public final class RacesUiTest {
     private static final CompletableFuture<Void> loadingChecks = new CompletableFuture<>();
     private static final CompletableFuture<Void> voiceLoadingChecks = new CompletableFuture<>();
     private static final CompletableFuture<Void> voiceRetirementChecks = new CompletableFuture<>();
+    private static final CompletableFuture<Void> raceRetirementChecks = new CompletableFuture<>();
+    private static final CompletableFuture<Void> modelRetirementChecks = new CompletableFuture<>();
 
     public static void main(String[] args) throws Exception {
         var done = new CompletableFuture<Void>();
@@ -40,6 +42,8 @@ public final class RacesUiTest {
                         loadingFeedback();
                         voiceLoadingFeedback();
                         voiceRetirementFeedback();
+                        raceRetirementFeedback();
+                        modelRetirementFeedback();
                         var human = new RaceTypes.Race(1, "Authored Human", 1, 2);
                         var internal = new RaceTypes.Race(99, "Internal record", 99, 0);
                         var pending = new CompletableFuture<RaceTypes.Overview>();
@@ -442,12 +446,417 @@ public final class RacesUiTest {
             loadingChecks.get(5, TimeUnit.SECONDS);
             voiceLoadingChecks.get(5, TimeUnit.SECONDS);
             voiceRetirementChecks.get(5, TimeUnit.SECONDS);
+            raceRetirementChecks.get(5, TimeUnit.SECONDS);
+            modelRetirementChecks.get(5, TimeUnit.SECONDS);
             System.out.println(
                     "Races UI: partial data, icons, internal-record filter, stale selection and"
                             + " borrowed lifetime passed");
         } finally {
             Platform.exit();
         }
+    }
+
+    private static void raceRetirementFeedback() {
+        var first = new CompletableFuture<RaceTypes.Catalog>();
+        var superseded = new CompletableFuture<RaceTypes.Catalog>();
+        var latest = new CompletableFuture<RaceTypes.Catalog>();
+        var catalogs = new java.util.ArrayDeque<CompletableFuture<RaceTypes.Catalog>>();
+        catalogs.add(first);
+        catalogs.add(superseded);
+        catalogs.add(latest);
+        var firstDetail = new CompletableFuture<RaceTypes.Overview>();
+        var latestDetail = new CompletableFuture<RaceTypes.Overview>();
+        var overviews = new java.util.ArrayDeque<CompletableFuture<RaceTypes.Overview>>();
+        overviews.add(firstDetail);
+        overviews.add(latestDetail);
+        var revision = new java.util.concurrent.atomic.AtomicLong(1);
+        BuildRaces handle =
+                new BuildRaces() {
+                    public CompletableFuture<RaceTypes.Catalog> catalog(Cancellation token) {
+                        return catalogs.remove();
+                    }
+
+                    public CompletableFuture<RaceTypes.Overview> overview(
+                            long id, Cancellation token) {
+                        return overviews.remove();
+                    }
+
+                    public CompletableFuture<Void> closeAsync() {
+                        return CompletableFuture.completedFuture(null);
+                    }
+                };
+        var handles = new java.util.concurrent.atomic.AtomicReference<BuildRaces>(handle);
+        var view =
+                new RacesView(
+                        handles::get, revision::get, (id, token) -> new CompletableFuture<>());
+        new Scene(view, 1200, 900);
+        view.applyCss();
+        view.layout();
+        view.ensureLoaded();
+        view.applyCss();
+        view.layout();
+        revision.incrementAndGet();
+        first.complete(new RaceTypes.Catalog(RaceTypes.State.READY, List.of(), List.of(), null));
+        Platform.runLater(
+                () -> {
+                    try {
+                        require(
+                                activityCount(view) == 0,
+                                "External race revision retires pending catalog activity");
+                        require(
+                                view.lookupAll(".list-view").stream()
+                                        .anyMatch(javafx.scene.Node::isDisabled),
+                                "Retired race list actions disabled");
+                        view.ensureLoaded();
+                        view.invalidate();
+                        view.ensureLoaded();
+                        superseded.complete(
+                                new RaceTypes.Catalog(
+                                        RaceTypes.State.READY, List.of(), List.of(), null));
+                        Platform.runLater(
+                                () -> {
+                                    try {
+                                        require(
+                                                activityCount(view) > 0,
+                                                "Old race catalog cannot clear newer pending"
+                                                    + " activity");
+                                        latest.complete(
+                                                new RaceTypes.Catalog(
+                                                        RaceTypes.State.READY,
+                                                        List.of(
+                                                                new RaceTypes.Race(
+                                                                        1,
+                                                                        "First pending race",
+                                                                        1,
+                                                                        1),
+                                                                new RaceTypes.Race(
+                                                                        2,
+                                                                        "Latest pending race",
+                                                                        2,
+                                                                        1)),
+                                                        List.of(),
+                                                        null));
+                                        Platform.runLater(
+                                                () -> {
+                                                    try {
+                                                        var list =
+                                                                (ListView<?>)
+                                                                        view.lookup(".list-view");
+                                                        list.getSelectionModel().select(1);
+                                                        handles.set(null);
+                                                        firstDetail.completeExceptionally(
+                                                                new IllegalStateException(
+                                                                        "Older retired race"));
+                                                        Platform.runLater(
+                                                                () -> {
+                                                                    try {
+                                                                        require(
+                                                                                activityCount(view)
+                                                                                        > 0,
+                                                                                "Older race"
+                                                                                    + " selection"
+                                                                                    + " cannot"
+                                                                                    + " clear newer"
+                                                                                    + " overview"
+                                                                                    + " activity");
+                                                                        latestDetail
+                                                                                .completeExceptionally(
+                                                                                        new IllegalStateException(
+                                                                                                "Current"
+                                                                                                    + " retired"
+                                                                                                    + " race"));
+                                                                        Platform.runLater(
+                                                                                () -> {
+                                                                                    try {
+                                                                                        require(
+                                                                                                activityCount(
+                                                                                                                view)
+                                                                                                        == 0,
+                                                                                                "Current"
+                                                                                                    + " retired"
+                                                                                                    + " overview"
+                                                                                                    + " clears"
+                                                                                                    + " center"
+                                                                                                    + " and racial"
+                                                                                                    + " rail"
+                                                                                                    + " activity");
+                                                                                        require(
+                                                                                                labels(
+                                                                                                                view)
+                                                                                                        .contains(
+                                                                                                                "Build"
+                                                                                                                    + " changed."
+                                                                                                                    + " Reload"
+                                                                                                                    + " race"
+                                                                                                                    + " records."),
+                                                                                                "Race retirement"
+                                                                                                    + " is explicit");
+                                                                                        view
+                                                                                                .close();
+                                                                                        raceRetirementChecks
+                                                                                                .complete(
+                                                                                                        null);
+                                                                                    } catch (
+                                                                                            Throwable
+                                                                                                    failure) {
+                                                                                        view
+                                                                                                .close();
+                                                                                        raceRetirementChecks
+                                                                                                .completeExceptionally(
+                                                                                                        failure);
+                                                                                    }
+                                                                                });
+                                                                    } catch (Throwable failure) {
+                                                                        view.close();
+                                                                        raceRetirementChecks
+                                                                                .completeExceptionally(
+                                                                                        failure);
+                                                                    }
+                                                                });
+                                                    } catch (Throwable failure) {
+                                                        view.close();
+                                                        raceRetirementChecks.completeExceptionally(
+                                                                failure);
+                                                    }
+                                                });
+                                    } catch (Throwable failure) {
+                                        view.close();
+                                        raceRetirementChecks.completeExceptionally(failure);
+                                    }
+                                });
+                    } catch (Throwable failure) {
+                        view.close();
+                        raceRetirementChecks.completeExceptionally(failure);
+                    }
+                });
+    }
+
+    private static void modelRetirementFeedback() {
+        var variantDone = new CompletableFuture<Void>();
+        var previewDone = new CompletableFuture<Void>();
+        var appearanceDone = new CompletableFuture<Void>();
+        CompletableFuture.allOf(variantDone, previewDone, appearanceDone)
+                .whenComplete(
+                        (value, failure) -> {
+                            if (failure == null) modelRetirementChecks.complete(null);
+                            else modelRetirementChecks.completeExceptionally(failure);
+                        });
+        var variants =
+                new CompletableFuture<com.vibeminer.concepts.races.RaceMediaTypes.Variants>();
+        var oldPreview =
+                new CompletableFuture<com.vibeminer.concepts.races.RaceMediaTypes.Preview>();
+        var latestPreview =
+                new CompletableFuture<com.vibeminer.concepts.races.RaceMediaTypes.Preview>();
+        var revision = new java.util.concurrent.atomic.AtomicLong(1);
+        BuildRaces handle =
+                new BuildRaces() {
+                    public CompletableFuture<RaceTypes.Catalog> catalog(Cancellation token) {
+                        return new CompletableFuture<>();
+                    }
+
+                    public CompletableFuture<RaceTypes.Overview> overview(
+                            long id, Cancellation token) {
+                        return new CompletableFuture<>();
+                    }
+
+                    public CompletableFuture<com.vibeminer.concepts.races.RaceMediaTypes.Variants>
+                            modelVariants(long id, Cancellation token) {
+                        return variants;
+                    }
+
+                    public CompletableFuture<com.vibeminer.concepts.races.RaceMediaTypes.Preview>
+                            preview(long race, long playerClass, long model, Cancellation token) {
+                        return model == 1 ? oldPreview : latestPreview;
+                    }
+
+                    public CompletableFuture<Void> closeAsync() {
+                        return CompletableFuture.completedFuture(null);
+                    }
+                };
+        var retired = new RaceModelPanel(handle, () -> handle, revision::get, 1, 1, List.of());
+        new Scene(retired, 800, 600);
+        retired.applyCss();
+        retired.layout();
+        revision.incrementAndGet();
+        variants.complete(
+                new com.vibeminer.concepts.races.RaceMediaTypes.Variants(
+                        RaceTypes.State.READY,
+                        List.of(
+                                new com.vibeminer.concepts.races.RaceMediaTypes.Variant(
+                                        1, 0, 1, 1, 1),
+                                new com.vibeminer.concepts.races.RaceMediaTypes.Variant(
+                                        2, 1, 2, 2, 2)),
+                        List.of(),
+                        null));
+        var current = new RaceModelPanel(handle, () -> handle, revision::get, 2, 1, List.of());
+        new Scene(current, 800, 600);
+        current.applyCss();
+        current.layout();
+        Platform.runLater(
+                () -> {
+                    try {
+                        require(
+                                activityCount(retired) == 0
+                                        && labels(retired)
+                                                .contains("Build changed. Reload model records."),
+                                "Retired variant completion clears busy");
+                        require(
+                                retired.lookupAll(".combo-box").stream()
+                                        .allMatch(javafx.scene.Node::isDisabled),
+                                "Retired model choices disabled");
+                        variantDone.complete(null);
+                        var model =
+                                current.lookupAll(".combo-box").stream()
+                                        .filter(
+                                                node ->
+                                                        "Recorded model variant"
+                                                                .equals(node.getAccessibleText()))
+                                        .map(javafx.scene.control.ComboBox.class::cast)
+                                        .findFirst()
+                                        .orElseThrow();
+                        model.getSelectionModel().select(1);
+                        model.fireEvent(new javafx.event.ActionEvent());
+                        revision.incrementAndGet();
+                        oldPreview.completeExceptionally(new IllegalStateException("Older mesh"));
+                        Platform.runLater(
+                                () -> {
+                                    try {
+                                        require(
+                                                activityCount(current) > 0,
+                                                "Older mesh completion cannot clear newer model"
+                                                    + " acquisition");
+                                        latestPreview.completeExceptionally(
+                                                new IllegalStateException("Current retired mesh"));
+                                        Platform.runLater(
+                                                () -> {
+                                                    try {
+                                                        require(
+                                                                activityCount(current) == 0
+                                                                        && labels(current)
+                                                                                .contains(
+                                                                                        "Build"
+                                                                                            + " changed."
+                                                                                            + " Reload"
+                                                                                            + " model"
+                                                                                            + " records."),
+                                                                "Current retired mesh clears busy");
+                                                        current.close();
+                                                        retired.close();
+                                                        previewDone.complete(null);
+                                                    } catch (Throwable failure) {
+                                                        current.close();
+                                                        retired.close();
+                                                        previewDone.completeExceptionally(failure);
+                                                    }
+                                                });
+                                    } catch (Throwable failure) {
+                                        current.close();
+                                        retired.close();
+                                        previewDone.completeExceptionally(failure);
+                                    }
+                                });
+                    } catch (Throwable failure) {
+                        current.close();
+                        retired.close();
+                        variantDone.completeExceptionally(failure);
+                        previewDone.completeExceptionally(failure);
+                    }
+                });
+        var appearance =
+                new CompletableFuture<com.vibeminer.concepts.races.RaceAppearanceTypes.Result>();
+        var appearanceRevision = new java.util.concurrent.atomic.AtomicLong(1);
+        var variant = new com.vibeminer.concepts.races.RaceMediaTypes.Variant(1, 0, 1, 1, 1);
+        var mesh =
+                new com.vibeminer.rendering.models.PreviewMesh(
+                        new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0},
+                        new int[] {0, 1, 2},
+                        List.of(new com.vibeminer.rendering.models.PreviewMesh.Part(0, 0, 3)));
+        BuildRaces surface =
+                new BuildRaces() {
+                    public CompletableFuture<RaceTypes.Catalog> catalog(Cancellation token) {
+                        return new CompletableFuture<>();
+                    }
+
+                    public CompletableFuture<RaceTypes.Overview> overview(
+                            long id, Cancellation token) {
+                        return new CompletableFuture<>();
+                    }
+
+                    public CompletableFuture<com.vibeminer.concepts.races.RaceMediaTypes.Variants>
+                            modelVariants(long id, Cancellation token) {
+                        return CompletableFuture.completedFuture(
+                                new com.vibeminer.concepts.races.RaceMediaTypes.Variants(
+                                        RaceTypes.State.READY, List.of(variant), List.of(), null));
+                    }
+
+                    public CompletableFuture<com.vibeminer.concepts.races.RaceMediaTypes.Preview>
+                            preview(long race, long playerClass, long model, Cancellation token) {
+                        return CompletableFuture.completedFuture(
+                                new com.vibeminer.concepts.races.RaceMediaTypes.Preview(
+                                        RaceTypes.State.READY,
+                                        variant,
+                                        mesh,
+                                        java.util.Set.of(0),
+                                        List.of(),
+                                        false,
+                                        null));
+                    }
+
+                    public CompletableFuture<
+                                    com.vibeminer.concepts.races.RaceAppearanceTypes.Result>
+                            appearance(
+                                    long race, long playerClass, long model, Cancellation token) {
+                        return appearance;
+                    }
+
+                    public CompletableFuture<Void> closeAsync() {
+                        return CompletableFuture.completedFuture(null);
+                    }
+                };
+        var composed =
+                new RaceModelPanel(
+                        surface, () -> surface, appearanceRevision::get, 1, 1, List.of());
+        new Scene(composed, 800, 600);
+        composed.applyCss();
+        composed.layout();
+        Platform.runLater(
+                () ->
+                        Platform.runLater(
+                                () -> {
+                                    try {
+                                        require(
+                                                activityCount(composed) > 0,
+                                                "Appearance is visibly pending");
+                                        appearanceRevision.incrementAndGet();
+                                        appearance.completeExceptionally(
+                                                new IllegalStateException("Retired appearance"));
+                                        Platform.runLater(
+                                                () -> {
+                                                    try {
+                                                        require(
+                                                                activityCount(composed) == 0
+                                                                        && labels(composed)
+                                                                                .contains(
+                                                                                        "Build"
+                                                                                            + " changed."
+                                                                                            + " Reload"
+                                                                                            + " model"
+                                                                                            + " records."),
+                                                                "Retired appearance clears all"
+                                                                    + " activity");
+                                                        composed.close();
+                                                        appearanceDone.complete(null);
+                                                    } catch (Throwable failure) {
+                                                        composed.close();
+                                                        appearanceDone.completeExceptionally(
+                                                                failure);
+                                                    }
+                                                });
+                                    } catch (Throwable failure) {
+                                        composed.close();
+                                        appearanceDone.completeExceptionally(failure);
+                                    }
+                                }));
     }
 
     private static void voiceRetirementFeedback() {
@@ -527,7 +936,7 @@ public final class RacesUiTest {
                                         require(
                                                 activityCount(panel) > 0,
                                                 "Old voice catalog cannot clear newer pending"
-                                                    + " state");
+                                                        + " state");
                                         latest.complete(ready);
                                         Platform.runLater(
                                                 () -> {
@@ -557,7 +966,7 @@ public final class RacesUiTest {
                                                         require(
                                                                 activityCount(panel) > 0,
                                                                 "Voice decode is pending before"
-                                                                    + " retirement");
+                                                                        + " retirement");
                                                         external.set(true);
                                                         audio.completeExceptionally(
                                                                 new IllegalStateException(

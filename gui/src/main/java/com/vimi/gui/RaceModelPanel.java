@@ -48,7 +48,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
         this.revisions = revisions;
         this.revision = revision;
         this.raceId = raceId;
-        voices = new RaceVoicePanel(handle, this::stale);
+        voices = new RaceVoicePanel(handle, this::workspaceStale);
         classes.getItems().setAll(recorded);
         classes.setConverter(
                 new javafx.util.StringConverter<>() {
@@ -105,12 +105,13 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
         activity.managedProperty().bind(activity.visibleProperty());
         getChildren().addAll(choices, new HBox(9, activity, state), viewer, voices, source);
         viewer.loading("Loading model variants…");
+        long variantsRequest = generation;
         request(() -> handle.modelVariants(raceId, token))
                 .whenComplete(
                         (result, error) ->
                                 Platform.runLater(
                                         () -> {
-                                            if (stale()) {
+                                            if (stale(variantsRequest)) {
                                                 return;
                                             }
                                             if (error != null
@@ -120,7 +121,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                                         result != null && result.message() != null
                                                                 ? result.message()
                                                                 : "Race model references are"
-                                                                      + " unavailable.");
+                                                                        + " unavailable.");
                                                 viewer.clear("No model surface is available");
                                                 return;
                                             }
@@ -132,6 +133,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
     }
 
     private void load() {
+        if (stale(generation)) return;
         var model = variants.getValue();
         if (model == null) {
             return;
@@ -151,7 +153,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                         (result, error) ->
                                 Platform.runLater(
                                         () -> {
-                                            if (stale() || request != generation) {
+                                            if (stale(request)) {
                                                 return;
                                             }
                                             if (error != null
@@ -166,7 +168,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                             }
                                             state.setText(
                                                     "Static model preview · preparing textures and"
-                                                        + " starting clothing…");
+                                                            + " starting clothing…");
                                             evidence.getChildren()
                                                     .setAll(
                                                             new Label(
@@ -180,10 +182,10 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                                             new Label(
                                                                     result.restored()
                                                                             ? "Restored derived"
-                                                                                  + " surface"
+                                                                                    + " surface"
                                                                             : "Derived from the"
-                                                                                  + " original M2"
-                                                                                  + " and SKIN"));
+                                                                                    + " original M2"
+                                                                                    + " and SKIN"));
                                             for (String issue : result.issues()) {
                                                 var note = new Label(issue);
                                                 note.setWrapText(true);
@@ -202,7 +204,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                         (result, error) ->
                                 Platform.runLater(
                                         () -> {
-                                            if (stale() || request != generation) {
+                                            if (stale(request)) {
                                                 return;
                                             }
                                             activity.setVisible(false);
@@ -216,7 +218,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                                                                         != null
                                                                         ? result.message()
                                                                         : "Textured appearance is"
-                                                                              + " unavailable."));
+                                                                                + " unavailable."));
                                                 return;
                                             }
                                             viewer.setAppearance(
@@ -224,10 +226,10 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                             state.setText(
                                                     result.items().isEmpty()
                                                             ? "Static textured sample · starting"
-                                                                  + " clothing unavailable"
+                                                                    + " clothing unavailable"
                                                             : "Static textured sample · available"
-                                                                  + " starting clothing · held"
-                                                                  + " equipment not shown");
+                                                                    + " starting clothing · held"
+                                                                    + " equipment not shown");
                                             evidence.getChildren()
                                                     .setAll(
                                                             new Label(
@@ -241,7 +243,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                                             new Label(
                                                                     result.restored()
                                                                             ? "Restored composed"
-                                                                                  + " appearance"
+                                                                                    + " appearance"
                                                                             : "Composed from"
                                                                                   + " recorded"
                                                                                   + " character and"
@@ -283,13 +285,28 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
         }
     }
 
-    private boolean stale() {
+    private boolean workspaceStale() {
         return closed || handles.get() != handle || revisions.getAsLong() != revision;
+    }
+
+    private boolean stale(long request) {
+        if (closed || request != generation) return true;
+        if (!workspaceStale()) return false;
+        viewer.clear("Build changed. Reload model records.");
+        close();
+        evidence.getChildren().clear();
+        state.setText("Build changed. Reload model records.");
+        return true;
     }
 
     @Override
     public void close() {
+        if (closed) return;
         closed = true;
+        classes.setDisable(true);
+        variants.setDisable(true);
+        voices.setDisable(true);
+        viewer.setDisable(true);
         generation++;
         token.cancel();
         activity.setVisible(false);

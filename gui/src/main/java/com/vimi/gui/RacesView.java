@@ -189,6 +189,7 @@ final class RacesView extends BorderPane implements AutoCloseable {
         icons.clear();
         catalog = List.of();
         races.getItems().clear();
+        races.setPlaceholder(text("Race records changed. Reload to continue.", "muted"));
         clear();
     }
 
@@ -208,6 +209,8 @@ final class RacesView extends BorderPane implements AutoCloseable {
             return;
         }
         loaded = true;
+        races.setDisable(false);
+        otherRecords.setDisable(false);
         long request = ++generation;
         status.setText("Loading race records…");
         catalogLoading = true;
@@ -229,7 +232,7 @@ final class RacesView extends BorderPane implements AutoCloseable {
                                                 races.setPlaceholder(
                                                         text(
                                                                 "Race records are unavailable."
-                                                                    + " Reload to retry.",
+                                                                        + " Reload to retry.",
                                                                 "muted"));
                                                 details.getChildren()
                                                         .setAll(
@@ -240,7 +243,7 @@ final class RacesView extends BorderPane implements AutoCloseable {
                                                                         "muted"));
                                                 status.setText(
                                                         "Race records are unavailable. Reload to"
-                                                            + " retry.");
+                                                                + " retry.");
                                                 return;
                                             }
                                             races.setPlaceholder(
@@ -256,12 +259,13 @@ final class RacesView extends BorderPane implements AutoCloseable {
                                                                           + " readable records are"
                                                                           + " shown"
                                                                     : "Recorded client data ·"
-                                                                          + " choose a race");
+                                                                            + " choose a race");
                                             filter();
                                         }));
     }
 
     private void filter() {
+        if (loaded && stale(generation)) return;
         if (catalogLoading) return;
         var visible =
                 catalog.stream()
@@ -283,6 +287,7 @@ final class RacesView extends BorderPane implements AutoCloseable {
     }
 
     private void select(RaceTypes.Race race) {
+        if (stale(generation)) return;
         if (modelPanel != null) {
             modelPanel.close();
             modelPanel = null;
@@ -309,7 +314,7 @@ final class RacesView extends BorderPane implements AutoCloseable {
                                                         .setAll(
                                                                 text(
                                                                         "Racial ability records are"
-                                                                            + " unavailable.",
+                                                                                + " unavailable.",
                                                                         "muted"));
                                                 details.getChildren()
                                                         .setAll(
@@ -400,7 +405,7 @@ final class RacesView extends BorderPane implements AutoCloseable {
                         text("Class links: CharBaseInfo → ChrClasses", "muted"),
                         text(
                                 "Racial cards: ChrRaceRacialAbility. Cards are not inferred SpellID"
-                                    + " links.",
+                                        + " links.",
                                 "muted"));
         for (var issue : result.issues()) evidence.getChildren().add(text(issue, "muted"));
         TitledPane source = new TitledPane("Source details", evidence);
@@ -489,10 +494,18 @@ final class RacesView extends BorderPane implements AutoCloseable {
     }
 
     private boolean stale(long request) {
-        return closed
-                || request != generation
-                || handles.get() != bound
-                || revisions.getAsLong() != revision;
+        if (closed || request != generation) return true;
+        if (handles.get() == bound && revisions.getAsLong() == revision) return false;
+        invalidate();
+        races.setDisable(true);
+        otherRecords.setDisable(true);
+        races.setPlaceholder(text("Build changed. Reload race records.", "muted"));
+        details.getChildren().setAll(text("Build changed. Reload race records.", "muted"));
+        racialRail
+                .getChildren()
+                .setAll(text("Racial records are unavailable until reload.", "muted"));
+        status.setText("Build changed. Reload race records.");
+        return true;
     }
 
     private void clear() {
@@ -510,7 +523,7 @@ final class RacesView extends BorderPane implements AutoCloseable {
                         text("Choose a race", "h2"),
                         text(
                                 "Recorded race/class entries appear in the sidebar. Include other"
-                                    + " records to inspect internal or unlinked race data.",
+                                        + " records to inspect internal or unlinked race data.",
                                 "muted"));
     }
 
