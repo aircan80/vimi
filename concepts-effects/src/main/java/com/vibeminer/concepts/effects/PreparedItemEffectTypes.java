@@ -108,6 +108,18 @@ public final class PreparedItemEffectTypes {
             optional(policy, 128);
             optional(producer, 128);
             optional(bindingDigest, 512);
+            if (state.equals("UNKNOWN")) {
+                if (policy != null || producer != null || bindingDigest != null) {
+                    throw new IllegalArgumentException(
+                            "Unknown issue channel carries native claims");
+                }
+            } else if (!state.equals("VERIFIED_NATIVE")
+                    || !"native-row-issues-v1".equals(policy)
+                    || !"java-db2-native-producer-v1".equals(producer)
+                    || bindingDigest == null
+                    || !bindingDigest.matches("[0-9a-f]{64}")) {
+                throw new IllegalArgumentException("Invalid compact native issue evidence");
+            }
         }
     }
 

@@ -335,10 +335,13 @@ Reuse the actual existing comparison reservations, not arithmetic-only allowance
   With snapshot+heavy profile this is29MiB. Extra projector/index/bookkeeping
   allocations share the remaining3MiB and must reserve before allocating.
 - A separately implemented many-to-one join may use at most two4MiB heads,
-  8MiB codec and3MiB output/projector scratch, plus held1MiB metadata:20MiB.
+  8MiB codec and3MiB output/projector scratch, plus held1MiB metadata:20MiB
+  retained. Advance heads sequentially using the existing borrowed14MiB sorter
+  read allowance, then shrink that head to4MiB. Peak is14read+4otherhead+8codec
+  +3projector+1metadata=30MiB. Drop old head/output references before advancing.
   Any sort successor starts after these leases close; source spool files remain
-  disk-charged until successfully deleted. Join heads must not each silently
-  invoke a standalone14MiB reader.
+  disk-charged until successfully deleted. Never invoke a standalone reader that
+  reserves an additional14MiB or invent a fresh allowance per dependency.
 - Final candidates use `SealedCandidateInput` and
   `ComparisonService.MemoryPlan.withSnapshotMetadata()`: two borrowed12MiB
   input/canonical allowances with held1MiB metadata and existing core codec/index
