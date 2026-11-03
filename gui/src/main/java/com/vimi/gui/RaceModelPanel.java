@@ -98,6 +98,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
         state.setWrapText(true);
         TitledPane source = new TitledPane("Model source details", evidence);
         source.setExpanded(false);
+        activity.setId("race-model-activity");
         activity.setPrefSize(18, 18);
         activity.setMaxSize(18, 18);
         activity.setAccessibleText("Preparing textures and starting clothing");
@@ -194,6 +195,8 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                             }
                                             activity.setVisible(true);
                                             viewer.setMesh(result.mesh(), result.visibleParts());
+                                            viewer.appearanceLoading(
+                                                    "Preparing textures and starting clothing…");
                                             loadAppearance(model, classId, request);
                                         }));
     }
@@ -207,10 +210,11 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                             if (stale(request)) {
                                                 return;
                                             }
-                                            activity.setVisible(false);
                                             if (error != null
                                                     || result == null
                                                     || result.appearance() == null) {
+                                                activity.setVisible(false);
+                                                viewer.appearanceUnavailable();
                                                 state.setText(
                                                         "Static model preview · "
                                                                 + (result != null
@@ -221,15 +225,33 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                                                                 + " unavailable."));
                                                 return;
                                             }
-                                            viewer.setAppearance(
-                                                    result.appearance(), result.visibleParts());
-                                            state.setText(
-                                                    result.items().isEmpty()
-                                                            ? "Static textured sample · starting"
-                                                                    + " clothing unavailable"
-                                                            : "Static textured sample · available"
-                                                                    + " starting clothing · held"
-                                                                    + " equipment not shown");
+                                            String sample =
+                                                    result.state() == RaceTypes.State.PARTIAL
+                                                            ? "Partial static textured sample"
+                                                            : "Static textured sample";
+                                            String completedState =
+                                                    sample
+                                                            + (result.items().isEmpty()
+                                                                    ? " · starting clothing"
+                                                                            + " unavailable"
+                                                                    : " · available starting"
+                                                                          + " clothing · held"
+                                                                          + " equipment not shown");
+                                            state.setText("Rendering composed textures…");
+                                            viewer.presentAppearance(
+                                                    result.appearance(),
+                                                    result.visibleParts(),
+                                                    accepted -> {
+                                                        if (stale(request)) return;
+                                                        activity.setVisible(false);
+                                                        state.setText(
+                                                                accepted
+                                                                        ? completedState
+                                                                        : "Static model preview ·"
+                                                                                + " textured frame"
+                                                                                + " could not be"
+                                                                                + " rendered.");
+                                                    });
                                             evidence.getChildren()
                                                     .setAll(
                                                             new Label(

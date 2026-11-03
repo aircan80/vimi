@@ -113,6 +113,11 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
     private final ProgressIndicator gpuActivity = new ProgressIndicator(-1);
     private final Label gpuStatus =
             new Label("GPU rendering stays in this preview; software fallback is available.");
+    private final javafx.scene.layout.HBox appearanceActivity = new javafx.scene.layout.HBox(7);
+    private final Label appearanceStage = new Label();
+    private boolean appearancePending;
+    private MeshAppearance appearanceTarget;
+    private java.util.function.Consumer<Boolean> appearanceDelivery;
     private final ProgressIndicator renderingActivity = new ProgressIndicator(-1);
     private volatile long gpuGeneration;
     private boolean gpuRequested;
@@ -143,7 +148,8 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
         all.setTooltip(
                 new Tooltip(
                         "Show every recorded mesh section, including alternate parts and sections"
-                                + " without supported materials. Unresolved materials appear neutral."));
+                                + " without supported materials. Unresolved materials appear"
+                                + " neutral."));
         gpuButton.setTooltip(
                 new Tooltip(
                         "GPU rasterization with copied frames displayed here. Software is used when"
@@ -170,6 +176,27 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
         renderingActivity.setVisible(false);
         renderingActivity.setManaged(false);
         viewport.getChildren().add(renderingActivity);
+        var composing = new ProgressIndicator(-1);
+        composing.setPrefSize(18, 18);
+        composing.setMaxSize(18, 18);
+        composing.visibleProperty().bind(appearanceActivity.visibleProperty());
+        composing.managedProperty().bind(appearanceActivity.visibleProperty());
+        appearanceActivity.setId("model-appearance-activity");
+        appearanceActivity.setAlignment(javafx.geometry.Pos.CENTER);
+        appearanceActivity.setStyle(
+                "-fx-background-color: rgba(20,30,38,0.90); -fx-padding: 9; -fx-background-radius:"
+                        + " 8;");
+        appearanceActivity.setMaxSize(
+                javafx.scene.layout.Region.USE_PREF_SIZE, javafx.scene.layout.Region.USE_PREF_SIZE);
+        appearanceActivity.setMouseTransparent(true);
+        appearanceStage.setStyle("-fx-text-fill: white;");
+        appearanceActivity.getChildren().addAll(composing, appearanceStage);
+        appearanceActivity.setVisible(false);
+        appearanceActivity.setManaged(false);
+        javafx.scene.layout.StackPane.setAlignment(
+                appearanceActivity, javafx.geometry.Pos.TOP_CENTER);
+        javafx.scene.layout.StackPane.setMargin(appearanceActivity, new javafx.geometry.Insets(12));
+        viewport.getChildren().add(appearanceActivity);
         viewport.setMinWidth(0);
         viewport.setPrefWidth(640);
         viewport.setMinHeight(320);
@@ -262,6 +289,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
     }
 
     void setMesh(PreviewMesh value, Set<Integer> visibleParts) {
+        appearanceUnavailable();
         closeGpu();
         mesh = value;
         gpuFailed = false;
@@ -283,6 +311,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
 
     void setAppearance(MeshAppearance value, Set<Integer> visibleParts, boolean qualifiedOnly) {
         if (closed) return;
+        if (appearanceTarget != null && appearanceTarget != value) appearanceUnavailable();
         var parts = Set.copyOf(visibleParts);
         boolean newScene =
                 mesh != value.mesh()
@@ -299,6 +328,50 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
         request();
     }
 
+    void appearanceLoading(String message) {
+        if (closed) return;
+        appearancePending = true;
+        appearanceTarget = null;
+        appearanceDelivery = null;
+        appearanceStage.setText(message);
+        appearanceActivity.setAccessibleText(message);
+        appearanceActivity.setVisible(true);
+        appearanceActivity.setManaged(true);
+    }
+
+    void presentAppearance(
+            MeshAppearance value,
+            Set<Integer> parts,
+            java.util.function.Consumer<Boolean> delivered) {
+        if (closed) return;
+        appearancePending = true;
+        appearanceStage.setText("Rendering composed textures…");
+        appearanceActivity.setAccessibleText("Rendering composed textures");
+        appearanceActivity.setVisible(true);
+        appearanceActivity.setManaged(true);
+        appearanceTarget = value;
+        appearanceDelivery = delivered;
+        setAppearance(value, parts);
+    }
+
+    void appearanceUnavailable() {
+        appearanceStage.setText("");
+        appearanceActivity.setAccessibleText("");
+        appearancePending = false;
+        appearanceTarget = null;
+        appearanceDelivery = null;
+        appearanceActivity.setVisible(false);
+        appearanceActivity.setManaged(false);
+    }
+
+    private void appearanceAccepted(MeshAppearance frameAppearance, boolean success) {
+        if (!appearancePending || appearanceTarget == null || appearanceTarget != frameAppearance)
+            return;
+        var delivered = appearanceDelivery;
+        appearanceUnavailable();
+        if (delivered != null) delivered.accept(success);
+    }
+
     void loading(String message) {
         if (closed) return;
         clear(message);
@@ -308,6 +381,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
     }
 
     void clear(String message) {
+        appearanceUnavailable();
         closeGpu();
         gpuButton.setDisable(true);
         renderingActivity.setVisible(false);
@@ -424,6 +498,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                                             status.setText(
                                                     "Drag to rotate · scroll or +/− to zoom · arrow"
                                                             + " keys rotate · static rest surface");
+                                            appearanceAccepted(current.appearance(), true);
                                         });
                             } catch (java.util.concurrent.CancellationException superseded) {
                                 /* Latest camera request replaces this frame. */
@@ -436,6 +511,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                                                 renderingActivity.setManaged(false);
                                                 status.setText(
                                                         "Model preview could not be rendered.");
+                                                appearanceAccepted(current.appearance(), false);
                                             }
                                         });
                             }
@@ -597,6 +673,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                                 java.util.Locale.ROOT,
                                 "%.1f ms",
                                 (System.nanoTime() - started) / 1_000_000.0));
+        appearanceAccepted(gpuAppearance, true);
     }
 
     private void invalidateGpuDelivery() {
@@ -625,6 +702,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
 
     @Override
     public void close() {
+        appearanceUnavailable();
         closeGpu();
         closed = true;
         renderingActivity.setVisible(false);

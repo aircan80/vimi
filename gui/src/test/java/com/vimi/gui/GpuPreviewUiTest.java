@@ -123,6 +123,7 @@ public final class GpuPreviewUiTest {
             terminalFailureRejectsQueuedFrame(temporary, ownerStage);
             appearanceOnlyControlsAndRetry(temporary, ownerStage);
             qualifiedMaterialControls(temporary, ownerStage);
+            persistentAppearancePhase(temporary, ownerStage);
         } finally {
             release.countDown();
             service.closeAsync().get(3, TimeUnit.SECONDS);
@@ -165,6 +166,15 @@ public final class GpuPreviewUiTest {
                                 },
                         Duration.ofSeconds(3),
                         Duration.ofMillis(20));
+        var phaseDelivered = new java.util.concurrent.atomic.AtomicInteger();
+        var fixtureMesh =
+                new PreviewMesh(
+                        new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0},
+                        new int[] {0, 1, 2},
+                        List.of(new PreviewMesh.Part(1, 0, 3)));
+        var fixtureAppearance =
+                new MeshAppearance(
+                        fixtureMesh, new float[] {0, 0, 1, 0, 0, 1}, List.of(), List.of());
         var viewRef = new java.util.concurrent.atomic.AtomicReference<ModelPreviewView>();
         try {
             fx(
@@ -174,12 +184,7 @@ public final class GpuPreviewUiTest {
                         stage.setScene(new Scene(view, 640, 560));
                         view.applyCss();
                         view.layout();
-                        view.setMesh(
-                                new PreviewMesh(
-                                        new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0},
-                                        new int[] {0, 1, 2},
-                                        List.of(new PreviewMesh.Part(1, 0, 3))),
-                                Set.of(1));
+                        view.setAppearance(fixtureAppearance, Set.of(1));
                         viewRef.set(view);
                     });
             require(
@@ -190,6 +195,28 @@ public final class GpuPreviewUiTest {
             long firstRevision = Long.parseLong(first[1]);
             publish(frames, 1, first, 0xff123456);
             waitFor(() -> pixel(viewRef.get()) == 0xff123456, "GPU pixels display inline");
+            fx(
+                    () -> {
+                        viewRef.get().appearanceLoading("Preparing cached appearance…");
+                        viewRef.get()
+                                .presentAppearance(
+                                        fixtureAppearance,
+                                        Set.of(1),
+                                        accepted -> {
+                                            require(accepted, "GPU target accepted");
+                                            phaseDelivered.incrementAndGet();
+                                        });
+                        viewRef.get().lookupAll(".check-box").stream()
+                                .filter(CheckBox.class::isInstance)
+                                .map(CheckBox.class::cast)
+                                .filter(box -> box.getText().equals("Textures"))
+                                .findFirst()
+                                .orElseThrow()
+                                .fire();
+                        require(
+                                viewRef.get().lookup("#model-appearance-activity").isVisible(),
+                                "Cached target waits for actual GPU frame acceptance");
+                    });
             fx(
                     () -> {
                         var viewport = viewRef.get().lookup("#model-preview-viewport");
@@ -205,7 +232,7 @@ public final class GpuPreviewUiTest {
                                             false,
                                             false));
                     });
-            String[] camera = latestView(child, firstRevision);
+            String[] camera = latestViewWithFlags(child, firstRevision, 0);
             // A new camera request does not invalidate an already completed newer camera frame.
             long cameraRevision = Long.parseLong(camera[1]);
             fx(
@@ -227,6 +254,14 @@ public final class GpuPreviewUiTest {
             waitFor(
                     () -> pixel(viewRef.get()) == 0xff234567,
                     "Lagging camera frame remains presentable during interaction");
+            fx(
+                    () ->
+                            require(
+                                    phaseDelivered.get() == 1
+                                            && !viewRef.get()
+                                                    .lookup("#model-appearance-activity")
+                                                    .isVisible(),
+                                    "Accepted lagging GPU target retires phase exactly once"));
             fx(() -> ((CheckBox) viewRef.get().lookup("#model-all-surfaces")).fire());
             String[] policy = latestView(child, Long.parseLong(finalCamera[1]));
             publish(frames, 3, camera, 0xff345678);
@@ -401,6 +436,100 @@ public final class GpuPreviewUiTest {
             fx(
                     () -> {
                         if (view.get() != null) view.get().close();
+                    });
+            service.closeAsync().get(3, TimeUnit.SECONDS);
+        }
+    }
+
+    private static void persistentAppearancePhase(Path temporary, Stage stage) throws Exception {
+        var service =
+                new GpuPreviewService(
+                        temporary,
+                        (file, mesh, appearance, parts) -> Files.writeString(file, "authored"),
+                        scene -> {
+                            throw new IOException("Authored software-only phase test");
+                        },
+                        Duration.ofSeconds(2),
+                        Duration.ofMillis(20));
+        var mesh =
+                new PreviewMesh(
+                        new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0},
+                        new int[] {0, 1, 2},
+                        List.of(new PreviewMesh.Part(1, 0, 3)));
+        var appearance =
+                new MeshAppearance(mesh, new float[] {0, 0, 1, 0, 0, 1}, List.of(), List.of());
+        var selected = new java.util.concurrent.atomic.AtomicReference<ModelPreviewView>();
+        var delivered = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            fx(
+                    () -> {
+                        var view = new ModelPreviewView(service);
+                        stage.setScene(new Scene(view, 640, 560));
+                        view.applyCss();
+                        view.layout();
+                        ((CheckBox) view.lookup("#model-gpu-preview")).setSelected(false);
+                        view.setMesh(mesh, Set.of(1));
+                        view.appearanceLoading("Preparing authored textures…");
+                        selected.set(view);
+                    });
+            waitFor(
+                    () -> pixel(selected.get()) != 0,
+                    "Neutral geometry arrives while appearance acquisition stays gated");
+            fx(
+                    () -> {
+                        var view = selected.get();
+                        require(
+                                view.lookup("#model-appearance-activity").isVisible(),
+                                "Geometry first frame must not retire texture phase");
+                        view.presentAppearance(
+                                appearance,
+                                Set.of(1),
+                                accepted -> {
+                                    require(accepted, "CPU target accepted");
+                                    delivered.incrementAndGet();
+                                });
+                        require(
+                                delivered.get() == 0
+                                        && view.lookup("#model-appearance-activity").isVisible(),
+                                "Future handoff must not retire phase before FX upload");
+                    });
+            waitFor(() -> delivered.get() == 1, "Actual target CPU frame retires texture phase");
+            fx(
+                    () -> {
+                        var view = selected.get();
+                        require(
+                                !view.lookup("#model-appearance-activity").isVisible(),
+                                "Accepted appearance clears badge");
+                        view.appearanceLoading("Next texture request…");
+                        view.appearanceUnavailable();
+                        require(
+                                !view.lookup("#model-appearance-activity").isVisible(),
+                                "Explicit unavailable retires phase");
+                        view.appearanceLoading("Retired appearance…");
+                        view.presentAppearance(
+                                appearance, Set.of(1), accepted -> delivered.addAndGet(100));
+                        view.clear("New selection");
+                        view.setMesh(mesh, Set.of(1));
+                        view.appearanceLoading("Current appearance pending…");
+                    });
+            fx(() -> {});
+            fx(
+                    () -> {
+                        require(
+                                delivered.get() == 1
+                                        && selected.get()
+                                                .lookup("#model-appearance-activity")
+                                                .isVisible(),
+                                "Retired target cannot retire newer phase");
+                        selected.get().close();
+                        require(
+                                !selected.get().lookup("#model-appearance-activity").isVisible(),
+                                "Close clears phase");
+                    });
+        } finally {
+            fx(
+                    () -> {
+                        if (selected.get() != null) selected.get().close();
                     });
             service.closeAsync().get(3, TimeUnit.SECONDS);
         }

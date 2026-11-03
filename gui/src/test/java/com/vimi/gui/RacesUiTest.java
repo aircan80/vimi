@@ -262,10 +262,64 @@ public final class RacesUiTest {
                                                                         + " a completed textured"
                                                                         + " sample");
                                                         require(
-                                                                activityCount(authoredView.get())
-                                                                        > 0,
+                                                                authoredView
+                                                                                        .get()
+                                                                                        .lookup(
+                                                                                                "#model-appearance-activity")
+                                                                                != null
+                                                                        && authoredView
+                                                                                .get()
+                                                                                .lookup(
+                                                                                        "#model-appearance-activity")
+                                                                                .isVisible(),
                                                                 "Pending appearance shows"
                                                                     + " accessible local activity");
+                                                        var pendingImage =
+                                                                authoredView
+                                                                        .get()
+                                                                        .getScene()
+                                                                        .snapshot(null);
+                                                        int width = (int) pendingImage.getWidth(),
+                                                                height =
+                                                                        (int)
+                                                                                pendingImage
+                                                                                        .getHeight();
+                                                        int[] pixels = new int[width * height];
+                                                        pendingImage
+                                                                .getPixelReader()
+                                                                .getPixels(
+                                                                        0,
+                                                                        0,
+                                                                        width,
+                                                                        height,
+                                                                        javafx.scene.image
+                                                                                .PixelFormat
+                                                                                .getIntArgbInstance(),
+                                                                        pixels,
+                                                                        0,
+                                                                        width);
+                                                        var pendingPng =
+                                                                new BufferedImage(
+                                                                        width,
+                                                                        height,
+                                                                        BufferedImage
+                                                                                .TYPE_INT_ARGB);
+                                                        pendingPng.setRGB(
+                                                                0, 0, width, height, pixels, 0,
+                                                                width);
+                                                        Path directory =
+                                                                Path.of(
+                                                                        System.getProperty(
+                                                                                "vimi.uiReviewDirectory",
+                                                                                "gui/build/ui-review"));
+                                                        Files.createDirectories(directory);
+                                                        ImageIO.write(
+                                                                pendingPng,
+                                                                "png",
+                                                                directory
+                                                                        .resolve(
+                                                                                "races-appearance-pending.png")
+                                                                        .toFile());
                                                         future.complete(appearance);
                                                     } catch (Throwable error) {
                                                         future.completeExceptionally(error);
@@ -368,7 +422,8 @@ public final class RacesUiTest {
                                                         .anyMatch(
                                                                 value ->
                                                                         value.startsWith(
-                                                                                "Static textured"
+                                                                                "Partial static"
+                                                                                    + " textured"
                                                                                     + " sample")),
                                                 "Async textured sample reaches the view: "
                                                         + labels(view));
@@ -519,7 +574,7 @@ public final class RacesUiTest {
                                         require(
                                                 activityCount(view) > 0,
                                                 "Old race catalog cannot clear newer pending"
-                                                    + " activity");
+                                                        + " activity");
                                         latest.complete(
                                                 new RaceTypes.Catalog(
                                                         RaceTypes.State.READY,
@@ -635,7 +690,8 @@ public final class RacesUiTest {
         var variantDone = new CompletableFuture<Void>();
         var previewDone = new CompletableFuture<Void>();
         var appearanceDone = new CompletableFuture<Void>();
-        CompletableFuture.allOf(variantDone, previewDone, appearanceDone)
+        var appearanceErrorDone = new CompletableFuture<Void>();
+        CompletableFuture.allOf(variantDone, previewDone, appearanceDone, appearanceErrorDone)
                 .whenComplete(
                         (value, failure) -> {
                             if (failure == null) modelRetirementChecks.complete(null);
@@ -724,7 +780,7 @@ public final class RacesUiTest {
                                         require(
                                                 activityCount(current) > 0,
                                                 "Older mesh completion cannot clear newer model"
-                                                    + " acquisition");
+                                                        + " acquisition");
                                         latestPreview.completeExceptionally(
                                                 new IllegalStateException("Current retired mesh"));
                                         Platform.runLater(
@@ -843,7 +899,7 @@ public final class RacesUiTest {
                                                                                             + " model"
                                                                                             + " records."),
                                                                 "Retired appearance clears all"
-                                                                    + " activity");
+                                                                        + " activity");
                                                         composed.close();
                                                         appearanceDone.complete(null);
                                                     } catch (Throwable failure) {
@@ -855,6 +911,77 @@ public final class RacesUiTest {
                                     } catch (Throwable failure) {
                                         composed.close();
                                         appearanceDone.completeExceptionally(failure);
+                                    }
+                                }));
+        var failedAppearance =
+                new CompletableFuture<com.vibeminer.concepts.races.RaceAppearanceTypes.Result>();
+        var failureSource =
+                (BuildRaces)
+                        java.lang.reflect.Proxy.newProxyInstance(
+                                BuildRaces.class.getClassLoader(),
+                                new Class<?>[] {BuildRaces.class},
+                                (proxy, method, args) -> {
+                                    if (method.getName().equals("appearance"))
+                                        return failedAppearance;
+                                    try {
+                                        return method.invoke(surface, args);
+                                    } catch (java.lang.reflect.InvocationTargetException failure) {
+                                        throw failure.getCause();
+                                    }
+                                });
+        var failedPanel =
+                new RaceModelPanel(failureSource, () -> failureSource, () -> 1, 1, 1, List.of());
+        new Scene(failedPanel, 800, 600);
+        failedPanel.applyCss();
+        failedPanel.layout();
+        Platform.runLater(
+                () ->
+                        Platform.runLater(
+                                () -> {
+                                    try {
+                                        require(
+                                                failedPanel
+                                                        .lookup("#model-appearance-activity")
+                                                        .isVisible(),
+                                                "Failed appearance starts with persistent viewport"
+                                                        + " phase");
+                                        failedAppearance.completeExceptionally(
+                                                new IllegalStateException(
+                                                        "Authored texture failure"));
+                                        Platform.runLater(
+                                                () -> {
+                                                    try {
+                                                        require(
+                                                                !failedPanel
+                                                                                .lookup(
+                                                                                        "#model-appearance-activity")
+                                                                                .isVisible()
+                                                                        && !failedPanel
+                                                                                .lookup(
+                                                                                        "#race-model-activity")
+                                                                                .isVisible()
+                                                                        && labels(failedPanel)
+                                                                                .stream()
+                                                                                .anyMatch(
+                                                                                        text ->
+                                                                                                text
+                                                                                                        .contains(
+                                                                                                                "Textured"
+                                                                                                                    + " appearance"
+                                                                                                                    + " is unavailable")),
+                                                                "Texture failure clears phase with"
+                                                                        + " honest terminal state");
+                                                        failedPanel.close();
+                                                        appearanceErrorDone.complete(null);
+                                                    } catch (Throwable failure) {
+                                                        failedPanel.close();
+                                                        appearanceErrorDone.completeExceptionally(
+                                                                failure);
+                                                    }
+                                                });
+                                    } catch (Throwable failure) {
+                                        failedPanel.close();
+                                        appearanceErrorDone.completeExceptionally(failure);
                                     }
                                 }));
     }
