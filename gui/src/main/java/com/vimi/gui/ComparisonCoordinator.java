@@ -29,6 +29,14 @@ final class ComparisonCoordinator implements BuildComparisons {
             return null;
         }
 
+        default ComparisonService.MemoryPlan memoryPlan() {
+            return ComparisonService.MemoryPlan.standard();
+        }
+
+        default TempBudget.Reservation retainedMetadata() {
+            return null;
+        }
+
         default void prepare(Opened before, Opened after, Cancellation token) throws Exception {}
 
         @Override
@@ -40,7 +48,12 @@ final class ComparisonCoordinator implements BuildComparisons {
     }
 
     interface ServiceFactory {
-        ComparisonService create(Path parent, TempBudget budget) throws java.io.IOException;
+        ComparisonService create(
+                Path parent,
+                TempBudget budget,
+                ComparisonService.MemoryPlan plan,
+                TempBudget.Reservation metadata)
+                throws java.io.IOException;
     }
 
     private final ServiceFactory services;
@@ -54,10 +67,10 @@ final class ComparisonCoordinator implements BuildComparisons {
         this(
                 factory,
                 temporaryParent,
-                (parent, budget) ->
+                (parent, budget, plan, metadata) ->
                         budget == null
                                 ? new ComparisonService(parent)
-                                : new ComparisonService(parent, budget));
+                                : new ComparisonService(parent, budget, plan, metadata));
     }
 
     ComparisonCoordinator(Factory factory, Path temporaryParent, ServiceFactory services)
@@ -77,15 +90,15 @@ final class ComparisonCoordinator implements BuildComparisons {
                 || !request.before().product().equals(request.after().product())
                 || request.beforeLocale() == null
                 || !request.beforeLocale().equals(request.afterLocale())
-                || !java.util.Set.of("Files", "Tables").contains(request.area())
+                || !java.util.Set.of("Files", "Tables", "Items").contains(request.area())
                 || request.tableId() != null
                         && (!request.area().equals("Tables")
                                 || request.tableId() < 1
                                 || request.tableId() > 0xffffffffL)) {
             return CompletableFuture.failedFuture(
                     new IllegalArgumentException(
-                            "Choose the same product and locale, and Files or Tables for this"
-                                    + " inventory slice."));
+                            "Choose the same product and locale, and Files, Tables or Items for"
+                                + " this inventory slice."));
         }
         var run = new Run(request, cancellation);
         synchronized (this) {
@@ -140,7 +153,24 @@ final class ComparisonCoordinator implements BuildComparisons {
                                         + " assessed field policy.");
             opener.prepare(run.a, run.b, run.token);
             run.token.check();
-            run.service = services.create(temporaryParent, opener.budget());
+            var preparedA = run.a.input().descriptor();
+            var preparedB = run.b.input().descriptor();
+            if (!a.product().equals(preparedA.product())
+                    || !a.locale().equals(preparedA.locale())
+                    || !a.namespace().equals(preparedA.namespace())
+                    || !b.product().equals(preparedB.product())
+                    || !b.locale().equals(preparedB.locale())
+                    || !b.namespace().equals(preparedB.namespace())
+                    || !preparedA.scope().equals(preparedB.scope()))
+                throw new IllegalArgumentException("Prepared comparison scopes are incompatible.");
+            a = preparedA;
+            b = preparedB;
+            run.service =
+                    services.create(
+                            temporaryParent,
+                            opener.budget(),
+                            opener.memoryPlan(),
+                            opener.retainedMetadata());
             run.mergeLink = run.token.onCancel(run.service::cancel);
             run.token.check();
             var completion = run.service.start(run.a.input(), run.b.input());

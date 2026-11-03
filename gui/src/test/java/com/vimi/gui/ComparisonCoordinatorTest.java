@@ -298,7 +298,7 @@ public final class ComparisonCoordinatorTest {
                                                         false),
                                                 contexts),
                         directory,
-                        (parent, budget) -> {
+                        (parent, budget, plan, metadata) -> {
                             var service =
                                     new com.vibeminer.concepts.comparison.ComparisonService(parent);
                             service.closeAsync().join();
@@ -419,7 +419,7 @@ public final class ComparisonCoordinatorTest {
                                             require(
                                                     opens.get() == 2,
                                                     "Both descriptors are captured before raw"
-                                                        + " sorting");
+                                                            + " sorting");
                                             require(
                                                     before.input()
                                                             .descriptor()
@@ -429,7 +429,7 @@ public final class ComparisonCoordinatorTest {
                                                                             .descriptor()
                                                                             .scope()),
                                                     "Raw preparation only receives compatible"
-                                                        + " schemas");
+                                                            + " schemas");
                                             prepares.incrementAndGet();
                                             preparing.countDown();
                                             if (scenario == 2) {
@@ -454,7 +454,7 @@ public final class ComparisonCoordinatorTest {
                                                     inputsClosed.get() == 2
                                                             && contextsClosed.get() == 2,
                                                     "Plan closes after accepted inputs and original"
-                                                        + " contexts drain");
+                                                            + " contexts drain");
                                             budget.close();
                                             plansClosed.incrementAndGet();
                                         }

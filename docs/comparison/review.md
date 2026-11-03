@@ -154,3 +154,15 @@ plus legacy compatibility, partial-source, maximum-ID and cancellation tests.
 
 This authorizes increment A only. Effects/use-text increment B, certified
 membership, cross-layout mapping, assets and persistent reports remain gated.
+
+
+## Pure Items projector review
+
+Both independent reviewers approved exact projector revision
+`70bafa934bef981adb1ea139edf48a160264b7f4`. Architecture independently ran
+`:concepts-items:check`; domain reviewed the code and fixtures. The fix retains
+presence certificates, rejects inconsistent public DTO provenance and ambiguous
+row shapes, preserves typed limited tails and valid siblings, distinguishes text
+issues and checks localized field scope. Null issue channels remain UNKNOWN.
+This approval covers only pure projection; captured staging, joins, core paging
+and native/UI composition require separate integration validation and review.
