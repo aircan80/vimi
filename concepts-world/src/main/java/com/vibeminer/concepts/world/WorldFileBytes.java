@@ -12,6 +12,26 @@ final class WorldFileBytes {
 
     record Source(String contentKey, byte[] bytes) {}
 
+    static FileTypes.FileRef reference(WorldService.MapInfo map, WorldFormats.Tile tile) {
+        if (tile.rootId() > 0) {
+            return FileTypes.FileRef.id(tile.rootId());
+        }
+        if (map.directory() != null) {
+            String directory = map.directory();
+            return FileTypes.FileRef.forPath(
+                    "world/maps/"
+                            + directory
+                            + "/"
+                            + directory
+                            + "_"
+                            + tile.x()
+                            + "_"
+                            + tile.y()
+                            + ".adt");
+        }
+        throw new IllegalStateException("No terrain source reference");
+    }
+
     static Source read(BuildFiles files, FileTypes.FileRef ref, Cancellation token, boolean bound) {
         if (files == null) {
             throw new IllegalStateException("Build files are unavailable in this workspace");

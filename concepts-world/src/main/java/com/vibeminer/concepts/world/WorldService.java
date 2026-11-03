@@ -228,6 +228,57 @@ public final class WorldService implements BuildWorld {
         return navigation.scan(request, token, progress);
     }
 
+    @Override
+    public CompletableFuture<LoadedTile> areaTile(
+            MapInfo map, WorldAreaNavigation.Match match, Cancellation token) {
+        return submit(
+                token,
+                cancel -> {
+                    try {
+                        if (match.entryChunk() == null
+                                || match.entryChunk().entryReference() == null) {
+                            throw new IllegalStateException(
+                                    "No rendered terrain entry for this match");
+                        }
+                        var source =
+                                WorldFileBytes.read(
+                                        files,
+                                        WorldFileBytes.reference(map, match.tile()),
+                                        cancel,
+                                        true);
+                        if (!source.contentKey().equals(match.contentKey())) {
+                            throw new IllegalStateException(
+                                    "Terrain source changed; find terrain again");
+                        }
+                        var metadata = WorldFormats.adtAreas(source.bytes(), cancel::isCanceled);
+                        var entry =
+                                metadata.chunks().stream()
+                                        .filter(
+                                                c ->
+                                                        c.areaId() == match.entryChunk().areaId()
+                                                                && c.entryReference() != null)
+                                        .findFirst()
+                                        .orElse(null);
+                        long count =
+                                metadata.chunks().stream()
+                                        .filter(c -> c.areaId() == match.entryChunk().areaId())
+                                        .count();
+                        if (!match.entryChunk().equals(entry) || count != match.matchingChunks()) {
+                            throw new IllegalStateException(
+                                    "Terrain entry evidence changed; find terrain again");
+                        }
+                        var terrain = WorldFormats.adt(source.bytes(), cancel::isCanceled);
+                        cancel.check();
+                        return new LoadedTile(match.tile(), terrain, null);
+                    } catch (java.util.concurrent.CancellationException canceled) {
+                        throw canceled;
+                    } catch (RuntimeException failure) {
+                        cancel.check();
+                        return new LoadedTile(match.tile(), null, reason(failure));
+                    }
+                });
+    }
+
     private byte[] bytes(FileTypes.FileRef ref, Cancellation token) {
         return WorldFileBytes.read(files, ref, token, false).bytes();
     }

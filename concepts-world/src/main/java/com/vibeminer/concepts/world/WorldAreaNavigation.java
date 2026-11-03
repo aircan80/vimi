@@ -2,7 +2,6 @@ package com.vibeminer.concepts.world;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.files.BuildFiles;
-import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.world.WorldFormats;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -191,25 +190,7 @@ public final class WorldAreaNavigation implements AutoCloseable {
         }
 
         void inspect(WorldFormats.Tile tile) {
-            FileTypes.FileRef ref;
-            if (tile.rootId() > 0) {
-                ref = FileTypes.FileRef.id(tile.rootId());
-            } else if (request.map().directory() != null) {
-                String directory = request.map().directory();
-                ref =
-                        FileTypes.FileRef.forPath(
-                                "world/maps/"
-                                        + directory
-                                        + "/"
-                                        + directory
-                                        + "_"
-                                        + tile.x()
-                                        + "_"
-                                        + tile.y()
-                                        + ".adt");
-            } else {
-                throw new IllegalStateException("No terrain source reference");
-            }
+            var ref = WorldFileBytes.reference(request.map(), tile);
             var source = WorldFileBytes.read(files, ref, cancel, true);
             var metadata = WorldFormats.adtAreas(source.bytes(), cancel::isCanceled);
             int count = 0;

@@ -25,6 +25,13 @@ public interface BuildWorld extends AutoCloseable {
                 new UnsupportedOperationException("Area terrain discovery is unavailable"));
     }
 
+    /** Revalidate a discovered source and entry before opening its terrain. */
+    default CompletableFuture<WorldService.LoadedTile> areaTile(
+            WorldService.MapInfo map, WorldAreaNavigation.Match match, Cancellation token) {
+        return CompletableFuture.failedFuture(
+                new UnsupportedOperationException("Area terrain entry is unavailable"));
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override
