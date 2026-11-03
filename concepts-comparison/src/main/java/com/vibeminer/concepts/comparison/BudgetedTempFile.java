@@ -19,14 +19,17 @@ public final class BudgetedTempFile implements AutoCloseable {
 
     private final Path path;
     private final TempBudget.Reservation reservation;
+    private final TempBudget budget;
     private final FrameWriter writer;
     private FileChannel channel;
     private boolean sealed, failed, deleted;
 
-    private BudgetedTempFile(Path path, TempBudget.Reservation reservation, FrameWriter writer) {
+    private BudgetedTempFile(
+            Path path, TempBudget.Reservation reservation, FrameWriter writer, TempBudget budget) {
         this.path = path;
         this.reservation = reservation;
         this.writer = writer;
+        this.budget = budget;
     }
 
     public static BudgetedTempFile create(
@@ -51,7 +54,7 @@ public final class BudgetedTempFile implements AutoCloseable {
         var reservation = Objects.requireNonNull(budget).reserveDisk(owner, 0, token);
         try {
             return new BudgetedTempFile(
-                    Files.createTempFile(directory, prefix, ".tmp"), reservation, writer);
+                    Files.createTempFile(directory, prefix, ".tmp"), reservation, writer, budget);
         } catch (IOException | RuntimeException failure) {
             reservation.close();
             throw failure;
@@ -60,6 +63,13 @@ public final class BudgetedTempFile implements AutoCloseable {
 
     public Path path() {
         return path;
+    }
+
+    /** Validate scratch ownership before composing stages under a shared whole-job quota. */
+    public synchronized void requireBudget(TempBudget expected) {
+        if (deleted || failed || budget != Objects.requireNonNull(expected)) {
+            throw new IllegalArgumentException("A live same-budget scratch file is required");
+        }
     }
 
     /** Includes planned bytes of a failed/partial write until the file is deleted. */
