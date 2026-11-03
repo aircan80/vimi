@@ -93,6 +93,7 @@ public final class WorldService implements BuildWorld {
     private final Map<String, LoadedTile> cache = new LinkedHashMap<>(16, .75f, true);
     private Catalog catalog;
     private WorldAreaNavigation areaNavigation;
+    private WorldPlacementSource placements;
 
     public WorldService(BuildTables tables, BuildFiles files) {
         this.tables = java.util.Objects.requireNonNull(tables);
@@ -483,6 +484,19 @@ public final class WorldService implements BuildWorld {
                 java.util.Objects.requireNonNull(tile), java.util.Objects.requireNonNull(token));
     }
 
+    @Override
+    public synchronized CompletableFuture<WorldPlacementSource.Result> placements(
+            MapInfo map, WorldFormats.Tile tile, Cancellation token) {
+        if (closing != null) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("World workspace closed"));
+        }
+        if (placements == null) {
+            placements = new WorldPlacementSource(files);
+        }
+        return placements.read(map, tile, token);
+    }
+
     public synchronized CompletableFuture<Void> closeAsync() {
         if (closing != null) {
             return closing.copy();
@@ -495,12 +509,17 @@ public final class WorldService implements BuildWorld {
                         ? CompletableFuture.<Void>completedFuture(null)
                         : areaNavigation.closeAsync();
         var minimapsClosed = minimaps.closeAsync();
+        var placementsClosed =
+                placements == null
+                        ? CompletableFuture.<Void>completedFuture(null)
+                        : placements.closeAsync();
         Thread.startVirtualThread(
                 () -> {
                     try {
                         while (!worker.awaitTermination(1, TimeUnit.SECONDS)) {}
                         areasClosed.join();
                         minimapsClosed.join();
+                        placementsClosed.join();
                         cache.clear();
                         closing.complete(null);
                     } catch (InterruptedException e) {

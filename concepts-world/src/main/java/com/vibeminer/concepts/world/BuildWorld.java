@@ -41,6 +41,13 @@ public interface BuildWorld extends AutoCloseable {
                 WorldService.Minimap.unavailable("Minimap artwork unavailable"));
     }
 
+    /** Optional complete raw object metadata; no transform or visible-appearance admission. */
+    default CompletableFuture<WorldPlacementSource.Result> placements(
+            WorldService.MapInfo map, WorldFormats.Tile tile, Cancellation token) {
+        return CompletableFuture.completedFuture(
+                WorldPlacementSource.Result.unavailable("World object metadata is unsupported"));
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override
