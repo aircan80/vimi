@@ -47,6 +47,9 @@ no encoded variant supplies it. The native implementation never queries local
 object presence, community names, format detection or file payloads. Older
 implementations explicitly report `UnsupportedOperationException`; callers may
 choose an existing metadata-listing fallback without claiming the optimization.
+Canceling a returned future only abandons that caller observation; the supplied
+`Cancellation` token controls the operation. A canceled observation cannot release
+the cursor for another read until the accepted worker actually drains.
 Neither inventory exhaustion nor this capability certifies complete selected-locale
 membership. It does not avoid scanning merely because two build identities match.
 

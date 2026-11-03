@@ -236,6 +236,78 @@ final class ContentInventoryTest {
     }
 
     @Test
+    void cancelingCallerFutureKeepsBusyUntilWorkerDrainsAndCleanupStillAllowsOrderedNext()
+            throws Exception {
+        var started = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var resolved = java.util.Collections.synchronizedList(new ArrayList<Long>());
+        var key = new CdnKey(new byte[16]);
+        var built =
+                (com.vibeminer.builds.Build)
+                        Proxy.newProxyInstance(
+                                com.vibeminer.builds.Build.class.getClassLoader(),
+                                new Class<?>[] {com.vibeminer.builds.Build.class},
+                                (proxy, method, args) ->
+                                        switch (method.getName()) {
+                                            case "build" -> FilesScenario.REF;
+                                            case "fileDataIds" -> List.of(1L, 2L);
+                                            case "resolve" -> {
+                                                long id = (Long) args[0];
+                                                resolved.add(id);
+                                                if (id == 1) {
+                                                    started.countDown();
+                                                    release.await();
+                                                }
+                                                yield new com.vibeminer.builds.BuildTypes
+                                                        .FileResolution(
+                                                        com.vibeminer.builds.BuildTypes
+                                                                .FileResolutionState.FOUND,
+                                                        id,
+                                                        List.of(
+                                                                new FileVariant(
+                                                                        2, 0, key, id, key, 10L,
+                                                                        null)));
+                                            }
+                                            default ->
+                                                    throw new AssertionError(
+                                                            "Unexpected build operation "
+                                                                    + method.getName());
+                                        });
+        try (var handle =
+                        new BuildFilesHandle(
+                                built, "enUS", 2, forbiddenObjects(), forbiddenNames());
+                var cursor =
+                        handle.listContentInventory(FileTypes.FileIdRange.ALL, Cancellation.NONE)) {
+            var first = cursor.next(1, Cancellation.NONE);
+            try {
+                assertTrue(started.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                assertTrue(first.cancel(true));
+                assertThrows(IllegalStateException.class, () -> cursor.next(1, Cancellation.NONE));
+            } finally {
+                release.countDown();
+            }
+            // Future cancellation abandons that observation, not the accepted iterator operation.
+            // The next accepted page must follow its one consumed ID, with no extra skips.
+            java.util.concurrent.CompletableFuture<List<FileTypes.ContentFile>> next = null;
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while (next == null && System.nanoTime() < deadline) {
+                try {
+                    next = cursor.next(1, Cancellation.NONE);
+                } catch (IllegalStateException busy) {
+                    assertEquals("Concurrent next", busy.getMessage());
+                    Thread.sleep(1);
+                }
+            }
+            org.junit.jupiter.api.Assertions.assertNotNull(
+                    next, "Actual worker completion must release the cursor");
+            assertEquals(2, next.join().getFirst().fileDataId());
+            assertTrue(cursor.next(1, Cancellation.NONE).join().isEmpty());
+            assertEquals(List.of(1L, 2L), resolved);
+            assertTrue(first.isCancelled());
+        }
+    }
+
+    @Test
     void parentAndCallCancellationAndClosedCursorAreRespected() {
         var fixture =
                 new FilesScenario(false, forbiddenNames(), ignored -> forbiddenObjects())

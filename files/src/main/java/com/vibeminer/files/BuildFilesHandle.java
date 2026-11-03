@@ -525,7 +525,8 @@ final class BuildFilesHandle implements BuildFiles {
                                 call.check();
                                 return List.copyOf(result);
                             })
-                    .whenComplete((value, failure) -> reading.set(false));
+                    .whenComplete((value, failure) -> reading.set(false))
+                    .copy();
         }
 
         @Override
