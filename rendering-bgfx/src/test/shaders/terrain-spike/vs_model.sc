@@ -13,12 +13,12 @@ void main()
     if (farDepth < 0.5 || nearDepth > 2200.0) {
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
         v_color = vec4_splat(0.0);
-        return;
+    } else {
+        vec4 selected = a_position.x < 0.5 ? a : (a_position.x < 1.5 ? b : c);
+        gl_Position = mul(u_terrainProjection, selected);
+        float fog = clamp((farDepth - 600.0) / 1600.0, 0.0, 0.85);
+        vec3 base = vec3(i_data0.w, i_data1.w, i_data2.w);
+        vec3 rgb = floor(base * (1.0 - fog) + vec3(153.0, 184.0, 196.0) * fog);
+        v_color = vec4(rgb / 255.0, 1.0);
     }
-    vec4 selected = a_position.x < 0.5 ? a : (a_position.x < 1.5 ? b : c);
-    gl_Position = mul(u_terrainProjection, selected);
-    float fog = clamp((farDepth - 600.0) / 1600.0, 0.0, 0.85);
-    vec3 base = vec3(i_data0.w, i_data1.w, i_data2.w);
-    vec3 rgb = floor(base * (1.0 - fog) + vec3(153.0, 184.0, 196.0) * fog);
-    v_color = vec4(rgb / 255.0, 1.0);
 }
