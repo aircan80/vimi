@@ -68,6 +68,35 @@ class WorldMinimapsTest {
     }
 
     @Test
+    void single512MipUsesBoundedPixelCenterDownsampleWithoutInventingDecoderMip() {
+        var source = new Source();
+        source.side = 512;
+        source.gradient = true;
+        var images = new WorldMinimaps(source.files());
+        try {
+            var image = images.image(tile(91), Cancellation.NONE).join();
+            assertEquals(256, image.width());
+            assertEquals(256, image.height());
+            assertEquals(0xff010100, image.pixels().get(0));
+            assertEquals(0xff030100, image.pixels().get(1));
+            assertEquals(0xff010300, image.pixels().get(256));
+            assertEquals(0xffffff00, image.pixels().get(256 * 256 - 1));
+            assertEquals(1, source.closed.get());
+        } finally {
+            images.closeAsync().join();
+        }
+        var tooLarge = new Source();
+        tooLarge.side = 1024;
+        var limited = new WorldMinimaps(tooLarge.files());
+        try {
+            assertNull(limited.image(tile(91), Cancellation.NONE).join().pixels());
+            assertEquals(1, tooLarge.closed.get());
+        } finally {
+            limited.closeAsync().join();
+        }
+    }
+
+    @Test
     void canceledRequestDoesNotOpenSourceOrBecomeUnavailableSuccess() {
         var source = new Source();
         var images = new WorldMinimaps(source.files());
@@ -91,6 +120,8 @@ class WorldMinimapsTest {
                 closed = new AtomicInteger();
         String key = "a".repeat(32);
         int mode;
+        int side = 2;
+        boolean gradient;
 
         BuildFiles files() {
             return (BuildFiles)
@@ -100,7 +131,7 @@ class WorldMinimapsTest {
                             (proxy, method, args) -> {
                                 calls.incrementAndGet();
                                 assertEquals(FileTypes.FileRef.id(91), args[0]);
-                                byte[] data = blp();
+                                byte[] data = blp(side, gradient);
                                 if (method.getName().equals("stat")) {
                                     return CompletableFuture.completedFuture(
                                             new FileTypes.FileStat(
@@ -181,14 +212,24 @@ class WorldMinimapsTest {
         }
     }
 
-    private static byte[] blp() {
-        var b = ByteBuffer.allocate(164).order(ByteOrder.LITTLE_ENDIAN);
+    private static byte[] blp(int side, boolean gradient) {
+        var b = ByteBuffer.allocate(148 + side * side * 4).order(ByteOrder.LITTLE_ENDIAN);
         b.putInt(0x32504c42).putInt(1).put((byte) 3).put((byte) 8).put((byte) 0).put((byte) 0);
-        b.putInt(2).putInt(2).putInt(148);
+        b.putInt(side).putInt(side).putInt(148);
         b.position(84);
-        b.putInt(16);
+        b.putInt(side * side * 4);
         b.position(148);
-        b.putInt(0xffff0000).putInt(0xff00ff00).putInt(0xff0000ff).putInt(0xffffffff);
+        for (int y = 0; y < side; y++) {
+            for (int x = 0; x < side; x++) {
+                int color =
+                        gradient
+                                ? 0xff000000 | (x & 255) << 16 | (y & 255) << 8
+                                : y < side / 2
+                                        ? x < side / 2 ? 0xffff0000 : 0xff00ff00
+                                        : x < side / 2 ? 0xff0000ff : 0xffffffff;
+                b.putInt(color);
+            }
+        }
         return b.array();
     }
 }

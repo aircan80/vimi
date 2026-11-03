@@ -108,36 +108,41 @@ final class WorldMinimaps {
             var decoded =
                     Blp2Decoder.decodeLargestWithin(
                                     AssetSources.file(stream),
-                                    256,
+                                    512,
                                     new Blp2Types.Limits(
                                             SOURCE_LIMIT,
                                             4096,
-                                            256L * 256,
-                                            256L * 256 * 4,
-                                            256L * 256 * 4),
+                                            512L * 512,
+                                            512L * 512 * 4,
+                                            512L * 512 * 4),
                                     token)
                             .join();
             var rgba = decoded.rgba();
-            int[] argb = new int[decoded.width() * decoded.height()];
-            for (int i = 0; i < argb.length; i++) {
-                if ((i & 4095) == 0) {
-                    token.check();
+            double scale = Math.min(1, 256.0 / Math.max(decoded.width(), decoded.height()));
+            int width = Math.max(1, (int) (decoded.width() * scale));
+            int height = Math.max(1, (int) (decoded.height() * scale));
+            int[] argb = new int[width * height];
+            for (int y = 0; y < height; y++) {
+                token.check();
+                int sourceY = (2 * y + 1) * decoded.height() / (2 * height);
+                for (int x = 0; x < width; x++) {
+                    // Explicit nearest pixel-center resampling belongs to the minimap consumer;
+                    // the generic BLP decoder still decodes only declared native mip levels.
+                    int sourceX = (2 * x + 1) * decoded.width() / (2 * width);
+                    int p = sourceY * decoded.rowStride() + sourceX * 4;
+                    argb[y * width + x] =
+                            (rgba[p + 3] & 255) << 24
+                                    | (rgba[p] & 255) << 16
+                                    | (rgba[p + 1] & 255) << 8
+                                    | rgba[p + 2] & 255;
                 }
-                int p = i * 4;
-                argb[i] =
-                        (rgba[p + 3] & 255) << 24
-                                | (rgba[p] & 255) << 16
-                                | (rgba[p + 1] & 255) << 8
-                                | rgba[p + 2] & 255;
             }
             var current = files.stat(ref, token).join();
             token.check();
             if (current.file() == null || !contentKey.equals(current.file().contentKey())) {
                 return WorldService.Minimap.unavailable("Minimap source changed during read");
             }
-            var image =
-                    new WorldService.Minimap(
-                            decoded.width(), decoded.height(), IntBuffer.wrap(argb), null);
+            var image = new WorldService.Minimap(width, height, IntBuffer.wrap(argb), null);
             cache.put(key, image);
             while (cache.size() > 9) {
                 cache.remove(cache.keySet().iterator().next());
