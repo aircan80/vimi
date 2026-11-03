@@ -397,7 +397,7 @@ public final class ComparisonService implements AutoCloseable {
                                 right.coverage,
                                 "Comparing local captured inputs; findings-only results");
             }
-        } catch (ComparisonLimit | TempBudget.Limit limited) {
+        } catch (ComparisonLimit | TempBudget.Limit | ComparisonPolicyLimit limited) {
             state = RunState.LIMITED;
             message = limited.getMessage();
             requestCancel();
@@ -614,6 +614,9 @@ public final class ComparisonService implements AutoCloseable {
                     throw limited;
                 }
                 if (failure.getCause() instanceof ComparisonLimit limited) {
+                    throw limited;
+                }
+                if (failure.getCause() instanceof ComparisonPolicyLimit limited) {
                     throw limited;
                 }
                 throw failure;

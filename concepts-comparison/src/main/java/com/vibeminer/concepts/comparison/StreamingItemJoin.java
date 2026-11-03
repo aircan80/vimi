@@ -153,7 +153,8 @@ public final class StreamingItemJoin {
             if (previous != null && previous.compareTo(row.key()) >= 0) {
                 throw new IOException("Items dependency keys are not strictly increasing");
             }
-            if (!row.key().matches("[0-9]{20}")) {
+            if (!row.key().matches("[0-9]{20}")
+                    || row.key().compareTo("00000000004294967295") > 0) {
                 throw new IOException("Items dependency uses a noncanonical unsigned key");
             }
             previous = row.key();

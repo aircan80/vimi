@@ -837,7 +837,9 @@ public final class SortedComparisonInput implements ComparisonInput {
             return typed;
         }
         var reason =
-                failure instanceof TempBudget.Limit || failure instanceof ComparisonLimit
+                failure instanceof TempBudget.Limit
+                                || failure instanceof ComparisonLimit
+                                || failure instanceof ComparisonPolicyLimit
                         ? Reason.LIMITED
                         : failure instanceof java.util.concurrent.CancellationException
                                 ? Reason.CANCELED

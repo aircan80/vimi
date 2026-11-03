@@ -142,6 +142,32 @@ final class SealedCandidateInputTest {
     }
 
     @Test
+    void pureProjectorPolicyFailureRemainsLimitedThroughCore() throws Exception {
+        try (var budget = new TempBudget();
+                var metadata = budget.reserveMemory("snapshot", 1L << 20, Cancellation.NONE)) {
+            var a =
+                    input(
+                            budget,
+                            List.of(row(1, "a")),
+                            value -> {
+                                throw new ComparisonPolicyLimit(
+                                        "Authored projector allocation ceiling");
+                            });
+            var b = input(budget, List.of(row(1, "b")), value -> value);
+            try (var service =
+                    new ComparisonService(
+                            directory,
+                            budget,
+                            ComparisonService.MemoryPlan.withSnapshotMetadata(),
+                            metadata)) {
+                assertEquals(RunState.LIMITED, service.start(a, b).join().state());
+            }
+            assertEquals(1L << 20, budget.snapshot().memory());
+            assertEquals(0, budget.snapshot().disk());
+        }
+    }
+
+    @Test
     void actualSortUnionCandidateAndCoreRetainMetadataThroughAllByteShortenedPages()
             throws Exception {
         try (var budget = new TempBudget();
