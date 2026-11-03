@@ -162,6 +162,16 @@ public final class BuildModels {
                 token);
     }
 
+    /** Native rest-surface draw declarations only, including external-rig models. */
+    public CompletableFuture<SkinRead<M2Types.RestDrawSkin>> readRestDrawSkin(
+            ModelRead model, int profile, Cancellation token) {
+        return readSkinCore(
+                model,
+                profile,
+                (source, m) -> M2RestDrawSkinReader.read(source, m, limits, token).join(),
+                token);
+    }
+
     private <T> CompletableFuture<SkinRead<T>> readSkinCore(
             ModelRead read,
             int profile,

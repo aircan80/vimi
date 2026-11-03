@@ -46,6 +46,21 @@ public final class StaticMeshRenderer {
 
     public static Frame render(
             PreviewMesh mesh, int width, int height, View view, BooleanSupplier cancel) {
+        return render(mesh, null, width, height, view, cancel);
+    }
+
+    public static Frame render(
+            MeshAppearance appearance, int width, int height, View view, BooleanSupplier cancel) {
+        return render(appearance.mesh(), appearance, width, height, view, cancel);
+    }
+
+    private static Frame render(
+            PreviewMesh mesh,
+            MeshAppearance appearance,
+            int width,
+            int height,
+            View view,
+            BooleanSupplier cancel) {
         if (width < 1 || height < 1 || width > 1600 || height > 1200) {
             throw new IllegalArgumentException("Preview image exceeds bounds");
         }
@@ -93,7 +108,11 @@ public final class StaticMeshRenderer {
             py[i] = height * 0.53 - vertical * focal / distance;
         }
         long rasterBudget = 50_000_000L;
+        int section = -1;
         for (var part : mesh.parts()) {
+            section++;
+            MeshAppearance.Surface surface =
+                    appearance == null ? null : appearance.surfaces.get(section);
             if (!view.parts().isEmpty() && !view.parts().contains(part.id())) {
                 continue;
             }
@@ -143,17 +162,46 @@ public final class StaticMeshRenderer {
                         if (z >= depth[pixel]) {
                             continue;
                         }
+                        int shaded = color;
+                        if (surface != null) {
+                            double u =
+                                    (wa * appearance.uv[a * 2] / pz[a]
+                                                    + wb * appearance.uv[b * 2] / pz[b]
+                                                    + wc * appearance.uv[c * 2] / pz[c])
+                                            * z;
+                            double v =
+                                    (wa * appearance.uv[a * 2 + 1] / pz[a]
+                                                    + wb * appearance.uv[b * 2 + 1] / pz[b]
+                                                    + wc * appearance.uv[c * 2 + 1] / pz[c])
+                                            * z;
+                            var texture = appearance.textures.get(surface.textureIndex());
+                            int tx = coordinate(u, texture.width(), surface.wrapU()),
+                                    ty = coordinate(v, texture.height(), surface.wrapV());
+                            int sampled = texture.pixels[ty * texture.width() + tx];
+                            if (surface.alphaKey() && (sampled >>> 24) < 128) continue;
+                            double light = (color >>> 16 & 255) / 190.0;
+                            shaded =
+                                    0xff000000
+                                            | ((int) ((sampled >>> 16 & 255) * light) << 16)
+                                            | ((int) ((sampled >>> 8 & 255) * light) << 8)
+                                            | (int) ((sampled & 255) * light);
+                        }
                         depth[pixel] = (float) z;
                         image[pixel] =
                                 view.wireframe() && Math.min(wa, Math.min(wb, wc)) < lineThreshold
                                         ? 0xffabc5b1
-                                        : color;
+                                        : shaded;
                     }
                 }
             }
         }
         check(cancel);
         return new Frame(width, height, image);
+    }
+
+    private static int coordinate(double value, int size, boolean wrap) {
+        double normalized = wrap ? value - Math.floor(value) : Math.max(0, Math.min(1, value));
+        return Math.min(size - 1, (int) (normalized * size));
     }
 
     private static double edge(double ax, double ay, double bx, double by, double x, double y) {

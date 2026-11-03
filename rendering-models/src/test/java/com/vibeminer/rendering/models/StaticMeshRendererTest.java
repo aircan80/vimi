@@ -78,6 +78,38 @@ final class StaticMeshRendererTest {
     }
 
     @Test
+    void textureCoordinatesSampleDiffuseAndRespectAlphaKey() {
+        var geometry = mesh();
+        float[] uv = {0, 0, 1, 0, 0.5f, 1};
+        var binding = new MeshAppearance.Surface(0, 0, false, false, false);
+        var red =
+                new MeshAppearance(
+                        geometry,
+                        uv,
+                        List.of(binding),
+                        List.of(new MeshAppearance.Texture(1, 1, new int[] {0xffff0000})));
+        var frame =
+                StaticMeshRenderer.render(
+                        red, 200, 200, StaticMeshRenderer.View.initial(), () -> false);
+        int center = frame.argb()[100 * 200 + 100];
+        assertTrue((center >>> 16 & 255) > 0);
+        assertEquals(0, center & 0xffff);
+        var cutout =
+                new MeshAppearance(
+                        geometry,
+                        uv,
+                        List.of(new MeshAppearance.Surface(0, 0, false, false, true)),
+                        List.of(new MeshAppearance.Texture(1, 1, new int[] {0x00ff0000})));
+        var hidden =
+                StaticMeshRenderer.render(
+                        cutout, 200, 200, StaticMeshRenderer.View.initial(), () -> false);
+        assertTrue(center != hidden.argb()[100 * 200 + 100]);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new MeshAppearance(geometry, new float[2], List.of(), List.of()));
+    }
+
+    @Test
     void derivativeRoundTripPreservesBoundedPositionsTopologyAndSections() {
         var original = mesh();
         var bytes = PreviewMeshCodec.encode(original);

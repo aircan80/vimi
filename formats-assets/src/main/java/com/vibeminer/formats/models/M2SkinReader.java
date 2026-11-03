@@ -42,7 +42,16 @@ public final class M2SkinReader {
 
     private static Skin readCore(
             AssetSource source, Model model, Limits limits, Cancellation token) {
-        Core core = core(source, model, limits, true, token);
+        return readCore(source, model, limits, true, token);
+    }
+
+    static Skin readCore(
+            AssetSource source,
+            Model model,
+            Limits limits,
+            boolean validateRig,
+            Cancellation token) {
+        Core core = core(source, model, limits, true, validateRig, token);
         List<Batch> batches = new ArrayList<>();
         List<ShadowBatch> shadows = new ArrayList<>();
         long colors = count(model, "colors"),

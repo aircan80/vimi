@@ -277,6 +277,16 @@ public final class M2Types {
         }
     }
 
+    /**
+     * Validated raw draw declarations for native rest surfaces; no rig, tracks or shaders
+     * evaluated.
+     */
+    public record RestDrawSkin(RestSkin surface, List<Batch> batches) {
+        public RestDrawSkin {
+            batches = List.copyOf(batches);
+        }
+    }
+
     public record Section(
             int id,
             int level,
