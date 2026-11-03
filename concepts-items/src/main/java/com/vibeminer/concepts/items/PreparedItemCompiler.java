@@ -145,6 +145,13 @@ final class PreparedItemCompiler {
                         rejected = true;
                         break;
                     }
+                    if (field.kind() == TableSchema.ColumnKind.LOCSTRING
+                            && (field.locale() == null
+                                    || !field.locale().code().equals(stamp.locale())
+                                    || !field.locale().equals(input.schema().locale()))) {
+                        rejected = true;
+                        break;
+                    }
                     if (!text
                             && (field.bits() == null
                                     || field.unsigned() == null

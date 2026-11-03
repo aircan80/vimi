@@ -61,11 +61,23 @@ public final class PreparedItemProjection {
         Objects.requireNonNull(profile);
         Objects.requireNonNull(input);
         if (input.state() != RowState.PRESENT) {
-            return absent(profile, input.itemId(), input.state(), input.issueChannel());
+            return absent(
+                    profile, input.itemId(), input.state(), input.issueChannel(), input.evidence());
         }
         var row = input.row();
         if (row.id() != input.itemId() || row.id() < 0 || row.id() > 0xffffffffL) {
             return invalid(profile, input.itemId(), "ITEM_ROW_ID_MISMATCH");
+        }
+        if (row.values().size() != profile.columnCount()) {
+            if (row.values().size() > profile.columnCount()) {
+                return invalid(profile, input.itemId(), "ITEM_ROW_SHAPE_AMBIGUOUS");
+            }
+            for (int missing = row.values().size(); missing < profile.columnCount(); missing++) {
+                final int column = missing;
+                if (input.overrides().stream().noneMatch(issue -> issue.columnIndex() == column)) {
+                    return invalid(profile, input.itemId(), "ITEM_ROW_SHAPE_AMBIGUOUS");
+                }
+            }
         }
         for (var column : profile.idColumns()) {
             if (column.columnIndex() >= row.values().size()
@@ -99,20 +111,45 @@ public final class PreparedItemProjection {
             CellState state = CellState.VALUE;
             String value = null;
             var issues = new ArrayList<String>();
+            String rawEvidence = prefix(raw);
             var override =
                     input.overrides().stream()
                             .filter(v -> v.columnIndex() == binding.columnIndex())
                             .min(java.util.Comparator.comparingInt(v -> restriction(v.state())))
                             .orElse(null);
-            if (raw == null) {
-                state = CellState.UNKNOWN;
-                issues.add("ITEM_CELL_UNAVAILABLE");
-            } else if (override != null) {
+            if (override != null) {
                 state = override.state();
                 issues.add(override.code());
+            } else if (raw == null) {
+                state = CellState.UNKNOWN;
+                issues.add("ITEM_CELL_UNAVAILABLE");
             } else if (ItemLayout.issue(row, binding.columnIndex())) {
-                state = CellState.INVALID;
-                issues.add("ITEM_SOURCE_CELL_ISSUE");
+                state = CellState.UNKNOWN;
+                for (var issue : row.textIssues()) {
+                    if (issue.columnIndex() != binding.columnIndex()) {
+                        continue;
+                    }
+                    if (issue.code().equals("DB2_TEXT_ENCODING_INVALID")) {
+                        state = CellState.INVALID;
+                    }
+                    if (issues.size() < 8) {
+                        String boundedCode = prefix(issue.code());
+                        issues.add(
+                                boundedCode == null || boundedCode.isBlank()
+                                        ? "ITEM_SOURCE_ISSUE_UNKNOWN"
+                                        : boundedCode);
+                    }
+                    if (!issue.rawBytesHex().isEmpty()
+                            && (rawEvidence == null || rawEvidence.equals(prefix(raw)))) {
+                        rawEvidence = prefix("raw-bytes:" + prefix(issue.rawBytesHex()));
+                    }
+                }
+                if (state == CellState.INVALID && !issues.contains("DB2_TEXT_ENCODING_INVALID")) {
+                    if (issues.size() == 8) {
+                        issues.remove(7);
+                    }
+                    issues.add("DB2_TEXT_ENCODING_INVALID");
+                }
             } else if ((binding.kind() == ScalarKind.TEXT || binding.relation())
                     && channel != IssueChannel.KNOWN) {
                 state = CellState.UNKNOWN;
@@ -164,7 +201,7 @@ public final class PreparedItemProjection {
                             state,
                             binding.kind(),
                             value,
-                            prefix(raw),
+                            rawEvidence,
                             row.id(),
                             binding.columnIndex(),
                             copy,
@@ -182,7 +219,8 @@ public final class PreparedItemProjection {
                 channel,
                 cells,
                 profile.omissions(),
-                issues);
+                issues,
+                input.evidence());
     }
 
     public static SourceFacts unobservedSource(
@@ -207,7 +245,8 @@ public final class PreparedItemProjection {
                 IssueChannel.UNKNOWN,
                 List.of(),
                 List.of(),
-                List.of("ITEM_SOURCE_UNOBSERVED"));
+                List.of("ITEM_SOURCE_UNOBSERVED"),
+                evidence);
     }
 
     public static ItemView combine(
@@ -313,7 +352,13 @@ public final class PreparedItemProjection {
     }
 
     private static SourceFacts invalid(SourceProfile profile, long id, String code) {
-        var facts = absent(profile, id, RowState.INVALID, IssueChannel.UNKNOWN);
+        var facts =
+                absent(
+                        profile,
+                        id,
+                        RowState.INVALID,
+                        IssueChannel.UNKNOWN,
+                        PresenceEvidence.unknown());
         return new SourceFacts(
                 id,
                 profile.stamp(),
@@ -322,11 +367,16 @@ public final class PreparedItemProjection {
                 IssueChannel.UNKNOWN,
                 facts.cells(),
                 profile.omissions(),
-                List.of(code));
+                List.of(code),
+                PresenceEvidence.unknown());
     }
 
     private static SourceFacts absent(
-            SourceProfile profile, long id, RowState rowState, IssueChannel channel) {
+            SourceProfile profile,
+            long id,
+            RowState rowState,
+            IssueChannel channel,
+            PresenceEvidence evidence) {
         var state =
                 switch (rowState) {
                     case MISSING -> CellState.MISSING;
@@ -358,7 +408,8 @@ public final class PreparedItemProjection {
                 channel,
                 cells,
                 profile.omissions(),
-                List.of());
+                List.of(),
+                evidence);
     }
 
     private static CopyMetadata copy(boolean copy, Long source) {

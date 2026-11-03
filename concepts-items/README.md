@@ -110,13 +110,17 @@ results separately.
   protected/invalid/limited cells independently. Scalar versus array slot, original
   source row/column and copy metadata remain explicit. A missing joined half needs
   no synthetic Item row. Unknown issue channels never fabricate empty names;
-  valid numeric facts and unrelated families survive.
+  valid numeric facts and unrelated families survive. A nonexact row width is
+  ambiguous unless every omitted trailing column has an explicit typed override;
+  extra/interior-shift ambiguity invalidates only that source half.
 - `combine(id, item, sparse, selection)` verifies same endpoint/locale/ItemID and
   retains both source vectors with agreement/indeterminate status. It chooses no
   winner for conflicting values. The name is independently sourced from Sparse.
 - `unobservedSource` creates a typed unavailable half without inventing known
   cells. MISSING and PROTECTED require explicit absence/protection evidence; the
-  current captured comparison sources do not certify absence.
+  current captured comparison sources do not certify absence. SourceFacts retains
+  PresenceEvidence(kind/identity/code); staging codecs must preserve it. Missing/
+  protected constructors reject absent or contradictory evidence.
 
 The default whitelist covers name, quality, class/subclass/inventory type, recorded
 item level/required level and ordered flag words. Raw description is opt-in.
@@ -140,3 +144,11 @@ cover sparse-only values, disagreements, source domains, signed/max-ID rules,
 unknown/limited channels, local malformed cells, unsupported names/families,
 compact metadata and immutable results. Run `./gradlew :concepts-items:check` for
 unit and Java integration checks; optional C# regeneration is separate.
+
+Prepared projection classifies DB2_TEXT_ENCODING_INVALID as INVALID; missing
+relationships and unknown TextIssue codes remain UNKNOWN with bounded original
+codes/raw evidence. A LOCSTRING field must match both schema and source locale;
+an invalid name locale omits that field without discarding verified numeric facts.
+These rules do not change ordinary ItemFacts/ItemLayout behavior. SourceFacts also
+checks source-qualified cell table/kind/row identity, and issue lists enforce both
+count and per-string bounds at their DTO boundary.

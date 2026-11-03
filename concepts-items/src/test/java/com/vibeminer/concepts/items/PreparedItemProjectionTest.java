@@ -548,7 +548,9 @@ final class PreparedItemProjectionTest {
                                 RowState.PRESENT,
                                 raw,
                                 IssueChannel.KNOWN,
-                                List.of(),
+                                List.of(
+                                        new IssueOverride(
+                                                2, CellState.UNKNOWN, "AUTHORED_MISSING_TAIL")),
                                 PresenceEvidence.unknown()));
         assertEquals("2", cell(facts, FactId.CLASS_ID).value());
         assertEquals(CellState.UNKNOWN, cell(facts, FactId.SUBCLASS_ID).state());
@@ -616,5 +618,297 @@ final class PreparedItemProjectionTest {
                 view.groups().getFirst().cells().stream()
                         .map(PreparedItemTypes.SourceCell::value)
                         .toList());
+    }
+
+    @Test
+    void ambiguousShortAndExtraRowsInvalidateOnlyTheirSourceHalf() {
+        var item =
+                profile(
+                        schema(
+                                SourceKind.ITEM,
+                                List.of(
+                                        integer("ID", 32, true, 1),
+                                        integer("ClassID", 8, true, 1),
+                                        integer("SubclassID", 8, true, 1))));
+        var sparse =
+                profile(
+                        schema(
+                                SourceKind.ITEM_SPARSE,
+                                List.of(
+                                        integer("ID", 32, true, 1),
+                                        text("Display_lang"),
+                                        integer("OverallQualityID", 8, true, 1))));
+        for (var values : List.of(List.of("1", "2"), List.of("1", "2", "3", "4"))) {
+            var invalid =
+                    PreparedItemProjection.projectSource(
+                            item, row(1, values, List.of(), IssueChannel.KNOWN, List.of()));
+            assertEquals(RowState.INVALID, invalid.rowState());
+            assertTrue(invalid.cells().stream().noneMatch(c -> c.state() == CellState.VALUE));
+            var valid =
+                    PreparedItemProjection.projectSource(sparse, row(1, "1", "Sibling name", "4"));
+            var view = PreparedItemProjection.combine(1, invalid, valid, DEFAULT);
+            assertEquals("Sibling name", view.name().value());
+            assertEquals("4", cell(view.sparse(), FactId.QUALITY).value());
+        }
+    }
+
+    @Test
+    void relationAndUnknownIssueCodesRemainUnknownAndRetainBoundedEvidence() {
+        var p =
+                profile(
+                        schema(
+                                SourceKind.ITEM_SPARSE,
+                                List.of(
+                                        integer("ID", 32, true, 1),
+                                        text("Display_lang"),
+                                        integer("OverallQualityID", 8, true, 1))));
+        for (String code :
+                List.of(
+                        "DB2_RELATION_ABSENT",
+                        "AUTHORED_FUTURE_ISSUE",
+                        "x".repeat(1000),
+                        "DB2_TEXT_ENCODING_INVALID")) {
+            var facts =
+                    PreparedItemProjection.projectSource(
+                            p,
+                            row(
+                                    1,
+                                    List.of("1", "", "4"),
+                                    List.of(new Db2Types.TextIssue(1, code, "AB".repeat(1000))),
+                                    IssueChannel.KNOWN,
+                                    List.of()));
+            var name = cell(facts, FactId.NAME);
+            assertEquals(
+                    code.equals("DB2_TEXT_ENCODING_INVALID")
+                            ? CellState.INVALID
+                            : CellState.UNKNOWN,
+                    name.state());
+            assertTrue(name.issues().getFirst().length() <= 128);
+            assertTrue(name.rawEvidence().startsWith("raw-bytes:AB"));
+            assertTrue(name.rawEvidence().length() <= 128);
+            assertEquals("4", cell(facts, FactId.QUALITY).value());
+        }
+    }
+
+    @Test
+    void missingOrMismatchedLocstringLocaleOmitsOnlyNameFact() {
+        for (var locale : java.util.Arrays.asList(null, WowLocale.parse("deDE"))) {
+            var wrong =
+                    new TableSchema.SchemaColumn(
+                            "Display_lang",
+                            TableSchema.ColumnKind.LOCSTRING,
+                            null,
+                            null,
+                            1,
+                            null,
+                            TableSchema.KeyStorage.NONE,
+                            TableSchema.KeyStorage.NONE,
+                            true,
+                            locale,
+                            null,
+                            null);
+            var p =
+                    profile(
+                            schema(
+                                    SourceKind.ITEM_SPARSE,
+                                    List.of(
+                                            integer("ID", 32, true, 1),
+                                            wrong,
+                                            integer("OverallQualityID", 8, true, 1))));
+            var facts = PreparedItemProjection.projectSource(p, row(1, "1", "Wrong locale", "4"));
+            assertTrue(facts.cells().stream().noneMatch(c -> c.key().fact() == FactId.NAME));
+            assertTrue(p.omissions().stream().anyMatch(o -> o.fact() == FactId.NAME));
+            assertEquals("4", cell(facts, FactId.QUALITY).value());
+        }
+    }
+
+    @Test
+    void absenceAndProtectionEvidenceSurvivesProjectionAndConstructorsRejectContradiction() {
+        var p =
+                profile(
+                        schema(
+                                SourceKind.ITEM_SPARSE,
+                                List.of(integer("ID", 32, true, 1), text("Display_lang"))));
+        for (var state : List.of(RowState.MISSING, RowState.PROTECTED)) {
+            var evidence =
+                    new PresenceEvidence(
+                            state == RowState.MISSING
+                                    ? PresenceKind.ABSENCE_CERTIFIED
+                                    : PresenceKind.PROTECTION_OBSERVED,
+                            "authored-proof",
+                            "authored-code");
+            var projected =
+                    PreparedItemProjection.projectSource(
+                            p,
+                            new SourceRow(
+                                    1, state, null, IssueChannel.UNKNOWN, List.of(), evidence));
+            assertEquals(evidence, projected.presenceEvidence());
+            var absent =
+                    PreparedItemProjection.unobservedSource(
+                            1, p.stamp(), SourceState.UNAVAILABLE, state, evidence, DEFAULT);
+            assertEquals(evidence, absent.presenceEvidence());
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            new PreparedItemTypes.SourceFacts(
+                                    1,
+                                    p.stamp(),
+                                    p.state(),
+                                    state,
+                                    IssueChannel.UNKNOWN,
+                                    projected.cells(),
+                                    List.of(),
+                                    List.of()));
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            new PreparedItemTypes.SourceFacts(
+                                    1,
+                                    p.stamp(),
+                                    p.state(),
+                                    RowState.UNKNOWN,
+                                    IssueChannel.UNKNOWN,
+                                    List.of(),
+                                    List.of(),
+                                    List.of(),
+                                    evidence));
+        }
+    }
+
+    @Test
+    void malformedFactSourcesRowsColumnsAndIssueTextAreRejectedAtDtoBoundary() {
+        var p =
+                profile(
+                        schema(
+                                SourceKind.ITEM,
+                                List.of(
+                                        integer("ID", 32, true, 1),
+                                        integer("ClassID", 8, true, 1))));
+        var valid = PreparedItemProjection.projectSource(p, row(1, "1", "2"));
+        var cell = cell(valid, FactId.CLASS_ID);
+        var key = cell.key();
+        for (boolean sourceMismatch : new boolean[] {true, false}) {
+            var wrongKey =
+                    new PreparedItemTypes.SourceQualifiedKey(
+                            key.fact(),
+                            sourceMismatch ? SourceKind.ITEM_SPARSE : key.source(),
+                            sourceMismatch ? SourceKind.ITEM_SPARSE.fileDataId() : 123,
+                            key.field(),
+                            key.array(),
+                            key.arraySlot(),
+                            key.semantics());
+            var wrong =
+                    new PreparedItemTypes.SourceCell(
+                            wrongKey,
+                            cell.state(),
+                            cell.kind(),
+                            cell.value(),
+                            null,
+                            1L,
+                            cell.columnIndex(),
+                            cell.copy(),
+                            List.of());
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            new PreparedItemTypes.SourceFacts(
+                                    1,
+                                    p.stamp(),
+                                    p.state(),
+                                    RowState.PRESENT,
+                                    IssueChannel.KNOWN,
+                                    List.of(wrong),
+                                    List.of(),
+                                    List.of()));
+        }
+        var wrongRow =
+                new PreparedItemTypes.SourceCell(
+                        key,
+                        cell.state(),
+                        cell.kind(),
+                        cell.value(),
+                        null,
+                        2L,
+                        cell.columnIndex(),
+                        cell.copy(),
+                        List.of());
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new PreparedItemTypes.SourceFacts(
+                                1,
+                                p.stamp(),
+                                p.state(),
+                                RowState.PRESENT,
+                                IssueChannel.KNOWN,
+                                List.of(wrongRow),
+                                List.of(),
+                                List.of()));
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new PreparedItemTypes.SourceCell(
+                                key,
+                                cell.state(),
+                                cell.kind(),
+                                cell.value(),
+                                null,
+                                1L,
+                                -1,
+                                cell.copy(),
+                                List.of()));
+        for (var issues :
+                List.of(List.of("x".repeat(129)), java.util.Collections.nCopies(9, "code"))) {
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            new PreparedItemTypes.SourceCell(
+                                    key,
+                                    cell.state(),
+                                    cell.kind(),
+                                    cell.value(),
+                                    null,
+                                    1L,
+                                    cell.columnIndex(),
+                                    cell.copy(),
+                                    issues));
+        }
+        for (var issues :
+                List.of(List.of("x".repeat(129)), java.util.Collections.nCopies(17, "code"))) {
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            new PreparedItemTypes.SourceFacts(
+                                    1,
+                                    p.stamp(),
+                                    p.state(),
+                                    RowState.PRESENT,
+                                    IssueChannel.KNOWN,
+                                    valid.cells(),
+                                    List.of(),
+                                    issues));
+        }
+    }
+
+    @Test
+    void boundedIssueListsStillRetainTheRecognizedInvalidEncodingReason() {
+        var p =
+                profile(
+                        schema(
+                                SourceKind.ITEM_SPARSE,
+                                List.of(integer("ID", 32, true, 1), text("Display_lang"))));
+        var issues = new ArrayList<Db2Types.TextIssue>();
+        for (int i = 0; i < 9; i++) {
+            issues.add(new Db2Types.TextIssue(1, "AUTHORED_UNKNOWN_" + i, ""));
+        }
+        issues.add(new Db2Types.TextIssue(1, "DB2_TEXT_ENCODING_INVALID", "FF"));
+        var facts =
+                PreparedItemProjection.projectSource(
+                        p, row(1, List.of("1", ""), issues, IssueChannel.KNOWN, List.of()));
+        var name = cell(facts, FactId.NAME);
+        assertEquals(CellState.INVALID, name.state());
+        assertEquals(8, name.issues().size());
+        assertTrue(name.issues().contains("DB2_TEXT_ENCODING_INVALID"));
+        assertEquals("raw-bytes:FF", name.rawEvidence());
     }
 }

@@ -424,6 +424,12 @@ public final class PreparedItemTypes {
             }
             Objects.requireNonNull(copy);
             issues = List.copyOf(issues);
+            if (columnIndex < 0 || columnIndex >= 512) {
+                throw new IllegalArgumentException("Source cell column out of range");
+            }
+            for (var issue : issues) {
+                text(issue, 128);
+            }
             if (state == CellState.VALUE ? value == null : value != null) {
                 throw new IllegalArgumentException("Known value/state disagree");
             }
@@ -443,18 +449,65 @@ public final class PreparedItemTypes {
             IssueChannel issueChannel,
             List<SourceCell> cells,
             List<Omission> omissions,
-            List<String> issues) {
+            List<String> issues,
+            PresenceEvidence presenceEvidence) {
+        /**
+         * Only unknown presence can be implicit; certified missing/protected states need evidence.
+         */
+        public SourceFacts(
+                long itemId,
+                SourceStamp stamp,
+                SourceState sourceState,
+                RowState rowState,
+                IssueChannel issueChannel,
+                List<SourceCell> cells,
+                List<Omission> omissions,
+                List<String> issues) {
+            this(
+                    itemId,
+                    stamp,
+                    sourceState,
+                    rowState,
+                    issueChannel,
+                    cells,
+                    omissions,
+                    issues,
+                    PresenceEvidence.unknown());
+        }
+
         public SourceFacts {
             id(itemId);
             Objects.requireNonNull(stamp);
             Objects.requireNonNull(sourceState);
             Objects.requireNonNull(rowState);
             Objects.requireNonNull(issueChannel);
+            Objects.requireNonNull(presenceEvidence);
+            presence(rowState, presenceEvidence);
             cells = List.copyOf(cells);
             omissions = List.copyOf(omissions);
             issues = List.copyOf(issues);
             if (cells.size() > 64 || omissions.size() > 64 || issues.size() > 16) {
                 throw new IllegalArgumentException("Source facts exceed bound");
+            }
+            for (var issue : issues) {
+                text(issue, 128);
+            }
+            for (var cell : cells) {
+                if (cell.key().source() != stamp.kind()
+                        || cell.key().fileDataId() != stamp.fileDataId()
+                        || cell.rowId() != null && cell.rowId() != itemId) {
+                    throw new IllegalArgumentException("Cell source/row differs from facts");
+                }
+                if (cell.state() == CellState.MISSING && rowState != RowState.MISSING) {
+                    throw new IllegalArgumentException(
+                            "Missing cell requires certified missing row");
+                }
+                if (rowState != RowState.PRESENT
+                        && (cell.rowId() != null
+                                || cell.state() == CellState.VALUE
+                                || cell.state() == CellState.KNOWN_EMPTY)) {
+                    throw new IllegalArgumentException("Unobserved source has observed cells");
+                }
             }
         }
     }
@@ -497,10 +550,14 @@ public final class PreparedItemTypes {
     }
 
     static void presence(RowState state, PresenceEvidence evidence) {
-        if (state == RowState.MISSING && evidence.kind() != PresenceKind.ABSENCE_CERTIFIED
-                || state == RowState.PROTECTED
-                        && evidence.kind() != PresenceKind.PROTECTION_OBSERVED) {
-            throw new IllegalArgumentException("Missing/protected row needs specific evidence");
+        var expected =
+                switch (state) {
+                    case MISSING -> PresenceKind.ABSENCE_CERTIFIED;
+                    case PROTECTED -> PresenceKind.PROTECTION_OBSERVED;
+                    default -> PresenceKind.UNKNOWN;
+                };
+        if (evidence.kind() != expected) {
+            throw new IllegalArgumentException("Row state/presence evidence disagree");
         }
     }
 
