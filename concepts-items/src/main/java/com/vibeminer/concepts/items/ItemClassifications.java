@@ -11,7 +11,7 @@ import java.util.List;
 
 /** Reviewed signed8 semantic classification joins, never row-ID label lookup. */
 public final class ItemClassifications {
-    public static final String POLICY_REVISION = "classification-label-index-v2",
+    public static final String POLICY_REVISION = "classification-label-index-v3",
             CLASS_TABLE = "ItemClass",
             SUBCLASS_TABLE = "ItemSubClass",
             PROFILE_UNSUPPORTED_CODE = "ITEM_CLASSIFICATION_PROFILE_UNSUPPORTED",
@@ -348,19 +348,6 @@ public final class ItemClassifications {
                     null,
                     null);
         }
-        if (!complete) {
-            return result(
-                    ItemClassLabelState.INCOMPLETE_TARGET,
-                    sourceKeys,
-                    null,
-                    null,
-                    null,
-                    1L,
-                    scanned,
-                    entry,
-                    null,
-                    null);
-        }
         var row = first.row();
         String value = text < row.values().size() ? row.values().get(text) : "";
         boolean invalid = text >= row.values().size() || ItemLayout.issue(row, text);
@@ -372,12 +359,12 @@ public final class ItemClassifications {
                                 : value.isEmpty()
                                         ? ItemClassLabelState.EMPTY_TEXT
                                         : ItemClassLabelState.READY;
+        boolean readableText =
+                state == ItemClassLabelState.READY || state == ItemClassLabelState.EMPTY_TEXT;
         return result(
-                state,
+                !complete && readableText ? ItemClassLabelState.INCOMPLETE_TARGET : state,
                 sourceKeys,
-                state == ItemClassLabelState.READY || state == ItemClassLabelState.EMPTY_TEXT
-                        ? value
-                        : null,
+                readableText ? value : null,
                 first,
                 text,
                 1L,
@@ -386,6 +373,8 @@ public final class ItemClassifications {
                 state == ItemClassLabelState.UNSUPPORTED ? TEXT_LIMIT_CODE : null,
                 state == ItemClassLabelState.UNSUPPORTED
                         ? "Classification text exceeds bound"
-                        : null);
+                        : !complete && readableText
+                                ? "Readable classification candidate; additional matches may be protected or unavailable."
+                                : null);
     }
 }

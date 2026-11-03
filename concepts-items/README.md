@@ -83,3 +83,10 @@ concurrency and cache. Full media inspection remains a separate request. Existin
 Native SQLite integration tests include 1,200 synthetic items, filters beyond the
 first page, whole-catalog sorting/search, literal query values and a reopened index
 whose source provider rejects any attempt to rescan rows.
+
+Readable classification candidates from PARTIAL tables retain their source row,
+text and `INCOMPLETE_TARGET` state; a singleton readable match does not prove
+uniqueness when other records are protected. Grid and list labels append
+`(partial)` to these known candidates. Missing candidates remain uncertain,
+and multiple readable matches remain ambiguous. The classification policy
+revision invalidates older persisted grid projections.

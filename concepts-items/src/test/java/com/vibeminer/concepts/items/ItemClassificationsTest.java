@@ -90,11 +90,16 @@ class ItemClassificationsTest {
 
     @Test
     void partialCandidateAndAbsenceAreNeverCertain() {
-        assertEquals(
-                ItemClassLabelState.INCOMPLETE_TARGET,
+        var partial =
                 resolve(TableTypes.State.PARTIAL, List.of(ItemsWorld.row(9, "9", "2", "Weapon")))
-                        .itemClass()
-                        .state());
+                        .itemClass();
+        assertEquals(ItemClassLabelState.INCOMPLETE_TARGET, partial.state());
+        assertEquals("Weapon", partial.text());
+        assertEquals(9, partial.target().row().id());
+        assertEquals(1L, partial.candidates());
+        assertEquals(
+                "Readable classification candidate; additional matches may be protected or unavailable.",
+                partial.message());
         assertEquals(
                 ItemClassLabelState.INCOMPLETE_TARGET,
                 resolve(TableTypes.State.PARTIAL, List.of()).itemClass().state());

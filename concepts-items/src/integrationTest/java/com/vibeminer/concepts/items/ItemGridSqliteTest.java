@@ -57,7 +57,33 @@ class ItemGridSqliteTest {
                 true);
     }
 
+    private static MemoryTables.FakeTable classificationTable(
+            boolean partial, int id, String name, String[] names, List<Db2Types.Row> rows) {
+        var table = table(id, name, names, rows);
+        var e = table.entry();
+        return partial
+                ? new MemoryTables.FakeTable(
+                        new TableTypes.Entry(
+                                e.fileDataId(),
+                                e.name(),
+                                TableTypes.State.PARTIAL,
+                                true,
+                                e.reason(),
+                                e.counts(),
+                                e.contentKey()),
+                        table.columns(),
+                        table.rows(),
+                        table.schema(),
+                        Map.of(),
+                        true)
+                : table;
+    }
+
     private static MemoryTables data() {
+        return data(false);
+    }
+
+    private static MemoryTables data(boolean partialLabels) {
         var item = new ArrayList<Db2Types.Row>();
         var sparse = new ArrayList<Db2Types.Row>();
         for (int id = 1; id <= 1200; id++) {
@@ -108,14 +134,16 @@ class ItemGridSqliteTest {
                                             "InventoryType"
                                         },
                                         sparse),
-                                table(
+                                classificationTable(
+                                        partialLabels,
                                         3,
                                         "ItemClass",
                                         new String[] {"ID", "ClassID", "ClassName_lang"},
                                         List.of(
                                                 row(900, "900", "4", "Rüstung"),
                                                 row(901, "901", "2", "Waffen"))),
-                                table(
+                                classificationTable(
+                                        partialLabels,
                                         4,
                                         "ItemSubClass",
                                         new String[] {
@@ -141,6 +169,32 @@ class ItemGridSqliteTest {
                 .forBuild(BUILD, "deDE", Cancellation.NONE)
                 .join()
                 .items();
+    }
+
+    @Test
+    void persistsReadablePartialClassificationCandidatesWithUncertainty() {
+        try (var handle = open(data(true), "partial-labels")) {
+            var grid =
+                    handle.grid(
+                                    new ItemGridQuery(),
+                                    TableTypes.Priority.INTERACTIVE,
+                                    Cancellation.NONE)
+                            .join();
+            assertEquals("Rüstung (partial)", grid.rows().getFirst().itemClass());
+            assertEquals("Platte (partial)", grid.rows().getFirst().subclass());
+            assertTrue(
+                    grid.options().classes().stream()
+                            .anyMatch(choice -> choice.label().equals("Waffen (partial)")));
+        }
+        try (var reopened = open(data(true), "partial-labels")) {
+            var grid =
+                    reopened.grid(
+                                    new ItemGridQuery(),
+                                    TableTypes.Priority.INTERACTIVE,
+                                    Cancellation.NONE)
+                            .join();
+            assertEquals("Rüstung (partial)", grid.rows().getFirst().itemClass());
+        }
     }
 
     @Test

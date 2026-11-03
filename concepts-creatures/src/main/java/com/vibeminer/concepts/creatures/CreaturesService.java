@@ -501,7 +501,7 @@ public final class CreaturesService implements Creatures {
                                                 priority,
                                                 token)
                                         .join();
-                        boolean ready = schema.table().state() == TableTypes.State.READY;
+                        boolean ready = TableQueries.isReadable(schema.table().state());
                         String code = ready ? null : "CREATURE_TABLE_NOT_READABLE";
                         if (ready) {
                             try {

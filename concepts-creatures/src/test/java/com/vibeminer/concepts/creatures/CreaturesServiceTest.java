@@ -94,6 +94,10 @@ final class CreaturesServiceTest {
                                 display,
                                 CreatureWorld.models(List.of(CreatureWorld.model(33, "0"))));
         try (var handle = world.open()) {
+            assertEquals(true, handle.warmup(P, Cancellation.NONE).join().ready());
+            assertEquals(
+                    1,
+                    handle.list(new CreatureQuery(), P, Cancellation.NONE).join().entries().size());
             var chains = handle.get(10, P, Cancellation.NONE).join().detail().displays();
             assertEquals(
                     List.of(

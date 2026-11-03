@@ -5,6 +5,7 @@ import com.vibeminer.concepts.items.ItemFacts;
 import com.vibeminer.concepts.items.ItemSummary;
 import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.tables.TableTypes;
+
 import java.util.List;
 import java.util.Locale;
 
@@ -148,12 +149,12 @@ public final class ResearchPresentation {
     }
 
     private static String classText(com.vibeminer.concepts.items.ItemClassLabel label) {
-        return label != null
-                        && label.state() == com.vibeminer.concepts.items.ItemClassLabelState.READY
-                        && label.text() != null
-                        && !label.text().isBlank()
-                ? label.text()
-                : "Unavailable";
+        if (label == null || label.text() == null || label.text().isBlank()) return "Unavailable";
+        return switch (label.state()) {
+            case READY -> label.text();
+            case INCOMPLETE_TARGET -> label.text() + " (partial)";
+            default -> "Unavailable";
+        };
     }
 
     public static Row item(com.vibeminer.concepts.items.ItemGridRow row) {

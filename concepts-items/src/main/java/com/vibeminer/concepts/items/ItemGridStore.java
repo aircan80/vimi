@@ -307,18 +307,8 @@ final class ItemGridStore implements AutoCloseable {
         if (name == null || name.isBlank()) {
             name = "Item " + item.id();
         }
-        String cls =
-                labels != null
-                                && labels.itemClass() != null
-                                && labels.itemClass().state() == ItemClassLabelState.READY
-                        ? labels.itemClass().text()
-                        : null;
-        String sub =
-                labels != null
-                                && labels.subclass() != null
-                                && labels.subclass().state() == ItemClassLabelState.READY
-                        ? labels.subclass().text()
-                        : null;
+        String cls = labels == null ? null : classText(labels.itemClass());
+        String sub = labels == null ? null : classText(labels.subclass());
         String quality = value(item, "OverallQualityID"),
                 slot = value(item, "InventoryType"),
                 level = value(item, "ItemLevel");
@@ -343,6 +333,17 @@ final class ItemGridStore implements AutoCloseable {
                 slot,
                 (slot == null ? null : ItemFacts.INVENTORY_TYPE.get(slot)),
                 itemLevel);
+    }
+
+    private static String classText(ItemClassLabel label) {
+        if (label == null || label.text() == null || label.text().isBlank()) {
+            return null;
+        }
+        return switch (label.state()) {
+            case READY -> label.text();
+            case INCOMPLETE_TARGET -> label.text() + " (partial)";
+            default -> null;
+        };
     }
 
     @Override
