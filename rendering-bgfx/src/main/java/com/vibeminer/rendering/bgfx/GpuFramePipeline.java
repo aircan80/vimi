@@ -19,9 +19,11 @@ import static org.lwjgl.bgfx.BGFX.bgfx_is_texture_valid;
 import static org.lwjgl.bgfx.BGFX.bgfx_read_texture;
 import static org.lwjgl.bgfx.BGFX.bgfx_set_view_frame_buffer;
 
+import com.vibeminer.rendering.world.TerrainScene;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 import org.lwjgl.system.MemoryUtil;
 
 /**
@@ -33,7 +35,7 @@ final class GpuFramePipeline implements AutoCloseable {
     private static final class Slot {
         short texture = INVALID;
         final ByteBuffer pixels;
-        GpuViewRequest view;
+        GpuFrameRequest view;
         int ready;
 
         Slot(int capacity) {
@@ -43,6 +45,7 @@ final class GpuFramePipeline implements AutoCloseable {
 
     private final GpuFrameFile frames;
     private final BgfxModelRenderer renderer;
+    private final BgfxTerrainRenderer terrainRenderer;
     private final Set<Integer> qualified;
     private final Slot[] slots = new Slot[3];
     private final ByteBuffer flipped;
@@ -53,8 +56,28 @@ final class GpuFramePipeline implements AutoCloseable {
 
     GpuFramePipeline(GpuModelScene scene, Set<Integer> qualified, GpuFrameFile frames)
             throws IOException {
+        this(scene, qualified, null, frames, () -> false);
+    }
+
+    GpuFramePipeline(TerrainScene scene, GpuFrameFile frames, BooleanSupplier canceled)
+            throws IOException {
+        this(null, Set.of(), scene, frames, canceled);
+    }
+
+    private GpuFramePipeline(
+            GpuModelScene model,
+            Set<Integer> qualified,
+            TerrainScene terrain,
+            GpuFrameFile frames,
+            BooleanSupplier canceled)
+            throws IOException {
         this.frames = frames;
         this.qualified = Set.copyOf(qualified);
+        if (terrain != null
+                && (frames.maxWidth() > BgfxTerrainRenderer.MAX_WIDTH
+                        || frames.maxHeight() > BgfxTerrainRenderer.MAX_HEIGHT)) {
+            throw new IOException("Terrain frame allocation exceeds800x500 budget");
+        }
         var caps = bgfx_get_caps();
         if ((caps.supported() & (BGFX_CAPS_TEXTURE_READ_BACK | BGFX_CAPS_TEXTURE_BLIT))
                         != (BGFX_CAPS_TEXTURE_READ_BACK | BGFX_CAPS_TEXTURE_BLIT)
@@ -68,7 +91,8 @@ final class GpuFramePipeline implements AutoCloseable {
                 || !bgfx_is_texture_valid(0, false, 1, BGFX_TEXTURE_FORMAT_D32F, BGFX_TEXTURE_RT)) {
             throw new IOException("GPU backend does not support the inline frame bridge");
         }
-        renderer = new BgfxModelRenderer(scene);
+        renderer = model == null ? null : new BgfxModelRenderer(model);
+        terrainRenderer = terrain == null ? null : new BgfxTerrainRenderer(terrain, canceled);
         int capacity =
                 Math.multiplyExact(Math.multiplyExact(frames.maxWidth(), frames.maxHeight()), 4);
         ByteBuffer flip = null;
@@ -83,15 +107,20 @@ final class GpuFramePipeline implements AutoCloseable {
                     MemoryUtil.memFree(slot.pixels);
                 }
             }
-            renderer.close();
+            closeRenderer();
             throw failure;
         }
         flipped = flip;
     }
 
-    boolean submit(GpuViewRequest view) throws IOException {
+    boolean submit(GpuFrameRequest view) throws IOException {
         if (closed) {
             throw new IllegalStateException("Inline GPU pipeline closed");
+        }
+        if (terrainRenderer != null
+                ? !(view instanceof GpuWorldRequest)
+                : !(view instanceof GpuViewRequest)) {
+            throw new IOException("Control kind differs from the renderer scene");
         }
         if (view.width() > frames.maxWidth() || view.height() > frames.maxHeight()) {
             throw new IOException("Requested GPU frame exceeds the shared bridge");
@@ -112,12 +141,17 @@ final class GpuFramePipeline implements AutoCloseable {
         if (available == null) {
             return false;
         }
-        renderer.draw(
-                width,
-                height,
-                view.camera(qualified),
-                view.textures(),
-                view.qualifiedMaterialsOnly());
+        if (view instanceof GpuWorldRequest world) {
+            terrainRenderer.render(world.camera(), width, height);
+        } else {
+            var model = (GpuViewRequest) view;
+            renderer.draw(
+                    width,
+                    height,
+                    model.camera(qualified),
+                    model.textures(),
+                    model.qualifiedMaterialsOnly());
+        }
         bgfx_blit(1, available.texture, 0, 0, 0, 0, color, 0, 0, 0, 0, width, height, 1);
         available.pixels.clear().limit(width * height * 4);
         // Destination and texture remain owned by this slot through the returned ready frame.
@@ -262,10 +296,19 @@ final class GpuFramePipeline implements AutoCloseable {
             }
         }
         destroyTargets();
-        renderer.close();
+        closeRenderer();
         for (var slot : slots) {
             MemoryUtil.memFree(slot.pixels);
         }
         MemoryUtil.memFree(flipped);
+    }
+
+    private void closeRenderer() {
+        if (renderer != null) {
+            renderer.close();
+        }
+        if (terrainRenderer != null) {
+            terrainRenderer.close();
+        }
     }
 }

@@ -5,7 +5,8 @@ import java.util.Set;
 
 /** Small immutable latest-only control record; geometry never travels on the camera pipe. */
 record GpuViewRequest(
-        long revision, int width, int height, double yaw, double pitch, double zoom, int flags) {
+        long revision, int width, int height, double yaw, double pitch, double zoom, int flags)
+        implements GpuFrameRequest {
     GpuViewRequest {
         if (revision < 1
                 || width < 1

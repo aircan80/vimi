@@ -370,10 +370,11 @@ and retains at most one raw decoded tile alongside its copied immutable tile.
 | 800x500 color and D32F depth attachments | 3,200,000 |
 | Three800x500 GPU readback targets | 4,800,000 |
 | Three800x500 native CPU readback buffers | 4,800,000 |
+| Shared vertical-flip scratch buffer | 1,600,000 |
 | Triple-slot frame-file mapping, headers included | 4,800,256 |
 
 Codec raw-tile lifetime and renderer packing lifetime are separate phases; even
-conservatively adding every listed term gives89,753,380 bytes (about85.6MiB).
+conservatively adding every listed term gives91,353,380 bytes (about87.1MiB).
 Keep room within128MiB for bounded source metadata, shader resources, context
 bookkeeping and any explicitly retained frame copies. JVM, driver and Prism
 allocation overhead is measured separately and is not represented by this logical
@@ -381,3 +382,13 @@ payload ledger. GUI detached-frame/image copies belong to the parent process and
 must remain independently bounded. Child frame allocation is capped800x500 even
 though pure projection math and the generic frame transport can represent larger
 frames; model preview limits are unchanged.
+
+
+The terrain child now accepts `--terrain-scene` as an exclusive alternative to
+`--scene`, and parses only the matching WORLD/VIEW control kind. It reuses the
+same three-slot readback pipeline and frame protocol; model preview flags and
+camera behavior remain independent. Terrain bridge opening limits mapped bytes
+before mapping and checks width/height before returning, with a hard800x500
+consumer bound. Invalid private controls fail the child rather than emitting a
+normal CLOSED success after an ERROR. CLOSE/EOF during scene decoding/upload
+remains normal cancellation, with owned native resources drained on their thread.

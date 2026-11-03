@@ -224,3 +224,13 @@ tasks.register('verifyTerrainShaders', Exec) {
 }
 tasks.named('processResources') { dependsOn tasks.named('verifyTerrainShaders') }
 tasks.named('check') { dependsOn tasks.named('verifyTerrainShaders') }
+
+tasks.register('nativeGpuTerrainProductionAcceptance', JavaExec) {
+    group = 'verification'
+    description = 'Runs independently authored oracles against the production terrain renderer.'
+    dependsOn testClasses, tasks.named('verifyTerrainShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.TerrainProductionAcceptance'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-terrain-production').get().asFile.absolutePath
+}

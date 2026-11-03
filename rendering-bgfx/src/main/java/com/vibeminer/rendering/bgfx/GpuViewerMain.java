@@ -10,11 +10,13 @@ import static org.lwjgl.bgfx.BGFX.bgfx_init;
 import static org.lwjgl.bgfx.BGFX.bgfx_init_ctor;
 import static org.lwjgl.bgfx.BGFX.bgfx_shutdown;
 
+import com.vibeminer.rendering.world.TerrainScene;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import org.lwjgl.bgfx.BGFXInit;
@@ -45,12 +47,7 @@ public final class GpuViewerMain {
     }
 
     private static void run(Map<String, String> options) throws IOException {
-        if (!options.containsKey("--scene")
-                || !options.containsKey("--frames")
-                || !options.containsKey("--parent-pid")) {
-            throw new IllegalArgumentException(
-                    "Inline GPU renderer requires scene, frames and parent");
-        }
+        boolean terrain = terrainMode(options);
         long parent = Long.parseLong(options.get("--parent-pid"));
         var parentProcess =
                 ProcessHandle.of(parent)
@@ -59,7 +56,8 @@ public final class GpuViewerMain {
                                 () ->
                                         new IllegalArgumentException(
                                                 "GPU preview parent is unavailable"));
-        var latest = new AtomicReference<GpuViewRequest>();
+        var latest = new AtomicReference<GpuFrameRequest>();
+        var controlFailure = new AtomicReference<IllegalArgumentException>();
         var receivedRevision = new AtomicLong();
         try (var lifetime =
                 new GpuParentWatchdog(
@@ -69,35 +67,61 @@ public final class GpuViewerMain {
                         () -> Runtime.getRuntime().halt(2),
                         line -> {
                             try {
-                                var request = GpuViewRequest.parse(line);
+                                var request = parseControl(line, terrain);
                                 long previous = receivedRevision.get();
                                 if (request.revision() > previous) {
                                     receivedRevision.set(request.revision());
                                     latest.set(request);
                                 }
                             } catch (IllegalArgumentException invalid) {
-                                status("ERROR", "INVALID_VIEW " + safe(invalid.getMessage()));
+                                controlFailure.compareAndSet(null, invalid);
                                 throw invalid;
                             }
                         })) {
-            render(options, lifetime, latest);
+            try {
+                render(options, lifetime, latest, terrain);
+            } catch (CancellationException canceled) {
+                if (!lifetime.stopping()) {
+                    throw canceled;
+                }
+            }
+            if (controlFailure.get() != null) {
+                throw controlFailure.get();
+            }
         }
     }
 
     private static void render(
             Map<String, String> options,
             GpuParentWatchdog lifetime,
-            AtomicReference<GpuViewRequest> latest)
+            AtomicReference<GpuFrameRequest> latest,
+            boolean terrain)
             throws IOException {
         if (lifetime.stopping()) {
             return;
         }
-        var payload = GpuSceneFile.read(Path.of(options.get("--scene")));
-        var scene = GpuModelScene.create(payload.mesh(), payload.appearance());
+        GpuModelScene modelScene = null;
+        TerrainScene terrainScene = null;
+        Set<Integer> qualified = Set.of();
+        if (terrain) {
+            terrainScene =
+                    GpuTerrainSceneFile.read(
+                            Path.of(options.get("--terrain-scene")), lifetime::stopping);
+        } else {
+            var payload = GpuSceneFile.read(Path.of(options.get("--scene")));
+            modelScene = GpuModelScene.create(payload.mesh(), payload.appearance());
+            qualified = payload.visibleParts();
+        }
         if (lifetime.stopping()) {
             return;
         }
-        try (var frames = GpuFrameFile.open(Path.of(options.get("--frames")))) {
+        try (var frames =
+                terrain
+                        ? GpuFrameFile.open(
+                                Path.of(options.get("--frames")),
+                                BgfxTerrainRenderer.MAX_WIDTH,
+                                BgfxTerrainRenderer.MAX_HEIGHT)
+                        : GpuFrameFile.open(Path.of(options.get("--frames")))) {
             boolean initialized = false;
             try {
                 try (var stack = MemoryStack.stackPush()) {
@@ -122,7 +146,10 @@ public final class GpuViewerMain {
                 status("HELLO", backend);
                 long submittedRevision = 0, nextRender = 0;
                 boolean announced = false;
-                try (var pipeline = new GpuFramePipeline(scene, payload.visibleParts(), frames)) {
+                try (var pipeline =
+                        terrain
+                                ? new GpuFramePipeline(terrainScene, frames, lifetime::stopping)
+                                : new GpuFramePipeline(modelScene, qualified, frames)) {
                     while (!lifetime.stopping()) {
                         var view = latest.get();
                         long now = System.nanoTime();
@@ -154,6 +181,20 @@ public final class GpuViewerMain {
         }
     }
 
+    static boolean terrainMode(Map<String, String> options) {
+        if (options.containsKey("--scene") == options.containsKey("--terrain-scene")
+                || !options.containsKey("--frames")
+                || !options.containsKey("--parent-pid")) {
+            throw new IllegalArgumentException(
+                    "Inline GPU renderer requires exactly one model or terrain scene, frames and parent");
+        }
+        return options.containsKey("--terrain-scene");
+    }
+
+    static GpuFrameRequest parseControl(String line, boolean terrain) {
+        return terrain ? GpuWorldRequest.parse(line) : GpuViewRequest.parse(line);
+    }
+
     static int backend(String requested) {
         if (requested != null) {
             return switch (requested) {
@@ -182,6 +223,7 @@ public final class GpuViewerMain {
             if (i + 1 == args.length
                     || !Set.of(
                                     "--scene",
+                                    "--terrain-scene",
                                     "--frames",
                                     "--parent-pid",
                                     "--backend",

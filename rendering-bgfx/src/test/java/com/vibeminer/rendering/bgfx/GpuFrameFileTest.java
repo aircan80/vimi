@@ -211,4 +211,23 @@ final class GpuFrameFileTest {
             assertTrue(observed > 0 || last.pixels().get(0) == 0xff0000c8);
         }
     }
+
+    @Test
+    void consumerBudgetRejectsOversizedMappingsAndWrongAspectDimensions() throws Exception {
+        Path file = directory.resolve("consumer-bounds");
+        try (var owner = GpuFrameFile.create(file, 960, 400)) {
+            assertEquals(960, owner.maxWidth());
+            assertThrows(IOException.class, () -> GpuFrameFile.open(file, 800, 500));
+        }
+        Path oversized = directory.resolve("consumer-bytes");
+        try (var owner = GpuFrameFile.create(oversized, 800, 501)) {
+            assertEquals(501, owner.maxHeight());
+            assertThrows(IOException.class, () -> GpuFrameFile.open(oversized, 800, 500));
+        }
+        Path valid = directory.resolve("consumer-valid");
+        try (var owner = GpuFrameFile.create(valid, 800, 500);
+                var consumer = GpuFrameFile.open(valid, 800, 500)) {
+            assertEquals(owner.sessionNonce(), consumer.sessionNonce());
+        }
+    }
 }

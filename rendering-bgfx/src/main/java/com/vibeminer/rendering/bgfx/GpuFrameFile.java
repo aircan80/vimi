@@ -136,6 +136,15 @@ public final class GpuFrameFile implements AutoCloseable {
     }
 
     public static GpuFrameFile open(Path path) throws IOException {
+        return open(path, MAX_WIDTH, MAX_HEIGHT);
+    }
+
+    /**
+     * Rejects an oversized mapping before allocation; narrower dimensions are checked before
+     * return.
+     */
+    public static GpuFrameFile open(Path path, int maxWidth, int maxHeight) throws IOException {
+        checkDimensions(maxWidth, maxHeight, MAX_WIDTH, MAX_HEIGHT);
         if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
             throw new IOException("GPU frame bridge must be a regular file");
         }
@@ -148,12 +157,15 @@ public final class GpuFrameFile implements AutoCloseable {
         var arena = Arena.ofShared();
         try {
             long size = channel.size();
-            long maximum = FILE_HEADER_BYTES + (long) SLOTS * slotBytes(MAX_WIDTH, MAX_HEIGHT);
+            long maximum = FILE_HEADER_BYTES + (long) SLOTS * slotBytes(maxWidth, maxHeight);
             if (size < FILE_HEADER_BYTES || size > maximum) {
                 throw new IOException("GPU frame bridge size exceeds bounds");
             }
             var mapping = channel.map(FileChannel.MapMode.READ_WRITE, 0, size, arena);
             var header = readHeader(mapping, size);
+            if (header.width > maxWidth || header.height > maxHeight) {
+                throw new IOException("GPU frame bridge exceeds consumer dimensions");
+            }
             return new GpuFrameFile(channel, arena, mapping, header);
         } catch (IOException | RuntimeException | Error failure) {
             releaseFailed(channel, arena, failure);
