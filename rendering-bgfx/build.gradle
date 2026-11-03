@@ -234,3 +234,13 @@ tasks.register('nativeGpuTerrainProductionAcceptance', JavaExec) {
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args layout.buildDirectory.dir('native-terrain-production').get().asFile.absolutePath
 }
+
+tasks.register('nativeGpuTerrainInlineProof', JavaExec) {
+    group = 'verification'
+    description = 'Checks actual terrain child controls, mapped frames, resize and terminal shutdown.'
+    dependsOn testClasses, tasks.named('verifyTerrainShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.TerrainProductionInlineProof'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-terrain-inline').get().asFile.absolutePath
+}
