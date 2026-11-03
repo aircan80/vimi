@@ -730,7 +730,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         if (sourcePolicies == null) status = community.update(false, token).join();
         else {
             var registration = sourcePolicies.nameAcquisition(token);
-            try { token.check(); status = community.update(false, token).join(); }
+            try { token.check(); status = community.status(token).join(); }
             finally { registration.close(); }
         }
         token.check();

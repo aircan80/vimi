@@ -15,7 +15,9 @@ Explicitly close and reopen a build to change its captured provider policy.
 
 A listfile update checks the release and prepares the index; its automatic policy
 therefore says **Automatic listfile updates**. Questie automatic checks discover
-releases without downloading or activating them. Defaults are manual. Failed daily
+releases without downloading or activating them. Defaults are manual. Native build filename enrichment reads the installed local
+listfile; updates are performed by this page or the selected automatic policy,
+so opening a build does not bypass the manual setting. Failed daily
 checks do not spin in an automatic retry loop. Bundled definitions update with the
 application; there is no fabricated runtime definition updater.
 
