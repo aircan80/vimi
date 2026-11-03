@@ -1,8 +1,8 @@
 # Dwarf static body and hair profile proposal
 
-Status: pre-code design and private source audit, based on `81b0611`. No production
-Dwarf admission exists in this branch. Root and independent review are required
-before implementation; deliver this increment as its own prerelease. Human1/2,
+Status: approved design, implemented in `f2690da` with typed-context and cutout
+regression follow-up `119a1f8`. Root and independent domain review approved the
+bounded profile; deliver this increment as its own prerelease. Human1/2,
 Orc3/4 and Tauren11/12 already exist, so this is an additional race pair.
 
 ## Selected scope and evidence ownership
@@ -199,3 +199,43 @@ directory. Original-versus-prototype male images are `dwarf-5-class-1.png` and
 `dwarf-mod6-5-class-1.png`; the former demonstrates the excluded grey beard, the
 latter the exact proposed binding. These local paths are reviewer evidence, not
 repository assets or proof of client-default/account/runtime behavior.
+
+## Production implementation validation
+
+The public `RacesService.appearance` pipeline was exercised on the same private
+Forever70755 source for both Warrior1 and Priest5, male/female. All four cold
+results remain honestly PARTIAL. The male binds108 reviewed sections and the
+female73; native UV/normal/topology arrays and the existing clothing rules are
+preserved. Both male beard and female hair are textured; unreviewed eye/glow and
+separate attachments remain explicit limitations.
+
+All four warm requests and four newly constructed-service requests restore the
+persistent composition with identical full appearance codec bytes and warning
+lists. Warrior keeps pants1301, Priest skirt1302 and sleeves802. Source normals
+contain zero nonfinite or zero-length vectors. The original library was read-only;
+acquisition and generated outputs remained in private scratch stores. Evidence is
+`/tmp/vimi-race-profile-research/dwarf-production-asserted-f2690da.log` and
+`dwarf-production-{5,6}-class-{1,5}.png`; no game assets are committed.
+
+Authored native-byte tests cover exact male/female draw matrices, foreign/missing/
+partial opacity evidence, every reviewed batch guard, and model/material/coordinate/
+transform negatives. The admitted male material is passed through the existing
+renderer at alpha127/128 to verify discard without depth versus acceptance with
+depth before the body. Table fixtures cover both tuples, wrong race/layout/sex/
+recorded Sex, literal-zero compatibility values and changed logical/raw shapes.
+The existing Human/Orc/Tauren and strict format regressions remain enabled.
+
+`:concepts-races:check`, `:formats-assets:check`, `:rendering-models:check` and
+`:gui:check` pass. Hardware/runtime claims remain scoped to the separately
+recorded GPU proof; no new backend or animation qualification is implied.
+
+The no-window Linux x64 Intel Vulkan follow-up rendered all four production
+payloads at960x720, two camera views and three modes each (default raw, qualified
+material diagnostic and textures off):24 frames. Against the same-input CPU,
+silhouette intersection-over-union was0.99996858–1.0 and foreground RGB mean
+absolute error0.439567–0.555896. Every output pixel was opaque; all four children
+closed normally with no camera/mode restart. The male default GPU frame was
+visually inspected for the textured beard. This is Vulkan execution evidence,
+not Metal/D3D qualification or a client-rendering equivalence claim.
+Local artifacts are `dwarf-production-vulkan.log` and `gpu-production/` beneath
+the private research directory above.
