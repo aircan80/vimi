@@ -96,7 +96,7 @@ final class RaceAppearance {
                             .append('\n')
                             .append(Blp2Decoder.REVISION)
                             .append(
-                                    "\nstraight-alpha-source-over-nearest-v1\nhuman-orc-clothing-geosets-v3\n")
+                                    "\nstraight-alpha-source-over-nearest-v1\nhuman-orc-tauren-clothing-geosets-v4\n")
                             .append(files.build())
                             .append('\n')
                             .append(files.locale())

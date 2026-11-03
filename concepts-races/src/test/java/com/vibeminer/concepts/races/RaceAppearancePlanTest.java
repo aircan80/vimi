@@ -218,6 +218,315 @@ final class RaceAppearancePlanTest {
         return seed;
     }
 
+    private static List<MemoryTables.FakeTable> taurenFixture(
+            int model, int layout, int sex, String fallback) {
+        var seed = new ArrayList<>(orcFixture(model, layout));
+        replace(seed, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(6, "5")));
+        var modelTable =
+                table(
+                        "ChrModel",
+                        "03FAB755",
+                        "FaceCustomizationOffset:3,CustomizeOffset:3,ID,Sex,DisplayID,CharComponentTextureLayoutID,Flags,SkeletonFileDataID,ModelFallbackChrModelID,TextureFallbackChrModelID",
+                        row(
+                                model,
+                                "0",
+                                "0",
+                                "0",
+                                "0",
+                                "0",
+                                "0",
+                                Integer.toString(model),
+                                Integer.toString(sex),
+                                "1",
+                                Integer.toString(layout),
+                                "1",
+                                "0",
+                                fallback,
+                                "0"));
+        var modelSchema =
+                new TableSchema(
+                        modelTable.schema().columns().stream()
+                                .map(
+                                        field ->
+                                                new TableSchema.SchemaColumn(
+                                                        field.name(),
+                                                        field.kind(),
+                                                        field.bits(),
+                                                        field.name().endsWith("FallbackChrModelID")
+                                                                ? false
+                                                                : field.unsigned(),
+                                                        field.arrayLength(),
+                                                        field.foreignKey(),
+                                                        field.id(),
+                                                        field.relation(),
+                                                        field.name().equals("Sex"),
+                                                        field.locale(),
+                                                        field.columnComment(),
+                                                        field.fieldComment()))
+                                .toList(),
+                        modelTable.schema().layoutHashes(),
+                        modelTable.schema().match(),
+                        modelTable.schema().locale(),
+                        null);
+        replace(
+                seed,
+                new MemoryTables.FakeTable(
+                        modelTable.entry(),
+                        modelTable.columns(),
+                        modelTable.rows(),
+                        modelSchema,
+                        Map.of(),
+                        true));
+        replace(
+                seed,
+                table(
+                        "ChrModelMaterial",
+                        "22469480",
+                        "CharComponentTextureLayoutsID,TextureType,Width,Height,Flags",
+                        row(1, Integer.toString(layout), "1", "2048", "1024", "0"),
+                        row(2, Integer.toString(layout), "6", "512", "512", "0"),
+                        row(3, Integer.toString(layout), "8", "512", "512", "0"),
+                        row(4, Integer.toString(layout), "19", "256", "128", "0"),
+                        row(5, Integer.toString(layout), "20", "256", "256", "0")));
+        replace(
+                seed,
+                table(
+                        "CharacterLoadout",
+                        "713CE8BB",
+                        "ChrClassID,Purpose,Racemask:2",
+                        row(1, "1", "9", "32", "0")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationOption",
+                        "DCC2A86E",
+                        "ChrModelID,Requirement",
+                        row(10, Integer.toString(model), "0")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationChoice",
+                        "9559C358",
+                        "ChrCustomizationOptionID->ChrCustomizationOption,UiOrderIndex,ChrCustomizationReqID,ChrCustomizationVisReqID",
+                        row(20, "10", "0", "0", "0")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationElement",
+                        "6483C37E",
+                        "ChrCustomizationChoiceID,RelatedChrCustomizationChoiceID,ChrCustomizationMaterialID",
+                        row(30, "20", "0", "40")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationMaterial",
+                        "BE9767E9",
+                        "ChrModelTextureTargetID,MaterialResourcesID",
+                        row(40, "2", "900")));
+        replace(
+                seed,
+                table(
+                        "ChrModelTextureLayer",
+                        "D0583FB4",
+                        "CharComponentTextureLayoutsID,TextureType,Layer,BlendMode,TextureSectionTypeBitMask,TextureSectionTypeBitMask2,Flags,ChrModelTextureTargetID:2",
+                        row(
+                                50,
+                                Integer.toString(layout),
+                                "8",
+                                "1",
+                                "1",
+                                "-1",
+                                "-1",
+                                "0",
+                                "2",
+                                "0")));
+        return seed;
+    }
+
+    @Test
+    void taurenPairUsesRecordedFurCanvasAndSexQualifiedDiffuseWithoutNewBounds() {
+        for (int model : new int[] {11, 12}) {
+            var tables =
+                    new MemoryTables()
+                            .add(BUILD, "enUS", taurenFixture(model, model + 102, model - 11, "0"))
+                            .forBuild(BUILD, "enUS", Cancellation.NONE)
+                            .join()
+                            .tables();
+            var service = new RacesService(tables);
+            try {
+                var plan =
+                        new RaceAppearancePlan(
+                                        service, new RaceMedia(service, tables, null, null), tables)
+                                .build(
+                                        6,
+                                        1,
+                                        new RaceMediaTypes.Variant(model, model - 11, 1, 1, 1),
+                                        Cancellation.NONE,
+                                        new ArrayList<>());
+                assertEquals(5, plan.canvases().size());
+                var fur =
+                        plan.canvases().stream()
+                                .filter(canvas -> canvas.type() == 8)
+                                .findFirst()
+                                .orElseThrow();
+                assertEquals(new RaceAppearancePlan.Canvas(8, 512, 512), fur);
+                assertEquals(
+                        new RaceAppearancePlan.Canvas(20, 256, 256),
+                        plan.canvases().stream()
+                                .filter(canvas -> canvas.type() == 20)
+                                .findFirst()
+                                .orElseThrow());
+                var layer =
+                        plan.layers().stream()
+                                .filter(value -> value.type() == 8)
+                                .findFirst()
+                                .orElseThrow();
+                assertEquals(model == 11 ? 10000 : 10001, layer.fileDataId());
+                assertEquals(512, layer.width());
+                assertEquals(512, layer.height());
+                assertEquals(1, layer.blend());
+            } finally {
+                service.closeAsync().join();
+                tables.closeAsync().join();
+            }
+        }
+    }
+
+    @Test
+    void taurenAdmissionRejectsWrongSexLayoutOrNonzeroCompatibilitySlot() {
+        for (int[] mismatch : new int[][] {{11, 113, 1, 0}, {12, 113, 1, 0}, {11, 113, 0, 7}}) {
+            var tables =
+                    new MemoryTables()
+                            .add(
+                                    BUILD,
+                                    "enUS",
+                                    taurenFixture(
+                                            mismatch[0],
+                                            mismatch[1],
+                                            mismatch[2],
+                                            Integer.toString(mismatch[3])))
+                            .forBuild(BUILD, "enUS", Cancellation.NONE)
+                            .join()
+                            .tables();
+            var service = new RacesService(tables);
+            try {
+                assertThrows(
+                        RacesService.Projection.class,
+                        () ->
+                                new RaceAppearancePlan(
+                                                service,
+                                                new RaceMedia(service, tables, null, null),
+                                                tables)
+                                        .build(
+                                                6,
+                                                1,
+                                                new RaceMediaTypes.Variant(
+                                                        mismatch[0], mismatch[2], 1, 1, 1),
+                                                Cancellation.NONE,
+                                                new ArrayList<>()));
+            } finally {
+                service.closeAsync().join();
+                tables.closeAsync().join();
+            }
+        }
+        assertTrue(
+                !RaceAppearance.reviewedField(
+                        "ChrModel", List.of("03FAB755"), "ModelFallbackChrModelID"));
+        assertTrue(
+                !RaceAppearance.reviewedField(
+                        "ChrModel", List.of("03FAB755"), "TextureFallbackChrModelID"));
+    }
+
+    @Test
+    void taurenCompatibilityGateRejectsChangedLogicalWidthSignednessOrRawInterpretation() {
+        for (int change = 0; change < 3; change++) {
+            var seed = new ArrayList<>(taurenFixture(11, 113, 0, "0"));
+            var original =
+                    seed.stream()
+                            .filter(table -> table.entry().name().equals("ChrModel"))
+                            .findFirst()
+                            .orElseThrow();
+            var fields = new ArrayList<>(original.schema().columns());
+            var columns = new ArrayList<>(original.columns());
+            int at =
+                    java.util.stream.IntStream.range(0, fields.size())
+                            .filter(i -> fields.get(i).name().equals("ModelFallbackChrModelID"))
+                            .findFirst()
+                            .orElseThrow();
+            var field = fields.get(at);
+            fields.set(
+                    at,
+                    new TableSchema.SchemaColumn(
+                            field.name(),
+                            field.kind(),
+                            change == 0 ? 16 : 32,
+                            change == 1,
+                            field.arrayLength(),
+                            field.foreignKey(),
+                            field.id(),
+                            field.relation(),
+                            false,
+                            field.locale(),
+                            field.columnComment(),
+                            field.fieldComment()));
+            if (change == 2) {
+                columns.set(
+                        12,
+                        new Db2Types.Column(
+                                "ModelFallbackChrModelID",
+                                "integer",
+                                false,
+                                new Db2Types.Interpretation(
+                                        "raw-physical-integer-v1",
+                                        32,
+                                        false,
+                                        16,
+                                        false,
+                                        "Authored unreviewed shape"),
+                                null));
+            }
+            replace(
+                    seed,
+                    new MemoryTables.FakeTable(
+                            original.entry(),
+                            columns,
+                            original.rows(),
+                            new TableSchema(
+                                    fields,
+                                    original.schema().layoutHashes(),
+                                    original.schema().match(),
+                                    original.schema().locale(),
+                                    null),
+                            Map.of(),
+                            true));
+            var tables =
+                    new MemoryTables()
+                            .add(BUILD, "enUS", seed)
+                            .forBuild(BUILD, "enUS", Cancellation.NONE)
+                            .join()
+                            .tables();
+            var service = new RacesService(tables);
+            try {
+                assertThrows(
+                        RacesService.Projection.class,
+                        () ->
+                                new RaceAppearancePlan(
+                                                service,
+                                                new RaceMedia(service, tables, null, null),
+                                                tables)
+                                        .build(
+                                                6,
+                                                1,
+                                                new RaceMediaTypes.Variant(11, 0, 1, 1, 1),
+                                                Cancellation.NONE,
+                                                new ArrayList<>()));
+            } finally {
+                service.closeAsync().join();
+                tables.closeAsync().join();
+            }
+        }
+    }
+
     @Test
     void orcPairUsesRecordedAtlasSectionsAndSexQualifiedClassClothing() {
         for (int model : new int[] {3, 4}) {

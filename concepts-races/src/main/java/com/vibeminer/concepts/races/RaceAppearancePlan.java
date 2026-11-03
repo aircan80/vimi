@@ -10,7 +10,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Reviewed Human/Orc sample/starting-clothing texture recipe; no guessed texture variants. */
+/** Exact sample/starting-clothing profiles; no guessed texture variants. */
 final class RaceAppearancePlan {
     record Canvas(int type, int width, int height) {}
 
@@ -57,10 +57,11 @@ final class RaceAppearancePlan {
             Cancellation token,
             List<String> issues) {
         if (!(raceId == 1 && variant.chrModelId() >= 1 && variant.chrModelId() <= 2)
-                && !(raceId == 2 && variant.chrModelId() >= 3 && variant.chrModelId() <= 4)) {
+                && !(raceId == 2 && variant.chrModelId() >= 3 && variant.chrModelId() <= 4)
+                && !(raceId == 6 && variant.chrModelId() >= 11 && variant.chrModelId() <= 12)) {
             throw new RacesService.Projection(
                     RaceTypes.State.UNSUPPORTED,
-                    "Static character textures are reviewed for Human models1/2 and Orc models3/4.");
+                    "Static character textures support the narrow Human, Orc and Tauren model pairs.");
         }
         var models = schema("ChrModel", token, issues, "CharComponentTextureLayoutID");
         var model = get(models, variant.chrModelId(), token);
@@ -73,6 +74,17 @@ final class RaceAppearancePlan {
                         || variant.sex() != variant.chrModelId() - 3)) {
             throw models.unsupported(
                     "Orc model/layout/sex differs from the reviewed static profile");
+        }
+        if (raceId == 6) {
+            models.field("Sex", true);
+            if (layout != variant.chrModelId() + 102
+                    || variant.sex() != variant.chrModelId() - 11
+                    || models.number(model, "Sex") != variant.sex()) {
+                throw models.unsupported(
+                        "Tauren model/layout/sex/fallback differs from the isolated profile");
+            }
+            requireTaurenZero(models, model, "ModelFallbackChrModelID", 12);
+            requireTaurenZero(models, model, "TextureFallbackChrModelID", 13);
         }
         var materials = media.data("ChrModelMaterial", 2048, token, issues);
         fields(
@@ -415,6 +427,38 @@ final class RaceAppearancePlan {
                                 found.getFirst(),
                                 "Starting item #" + itemId + " display #" + displayId));
             }
+        }
+    }
+
+    // This is a compatibility-zero gate for this exact Tauren profile, not general name admission.
+    // The selected Classic layout declares these two logical signed32 slots at flattened12/13.
+    private static void requireTaurenZero(
+            RacesService.Data models, Db2Types.Row model, String name, int ordinal) {
+        var fields =
+                models.schema.columns().stream()
+                        .filter(field -> field.name().equals(name))
+                        .toList();
+        if (!models.name.equals("ChrModel")
+                || !models.schema.layoutHashes().equals(List.of("03FAB755"))
+                || fields.size() != 1
+                || models.index(name) != ordinal) {
+            throw models.unsupported("Tauren compatibility slot differs from the reviewed layout");
+        }
+        var field = fields.getFirst();
+        var column = models.columns.get(ordinal);
+        if (field.kind() != com.vibeminer.formats.definitions.TableSchema.ColumnKind.INT
+                || !Integer.valueOf(32).equals(field.bits())
+                || !Boolean.FALSE.equals(field.unsigned())
+                || field.arrayLength() != 1
+                || field.id() != com.vibeminer.formats.definitions.TableSchema.KeyStorage.NONE
+                || field.relation() != com.vibeminer.formats.definitions.TableSchema.KeyStorage.NONE
+                || !column.kind().equals("integer")
+                || column.isId()
+                || column.interpretation() != null
+                || column.narrowing() != null
+                || !models.text(model, name).equals("0")) {
+            throw models.unsupported(
+                    "Tauren compatibility slot must retain its exact recorded zero");
         }
     }
 

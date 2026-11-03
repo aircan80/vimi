@@ -45,6 +45,28 @@ final class RaceClothingGeometryTest {
     }
 
     @Test
+    void taurenShapedSurfaceKeepsBodyAndHornsWithRobeAndInventsNoFeetOrSleeves() {
+        var mesh =
+                new PreviewMesh(
+                        new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0},
+                        new int[] {0, 1, 2},
+                        java.util.stream.IntStream.of(0, 1, 802, 1301, 1302, 2401, 3201)
+                                .mapToObj(id -> new PreviewMesh.Part(id, 0, 3))
+                                .toList());
+        var shown =
+                RaceClothingGeometry.apply(
+                        mesh,
+                        Set.of(0, 1, 1301, 2401, 3201),
+                        List.of(
+                                new RaceAppearancePlan.Item(1, 7, 1, List.of(0, 0, 0, 0, 0, 0)),
+                                new RaceAppearancePlan.Item(2, 20, 2, List.of(0, 0, 1, 0, 0, 0))));
+        assertTrue(shown.containsAll(Set.of(0, 1, 1302, 2401, 3201)));
+        assertFalse(shown.contains(1301));
+        assertFalse(shown.contains(802));
+        assertFalse(shown.stream().anyMatch(id -> id / 100 == 20));
+    }
+
+    @Test
     void clothingSlotsOnlyOverlayTheirReviewedAtlasSections() {
         assertTrue(RaceClothingGeometry.allowsSection(20, 6));
         assertFalse(RaceClothingGeometry.allowsSection(20, 7));
