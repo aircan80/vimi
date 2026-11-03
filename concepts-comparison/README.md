@@ -20,7 +20,11 @@ The default output is findings-only. BOTH-present rows whose assessed fields are
 all known and equal are counted as observed but not staged. Member-only, changed,
 unknown and incompatible rows remain. Unassessed names/storage fields should be
 excluded from the declared field scope rather than manufactured as per-row unknown
-fields. No complete unchanged-row listing is provided. Progress `observed` counts
+fields. No complete unchanged-row listing is provided. Evidence annotations are explanatory
+and are not directly compared. An adapter that assesses a changed winning provider,
+source fact, or interpretation must project it as an explicit field with the
+EXTERNAL_EVIDENCE or INTERPRETATION aspect. An endpoint-only evidence identity
+change does not imply a finding for every otherwise equal row. Progress `observed` counts
 scanned identities; result offsets count staged findings independently.
 
 Wait for `start` to drain, then call `page(offset,limit)` with at most100rows;
@@ -35,7 +39,8 @@ Bounds: one merge worker, two simultaneous source reads, queue8, input256,
 result100, canonical frame1MiB,32MiB comparison-buffer policy,512MiB staging and
 5million observed identities. Oversized fields become LIMITED while small facts
 survive; unrepresentable inventories/keys or an input-page budget limit terminate
-with LIMITED coverage. Each retained input page reserves14MiB using conservative
+with LIMITED coverage. Exhausted canonical pages are released before requesting or allocating their
+replacement. Each retained input page reserves14MiB using conservative
 string/object estimates; result-page work reserves16MiB, and sparse checkpoints
 are stored once per100rows (at most50,000). These limits do not bound allocations
 inside borrowed source APIs, JVM/object implementation overhead, or pages retained

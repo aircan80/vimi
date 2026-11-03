@@ -90,6 +90,11 @@ public final class ComparisonTypes {
         }
     }
 
+    /**
+     * Explanatory annotations, not directly compared. Adapters must project assessed changes to
+     * winning sources or interpretation as EXTERNAL_EVIDENCE or INTERPRETATION fields;
+     * endpoint-only annotation identities must not create findings for every unchanged row.
+     */
     public record Evidence(String source, String identity, String field, String raw) {
         public Evidence {
             require(source);

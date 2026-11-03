@@ -487,6 +487,141 @@ final class ComparisonServiceTest {
         }
     }
 
+    @Test
+    void exhaustedCanonicalPagesAreReleasedBeforeReplacementReadAndAllocation() throws Exception {
+        var first = new ArrayList<Record>();
+        var other = new ArrayList<Record>();
+        var second = new ArrayList<Record>();
+        String value = "x".repeat(25000);
+        for (int i = 0; i < 128; i++) {
+            first.add(row(String.format("%04d", i), value));
+            other.add(row(String.format("%04d", 128 + i), value));
+            second.add(row(String.format("%04d", 256 + i), value));
+        }
+        try (var service = new ComparisonService(temporary)) {
+            var a =
+                    new Input("a", Completeness.COMPLETE, List.of()) {
+                        @Override
+                        public CompletableFuture<InputPage> read(
+                                String cursor, int limit, Cancellation token) {
+                            if (cursor != null) {
+                                assertTrue(
+                                        service.retainedInputBytes() < 14L * 1048576,
+                                        "Exhausted page retained during replacement read");
+                            }
+                            return CompletableFuture.completedFuture(
+                                    new InputPage(
+                                            "a",
+                                            cursor == null ? first : second,
+                                            cursor == null ? "next" : null,
+                                            new Coverage(
+                                                    cursor == null
+                                                            ? Completeness.UNKNOWN
+                                                            : Completeness.COMPLETE,
+                                                    "scope",
+                                                    List.of())));
+                        }
+                    };
+            assertEquals(
+                    RunState.COMPLETED,
+                    service.start(a, new Input("b", Completeness.COMPLETE, other)).join().state());
+            assertTrue(
+                    service.peakRetainedInputBytes()
+                            <= ComparisonService.BUFFER_BYTES
+                                    - 4L * ComparisonService.RECORD_BYTES);
+            assertEquals(0, service.retainedInputBytes());
+        }
+    }
+
+    @Test
+    void preStartPagesRejectImmediatelyWithoutConsumingAdmissionQueue() throws Exception {
+        try (var service = new ComparisonService(temporary)) {
+            for (int i = 0; i < 100; i++) {
+                assertTrue(service.page(0, 1).isCompletedExceptionally());
+            }
+            assertEquals(
+                    RunState.COMPLETED,
+                    service.start(
+                                    new Input("a", Completeness.COMPLETE, List.of()),
+                                    new Input("b", Completeness.COMPLETE, List.of()))
+                            .join()
+                            .state());
+        }
+    }
+
+    @Test
+    void rejectedExecutorAdmissionDoesNotTakeInputOwnershipOrStayRunning() throws Exception {
+        var executor = ComparisonService.newWorker();
+        executor.shutdown();
+        var a = new Input("a", Completeness.COMPLETE, List.of());
+        var b = new Input("b", Completeness.COMPLETE, List.of());
+        try (var service = new ComparisonService(temporary, 100, 4096, executor)) {
+            assertThrows(
+                    java.util.concurrent.CompletionException.class,
+                    () -> service.start(a, b).join());
+            assertEquals(RunState.FAILED, service.progress().state());
+            assertTrue(service.page(0, 1).isCompletedExceptionally());
+        }
+        assertFalse(a.closed);
+        assertFalse(b.closed);
+    }
+
+    @Test
+    void changedWinningSourceIsExplicitEvidenceFieldAndRemainsFinding() throws Exception {
+        var oldWinner =
+                new Field(
+                        "name-winning-provider-v1",
+                        ValueKind.TEXT,
+                        ValueState.VALUE,
+                        "QUESTIE",
+                        Aspect.EXTERNAL_EVIDENCE,
+                        List.of());
+        var newWinner =
+                new Field(
+                        "name-winning-provider-v1",
+                        ValueKind.TEXT,
+                        ValueState.VALUE,
+                        "EG_LINK",
+                        Aspect.EXTERNAL_EVIDENCE,
+                        List.of());
+        var a = new Record("1", Map.of("name", field("same"), "winner", oldWinner), List.of());
+        var b = new Record("1", Map.of("name", field("same"), "winner", newWinner), List.of());
+        try (var service = new ComparisonService(temporary)) {
+            service.start(
+                            new Input("a", Completeness.COMPLETE, List.of(a)),
+                            new Input("b", Completeness.COMPLETE, List.of(b)))
+                    .join();
+            var finding = service.page(0, 1).join().rows().getFirst();
+            assertEquals(Difference.EQUAL, finding.fields().getFirst().difference());
+            assertEquals(Difference.CHANGED, finding.fields().get(1).difference());
+            assertEquals(Aspect.EXTERNAL_EVIDENCE, finding.fields().get(1).aspect());
+        }
+    }
+
+    @Test
+    void endpointOnlyEvidenceAnnotationsDoNotFillStaging() throws Exception {
+        var a =
+                new Record(
+                        "1",
+                        Map.of("name", field("same")),
+                        List.of(new ComparisonTypes.Evidence("table", "endpoint-a", null, "same")));
+        var b =
+                new Record(
+                        "1",
+                        Map.of("name", field("same")),
+                        List.of(new ComparisonTypes.Evidence("table", "endpoint-b", null, "same")));
+        try (var service = new ComparisonService(temporary)) {
+            var progress =
+                    service.start(
+                                    new Input("a", Completeness.COMPLETE, List.of(a)),
+                                    new Input("b", Completeness.COMPLETE, List.of(b)))
+                            .join();
+            assertEquals(1, progress.observed());
+            assertEquals(0, progress.stagedBytes());
+            assertTrue(service.page(0, 1).join().rows().isEmpty());
+        }
+    }
+
     private static Field field(String value) {
         return new Field(
                 "name", ValueKind.TEXT, ValueState.VALUE, value, Aspect.CONTENT, List.of());

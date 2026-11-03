@@ -38,15 +38,21 @@ public final class ComparisonService implements AutoCloseable {
     public static final long BUFFER_BYTES = 32L * 1048576;
     public static final long STAGING_BYTES = 512L * 1048576;
     public static final long MAX_KEYS = 5000000;
-    private final ThreadPoolExecutor worker =
-            new ThreadPoolExecutor(
-                    1,
-                    1,
-                    0,
-                    TimeUnit.SECONDS,
-                    new ArrayBlockingQueue<>(8),
-                    Thread.ofPlatform().daemon().name("comparison").factory(),
-                    new ThreadPoolExecutor.AbortPolicy());
+    private final ThreadPoolExecutor worker;
+    private volatile long retainedInputBytes;
+    private volatile long peakRetainedInputBytes;
+
+    static ThreadPoolExecutor newWorker() {
+        return new ThreadPoolExecutor(
+                1,
+                1,
+                0,
+                TimeUnit.SECONDS,
+                new ArrayBlockingQueue<>(8),
+                Thread.ofPlatform().daemon().name("comparison").factory(),
+                new ThreadPoolExecutor.AbortPolicy());
+    }
+
     private final Cancellation lifetime = new Cancellation();
     private volatile RuntimeException cancellationFailure;
     private final Path directory;
@@ -65,9 +71,16 @@ public final class ComparisonService implements AutoCloseable {
     }
 
     ComparisonService(Path temporaryParent, long maxKeys, long maxStaging) throws IOException {
+        this(temporaryParent, maxKeys, maxStaging, newWorker());
+    }
+
+    ComparisonService(
+            Path temporaryParent, long maxKeys, long maxStaging, ThreadPoolExecutor worker)
+            throws IOException {
         if (maxKeys < 1 || maxKeys > MAX_KEYS || maxStaging < 1 || maxStaging > STAGING_BYTES) {
             throw new IllegalArgumentException("Invalid comparison bounds");
         }
+        this.worker = Objects.requireNonNull(worker);
         this.maxKeys = maxKeys;
         this.maxStaging = maxStaging;
         directory = Files.createTempDirectory(temporaryParent, "comparison-");
@@ -91,10 +104,45 @@ public final class ComparisonService implements AutoCloseable {
             return CompletableFuture.failedFuture(
                     new IllegalArgumentException("Incompatible comparison scope"));
         }
+        var result = new CompletableFuture<Progress>();
+        try {
+            worker.execute(
+                    () -> {
+                        // The caller still holds this monitor until accepted input ownership is
+                        // published.
+                        synchronized (ComparisonService.this) {
+                            /* Admission publication barrier. */
+                        }
+                        try {
+                            result.complete(run(x, y));
+                        } catch (Throwable failure) {
+                            result.completeExceptionally(failure);
+                        }
+                    });
+        } catch (java.util.concurrent.RejectedExecutionException rejected) {
+            progress =
+                    new Progress(
+                            RunState.FAILED,
+                            0,
+                            0,
+                            null,
+                            null,
+                            "Comparison admission rejected; no inputs owned");
+            return CompletableFuture.failedFuture(rejected);
+        }
+        progress = new Progress(RunState.RUNNING, 0, 0, null, null, "Comparison admitted");
         started = true;
         a = left;
         b = right;
-        return submit(() -> run(x, y));
+        return result;
+    }
+
+    long retainedInputBytes() {
+        return retainedInputBytes;
+    }
+
+    long peakRetainedInputBytes() {
+        return peakRetainedInputBytes;
     }
 
     public Progress progress() {
@@ -114,8 +162,9 @@ public final class ComparisonService implements AutoCloseable {
     }
 
     public synchronized CompletableFuture<ResultPage> page(long offset, int limit) {
-        if (closing != null) {
-            return CompletableFuture.failedFuture(new IllegalStateException("Comparison closed"));
+        if (closing != null || !started) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("Comparison not started or closed"));
         }
         if (offset < 0 || limit < 1 || limit > RESULT_PAGE) {
             return CompletableFuture.failedFuture(
@@ -330,6 +379,7 @@ public final class ComparisonService implements AutoCloseable {
         boolean exhausted;
         CompletableFuture<InputPage> pending;
         Coverage coverage;
+        long pageBytes;
 
         Cursor(ComparisonInput input, Descriptor descriptor) {
             this.input = input;
@@ -348,7 +398,11 @@ public final class ComparisonService implements AutoCloseable {
         }
 
         void fill() throws IOException {
-            if (index < rows.size() || exhausted) {
+            if (index < rows.size()) {
+                return;
+            }
+            releasePage();
+            if (exhausted) {
                 return;
             }
             request();
@@ -377,6 +431,13 @@ public final class ComparisonService implements AutoCloseable {
                 retained += ComparisonCodec.retainedBytes(safe);
                 if (retained > BUFFER_BYTES / 2 - 2L * RECORD_BYTES) {
                     throw new ComparisonLimit("Input page working buffer limit reached");
+                }
+                long size = ComparisonCodec.retainedBytes(safe);
+                retainedInputBytes += size;
+                pageBytes += size;
+                peakRetainedInputBytes = Math.max(peakRetainedInputBytes, retainedInputBytes);
+                if (retainedInputBytes > BUFFER_BYTES - 4L * RECORD_BYTES) {
+                    throw new ComparisonLimit("Canonical input buffer limit reached");
                 }
                 bounded.add(safe);
             }
@@ -408,7 +469,14 @@ public final class ComparisonService implements AutoCloseable {
                 }
                 pending = null;
             }
+            releasePage();
+        }
+
+        private void releasePage() {
             rows = List.of();
+            index = 0;
+            retainedInputBytes -= pageBytes;
+            pageBytes = 0;
         }
     }
 
@@ -419,7 +487,7 @@ public final class ComparisonService implements AutoCloseable {
                     () -> {
                         try {
                             result.complete(work.run());
-                        } catch (Exception failure) {
+                        } catch (Throwable failure) {
                             result.completeExceptionally(failure);
                         }
                     });
