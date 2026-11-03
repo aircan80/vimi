@@ -9,6 +9,7 @@ import com.vibeminer.access.Cancellation;
 import com.vibeminer.files.BuildFiles;
 import com.vibeminer.files.FileReadStream;
 import com.vibeminer.files.FileTypes;
+import com.vibeminer.formats.tables.BuildTables;
 import com.vibeminer.formats.world.WorldFormats;
 import java.lang.reflect.Proxy;
 import java.nio.ByteBuffer;
@@ -148,6 +149,75 @@ class WorldAreaNavigationTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new WorldAreaNavigation.Request(MAP, 42, List.of(tile(1, 0), tile(2, 0))));
+    }
+
+    @Test
+    void areaOpenBypassesCachedGeometryAndRejectsChangedOrForgedEntryEvidence() {
+        var fixture = new Files(Map.of(10L, adt(42, 0, 0)));
+        var tile = tile(10, 0);
+        try (var service = new WorldService(noTables(), fixture.handle())) {
+            assertTrue(service.tile(MAP, tile, Cancellation.NONE).join().terrain() != null);
+            var result = service.findArea(request(10), Cancellation.NONE, p -> {}).join();
+            var match = result.matches().getFirst();
+            assertTrue(service.areaTile(MAP, match, Cancellation.NONE).join().terrain() != null);
+            var chunk = match.entryChunk();
+            var forged =
+                    new WorldAreaNavigation.Match(
+                            tile,
+                            KEY,
+                            1,
+                            new WorldFormats.AreaChunk(
+                                    chunk.x(),
+                                    chunk.y(),
+                                    chunk.areaId(),
+                                    chunk.originX() + 1,
+                                    chunk.originY(),
+                                    chunk.originZ(),
+                                    chunk.entryReference()));
+            assertTrue(
+                    service.areaTile(MAP, forged, Cancellation.NONE)
+                            .join()
+                            .issue()
+                            .contains("entry evidence changed"));
+            fixture.changed = 10;
+            var changed = service.areaTile(MAP, match, Cancellation.NONE).join();
+            assertEquals(null, changed.terrain());
+            assertTrue(changed.issue().contains("source changed"));
+            assertTrue(service.tile(MAP, tile, Cancellation.NONE).join().terrain() != null);
+        }
+        assertEquals(0, fixture.open.get());
+        assertEquals(0, fixture.borrowedCloses.get());
+    }
+
+    @Test
+    void serviceCloseDrainsAreaDiscoveryBeforeBorrowedFilesCanRetire() throws Exception {
+        var fixture = new Files(Map.of(10L, adt(42, 0, 0)));
+        fixture.gated = 10;
+        var service = new WorldService(noTables(), fixture.handle());
+        var scan = service.findArea(request(10), Cancellation.NONE, p -> {});
+        assertTrue(fixture.entered.await(5, TimeUnit.SECONDS));
+        var close = service.closeAsync();
+        assertFalse(close.isDone());
+        fixture.gate.complete(null);
+        close.get(5, TimeUnit.SECONDS);
+        assertEquals(WorldAreaNavigation.State.CANCELED, scan.join().state());
+        assertEquals(0, fixture.open.get());
+        assertEquals(0, fixture.borrowedCloses.get());
+        assertTrue(
+                service.findArea(request(10), Cancellation.NONE, p -> {})
+                        .isCompletedExceptionally());
+    }
+
+    private static BuildTables noTables() {
+        return (BuildTables)
+                Proxy.newProxyInstance(
+                        BuildTables.class.getClassLoader(),
+                        new Class<?>[] {BuildTables.class},
+                        (proxy, method, args) -> {
+                            throw new AssertionError(
+                                    "Area discovery must not access or close tables: "
+                                            + method.getName());
+                        });
     }
 
     private static WorldAreaNavigation.Request request(long... ids) {
