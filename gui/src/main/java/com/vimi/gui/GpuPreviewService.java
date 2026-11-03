@@ -2,6 +2,9 @@ package com.vimi.gui;
 
 import com.vibeminer.rendering.bgfx.GpuFrameFile;
 import com.vibeminer.rendering.bgfx.GpuSceneFile;
+import com.vibeminer.rendering.bgfx.GpuTerrainSceneFile;
+import com.vibeminer.rendering.world.TerrainScene;
+import com.vibeminer.rendering.world.TerrainCamera;
 import com.vibeminer.rendering.models.MeshAppearance;
 import com.vibeminer.rendering.models.PreviewMesh;
 
@@ -55,6 +58,13 @@ final class GpuPreviewService {
         Process start(Path scene, Path frames) throws IOException;
     }
 
+    private sealed interface Control permits ViewRequest, TerrainRequest {
+        long revision();
+        int width();
+        int height();
+        String command();
+    }
+
     record ViewRequest(
             long revision,
             int width,
@@ -62,7 +72,7 @@ final class GpuPreviewService {
             double yaw,
             double pitch,
             double zoom,
-            int flags) {
+            int flags) implements Control {
         ViewRequest {
             if (revision < 1
                     || width < 1
@@ -80,9 +90,25 @@ final class GpuPreviewService {
                     || flags > 15) throw new IllegalArgumentException("Invalid inline view");
         }
 
-        String command() {
+        public String command() {
             return "VIEW " + revision + " " + width + " " + height + " " + yaw + " " + pitch + " "
                     + zoom + " " + flags + "\n";
+        }
+    }
+
+    record TerrainRequest(long revision, int width, int height, TerrainCamera camera)
+            implements Control {
+        TerrainRequest {
+            Objects.requireNonNull(camera);
+            if (revision < 1 || width < 1 || width > 800 || height < 1 || height > 500) {
+                throw new IllegalArgumentException("Invalid inline terrain view");
+            }
+        }
+
+        public String command() {
+            return "WORLD " + revision + " " + width + " " + height + " " + camera.x()
+                    + " " + camera.y() + " " + camera.z() + " " + camera.yaw()
+                    + " " + camera.pitch() + "\n";
         }
     }
 
@@ -123,6 +149,7 @@ final class GpuPreviewService {
     private final SceneWriter writer;
     private final InlineStarter starter;
     private final FrameFactory frameFactory;
+    private final boolean nativeDefaults;
     private final Path temporaryParent;
     private final long readyNanos, closeMillis;
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
@@ -132,11 +159,12 @@ final class GpuPreviewService {
     private static final class Request {
         final Object owner;
         final PreviewMesh mesh;
+        final TerrainScene terrain;
         final MeshAppearance appearance;
         final Set<Integer> parts;
         final Consumer<Status> listener;
         final Consumer<Frame> frames;
-        final AtomicReference<ViewRequest> view = new AtomicReference<>();
+        final AtomicReference<Control> view = new AtomicReference<>();
         volatile long revision;
         final CompletableFuture<Void> drained = new CompletableFuture<>();
         volatile boolean stopping, ready, protocolFailure;
@@ -158,9 +186,21 @@ final class GpuPreviewService {
             this.frames = frames;
             this.owner = owner;
             this.mesh = mesh;
+            this.terrain = null;
             this.appearance = appearance;
             this.parts = Set.copyOf(parts);
             this.listener = listener;
+        }
+
+        Request(Object owner, TerrainScene terrain, Consumer<Status> listener,
+                Consumer<Frame> frames) {
+            this.owner = owner;
+            this.terrain = terrain;
+            this.mesh = null;
+            this.appearance = null;
+            this.parts = Set.of();
+            this.listener = listener;
+            this.frames = frames;
         }
 
         void publish(State state, String message) {
@@ -179,7 +219,7 @@ final class GpuPreviewService {
                 GpuPreviewService::startChild,
                 GpuPreviewService::createFrames,
                 Duration.ofSeconds(20),
-                Duration.ofSeconds(3));
+                Duration.ofSeconds(3), true);
     }
 
     GpuPreviewService(
@@ -204,6 +244,14 @@ final class GpuPreviewService {
             FrameFactory frameFactory,
             Duration readyTimeout,
             Duration closeTimeout) {
+        this(temporaryParent, writer, starter, frameFactory, readyTimeout, closeTimeout, false);
+    }
+
+    private GpuPreviewService(
+            Path temporaryParent, SceneWriter writer, InlineStarter starter,
+            FrameFactory frameFactory, Duration readyTimeout, Duration closeTimeout,
+            boolean nativeDefaults) {
+        this.nativeDefaults = nativeDefaults;
         this.frameFactory = Objects.requireNonNull(frameFactory);
         this.temporaryParent = temporaryParent;
         this.writer = Objects.requireNonNull(writer);
@@ -236,6 +284,19 @@ final class GpuPreviewService {
         var request =
                 new Request(
                         owner, mesh, appearance, parts, listener, Objects.requireNonNull(frames));
+        return enqueue(request);
+    }
+
+    CompletableFuture<Void> openTerrain(Object owner, TerrainScene scene,
+            Consumer<Status> listener, Consumer<Frame> frames) {
+        Objects.requireNonNull(owner);
+        Objects.requireNonNull(scene);
+        Objects.requireNonNull(listener);
+        Objects.requireNonNull(frames);
+        return enqueue(new Request(owner, scene, listener, frames));
+    }
+
+    private CompletableFuture<Void> enqueue(Request request) {
         Request superseded;
         boolean supersededPending, start;
         synchronized (gate) {
@@ -266,8 +327,18 @@ final class GpuPreviewService {
     }
 
     void update(Object owner, ViewRequest view) {
+        updateControl(owner, view, false);
+    }
+
+    void updateTerrain(Object owner, TerrainRequest view) {
+        updateControl(owner, view, true);
+    }
+
+    private void updateControl(Object owner, Control view, boolean terrain) {
+        Objects.requireNonNull(view);
         synchronized (gate) {
             if (desired != null
+                    && (desired.terrain != null) == terrain
                     && desired.owner == owner
                     && !desired.stopping
                     && view.revision() > desired.revision) {
@@ -278,7 +349,11 @@ final class GpuPreviewService {
     }
 
     private static Frames createFrames(Path path) throws IOException {
-        var mapped = GpuFrameFile.create(path, 960, 720);
+        return createFrames(path, 960, 720);
+    }
+
+    private static Frames createFrames(Path path, int width, int height) throws IOException {
+        var mapped = GpuFrameFile.create(path, width, height);
         return new Frames() {
             public Frame readLatest(long after) throws IOException {
                 var frame = mapped.readLatest(after);
@@ -394,14 +469,21 @@ final class GpuPreviewService {
                             ? Files.createTempDirectory("vimi-gpu-")
                             : Files.createTempDirectory(temporaryParent, "vimi-gpu-");
             scene = directory.resolve("scene.vgpu");
-            writer.write(scene, request.mesh, request.appearance, request.parts);
-            if (Files.size(scene) > MAX_SCENE_BYTES)
+            if (request.terrain == null) {
+                writer.write(scene, request.mesh, request.appearance, request.parts);
+            } else {
+                GpuTerrainSceneFile.write(scene, request.terrain);
+            }
+            long sceneLimit = request.terrain == null ? MAX_SCENE_BYTES : GpuTerrainSceneFile.MAX_BYTES;
+            if (Files.size(scene) > sceneLimit)
                 throw new IOException("GPU scene exceeds its size bound");
             if (request.stopping) return;
             framePath = directory.resolve("frames.vgpu");
-            frames = frameFactory.create(framePath);
+            frames = request.terrain != null && nativeDefaults
+                    ? createFrames(framePath, 800, 500) : frameFactory.create(framePath);
             request.publish(State.STARTING, "Starting inline GPU renderer…");
-            child = starter.start(scene, framePath);
+            child = request.terrain != null && nativeDefaults
+                    ? startChild(scene, framePath, true) : starter.start(scene, framePath);
             final Process process = child;
             stdout =
                     Thread.ofVirtual()
@@ -626,6 +708,10 @@ final class GpuPreviewService {
     }
 
     private static Process startChild(Path scene, Path frames) throws IOException {
+        return startChild(scene, frames, false);
+    }
+
+    private static Process startChild(Path scene, Path frames, boolean terrain) throws IOException {
         var command = new ArrayList<String>();
         boolean windows =
                 System.getProperty("os.name").toLowerCase(java.util.Locale.ROOT).contains("win");
@@ -638,7 +724,7 @@ final class GpuPreviewService {
         command.add("-cp");
         command.add(System.getProperty("java.class.path"));
         command.add("com.vibeminer.rendering.bgfx.GpuViewerMain");
-        command.add("--scene");
+        command.add(terrain ? "--terrain-scene" : "--scene");
         command.add(scene.toAbsolutePath().toString());
         command.add("--frames");
         command.add(frames.toAbsolutePath().toString());

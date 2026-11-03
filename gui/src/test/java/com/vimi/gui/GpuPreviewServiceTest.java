@@ -45,6 +45,7 @@ public final class GpuPreviewServiceTest {
             }
             latestFrameHandoffNeverRepublishesOlderWork();
             inlineFramesAndCoalescedControls(root);
+            terrainAndModelsShareOwnerAndKeepControlsTyped(root);
             normalExitAndOwnerIsolation(root);
             cancelDuringPreparationDoesNotLaunch(root);
             canceledDeliveryStopsOnlyItsRequest(root);
@@ -90,6 +91,68 @@ public final class GpuPreviewServiceTest {
         require(
                 seen.equals(List.of(1, 3)) && scheduled.isEmpty(),
                 "Newer publication during handoff wins without older-value reinsertion");
+    }
+
+    private static void terrainAndModelsShareOwnerAndKeepControlsTyped(Path root) throws Exception {
+        var scene = new com.vibeminer.rendering.world.TerrainScene(List.of(
+                com.vibeminer.rendering.world.TerrainScene.Tile.copyOf(17, 21,
+                        new float[] {10, -1, 0, 10, 1, 0, 10, 0, 1}, new int[] {0, 1, 2}, 1)));
+        var camera = new com.vibeminer.rendering.world.TerrainCamera(1, 2, 3, .2, -.1);
+        try {
+            new GpuPreviewService.TerrainRequest(1, 801, 500, camera);
+            throw new AssertionError("Terrain allocation cap must be checked");
+        } catch (IllegalArgumentException expected) {
+        }
+        var terrainChild = new FakeProcess(true);
+        var modelChild = new FakeProcess(true);
+        var launches = new AtomicInteger();
+        var fixture = service(root, GpuPreviewServiceTest::write, file -> {
+            if (launches.getAndIncrement() == 0) {
+                var restored = com.vibeminer.rendering.bgfx.GpuTerrainSceneFile.read(file);
+                require(restored.tiles().getFirst().x() == 17
+                        && restored.tiles().getFirst().y() == 21,
+                        "Terrain payload keeps source tuple rather than using model geometry");
+                return terrainChild;
+            }
+            require(!terrainChild.isAlive(), "Terrain drains before a model child may start");
+            require(Files.readString(file).equals("authored scene"),
+                    "Model still uses the legacy injected writer");
+            return modelChild;
+        });
+        Object terrainOwner = new Object(), modelOwner = new Object();
+        try {
+            var terrainClosed = fixture.openTerrain(terrainOwner, scene, ignored -> {}, ignored -> {});
+            fixture.update(terrainOwner, new GpuPreviewService.ViewRequest(100, 32, 32, 0, 0, 1, 0));
+            fixture.updateTerrain(terrainOwner, new GpuPreviewService.TerrainRequest(1, 800, 500, camera));
+            await(terrainChild.started);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!terrainChild.controls.toString().contains("WORLD 1 ")
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+            require(terrainChild.controls.toString().contains("WORLD 1 800 500 1.0 2.0 3.0 0.2 -0.1\n")
+                    && !terrainChild.controls.toString().contains("VIEW"),
+                    "Orbit controls cannot advance or corrupt free-flight revision");
+            fixture.open(modelOwner, mesh(), null, Set.of(), ignored -> {});
+            fixture.updateTerrain(modelOwner, new GpuPreviewService.TerrainRequest(100, 32, 32, camera));
+            fixture.update(modelOwner, new GpuPreviewService.ViewRequest(2, 32, 32, 0, 0, 1, 0));
+            await(modelChild.started);
+            terrainClosed.get(2, TimeUnit.SECONDS);
+            fixture.closeOwner(terrainOwner).get(2, TimeUnit.SECONDS);
+            require(modelChild.isAlive(), "Retired terrain owner cannot close the model successor");
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!modelChild.controls.toString().contains("VIEW 2 ")
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+            require(modelChild.controls.toString().contains("VIEW 2 ")
+                    && !modelChild.controls.toString().contains("WORLD"),
+                    "Free-flight controls cannot corrupt an orbit session");
+        } finally {
+            fixture.closeAsync().get(3, TimeUnit.SECONDS);
+        }
+        require(launches.get() == 2 && !terrainChild.isAlive() && !modelChild.isAlive(),
+                "One shared native lifecycle drains both renderer kinds");
     }
 
     private static PreviewMesh mesh() {
