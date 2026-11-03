@@ -1,7 +1,8 @@
 # Native prepared-row issue certificates — design proposal
 
-Status: design only, based on `cfaa297`. Implementation requires independent
-architecture and WoW-data approval. This proposal extends prepared-local input
+Status: both independent architecture and WoW-data reviewers approved exact
+contract `09533d58b41e825999ce392c4317e4ba3b6a60a9` before implementation.
+Based on `cfaa297`; root integration also includes reviewed Items increment A. This proposal extends prepared-local input
 evidence; it does not authorize persistent comparison reports, acquisition,
 cache repair during comparison, or an upgrade of existing graphs.
 
