@@ -1,5 +1,14 @@
 # vimi development handoff
 
+## Continuous parallel delivery instruction
+
+The user explicitly says keep going without stopping, develop independent items
+in parallel, and make each roadmap item a separate GitHub prerelease. See
+[delivery policy](docs/prereleases.md#roadmap-delivery-policy). Active agents own
+GPU terrain feasibility and independent acceptance, plus a parallel item-effects
+comparison design. Root owns packaging/integration and verified zone-navigation
+scoping. Do not wait for one track to finish before progressing another.
+
 ## Static mount materials — current Linux continuation
 
 PR #141 is FF-merged at `f10febd`: legacy cutout qualification, mount controls and

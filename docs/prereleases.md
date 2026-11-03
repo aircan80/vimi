@@ -24,6 +24,31 @@ Uninstalling an application package does not intentionally delete the library.
 Back up valuable local data before testing a version that explicitly changes its
 storage format; each release notes any such change.
 
+## Roadmap delivery policy
+
+The user explicitly requests one GitHub prerelease per completed roadmap item,
+with independent items developed in parallel. Do not combine completed roadmap
+items into one release to wait for unrelated work. Allocate the next unused
+alpha sequence at delivery time, after integration checks; never reserve a number
+by publishing a tag early or replace an existing tag.
+
+Current independent tracks:
+
+| Track | Next release boundary |
+| --- | --- |
+| World rendering | Inline GPU height-shaded terrain, preserving camera, holes and CPU fallback |
+| Comparison | Reviewed item-effect link/input comparisons, then separately scoped additional areas |
+| World navigation | Verified area/zone-to-terrain navigation with explicit discovery coverage |
+| Native qualification | Actual Metal/D3D rendering acceptance and resulting platform fixes |
+| Races | Additional reviewed appearance profiles |
+| Animation | Reviewed animated model playback |
+| Equipment | Reviewed held/equipped model composition |
+
+Each boundary requires its own review, meaningful validation, release notes and
+successful packaged checks. Native hardware acceptance cannot be claimed from
+cross-compilation alone. Package jobs may overlap development on another track;
+keep source/tag identities and release notes exact.
+
 ## Build and publication
 
 The Desktop prereleases workflow runs on prerelease tag pushes. A manual dispatch
