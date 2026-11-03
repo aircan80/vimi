@@ -93,6 +93,25 @@ class M2BindPoseFactsTest {
                                 .join());
     }
 
+    @ParameterizedTest
+    @ValueSource(ints = {272, 274})
+    void changedConsumedDeclarationCannotReuseParsedModelFacts(int version) {
+        byte[] original = authoredModel(version);
+        var model = M2ModelReader.read(AssetSource.bytes(original)).join();
+        int base = Math.toIntExact(model.baseOffset());
+        for (int field : new int[] {16, 44, 48}) {
+            byte[] changed = original.clone();
+            var buffer = ByteBuffer.wrap(changed).order(ByteOrder.LITTLE_ENDIAN);
+            buffer.putInt(base + field, buffer.getInt(base + field) + 1);
+            M2ReadersTest.failure(
+                    "MODEL_INVALID",
+                    () ->
+                            M2BindPoseFacts.read(
+                                            AssetSource.bytes(changed), model, Cancellation.NONE)
+                                    .join());
+        }
+    }
+
     private static byte[] authoredModel(int version) {
         byte[] original = M2ReadersTest.golden("model-" + version + ".m2");
         var parsed = M2ModelReader.read(AssetSource.bytes(original)).join();

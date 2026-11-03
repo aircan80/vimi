@@ -60,8 +60,10 @@ public final class M2BindPoseFacts {
         if (input.length != model.sourceBytes()) {
             throw error("INVALID", "Bone-fact source differs from the parsed model.");
         }
-        var header = input.at(model.baseOffset(), 8);
-        if (i32(header, 0) != 0x3032444d || u32(header, 4) != model.version()) {
+        var header = input.at(model.baseOffset(), 52);
+        if (i32(header, 0) != 0x3032444d
+                || u32(header, 4) != model.version()
+                || u32(header, 16) != model.flags()) {
             throw error("INVALID", "Bone-fact source header differs from the parsed model.");
         }
         var declarations =
@@ -70,7 +72,10 @@ public final class M2BindPoseFacts {
             throw error("INVALID", "Bone-fact declaration is missing or ambiguous.");
         }
         var bones = declarations.getFirst();
-        if (bones.stride() != 88 || bones.count() != model.bones().size()) {
+        if (bones.stride() != 88
+                || bones.count() != model.bones().size()
+                || u32(header, 44) != bones.count()
+                || u32(header, 48) != bones.offset()) {
             throw error("INVALID", "Bone-fact declaration differs from parsed bones.");
         }
         var absent = new ArrayList<Boolean>();
