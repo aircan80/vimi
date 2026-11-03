@@ -53,7 +53,8 @@ if (!supportedPlatforms.containsKey(targetPlatform)) {
 application {
     mainClass = 'com.vibeminer.rendering.bgfx.GpuViewerMain'
     applicationName = 'vimi-gpu-viewer'
-    applicationDefaultJvmArgs = ['--enable-native-access=ALL-UNNAMED']
+    applicationDefaultJvmArgs = ['--enable-native-access=ALL-UNNAMED'] +
+        (hostSystem == 'macos' ? ['-XstartOnFirstThread'] : [])
 }
 
 
@@ -134,4 +135,15 @@ tasks.register('compileShaders', Exec) {
     description = 'Explicitly regenerates shader blobs with the pinned matching bgfx compiler.'
     workingDir rootProject.layout.projectDirectory
     commandLine pythonExecutable.get(), shaderHelper.asFile.absolutePath
+}
+
+// Explicit hardware/native diagnostic; never part of portable default checks.
+tasks.register('nativeGpuSmoke', JavaExec) {
+    group = 'verification'
+    description = 'Renders an authored fixture using headless Vulkan and writes diagnostic evidence.'
+    dependsOn classes
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.GpuViewerMain'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args '--headless-smoke', layout.buildDirectory.dir('native-gpu-proof').get().asFile.absolutePath
 }

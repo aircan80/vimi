@@ -144,7 +144,7 @@ public final class GpuModelScene {
         return FloatBuffer.wrap(vertices).asReadOnlyBuffer();
     }
 
-    /** Original unsigned32-capable topology; renderer must use an INDEX32 buffer. */
+    /** Original topology in an integer view; validated indices fit unsigned16 for native upload. */
     public IntBuffer indexData() {
         return IntBuffer.wrap(indices).asReadOnlyBuffer();
     }
