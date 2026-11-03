@@ -27,6 +27,7 @@ public final class CompareUiTest {
                 new AtomicReference<>(ComparisonTypes.RunState.RUNNING);
         final AtomicBoolean failPage = new AtomicBoolean(true);
         CompletableFuture<Void> closeGate = CompletableFuture.completedFuture(null);
+        boolean rawFacts;
 
         public ComparisonTypes.Descriptor before() {
             return descriptor("authored-before");
@@ -42,18 +43,87 @@ public final class CompareUiTest {
                     1200,
                     0,
                     new ComparisonTypes.Coverage(
-                            ComparisonTypes.Completeness.PARTIAL,
-                            "Authored files",
-                            List.of("Protected rows")),
+                            rawFacts
+                                    ? ComparisonTypes.Completeness.UNKNOWN
+                                    : ComparisonTypes.Completeness.PARTIAL,
+                            rawFacts ? "raw-verified-cells-v1:" + "a".repeat(64) : "Authored files",
+                            rawFacts
+                                    ? List.of("Membership is uncertified", "Protected rows")
+                                    : List.of("Protected rows")),
                     new ComparisonTypes.Coverage(
-                            ComparisonTypes.Completeness.COMPLETE, "Authored files", List.of()),
-                    "Findings only");
+                            rawFacts
+                                    ? ComparisonTypes.Completeness.PARTIAL
+                                    : ComparisonTypes.Completeness.COMPLETE,
+                            rawFacts ? "raw-verified-cells-v1:" + "b".repeat(64) : "Authored files",
+                            List.of()),
+                    rawFacts
+                            ? "Session-only findings; known-equal rows omitted; no persistent report; findings-only, known-equal rows omitted"
+                            : "Findings only");
         }
 
         public CompletableFuture<ComparisonTypes.ResultPage> page(long offset, int limit) {
             if (failPage.getAndSet(false))
                 return CompletableFuture.failedFuture(
                         new IllegalStateException("authored transient page failure"));
+            if (rawFacts) {
+                var equal = field("0");
+                var unknown =
+                        new ComparisonTypes.Field(
+                                "raw-unreadable",
+                                ComparisonTypes.ValueKind.TEXT,
+                                ComparisonTypes.ValueState.PROTECTED,
+                                null,
+                                ComparisonTypes.Aspect.CONTENT,
+                                List.of());
+                var incomparable =
+                        new ComparisonTypes.Field(
+                                "raw-copy-source",
+                                ComparisonTypes.ValueKind.REFERENCE,
+                                ComparisonTypes.ValueState.UNKNOWN,
+                                null,
+                                ComparisonTypes.Aspect.INTERPRETATION,
+                                List.of());
+                var deltas =
+                        List.of(
+                                new ComparisonTypes.FieldDelta(
+                                        "cell.Alliance",
+                                        equal,
+                                        equal,
+                                        ComparisonTypes.Difference.EQUAL,
+                                        ComparisonTypes.Aspect.CONTENT),
+                                new ComparisonTypes.FieldDelta(
+                                        "record.isCopy",
+                                        equal,
+                                        equal,
+                                        ComparisonTypes.Difference.EQUAL,
+                                        ComparisonTypes.Aspect.INTERPRETATION),
+                                new ComparisonTypes.FieldDelta(
+                                        "record.copySource",
+                                        incomparable,
+                                        incomparable,
+                                        ComparisonTypes.Difference.INCOMPARABLE,
+                                        ComparisonTypes.Aspect.INTERPRETATION),
+                                new ComparisonTypes.FieldDelta(
+                                        "cell.Unreadable",
+                                        unknown,
+                                        unknown,
+                                        ComparisonTypes.Difference.UNKNOWN,
+                                        ComparisonTypes.Aspect.CONTENT));
+                var record =
+                        new ComparisonTypes.Record("00000000000000000001", Map.of(), List.of());
+                return CompletableFuture.completedFuture(
+                        new ComparisonTypes.ResultPage(
+                                offset,
+                                List.of(
+                                        new ComparisonTypes.Result(
+                                                record.key(),
+                                                ComparisonTypes.Membership.BOTH,
+                                                record,
+                                                record,
+                                                deltas)),
+                                null,
+                                progress()));
+            }
             var old = field("authored-content-before");
             var current = field("authored-content-after");
             var key = offset == 0 ? "910001" : "910003";
@@ -361,6 +431,7 @@ public final class CompareUiTest {
         inventory.failPage.set(false);
         var raw = new Fixture();
         raw.failPage.set(false);
+        raw.rawFacts = true;
         var reset = new Fixture();
         reset.state.set(ComparisonTypes.RunState.COMPLETED);
         reset.failPage.set(false);
@@ -381,7 +452,10 @@ public final class CompareUiTest {
                 fx(
                         () -> {
                             var stage = new Stage();
-                            stage.setScene(new Scene(view, 1320, 940));
+                            var scene = new Scene(view, 1320, 940);
+                            var css = CompareUiTest.class.getResource("/vimi.css");
+                            if (css != null) scene.getStylesheets().add(css.toExternalForm());
+                            stage.setScene(scene);
                             stage.show();
                             view.applyCss();
                             view.layout();
@@ -437,7 +511,7 @@ public final class CompareUiTest {
                                         && requests.get(1).tableId() == 4294967295L,
                                 "Raw request preserves Tables area and unsigned FileDataID");
                         require(
-                                labels(view).contains("gameplay meaning is not assessed"),
+                                labels(view).contains("gameplay meaning is unassessed"),
                                 "Raw findings have scoped semantics warning");
                         button(view, "Compare local data").fire();
                         button(view, "Compare readable rows locally").fire();
@@ -460,6 +534,18 @@ public final class CompareUiTest {
                     });
             raw.state.set(ComparisonTypes.RunState.COMPLETED);
             await(() -> fxUnchecked(() -> !button(view, "Compare local data").isDisabled()));
+            fx(
+                    () -> {
+                        view.resize(1320, 940);
+                        view.layout();
+                        return null;
+                    });
+            await(() -> fxUnchecked(() -> labels(view).contains("Unreadable · Unknown")));
+            fx(
+                    () -> {
+                        assertRawReadability(view);
+                        return null;
+                    });
             fx(
                     () -> {
                         button(view, "Compare local data").fire();
@@ -489,6 +575,95 @@ public final class CompareUiTest {
                         return null;
                     });
         }
+    }
+
+    private static void assertRawReadability(CompareView view) throws Exception {
+        view.applyCss();
+        view.layout();
+        var identity =
+                view.lookupAll(".label").stream()
+                        .filter(
+                                node ->
+                                        node instanceof Label label
+                                                && label.getText().equals("ID 1"))
+                        .map(Label.class::cast)
+                        .findFirst()
+                        .orElseThrow();
+        require(
+                identity.getTooltip().getText().contains("00000000000000000001")
+                        && identity.getAccessibleText().contains("00000000000000000001"),
+                "Human identity retains canonical tooltip/accessibility");
+        var cell =
+                view.lookupAll(".list-cell").stream()
+                        .filter(
+                                node ->
+                                        node instanceof javafx.scene.control.ListCell<?> item
+                                                && item.getItem() instanceof ComparisonTypes.Result)
+                        .map(node -> (javafx.scene.control.ListCell<?>) node)
+                        .findFirst()
+                        .orElseThrow();
+        require(
+                cell.getText().equals("Cannot determine · 1")
+                        && cell.getTooltip().getText().contains("00000000000000000001"),
+                "List IDs are human-readable with canonical evidence");
+        var unreadable =
+                view.lookupAll(".label").stream()
+                        .filter(
+                                node ->
+                                        node instanceof Label label
+                                                && label.getText().equals("Unreadable · Unknown"))
+                        .map(Label.class::cast)
+                        .findFirst()
+                        .orElseThrow();
+        var inspector = (javafx.scene.layout.VBox) unreadable.getParent().getParent();
+        var fields =
+                inspector.getChildren().stream()
+                        .filter(javafx.scene.layout.VBox.class::isInstance)
+                        .map(javafx.scene.layout.VBox.class::cast)
+                        .map(box -> ((Label) box.getChildren().getFirst()).getText())
+                        .toList();
+        require(
+                fields.getFirst().equals("Unreadable · Unknown")
+                        && fields.indexOf("Copy source ID · Incomparable")
+                                < fields.indexOf("Alliance · Equal"),
+                "Uncertainty and incomparable reasons precede equal fields");
+        require(
+                fields.contains("Copy record · Equal")
+                        && unreadable
+                                .getTooltip()
+                                .getText()
+                                .equals("Canonical field: cell.Unreadable"),
+                "Friendly column/copy labels preserve canonical keys");
+        var coverage =
+                view.lookupAll(".label").stream()
+                        .filter(
+                                node ->
+                                        node instanceof Label label
+                                                && label.getText()
+                                                        .startsWith(
+                                                                "Before: Unknown · Prepared table rows"))
+                        .map(Label.class::cast)
+                        .findFirst()
+                        .orElseThrow();
+        require(
+                coverage.getText().contains("Membership is uncertified")
+                        && coverage.getText().contains("Protected rows")
+                        && coverage.getText().contains("After: Partial"),
+                "Human coverage retains every issue and differing states");
+        require(
+                !coverage.getText().contains("a".repeat(64))
+                        && coverage.getTooltip().getText().contains("a".repeat(64)),
+                "Main coverage omits fingerprint while full scope remains inspectable");
+        require(
+                labels(view).contains("Completed · 1200 identities scanned · Session only")
+                        && !labels(view).contains("known-equal rows omitted; no persistent report"),
+                "Progress avoids repeated boilerplate");
+        require(
+                unreadable.isWrapText()
+                        && coverage.isWrapText()
+                        && coverage.getMinHeight() == javafx.scene.layout.Region.USE_PREF_SIZE,
+                "Narrow labels wrap instead of hiding uncertainty");
+        screenshot(view.getScene(), "comparison-raw-authored");
     }
 
     private static javafx.scene.control.TextField rawId(CompareView view) {
@@ -667,6 +842,10 @@ public final class CompareUiTest {
     }
 
     private static void screenshot(Scene scene) throws Exception {
+        screenshot(scene, "comparison-authored");
+    }
+
+    private static void screenshot(Scene scene, String name) throws Exception {
         var image = scene.snapshot(null);
         var pixels =
                 new java.awt.image.BufferedImage(
@@ -680,8 +859,7 @@ public final class CompareUiTest {
                 java.nio.file.Path.of(
                         System.getProperty("vimi.uiReviewDirectory", "gui/build/ui-review"));
         java.nio.file.Files.createDirectories(directory);
-        javax.imageio.ImageIO.write(
-                pixels, "png", directory.resolve("comparison-authored.png").toFile());
+        javax.imageio.ImageIO.write(pixels, "png", directory.resolve(name + ".png").toFile());
     }
 
     private static void require(boolean condition, String message) {

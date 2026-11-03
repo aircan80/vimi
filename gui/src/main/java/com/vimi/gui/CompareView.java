@@ -2,7 +2,10 @@ package com.vimi.gui;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.comparison.ComparisonTypes;
-
+import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Supplier;
 import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
 import javafx.application.Platform;
@@ -18,11 +21,6 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import javafx.util.Duration;
-
-import java.util.List;
-import java.util.Objects;
-import java.util.concurrent.CompletableFuture;
-import java.util.function.Supplier;
 
 /** Session-only local inventory comparison. Backend handles belong to the composition owner. */
 final class CompareView extends BorderPane implements AutoCloseable {
@@ -240,7 +238,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                     if (id == null) {
                         status.setText(
                                 "Enter a table FileDataID from 1 to 4294967295. No comparison was"
-                                    + " started.");
+                                        + " started.");
                         return;
                     }
                     start(id);
@@ -327,7 +325,22 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                 setText(
                                         empty || value == null
                                                 ? null
-                                                : resultLabel(value) + " · " + value.key());
+                                                : resultLabel(value)
+                                                        + " · "
+                                                        + displayIdentity(value.key()));
+                                setTooltip(
+                                        empty || value == null
+                                                ? null
+                                                : new javafx.scene.control.Tooltip(
+                                                        "Canonical identity: " + value.key()));
+                                setAccessibleText(
+                                        empty || value == null
+                                                ? null
+                                                : resultLabel(value)
+                                                        + " · ID "
+                                                        + displayIdentity(value.key())
+                                                        + " · Canonical identity "
+                                                        + value.key());
                             }
                         });
         results.getSelectionModel()
@@ -400,9 +413,9 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                                                     && capturedRequest.tableId()
                                                                             != null
                                                             ? " raw table findings. Known-equal"
-                                                                  + " rows are"
+                                                                    + " rows are"
                                                             : " inventory findings. Known-equal"
-                                                                  + " records are")
+                                                                    + " records are")
                                                     + " omitted; other areas are not assessed.",
                                     "muted"));
             content.getChildren().add(pageStatus);
@@ -411,10 +424,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                     .add(
                             text(
                                     raw
-                                            ? "Raw columns for one exact-layout table only."
-                                                  + " Membership remains scoped/unknown where"
-                                                  + " coverage is incomplete; gameplay meaning is"
-                                                  + " not assessed."
+                                            ? "Recorded columns from one prepared table. Membership is uncertified; gameplay meaning is unassessed."
                                             : "Local "
                                                     + area.toLowerCase(java.util.Locale.ROOT)
                                                     + " inventory only. Readability and source"
@@ -582,15 +592,25 @@ final class CompareView extends BorderPane implements AutoCloseable {
                 running
                         || pending
                         || !(selectedArea.equals("Files") || selectedArea.equals("Tables")));
+        var message =
+                progress.state() == ComparisonTypes.RunState.COMPLETED
+                        ? conciseProgressMessage(progress.message())
+                        : safe(progress.message());
         status.setText(
                 words(progress.state().toString())
                         + " · "
                         + progress.observed()
-                        + " scanned identities · session-only findings, known-equal records"
-                        + " omitted. "
-                        + safe(progress.message()));
+                        + " identities scanned · Session only"
+                        + (message.isBlank() ? "" : " · " + message));
+        status.setTooltip(new javafx.scene.control.Tooltip(safe(progress.message())));
         pageStatus.setText(
-                "Before: " + coverage(progress.a()) + " · After: " + coverage(progress.b()));
+                "Before: " + coverage(progress.a()) + "\nAfter: " + coverage(progress.b()));
+        pageStatus.setTooltip(
+                new javafx.scene.control.Tooltip(
+                        "Before full scope: "
+                                + fullCoverage(progress.a())
+                                + "\nAfter full scope: "
+                                + fullCoverage(progress.b())));
         if (!running && renderedState != progress.state()) {
             renderedState = progress.state();
             loadPage(0);
@@ -626,15 +646,70 @@ final class CompareView extends BorderPane implements AutoCloseable {
                 : "Raw table rows · FileDataID " + request.tableId();
     }
 
-    private static String coverage(ComparisonTypes.Coverage value) {
+    private String coverage(ComparisonTypes.Coverage value) {
+        if (value == null) return "Not assessed";
+        var scope = value.scope();
+        if (scope.matches(".*[0-9a-fA-F]{32,}.*")) {
+            scope =
+                    capturedRequest != null && capturedRequest.tableId() != null
+                            ? "Prepared table rows"
+                            : "Tables".equals(runArea)
+                                    ? "Table inventory"
+                                    : "Selected-locale file inventory";
+        }
+        return words(value.completeness().toString())
+                + " · "
+                + scope
+                + (value.issues().isEmpty() ? "" : " · " + String.join("; ", value.issues()));
+    }
+
+    private static String fullCoverage(ComparisonTypes.Coverage value) {
         return value == null
-                ? "not assessed"
-                : words(value.completeness().toString())
+                ? "Not assessed"
+                : value.completeness()
                         + " · "
                         + value.scope()
                         + (value.issues().isEmpty()
                                 ? ""
-                                : " · Reasons: " + String.join("; ", value.issues()));
+                                : " · " + String.join("; ", value.issues()));
+    }
+
+    private static String conciseProgressMessage(String message) {
+        return java.util.Arrays.stream(safe(message).split(";"))
+                .map(String::trim)
+                .filter(part -> !part.isBlank())
+                .filter(
+                        part -> {
+                            var lower = part.toLowerCase(java.util.Locale.ROOT);
+                            return !lower.contains("session-only")
+                                    && !lower.contains("known-equal")
+                                    && !lower.contains("findings-only")
+                                    && !lower.equals("findings only")
+                                    && !lower.contains("no persistent report")
+                                    && !lower.contains("no saved report");
+                        })
+                .collect(java.util.stream.Collectors.joining("; "));
+    }
+
+    private static String displayIdentity(String key) {
+        return key.matches("[0-9]{20}") ? new java.math.BigInteger(key).toString() : key;
+    }
+
+    private static String fieldLabel(String key) {
+        return switch (key) {
+            case "record.isCopy" -> "Copy record";
+            case "record.copySource" -> "Copy source ID";
+            default -> key.startsWith("cell.") ? key.substring(5) : key;
+        };
+    }
+
+    private static int fieldPriority(ComparisonTypes.FieldDelta field) {
+        return switch (field.difference()) {
+            case CHANGED -> 0;
+            case UNKNOWN -> 1;
+            case INCOMPARABLE -> 2;
+            case EQUAL -> 3;
+        };
     }
 
     private void loadPage(long offset) {
@@ -661,7 +736,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                             if (failure != null || page == null) {
                                                 pageError.setText(
                                                         "Findings page unavailable. Existing"
-                                                            + " findings remain; retry this page.");
+                                                                + " findings remain; retry this page.");
                                                 retryOffset = offset;
                                                 retryDirection = direction;
                                                 retryPage.setVisible(true);
@@ -746,10 +821,14 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                     "muted"));
             return;
         }
+        var identity = text("ID " + displayIdentity(row.key()), "h3");
+        identity.setTooltip(new javafx.scene.control.Tooltip("Canonical identity: " + row.key()));
+        identity.setAccessibleText(
+                "ID " + displayIdentity(row.key()) + " · Canonical identity " + row.key());
         inspector
                 .getChildren()
                 .addAll(
-                        text(row.key(), "h3"),
+                        identity,
                         text(resultLabel(row) + " · " + membership(row.membership()), "muted"));
         if (session != null) {
             inspector
@@ -757,11 +836,11 @@ final class CompareView extends BorderPane implements AutoCloseable {
                     .add(
                             text(
                                     "Before: "
-                                            + session.before().identity()
+                                            + endpointCaption(true)
                                             + " · "
                                             + session.before().locale()
                                             + "\nAfter: "
-                                            + session.after().identity()
+                                            + endpointCaption(false)
                                             + " · "
                                             + session.after().locale(),
                                     "muted"));
@@ -769,19 +848,42 @@ final class CompareView extends BorderPane implements AutoCloseable {
                     new javafx.scene.control.TitledPane(
                             "Captured inputs",
                             text(
-                                    "Before: "
+                                    "Before identity: "
+                                            + session.before().identity()
+                                            + "\nBefore scope: "
+                                            + session.before().scope()
+                                            + "\nBefore dependencies: "
                                             + session.before().dependencies()
-                                            + "\nAfter: "
+                                            + "\nAfter identity: "
+                                            + session.after().identity()
+                                            + "\nAfter scope: "
+                                            + session.after().scope()
+                                            + "\nAfter dependencies: "
                                             + session.after().dependencies(),
                                     "muted"));
             sources.setExpanded(false);
             inspector.getChildren().add(sources);
         }
-        for (var field : row.fields()) {
+        for (var field :
+                row.fields().stream()
+                        .sorted(java.util.Comparator.comparingInt(CompareView::fieldPriority))
+                        .toList()) {
+            var fieldHeading =
+                    text(
+                            fieldLabel(field.key()) + " · " + words(field.difference().toString()),
+                            "h3");
+            fieldHeading.setTooltip(
+                    new javafx.scene.control.Tooltip("Canonical field: " + field.key()));
+            fieldHeading.setAccessibleText(
+                    fieldLabel(field.key())
+                            + " · Canonical field "
+                            + field.key()
+                            + " · "
+                            + field.difference());
             var box =
                     new VBox(
                             5,
-                            text(field.key() + " · " + words(field.difference().toString()), "h3"),
+                            fieldHeading,
                             text("Before: " + fieldValue(field.a()), "muted"),
                             text("After: " + fieldValue(field.b()), "muted"),
                             text(
@@ -804,6 +906,15 @@ final class CompareView extends BorderPane implements AutoCloseable {
             box.getChildren().add(evidence);
             inspector.getChildren().add(box);
         }
+    }
+
+    private String endpointCaption(boolean first) {
+        if (capturedRequest == null)
+            return first ? session.before().identity() : session.after().identity();
+        var build = first ? capturedRequest.before() : capturedRequest.after();
+        return build.version()
+                + " · config "
+                + configLabels.getOrDefault(safe(build.config()), safe(build.config()));
     }
 
     private static String fieldValue(ComparisonTypes.Field field) {
@@ -870,8 +981,8 @@ final class CompareView extends BorderPane implements AutoCloseable {
         pendingSelection.setText(
                 changed
                         ? "Selection changed. Findings and progress still belong to the captured"
-                              + " pair above. Compare local data again after this run finishes, or"
-                              + " cancel it."
+                                + " pair above. Compare local data again after this run finishes, or"
+                                + " cancel it."
                         : "");
         pendingSelection.setVisible(changed);
         pendingSelection.setManaged(changed);
@@ -893,6 +1004,9 @@ final class CompareView extends BorderPane implements AutoCloseable {
     private static Label text(String value, String style) {
         var label = new Label(value);
         label.setWrapText(true);
+        label.setMinWidth(0);
+        label.setMaxWidth(Double.MAX_VALUE);
+        label.setMinHeight(javafx.scene.layout.Region.USE_PREF_SIZE);
         label.getStyleClass().add(style);
         return label;
     }
