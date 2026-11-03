@@ -2,22 +2,37 @@
 
 ## Active autonomous roadmap and decisions
 
-User asked to keep working without waiting for input and retain questions for
-their return. No unresolved user question currently blocks implementation.
-World #115 is merged: source terrain, continent/map/area browser,
-free-fly camera and bounded neighborhood streaming; see docs/world.md.
-Current work is #22: five-target native prerelease packaging; local ARM64
-app-image passed the bundled Java/SQLite/JavaFX GUI smoke test.
-After World is ready, publish installable GitHub PRERELEASES for Linux/macOS/Windows,
-then after each major feature. These are all prereleases, never stable/official
-releases. Windows testing will be through the GitHub installer; bundle Java and
-required native libraries. Routine prerelease publication within this scope is
-authorized. #22 tracks packaging/release automation.
-#116 adds Blizzard zone-map artwork with provider NPC/pickup markers. #108 Dungeons
-is queued; #111 Mounts and #112 Professions are being developed in isolated branches.
-When this roadmap is finished, #117 Build Comparison requires WoW expert, WoW data
-miner, UI expert and BA design, independent peer review and approval before coding.
-Keep true changes separate from incomplete/encrypted/newly readable data.
+Keep working without waiting for user input; retain questions/follow-ups here.
+No blocking product question is outstanding.
+
+World #115, Mounts #111 and Professions/Recipes #112 are merged. Installable
+prereleases v0.1.0-alpha.1 (World baseline) and alpha.2 (Mounts/Professions) are
+published for Linux x64/ARM64, macOS Intel/Apple Silicon and Windows x64, with
+bundled Java/JavaFX/SQLite, installers, portable archives and checksums. All are
+explicit GitHub prereleases, never stable/latest. #22 and CI epic #2 are complete.
+After each major feature, continue the same tested prerelease workflow.
+
+Dungeons #108 is integrated through #125 with independent domain/lifetime review,
+three-platform unit/integration checks and authored UI proof; alpha.3 carries it.
+#116 has provider location contracts, selected-build map/art services and the NPC/
+quest sidebar wired. Direct physical DB2 proof resolves Durotar's12tiles and a
+persistent decoded image cache hit. Source spaces, explicit starters, partial
+results, bounded observation/tile work and source/workspace/selection guards stay
+explicit. Alpha.4 is prepared for the map feature after final CI/merge.
+
+#104 Orc male/female is the next narrow appearance profile under proof/review in
+an isolated branch. Preserve reviewed layout/material/qualification guards; full
+animation, held equipment and arbitrary race profiles remain separate work.
+
+Once current browser work is complete, #117 Build Comparison requires WoW expert,
+WoW data miner, UI expert and BA design, followed by independent peer review and
+approval before coding. Distinguish true changes from incomplete/encrypted/newly
+readable data.
+
+Questions/follow-ups for the user's return: Windows MSI installation and native
+Windows/macOS filesystem acceptance #24–#26 still require hands-on machines; hosted
+packaged-GUI checks are passing but do not close those native-machine stories.
+Initial installers are unsigned; signing/notarization is separate future scope.
 
 ## NPCs, Quests and upcoming browser areas
 

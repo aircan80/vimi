@@ -20,6 +20,12 @@ final class NpcsView extends ProviderBrowser<NpcCatalog.Npc> {
                         new Column<>("Name", n -> known(n.name()), 240),
                         new Column<>("Title", n -> known(n.subname()), 180),
                         new Column<>("Level", n -> known(n.levels()), 90)));
+        if (job != null && job.work() instanceof NativePreparationWork work) {
+            attachLocationMap(new LocationMapView(work::locationMapsHandle,
+                    () -> new com.vibeminer.concepts.locations.LocationsService(
+                            sources == null ? List.of() : sources.locationInputs(job.build(), job.locale())),
+                    work::revision, () -> sources == null ? 0L : sources.revision(), false));
+        }
     }
 
     @Override

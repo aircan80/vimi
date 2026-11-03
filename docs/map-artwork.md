@@ -113,3 +113,34 @@ boxed-number cache. The existing 27 provider-location tests run with them.
 
 Marker UI wiring and selected-source policy are owned by the coordinating GUI
 integration; see [provider contracts](locations.md).
+
+## NPC and quest sidebar
+
+Selecting an NPC or quest opens a zone-map panel in its existing detail sidebar.
+Quest markers describe explicit pickup/starter relationships. They do not mix in
+quest objectives or turn-in locations. An item starter remains a known relationship
+without an invented intrinsic position.
+
+Choose another map from the compact selector when observations cover several
+maps. Blue markers are declared source spawns; amber markers are approximate
+observed player interactions. Hover for provider/snapshot, entity ID, normalized
+position, recorded phase and assignment basis. Unknown or ambiguous coordinates
+remain unplotted; a known map can still show artwork without a marker. Base artwork
+does not evaluate a player's phase, unlocks or current visibility.
+
+The GUI reads only already prepared enabled provider snapshots using the same
+flavor/product/build policy as the catalogues. Source handles/cache survive row
+selection and retire on catalogue/source/workspace invalidation or close. The
+selected build owns map-table/file services; closing drains them before borrowed
+tables. Original artwork uses normal build-owned Blizzard file acquisition and
+its existing persistent generated-image cache.
+
+The sidebar bounds each request to512observations and32sequential artwork tiles.
+One failed observation/tile preserves other readable results. Revision, selection
+and cancellation guards prevent retired work from changing the visible map.
+Resolver/artwork diagnostics and phase limitations stay visible with partial data.
+
+Focused checks: `:concepts-locations:check :gui:check` and the display-dependent
+`:gui:locationMapUiTest :gui:providerBrowserUiTest`. The authored image fixture
+covers a cropped edge tile, isolated resolution failure, delayed stale response,
+resize, starter queries and borrowed ownership; it contains no game assets.

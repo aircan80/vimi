@@ -40,6 +40,7 @@ abstract class ProviderBrowser<T> extends BorderPane implements AutoCloseable {
     final BuildPreparation.Job job;
     final DataSourcesService sources;
     private final String area;
+    private LocationMapView locationMap;
     private final TableView<T> table = new TableView<>();
     private final TextField search = new TextField();
     private final Label status = new Label(), pageCount = new Label();
@@ -115,6 +116,8 @@ abstract class ProviderBrowser<T> extends BorderPane implements AutoCloseable {
     abstract String searchable(T row);
 
     abstract List<Fact> inspection(T row);
+
+    final void attachLocationMap(LocationMapView view) { locationMap = view; }
 
     void ensureLoaded() {
         if (closed || job == null || !(job.work() instanceof NativePreparationWork work))
@@ -198,15 +201,18 @@ abstract class ProviderBrowser<T> extends BorderPane implements AutoCloseable {
 
     private void show(T row) {
         details.getChildren().clear();
+        if (locationMap != null) locationMap.select(row == null ? null : id(row));
         var facts =
                 row == null
                         ? List.of(new Fact("Select a record to inspect its sources.", "muted"))
                         : inspection(row);
+        int factIndex = 0;
         for (var fact : facts) {
             var label = new Label(fact.text());
             label.setWrapText(true);
             label.getStyleClass().add(fact.style());
             details.getChildren().add(label);
+            if (++factIndex == 2 && row != null && locationMap != null) details.getChildren().add(locationMap);
         }
     }
 
@@ -238,6 +244,7 @@ abstract class ProviderBrowser<T> extends BorderPane implements AutoCloseable {
     @Override
     public void close() {
         closed = true;
+        if (locationMap != null) locationMap.close();
         token.cancel();
         generation++;
     }

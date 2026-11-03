@@ -20,6 +20,12 @@ final class QuestsView extends ProviderBrowser<QuestCatalog.Quest> {
                         new Column<>("Title", n -> known(n.title()), 240),
                         new Column<>("Required level", n -> known(n.requiredLevel()), 180),
                         new Column<>("Level", n -> known(n.questLevel()), 90)));
+        if (job != null && job.work() instanceof NativePreparationWork work) {
+            attachLocationMap(new LocationMapView(work::locationMapsHandle,
+                    () -> new com.vibeminer.concepts.locations.LocationsService(
+                            sources == null ? List.of() : sources.locationInputs(job.build(), job.locale())),
+                    work::revision, () -> sources == null ? 0L : sources.revision(), true));
+        }
     }
 
     @Override

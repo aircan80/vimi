@@ -259,6 +259,30 @@ public final class DataSourcesService {
         return List.copyOf(result);
     }
 
+    /** Same prepared-source selection policy as NPC/quest catalogues; no downloads. */
+    public List<com.vibeminer.concepts.locations.LocationInput> locationInputs(BuildInfo build, String locale) {
+        var result = new java.util.ArrayList<com.vibeminer.concepts.locations.LocationInput>();
+        var mapping = mapping(build);
+        if (mapping.versionId() != null)
+            result.add(com.vibeminer.concepts.locations.LocationSources.questie(questie, mapping.versionId(), mapping.flavor(), locale));
+        if (policy(Id.POLESTAR).enabled() && "Forever".equals(automaticFlavor(build.product(), build.version()))) {
+            polestarState.snapshots().stream()
+                .filter(v -> v.preparedAt() != null && compatibleNpcBuild(v.catalog().clientBuild(), build.version()))
+                .max(java.util.Comparator.comparing(v -> v.catalog().clientBuild(), DataSourcesService::compareNpcBuild))
+                .ifPresent(v -> result.add(com.vibeminer.concepts.locations.LocationSources.polestar(polestar, v)));
+        }
+        if (egLink != null && policy(Id.EG_LINK).enabled()) {
+            egLinkState.snapshots().stream()
+                .filter(v -> v.indexedRecords() != null && v.problem() == null
+                    && v.build().product().equals(build.product())
+                    && compatibleNpcBuild(v.build().version(), build.version())
+                    && v.build().datasets().stream().anyMatch(d -> d.name().equals("npcs")))
+                .max(java.util.Comparator.comparing(v -> v.build().version(), DataSourcesService::compareNpcBuild))
+                .ifPresent(v -> result.add(com.vibeminer.concepts.locations.LocationSources.egLink(egLink, v)));
+        }
+        return List.copyOf(result);
+    }
+
     static boolean compatibleNpcBuild(String source, String target) {
         if (source == null || target == null || !source.matches("\\d+\\.\\d+\\.\\d+\\.\\d+") || !target.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) return false;
         try {

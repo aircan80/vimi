@@ -48,6 +48,7 @@ dependencies {
     implementation project(':rendering-world')
     implementation project(':concepts-world')
     implementation project(':concepts-dungeons')
+    implementation project(':concepts-locations')
     implementation project(':concepts-effects')
     testImplementation testFixtures(project(':builds'))
     testImplementation testFixtures(project(':polestar'))
@@ -336,5 +337,13 @@ tasks.register('dungeonsUiTest', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.DungeonsUiTest'
+    systemProperty 'vimi.uiReviewDirectory', layout.buildDirectory.dir('ui-review').get().asFile.absolutePath
+}
+
+// Authored map pixels only; requires a display.
+tasks.register('locationMapUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.LocationMapUiTest'
     systemProperty 'vimi.uiReviewDirectory', layout.buildDirectory.dir('ui-review').get().asFile.absolutePath
 }
