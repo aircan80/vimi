@@ -217,3 +217,22 @@ CPU and actual GPU images at multiple cameras, with independently checked sample
 pixels/group positions as well as image parity. Report remaining refusals instead
 of asserting full coverage from a plausible screenshot. No game assets or private
 payloads become committed regression fixtures.
+
+## Legacy reflective wolf and ram follow-up
+
+Source revision96326d8 admits only the observed chunked272 ENV tuple alongside
+the existing274 tuple: shader14, two stages, batch flags0x90, repeated section
+index and material flags0or4. The shared opacity, transform, texture and consumed
+normal guards remain unchanged. No shader formula or additive-card admission is
+expanded. Policyv4 prevents old partial appearances from being restored.
+
+The read-only Forever70755 source chain identifies Mount105/display14575/model1911
+(M2FID123410) and Mount94/display14347 (M2FID125522). Both public service
+cold/warm/fresh requests bind reflective section1 with identical restored codec
+bytes. Wolf is5/6 supported sections and ram4/5; the remaining additive sections
+are explicitly unsupported. Root inspected the two fixed CPU previews locally.
+Twenty-four actual Vulkan frames across both mounts, four cameras and three modes
+have minimum silhouette IoU99.994827% and maximum foreground RGB MAE0.534754/255.
+Independent source/test reviews approve the profile/cache delta; actual execution
+belongs to the private proof author. Evidence is under `/tmp/vimi-mount105-proof`;
+no game assets or screenshots are committed. Metal/D3D remain unqualified.

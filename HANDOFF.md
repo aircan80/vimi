@@ -1,5 +1,23 @@
 # vimi development handoff
 
+## Current combined delivery checkpoint
+
+Combined PR149, branch`feature/world-release-bundle`, worktree
+`/tmp/vimi-world-release-bundle`, supersedes closed PR146/147/148. Reviewed source
+throughc25dc10 contains World navigation/Space/map feedback, minimap, Dwarf profiles
+and item-effects comparison; hosted checks are running. User additionally reported
+missing neck/armor on Swift Timber Wolf105 (spell23251/display14575/record176) and
+Swift Brown Ram94 (spell23238/display14347/record89). Narrow source fix96326d8 is
+integrated as72d8b4c, with independent root/architecture/acceptance approval,
+source cold/warm/fresh and24 Vulkan-frame proof. It admits exact legacy272 ENV
+material0/4 tuples; policyv4 refreshes partial compositions. Unsupported additive
+sections remain omitted. Updated notes/checks still gate alpha.16 tagging.
+
+Future world work: placement parser/API3b5c589 is approved but not in this release;
+LOD design/test-only spiked3e1153 is independently approved, production gates remain.
+Texture source audit is actively pinning exact split-ADT alpha/BLP profiles before
+code. Diagnostics012e6ff hardening remains preserved and deprioritized.
+
 ## Delivery steering — latest user instruction
 
 Group almost-ready parallel features into a single prerelease when integrated
