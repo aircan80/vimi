@@ -60,10 +60,15 @@ Explicit LWJGL/bgfx licenses are bundled in this module's resource JAR.
 
 ## Reproducible offline shaders
 
-Shader source uses the reviewed model surface/material contract: position/normal/UV
-(32-byte stride), custom `u_modelToClip`, `u_lightDirection`, `u_material`, and
-`s_diffuse`. The fragment shader keeps the recorded diffuse, alpha-key, two-sided,
-flat/smooth-light and edge-pass rules; it does not invent animated/equipment facts.
+Shader source uses immutable native position/normal/UV0 plus sparse-card-derived
+pivot/marker attributes (48-byte GPU stride). Shared `PreviewCamera` supplies
+model-to-eye, projection and native/eye-space headlight uniforms. A second sampler
+supports the reviewed per-vertex sphere-map ENV coordinate; material uniforms carry
+explicit combiner, lighting and blend codes. Opaque/cutout sections retain legacy
+section order, followed by unlit additive draws with separate RGB/alpha blending,
+LEQUAL and no depth write. Camera-facing cards are the reviewed rigid bind/rest
+profile; this does not implement animation or general skinning. Texture-off mode
+remains neutral opaque geometry, with qualification and card transforms intact.
 
 The matching official release compiler is **shaderc1.19.156**. Every platform's
 library provenance records bgfx source

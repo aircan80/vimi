@@ -67,6 +67,11 @@ public final class GpuMaterialProof {
             proof.checkVisibilityIdsAndEmptySentinel();
             proof.checkWrapAndClamp();
             proof.checkMaximumIndex();
+            proof.checkRichCombinerAndUnlit(directory);
+            proof.checkVertexEnvironmentOracle(directory);
+            proof.checkAdditiveDepthAndOrder();
+            proof.checkRichOrdinalFirstWins();
+            proof.checkRigidCardCameraAndDiagnostics(directory);
             var caps = bgfx_get_caps();
             GpuViewerMain.requireHardware(
                     Short.toUnsignedInt(caps.vendorId()), Short.toUnsignedInt(caps.deviceId()));
@@ -82,7 +87,8 @@ public final class GpuMaterialProof {
                             + ",\n  \"cases\": [\"orientation-nearest\", \"flat-smooth-lighting\","
                             + " \"reverse-winding\", \"alpha-127-128-depth\", \"opaque-alpha-zero\","
                             + " \"equal-depth-first-wins\", \"part-id-ordinal\", \"empty-sentinel\", \"independent-wrap-clamp\","
-                            + " \"maximum-index-65535\"]\n}\n";
+                            + " \"maximum-index-65535\", \"rich-unlit-NA\", \"vertex-ENV-oracle\","
+                            + " \"additive-alpha-depth-order\", \"rigid-camera-card\", \"rich-neutral-diagnostic\"]\n}\n";
             Files.writeString(directory.resolve("gpu-material-proof.json"), report);
             System.out.println("GPU material proof passed: " + proof.frames + " authored frames");
         }
@@ -159,9 +165,21 @@ public final class GpuMaterialProof {
 
         private int[] render(PreviewMesh mesh, MeshAppearance appearance, Set<Integer> visible)
                 throws IOException {
-            var view = new StaticMeshRenderer.View(0, 0, 1, false, visible);
+            return render(
+                    mesh,
+                    appearance,
+                    new StaticMeshRenderer.View(0, 0, 1, false, visible),
+                    appearance != null);
+        }
+
+        private int[] render(
+                PreviewMesh mesh,
+                MeshAppearance appearance,
+                StaticMeshRenderer.View view,
+                boolean textured)
+                throws IOException {
             try (var renderer = new BgfxModelRenderer(GpuModelScene.create(mesh, appearance))) {
-                renderer.draw(WIDTH, HEIGHT, view, appearance != null);
+                renderer.draw(WIDTH, HEIGHT, view, textured);
                 bgfx_blit(1, staging, 0, 0, 0, 0, color, 0, 0, 0, 0, WIDTH, HEIGHT, 1);
                 int ready = bgfx_read_texture(staging, pixels, 0, 0);
                 long deadline = System.nanoTime() + 10_000_000_000L;
@@ -311,6 +329,234 @@ public final class GpuMaterialProof {
                     "Native unsigned16 compaction preserves index65535");
         }
 
+        private void checkRichCombinerAndUnlit(Path directory) throws IOException {
+            var mesh = quad(false);
+            var unlit =
+                    new MeshAppearance(
+                            mesh,
+                            UV,
+                            List.of(
+                                    new MeshAppearance.Surface(
+                                            0,
+                                            material(
+                                                    MeshAppearance.Lighting.UNLIT,
+                                                    MeshAppearance.Blend.OPAQUE,
+                                                    0))),
+                            List.of(new MeshAppearance.Texture(1, 1, new int[] {0x00123456})));
+            assertPixel(
+                    render(mesh, unlit, VIEW, true),
+                    128,
+                    128,
+                    18,
+                    52,
+                    86,
+                    0,
+                    "Unlit opaque preserves RGB and ignores zero texture alpha");
+            assertPixel(
+                    render(
+                            mesh,
+                            unlit,
+                            new StaticMeshRenderer.View(.4, .3, 1, false, Set.of()),
+                            true),
+                    128,
+                    128,
+                    18,
+                    52,
+                    86,
+                    0,
+                    "Unlit color is camera independent");
+            var environment =
+                    new MeshAppearance.Material(
+                            MeshAppearance.Combiner.OPAQUE_MOD2X_NA,
+                            List.of(
+                                    stage(0, MeshAppearance.Coordinate.UV0),
+                                    stage(1, MeshAppearance.Coordinate.ENV_SPHERE)),
+                            MeshAppearance.Lighting.LIT,
+                            MeshAppearance.Blend.OPAQUE);
+            var appearance =
+                    new MeshAppearance(
+                            mesh,
+                            UV,
+                            new float[] {0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1},
+                            List.of(new MeshAppearance.Surface(0, environment)),
+                            List.of(
+                                    new MeshAppearance.Texture(1, 1, new int[] {0x00cc9966}),
+                                    new MeshAppearance.Texture(1, 1, new int[] {0x00cc6633})));
+            int[] image = render(mesh, appearance, VIEW, true);
+            // Known native normal +Z gives legacy intensity .28+.72*.6=.712.
+            // RGB=2*(204,153,102)*(204,102,51)/255*.712, alpha ignored.
+            assertPixel(
+                    image,
+                    128,
+                    128,
+                    232,
+                    87,
+                    29,
+                    1,
+                    "NA modulation, alpha ignore and deferred clamping");
+            writeImage(directory.resolve("gpu-rich-na.png"), image);
+        }
+
+        private void checkVertexEnvironmentOracle(Path directory) throws IOException {
+            var mesh =
+                    new PreviewMesh(
+                            new float[] {1, -1, -1, -1, 1, -1, 0, 0, 1},
+                            new int[] {0, 1, 2},
+                            List.of(new PreviewMesh.Part(0, 0, 3)));
+            float h = (float) Math.sqrt(.5);
+            int[] gradient = new int[256 * 256];
+            for (int y = 0; y < 256; y++)
+                for (int x = 0; x < 256; x++) gradient[y * 256 + x] = (x << 16) | (y << 8) | 31;
+            var environment =
+                    new MeshAppearance.Material(
+                            MeshAppearance.Combiner.OPAQUE_MOD2X_NA,
+                            List.of(
+                                    stage(0, MeshAppearance.Coordinate.UV0),
+                                    stage(1, MeshAppearance.Coordinate.ENV_SPHERE)),
+                            MeshAppearance.Lighting.LIT,
+                            MeshAppearance.Blend.OPAQUE);
+            var appearance =
+                    new MeshAppearance(
+                            mesh,
+                            new float[6],
+                            new float[] {1, 0, 0, h, h, 0, h, 0, h},
+                            List.of(new MeshAppearance.Surface(0, environment)),
+                            List.of(
+                                    new MeshAppearance.Texture(1, 1, new int[] {0x00404040}),
+                                    new MeshAppearance.Texture(256, 256, gradient)));
+            var view = new StaticMeshRenderer.View(0, 0, Math.sqrt(3) * 3.2 / 3, false, Set.of());
+            int[] image = render(mesh, appearance, view, true);
+            // Independent eye fixture P=(-1,-1,-2),(1,-1,-4),(0,1,-3).
+            // At pixel center (101.5,180.5), projected triangle barycentrics give
+            // perspective weights (.4617316017,.2322943723,.3059740260).
+            // PER-VERTEX ENV => UV(.5391215616,.5525187074), texel(138,141).
+            // Independently interpolated legacy light=.7687447431 yields RGB(53,54,12).
+            assertPixel(
+                    image,
+                    101,
+                    180,
+                    53,
+                    54,
+                    12,
+                    1,
+                    "Vertex ENV interpolation and signed sphere convention");
+            writeImage(directory.resolve("gpu-rich-env-interior.png"), image);
+        }
+
+        private void checkAdditiveDepthAndOrder() throws IOException {
+            for (int alpha : new int[] {0, 128}) {
+                var pair = additivePair(alpha, 0);
+                assertPixel(
+                        render(pair.mesh(), pair, VIEW, true),
+                        128,
+                        128,
+                        alpha == 0 ? 10 : 60,
+                        alpha == 0 ? 20 : 60,
+                        alpha == 0 ? 30 : 60,
+                        1,
+                        "Additive alpha, coplanar LEQUAL and opaque-first phase");
+            }
+            var hidden = additivePair(128, -.5f);
+            assertPixel(
+                    render(hidden.mesh(), hidden, VIEW, true),
+                    128,
+                    128,
+                    10,
+                    20,
+                    30,
+                    0,
+                    "Opaque foreground occludes additive behind it");
+            var two = twoAdditiveCards();
+            assertPixel(
+                    render(two.mesh(), two, VIEW, true),
+                    128,
+                    128,
+                    60,
+                    60,
+                    60,
+                    1,
+                    "Front additive triangle cannot depth-occlude later glow");
+        }
+
+        private void checkRichOrdinalFirstWins() throws IOException {
+            var pair = additivePair(255, 0);
+            var appearance =
+                    new MeshAppearance(
+                            pair.mesh(),
+                            new float[16],
+                            List.of(
+                                    new MeshAppearance.Surface(
+                                            1,
+                                            material(
+                                                    MeshAppearance.Lighting.UNLIT,
+                                                    MeshAppearance.Blend.OPAQUE,
+                                                    1)),
+                                    new MeshAppearance.Surface(
+                                            0,
+                                            material(
+                                                    MeshAppearance.Lighting.UNLIT,
+                                                    MeshAppearance.Blend.OPAQUE,
+                                                    0))),
+                            List.of(
+                                    new MeshAppearance.Texture(1, 1, new int[] {0xffff0000}),
+                                    new MeshAppearance.Texture(1, 1, new int[] {0xff0000ff})));
+            assertPixel(
+                    render(appearance.mesh(), appearance, VIEW, true),
+                    128,
+                    128,
+                    255,
+                    0,
+                    0,
+                    0,
+                    "Rich opaque phase follows section ordinal, not material-list order");
+        }
+
+        private void checkRigidCardCameraAndDiagnostics(Path directory) throws IOException {
+            var card = rigidCard(.002f);
+            int[] first = render(card.mesh(), card, VIEW, true);
+            int[] turned =
+                    render(
+                            card.mesh(),
+                            card,
+                            new StaticMeshRenderer.View(.7, .4, 1, false, Set.of()),
+                            true);
+            int[] reversed =
+                    render(
+                            card.mesh(),
+                            card,
+                            new StaticMeshRenderer.View(-1.1, -.5, 1, false, Set.of()),
+                            true);
+            for (int y : new int[] {115, 155})
+                for (int x : new int[] {115, 140}) {
+                    require(
+                            first[y * WIDTH + x] == turned[y * WIDTH + x]
+                                    && first[y * WIDTH + x] == reversed[y * WIDTH + x],
+                            "Rigid card UV corners remain screen aligned around nonorigin pivot");
+                }
+            // Textures OFF overrides source ADD/unlit/alpha with flat neutral opaque diagnostic.
+            int[] neutral = render(card.mesh(), card, VIEW, false);
+            assertPixel(
+                    neutral,
+                    128,
+                    128,
+                    151,
+                    140,
+                    122,
+                    1,
+                    "Card neutral diagnostic uses eye-space legacy light");
+            var depth = rigidCard(.5f);
+            int[] shifted = render(depth.mesh(), depth, VIEW, true);
+            int count = 0;
+            for (int x = 0; x < WIDTH; x++) if (shifted[128 * WIDTH + x] != CLEAR) count++;
+            // Radius = sqrt(3)*sqrt(.25^2+.5^2+.5^2), depth=radius*3.2+.5.
+            // Projected full width is about34.36px; flattening offsetX gives about38.49px.
+            require(
+                    count >= 33 && count <= 35,
+                    "Billboard local X contributes eye depth rather than being flattened");
+            writeImage(directory.resolve("gpu-rich-billboard.png"), first);
+            writeImage(directory.resolve("gpu-rich-billboard-neutral.png"), neutral);
+        }
+
         @Override
         public void close() {
             if (initialized) {
@@ -330,6 +576,135 @@ public final class GpuMaterialProof {
                 pixels = null;
             }
         }
+    }
+
+    private static MeshAppearance.TextureStage stage(
+            int texture, MeshAppearance.Coordinate coordinate) {
+        return new MeshAppearance.TextureStage(texture, coordinate, false, false);
+    }
+
+    private static MeshAppearance.Material material(
+            MeshAppearance.Lighting lighting, MeshAppearance.Blend blend, int texture) {
+        return new MeshAppearance.Material(
+                MeshAppearance.Combiner.DIFFUSE,
+                List.of(stage(texture, MeshAppearance.Coordinate.UV0)),
+                lighting,
+                blend);
+    }
+
+    private static MeshAppearance additivePair(int alpha, float x) {
+        var mesh =
+                new PreviewMesh(
+                        new float[] {
+                            x, -1, -1, x, 1, -1, x, 1, 1, x, -1, 1, 0, -1, -1, 0, 1, -1, 0, 1, 1, 0,
+                            -1, 1
+                        },
+                        new int[] {0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7},
+                        List.of(new PreviewMesh.Part(0, 0, 6), new PreviewMesh.Part(0, 6, 6)));
+        return new MeshAppearance(
+                mesh,
+                new float[16],
+                List.of(
+                        new MeshAppearance.Surface(
+                                0,
+                                material(
+                                        MeshAppearance.Lighting.UNLIT,
+                                        MeshAppearance.Blend.ADDITIVE,
+                                        0)),
+                        new MeshAppearance.Surface(
+                                1,
+                                material(
+                                        MeshAppearance.Lighting.UNLIT,
+                                        MeshAppearance.Blend.OPAQUE,
+                                        1))),
+                List.of(
+                        new MeshAppearance.Texture(1, 1, new int[] {alpha << 24 | 0x0064503c}),
+                        new MeshAppearance.Texture(1, 1, new int[] {0xff0a141e})));
+    }
+
+    private static MeshAppearance twoAdditiveCards() {
+        var mesh =
+                new PreviewMesh(
+                        new float[] {
+                            .3f, -1, -1, .3f, 1, -1, .3f, 1, 1, .3f, -1, 1, .1f, -1, -1, .1f, 1, -1,
+                            .1f, 1, 1, .1f, -1, 1, 0, -1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1
+                        },
+                        new int[] {0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7, 8, 9, 10, 8, 10, 11},
+                        List.of(new PreviewMesh.Part(0, 0, 12), new PreviewMesh.Part(0, 12, 6)));
+        return new MeshAppearance(
+                mesh,
+                new float[24],
+                List.of(
+                        new MeshAppearance.Surface(
+                                0,
+                                material(
+                                        MeshAppearance.Lighting.UNLIT,
+                                        MeshAppearance.Blend.ADDITIVE,
+                                        0)),
+                        new MeshAppearance.Surface(
+                                1,
+                                material(
+                                        MeshAppearance.Lighting.UNLIT,
+                                        MeshAppearance.Blend.OPAQUE,
+                                        1))),
+                List.of(
+                        new MeshAppearance.Texture(1, 1, new int[] {0x4064503c}),
+                        new MeshAppearance.Texture(1, 1, new int[] {0xff0a141e})));
+    }
+
+    private static MeshAppearance rigidCard(float offsetX) {
+        var mesh =
+                new PreviewMesh(
+                        new float[] {
+                            1 + offsetX,
+                            1.75f,
+                            2.5f,
+                            1 + offsetX,
+                            2.25f,
+                            2.5f,
+                            1 + offsetX,
+                            2.25f,
+                            3.5f,
+                            1 + offsetX,
+                            1.75f,
+                            3.5f
+                        },
+                        new int[] {0, 1, 2, 0, 2, 3},
+                        List.of(new PreviewMesh.Part(0, 0, 6)));
+        return new MeshAppearance(
+                mesh,
+                UV,
+                new float[0],
+                List.of(
+                        new MeshAppearance.Surface(
+                                0,
+                                material(
+                                        MeshAppearance.Lighting.UNLIT,
+                                        MeshAppearance.Blend.ADDITIVE,
+                                        0))),
+                List.of(new MeshAppearance.Texture(2, 2, QUADRANTS)),
+                List.of(
+                        new MeshAppearance.RigidBillboard(
+                                36, new MeshAppearance.Vec3(1, 2, 3), new int[] {0, 1, 2, 3})));
+    }
+
+    private static void assertPixel(
+            int[] image, int x, int y, int r, int g, int b, int tolerance, String label) {
+        int pixel = image[y * WIDTH + x];
+        require(
+                Math.abs(channel(pixel, 16) - r) <= tolerance
+                        && Math.abs(channel(pixel, 8) - g) <= tolerance
+                        && Math.abs(channel(pixel, 0) - b) <= tolerance
+                        && channel(pixel, 24) == 255,
+                label
+                        + " expectedRGB("
+                        + r
+                        + ","
+                        + g
+                        + ","
+                        + b
+                        + ") actual0x"
+                        + Integer.toHexString(pixel));
     }
 
     private static PreviewMesh quad(boolean reverse) {

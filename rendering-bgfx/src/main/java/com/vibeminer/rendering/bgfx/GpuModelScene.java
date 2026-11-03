@@ -13,7 +13,7 @@ import java.util.Set;
 
 /** Immutable bounded upload snapshot; native allocations and GPU handles belong to its renderer. */
 public final class GpuModelScene {
-    public static final int VERTEX_FLOATS = 8;
+    public static final int VERTEX_FLOATS = 12;
     public static final int VERTEX_BYTES = VERTEX_FLOATS * Float.BYTES;
 
     /** Section ordinal selects materials; recorded part ID selects visibility. */
@@ -25,7 +25,14 @@ public final class GpuModelScene {
             int textureIndex,
             boolean wrapU,
             boolean wrapV,
-            boolean alphaKey) {
+            boolean alphaKey,
+            MeshAppearance.Material material) {
+        public boolean additive(boolean texturesEnabled) {
+            return texturesEnabled
+                    && material != null
+                    && material.blend() == MeshAppearance.Blend.ADDITIVE;
+        }
+
         public boolean textured() {
             return textureIndex >= 0;
         }
@@ -99,11 +106,29 @@ public final class GpuModelScene {
             }
             if (appearance != null) {
                 System.arraycopy(uv, vertex * 2, vertices, target + 6, 2);
+                int group = appearance.billboardGroup(vertex);
+                if (group >= 0) {
+                    var pivot = appearance.billboards().get(group).modelPivot();
+                    vertices[target + 8] = pivot.x();
+                    vertices[target + 9] = pivot.y();
+                    vertices[target + 10] = pivot.z();
+                    vertices[target + 11] = 1;
+                }
             }
         }
         indices = mesh.indices();
-        min = new float[] {mesh.minimum(0), mesh.minimum(1), mesh.minimum(2)};
-        max = new float[] {mesh.maximum(0), mesh.maximum(1), mesh.maximum(2)};
+        min =
+                new float[] {
+                    appearance == null ? mesh.minimum(0) : appearance.minimum(0),
+                    appearance == null ? mesh.minimum(1) : appearance.minimum(1),
+                    appearance == null ? mesh.minimum(2) : appearance.minimum(2)
+                };
+        max =
+                new float[] {
+                    appearance == null ? mesh.maximum(0) : appearance.maximum(0),
+                    appearance == null ? mesh.maximum(1) : appearance.maximum(1),
+                    appearance == null ? mesh.maximum(2) : appearance.maximum(2)
+                };
         var surfaces = new HashMap<Integer, MeshAppearance.Surface>();
         if (appearance != null) {
             for (var surface : appearance.surfaces()) {
@@ -123,7 +148,8 @@ public final class GpuModelScene {
                             surface == null ? -1 : surface.textureIndex(),
                             surface != null && surface.wrapU(),
                             surface != null && surface.wrapV(),
-                            surface != null && surface.alphaKey()));
+                            surface != null && surface.alphaKey(),
+                            surface == null ? null : surface.material()));
         }
         draws = List.copyOf(commands);
         var images = new ArrayList<Texture>();
@@ -143,7 +169,10 @@ public final class GpuModelScene {
         return new GpuModelScene(Objects.requireNonNull(mesh), appearance);
     }
 
-    /** Shared vertices: native XYZ, optional native normal XYZ, UV0; 32-byte stride. */
+    /**
+     * Shared vertices: native XYZ, optional native normal XYZ, UV0 and optional card pivot/marker;
+     * 48-byte stride.
+     */
     public FloatBuffer vertexData() {
         return FloatBuffer.wrap(vertices).asReadOnlyBuffer();
     }
@@ -181,7 +210,10 @@ public final class GpuModelScene {
         return textures;
     }
 
-    /** Exact upload payload bytes, not an estimate of Java/native heap or driver allocations. */
+    /**
+     * Immutable scene payload bytes; derived compact index/edge buffers and driver storage are
+     * separate.
+     */
     public long uploadBytes() {
         return uploadBytes;
     }

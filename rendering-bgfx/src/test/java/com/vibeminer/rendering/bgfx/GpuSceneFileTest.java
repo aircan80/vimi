@@ -50,6 +50,67 @@ final class GpuSceneFileTest {
     }
 
     @Test
+    void sceneBoundaryPreservesRichStagesAndSparseBindCards() throws Exception {
+        var mesh =
+                new PreviewMesh(
+                        new float[] {
+                            0, -1, -1, 0, 1, -1, 0, 0, 1, 2, -.5f, -.5f, 2, .5f, -.5f, 2, .5f, .5f,
+                            2, -.5f, .5f
+                        },
+                        new int[] {0, 1, 2, 3, 4, 5, 3, 5, 6},
+                        List.of(new PreviewMesh.Part(0, 0, 3), new PreviewMesh.Part(0, 3, 6)));
+        var environment =
+                new MeshAppearance.Material(
+                        MeshAppearance.Combiner.OPAQUE_MOD2X_NA,
+                        List.of(
+                                new MeshAppearance.TextureStage(
+                                        0, MeshAppearance.Coordinate.UV0, false, false),
+                                new MeshAppearance.TextureStage(
+                                        1, MeshAppearance.Coordinate.ENV_SPHERE, true, false)),
+                        MeshAppearance.Lighting.LIT,
+                        MeshAppearance.Blend.OPAQUE);
+        var additive =
+                new MeshAppearance.Material(
+                        MeshAppearance.Combiner.DIFFUSE,
+                        List.of(
+                                new MeshAppearance.TextureStage(
+                                        2, MeshAppearance.Coordinate.UV0, false, false)),
+                        MeshAppearance.Lighting.UNLIT,
+                        MeshAppearance.Blend.ADDITIVE);
+        var appearance =
+                new MeshAppearance(
+                        mesh,
+                        new float[14],
+                        new float[] {1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+                        List.of(
+                                new MeshAppearance.Surface(0, environment),
+                                new MeshAppearance.Surface(1, additive)),
+                        List.of(
+                                new MeshAppearance.Texture(1, 1, new int[] {0xff123456}),
+                                new MeshAppearance.Texture(1, 1, new int[] {0x00345678}),
+                                new MeshAppearance.Texture(1, 1, new int[] {0x80567890})),
+                        List.of(
+                                new MeshAppearance.RigidBillboard(
+                                        36,
+                                        new MeshAppearance.Vec3(2, 0, 0),
+                                        new int[] {3, 4, 5, 6})));
+        Path file = directory.resolve("rich.bin");
+        GpuSceneFile.write(file, mesh, appearance, Set.of(0));
+        var restored = GpuSceneFile.read(file);
+        assertEquals(appearance.surfaces(), restored.appearance().surfaces());
+        assertEquals(appearance.billboards(), restored.appearance().billboards());
+        assertEquals(Set.of(0), restored.visibleParts());
+        var scene = GpuModelScene.create(restored.mesh(), restored.appearance());
+        assertEquals(environment, scene.draws().getFirst().material());
+        assertEquals(additive, scene.draws().getLast().material());
+        assertEquals(1f, scene.vertexData().get(3 * GpuModelScene.VERTEX_FLOATS + 11));
+        for (int axis = 0; axis < 3; axis++) {
+            assertEquals(appearance.minimum(axis), scene.minimum(axis));
+            assertEquals(appearance.maximum(axis), scene.maximum(axis));
+        }
+    }
+
+    @Test
     void untexturedEmptyRecordedSelectionIsNotInventedAsAVisiblePart() throws Exception {
         Path file = directory.resolve("scene.bin");
         GpuSceneFile.write(file, mesh(), null, Set.of());

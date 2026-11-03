@@ -3,6 +3,7 @@ package com.vibeminer.rendering.bgfx;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_NORMAL;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_POSITION;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TEXCOORD0;
+import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TEXCOORD1;
 import static org.lwjgl.bgfx.BGFX.BGFX_ATTRIB_TYPE_FLOAT;
 import static org.lwjgl.bgfx.BGFX.BGFX_BUFFER_NONE;
 import static org.lwjgl.bgfx.BGFX.BGFX_CLEAR_COLOR;
@@ -17,6 +18,10 @@ import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MIN_POINT;
 import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MIP_POINT;
 import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_U_CLAMP;
 import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_V_CLAMP;
+import static org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_FUNC_SEPARATE;
+import static org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_ONE;
+import static org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_SRC_ALPHA;
+import static org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_ZERO;
 import static org.lwjgl.bgfx.BGFX.BGFX_STATE_DEPTH_TEST_LEQUAL;
 import static org.lwjgl.bgfx.BGFX.BGFX_STATE_DEPTH_TEST_LESS;
 import static org.lwjgl.bgfx.BGFX.BGFX_STATE_PT_LINES;
@@ -58,6 +63,7 @@ import static org.lwjgl.bgfx.BGFX.bgfx_vertex_layout_add;
 import static org.lwjgl.bgfx.BGFX.bgfx_vertex_layout_begin;
 import static org.lwjgl.bgfx.BGFX.bgfx_vertex_layout_end;
 
+import com.vibeminer.rendering.models.MeshAppearance;
 import com.vibeminer.rendering.models.StaticMeshRenderer;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -74,8 +80,12 @@ final class BgfxModelRenderer implements AutoCloseable {
     private static final short INVALID = (short) 0xffff;
     private final GpuModelScene scene;
     private short vertices = INVALID, indices = INVALID, edges = INVALID, program = INVALID;
-    private short matrixUniform = INVALID, lightUniform = INVALID, materialUniform = INVALID;
-    private short sampler = INVALID, white = INVALID;
+    private short eyeUniform = INVALID,
+            projectionUniform = INVALID,
+            lightUniform = INVALID,
+            materialUniform = INVALID,
+            flagsUniform = INVALID;
+    private short sampler = INVALID, environmentSampler = INVALID, white = INVALID;
     private final List<Short> textures = new ArrayList<>();
     private boolean closed;
 
@@ -85,11 +95,16 @@ final class BgfxModelRenderer implements AutoCloseable {
             int renderer = bgfx_get_renderer_type();
             String profile = shaderProfile(renderer);
             program = program(profile);
-            matrixUniform = valid(bgfx_create_uniform("u_modelToClip", BGFX_UNIFORM_TYPE_MAT4, 1));
+            eyeUniform = valid(bgfx_create_uniform("u_modelToEye", BGFX_UNIFORM_TYPE_MAT4, 1));
+            projectionUniform =
+                    valid(bgfx_create_uniform("u_projection", BGFX_UNIFORM_TYPE_MAT4, 1));
             lightUniform =
-                    valid(bgfx_create_uniform("u_lightDirection", BGFX_UNIFORM_TYPE_VEC4, 1));
+                    valid(bgfx_create_uniform("u_lightDirection", BGFX_UNIFORM_TYPE_VEC4, 2));
             materialUniform = valid(bgfx_create_uniform("u_material", BGFX_UNIFORM_TYPE_VEC4, 1));
+            flagsUniform = valid(bgfx_create_uniform("u_drawFlags", BGFX_UNIFORM_TYPE_VEC4, 1));
             sampler = valid(bgfx_create_uniform("s_diffuse", BGFX_UNIFORM_TYPE_SAMPLER, 1));
+            environmentSampler =
+                    valid(bgfx_create_uniform("s_environment", BGFX_UNIFORM_TYPE_SAMPLER, 1));
             try (var layout = BGFXVertexLayout.calloc()) {
                 bgfx_vertex_layout_begin(layout, renderer);
                 bgfx_vertex_layout_add(
@@ -98,7 +113,12 @@ final class BgfxModelRenderer implements AutoCloseable {
                         layout, BGFX_ATTRIB_NORMAL, 3, BGFX_ATTRIB_TYPE_FLOAT, false, false);
                 bgfx_vertex_layout_add(
                         layout, BGFX_ATTRIB_TEXCOORD0, 2, BGFX_ATTRIB_TYPE_FLOAT, false, false);
+                bgfx_vertex_layout_add(
+                        layout, BGFX_ATTRIB_TEXCOORD1, 4, BGFX_ATTRIB_TYPE_FLOAT, false, false);
                 bgfx_vertex_layout_end(layout);
+                if (layout.stride() != GpuModelScene.VERTEX_BYTES)
+                    throw new IllegalStateException(
+                            "GPU vertex layout disagrees with packed scene");
                 FloatBuffer raw = MemoryUtil.memAllocFloat(scene.vertexData().remaining());
                 try {
                     raw.put(scene.vertexData()).flip();
@@ -148,7 +168,7 @@ final class BgfxModelRenderer implements AutoCloseable {
             }
             bgfx_set_view_mode(0, BGFX_VIEW_MODE_SEQUENTIAL);
             bgfx_set_view_clear(0, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0x14202aff, 1.0f, 0);
-        } catch (IOException | RuntimeException failure) {
+        } catch (IOException | RuntimeException | Error failure) {
             close();
             throw failure;
         }
@@ -184,21 +204,29 @@ final class BgfxModelRenderer implements AutoCloseable {
         bgfx_set_view_rect(0, 0, 0, width, height);
         bgfx_touch(0);
         try (var stack = MemoryStack.stackPush()) {
-            var matrix = stack.mallocFloat(16).put(camera.modelToClip()).flip();
-            var light = stack.mallocFloat(4).put(camera.lightDirection()).flip();
+            var eye = stack.mallocFloat(16).put(camera.modelToEye()).flip();
+            var projection = stack.mallocFloat(16).put(camera.projection()).flip();
+            var light =
+                    stack.mallocFloat(8)
+                            .put(camera.lightDirection())
+                            .put(camera.eyeLightDirection())
+                            .flip();
             var material = stack.mallocFloat(4);
-            for (var draw : scene.draws()) {
-                if (!draw.visible(view.parts(), qualifiedMaterialsOnly) || draw.indexCount() == 0) {
-                    continue;
+            var flags = stack.mallocFloat(4);
+            // Stable opaque/cutout phase, then additive. Source admission excludes other blends.
+            for (int phase = 0; phase < 2; phase++) {
+                for (var draw : scene.draws()) {
+                    if (!draw.visible(view.parts(), qualifiedMaterialsOnly)
+                            || draw.indexCount() == 0
+                            || draw.additive(textured) != (phase == 1)) continue;
+                    submit(draw, eye, projection, light, material, flags, textured, false);
                 }
-                submit(draw, matrix, light, material, textured, false);
             }
             if (view.wireframe()) {
                 for (var draw : scene.draws()) {
                     if (draw.visible(view.parts(), qualifiedMaterialsOnly)
-                            && draw.indexCount() != 0) {
-                        submit(draw, matrix, light, material, textured, true);
-                    }
+                            && draw.indexCount() != 0)
+                        submit(draw, eye, projection, light, material, flags, textured, true);
                 }
             }
         }
@@ -206,41 +234,63 @@ final class BgfxModelRenderer implements AutoCloseable {
 
     private void submit(
             GpuModelScene.Draw draw,
-            FloatBuffer matrix,
+            FloatBuffer eye,
+            FloatBuffer projection,
             FloatBuffer light,
             FloatBuffer material,
+            FloatBuffer flags,
             boolean textured,
             boolean edgePass) {
-        boolean sample = textured && draw.textured();
+        var value = draw.material();
+        boolean sample = textured && value != null;
         material.clear()
                 .put(sample ? 1f : 0f)
-                .put(draw.alphaKey() ? 1f : 0f)
+                .put(sample ? value.combiner().code() : MeshAppearance.Combiner.DIFFUSE.code())
+                .put(sample ? value.lighting().code() : MeshAppearance.Lighting.LIT.code())
+                .put(sample ? value.blend().code() : MeshAppearance.Blend.OPAQUE.code())
+                .flip();
+        flags.clear()
                 .put(scene.hasNormals() ? 1f : 0f)
                 .put(edgePass ? 1f : 0f)
+                .put(0)
+                .put(0)
                 .flip();
-        bgfx_set_uniform(matrixUniform, matrix, 1);
-        bgfx_set_uniform(lightUniform, light, 1);
+        bgfx_set_uniform(eyeUniform, eye, 1);
+        bgfx_set_uniform(projectionUniform, projection, 1);
+        bgfx_set_uniform(lightUniform, light, 2);
         bgfx_set_uniform(materialUniform, material, 1);
-        int flags = BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT | BGFX_SAMPLER_MIP_POINT;
-        if (!draw.wrapU()) {
-            flags |= BGFX_SAMPLER_U_CLAMP;
-        }
-        if (!draw.wrapV()) {
-            flags |= BGFX_SAMPLER_V_CLAMP;
-        }
-        bgfx_set_texture(0, sampler, sample ? textures.get(draw.textureIndex()) : white, flags);
+        bgfx_set_uniform(flagsUniform, flags, 1);
+        bind(0, sampler, sample ? value.stages().getFirst() : null);
+        bind(
+                1,
+                environmentSampler,
+                sample && value.stages().size() == 2 ? value.stages().get(1) : null);
         bgfx_set_vertex_buffer(0, vertices, 0, scene.vertexCount());
         bgfx_set_index_buffer(
                 edgePass ? edges : indices,
                 draw.firstIndex() * (edgePass ? 2 : 1),
                 draw.indexCount() * (edgePass ? 2 : 1));
         long state = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A;
-        state |=
-                edgePass
-                        ? BGFX_STATE_DEPTH_TEST_LEQUAL | BGFX_STATE_PT_LINES
-                        : BGFX_STATE_DEPTH_TEST_LESS | BGFX_STATE_WRITE_Z;
+        if (edgePass) state |= BGFX_STATE_DEPTH_TEST_LEQUAL | BGFX_STATE_PT_LINES;
+        else if (draw.additive(textured)) {
+            state |=
+                    BGFX_STATE_DEPTH_TEST_LEQUAL
+                            | BGFX_STATE_BLEND_FUNC_SEPARATE(
+                                    BGFX_STATE_BLEND_SRC_ALPHA,
+                                    BGFX_STATE_BLEND_ONE,
+                                    BGFX_STATE_BLEND_ZERO,
+                                    BGFX_STATE_BLEND_ONE);
+        } else state |= BGFX_STATE_DEPTH_TEST_LESS | BGFX_STATE_WRITE_Z;
         bgfx_set_state(state, 0);
         bgfx_submit(0, program, 0, BGFX_DISCARD_ALL);
+    }
+
+    private void bind(int slot, short uniform, MeshAppearance.TextureStage stage) {
+        int flags = BGFX_SAMPLER_MIN_POINT | BGFX_SAMPLER_MAG_POINT | BGFX_SAMPLER_MIP_POINT;
+        if (stage == null || !stage.wrapU()) flags |= BGFX_SAMPLER_U_CLAMP;
+        if (stage == null || !stage.wrapV()) flags |= BGFX_SAMPLER_V_CLAMP;
+        bgfx_set_texture(
+                slot, uniform, stage == null ? white : textures.get(stage.textureIndex()), flags);
     }
 
     private static short uploadIndices(IntBuffer input, boolean lines) {
@@ -329,7 +379,16 @@ final class BgfxModelRenderer implements AutoCloseable {
         if (program != INVALID) {
             bgfx_destroy_program(program);
         }
-        for (short uniform : new short[] {matrixUniform, lightUniform, materialUniform, sampler}) {
+        for (short uniform :
+                new short[] {
+                    eyeUniform,
+                    projectionUniform,
+                    lightUniform,
+                    materialUniform,
+                    flagsUniform,
+                    sampler,
+                    environmentSampler
+                }) {
             if (uniform != INVALID) {
                 bgfx_destroy_uniform(uniform);
             }

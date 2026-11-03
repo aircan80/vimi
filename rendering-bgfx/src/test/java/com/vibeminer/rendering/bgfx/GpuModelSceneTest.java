@@ -34,14 +34,16 @@ final class GpuModelSceneTest {
         var scene = GpuModelScene.create(mesh, appearance);
         assertEquals(3, scene.vertexCount());
         assertEquals(3, scene.indexCount());
-        assertEquals(32, GpuModelScene.VERTEX_BYTES);
+        assertEquals(48, GpuModelScene.VERTEX_BYTES);
         assertTrue(scene.hasNormals());
         var vertices = scene.vertexData();
         float[] values = new float[vertices.remaining()];
         vertices.get(values);
         assertArrayEquals(
                 new float[] {
-                    0, -1, -1, 1, 0, 0, 0, 0, 0, 1, -1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 1, .5f, 1
+                    0, -1, -1, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 1, -1, 0, 1, 0, 1, 0, 0, 0, 0, 0,
+                    0, 0, 1, 0, 0, 1, .5f, 1, 0, 0, 0, 0
                 },
                 values);
         int[] indices = new int[3];
@@ -62,7 +64,7 @@ final class GpuModelSceneTest {
         byte[] rgba = new byte[4];
         scene.textures().getFirst().rgba8().get(rgba);
         assertArrayEquals(new byte[] {0x12, 0x34, 0x56, (byte) 0x80}, rgba);
-        assertEquals(3L * 32 + 3 * 4 + 4, scene.uploadBytes());
+        assertEquals(3L * 48 + 3 * 4 + 4, scene.uploadBytes());
     }
 
     @Test
@@ -84,6 +86,55 @@ final class GpuModelSceneTest {
         assertTrue(scene.draws().getFirst().visible(Set.of(0), false));
         assertTrue(scene.draws().getLast().visible(Set.of(0), false));
         assertFalse(scene.draws().getLast().visible(Set.of(7), true));
+    }
+
+    @Test
+    void rigidCardsPackSparsePivotsAndUseConservativeBoundsWithoutChangingRestVertices() {
+        var mesh =
+                new PreviewMesh(
+                        new float[] {1, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1},
+                        new int[] {0, 1, 2, 0, 2, 3},
+                        List.of(new PreviewMesh.Part(0, 0, 6)));
+        var material =
+                new MeshAppearance.Material(
+                        MeshAppearance.Combiner.DIFFUSE,
+                        List.of(
+                                new MeshAppearance.TextureStage(
+                                        0, MeshAppearance.Coordinate.UV0, false, false)),
+                        MeshAppearance.Lighting.UNLIT,
+                        MeshAppearance.Blend.ADDITIVE);
+        var appearance =
+                new MeshAppearance(
+                        mesh,
+                        new float[] {0, 0, 1, 0, 1, 1, 0, 1},
+                        new float[0],
+                        List.of(new MeshAppearance.Surface(0, material)),
+                        List.of(new MeshAppearance.Texture(1, 1, new int[] {0x80123456})),
+                        List.of(
+                                new MeshAppearance.RigidBillboard(
+                                        36,
+                                        new MeshAppearance.Vec3(1, .5f, .5f),
+                                        new int[] {0, 1, 2, 3})));
+        var scene = GpuModelScene.create(mesh, appearance);
+        assertEquals(material, scene.draws().getFirst().material());
+        assertTrue(scene.draws().getFirst().additive(true));
+        assertFalse(scene.draws().getFirst().additive(false));
+        var packed = scene.vertexData();
+        for (int vertex = 0; vertex < 4; vertex++) {
+            int offset = vertex * GpuModelScene.VERTEX_FLOATS;
+            assertEquals(1f, packed.get(offset));
+            assertEquals(1f, packed.get(offset + 8));
+            assertEquals(.5f, packed.get(offset + 9));
+            assertEquals(.5f, packed.get(offset + 10));
+            assertEquals(1f, packed.get(offset + 11));
+        }
+        assertTrue(scene.minimum(0) < mesh.minimum(0));
+        assertTrue(scene.maximum(0) > mesh.maximum(0));
+        for (int axis = 0; axis < 3; axis++) {
+            assertEquals(appearance.minimum(axis), scene.minimum(axis));
+            assertEquals(appearance.maximum(axis), scene.maximum(axis));
+        }
+        assertEquals(4L * 48 + 6 * 4 + 4, scene.uploadBytes());
     }
 
     @Test
@@ -121,6 +172,6 @@ final class GpuModelSceneTest {
         var scene = GpuModelScene.create(mesh, null);
         assertEquals(65536, scene.vertexCount());
         assertEquals(65535, scene.indexData().get(2));
-        assertEquals(65536L * 32 + 12, scene.uploadBytes());
+        assertEquals(65536L * 48 + 12, scene.uploadBytes());
     }
 }
