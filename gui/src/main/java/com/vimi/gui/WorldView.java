@@ -68,6 +68,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
             status = new Label("Choose a map"),
             position = new Label();
     private final Canvas tiles = new Canvas(512, 512);
+    private final Label inventoryMessage = new Label("Choose a map to see its terrain inventory.");
+    private final StackPane tileInventory = new StackPane(tiles, inventoryMessage);
     private final BorderPane content = new BorderPane();
     private final ImageView image = new ImageView();
     private final StackPane viewport = new StackPane(image);
@@ -309,7 +311,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         (o, a, b) -> {
                             stopArea(true);
                             areaEntry = null;
-                            if (b != null)
+                            if (b != null && (inventory == null || inventory.world() == null
+                                    || inventory.world().tiles().isEmpty())) {
+                                status.setText(inventoryMessage.getText());
+                            } else if (b != null)
                                 status.setText(
                                         b
                                                 + " · Area #"
@@ -337,6 +342,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var split = new SplitPane(sidebar, content);
         split.setDividerPositions(.23);
         setCenter(split);
+        inventoryMessage.setId("world-inventory-message");
+        inventoryMessage.setWrapText(true);
+        inventoryMessage.setMaxWidth(400);
+        inventoryMessage.setStyle("-fx-background-color: #f3f6f3; -fx-padding: 18; -fx-text-fill: #263c31;");
+        tileInventory.setMinWidth(512);
+        tileInventory.setMaxWidth(512);
         tiles.setId("world-tiles");
         tiles.setAccessibleText("Full-map terrain tile inventory");
         tiles.setOnMouseClicked(
@@ -540,6 +551,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         image.setImage(null);
         maps.setDisable(true);
         heading.setText("World");
+        inventoryMessage.setText("Choose a map to see its terrain inventory.");
         showInventory();
     }
 
@@ -637,6 +649,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         show(firstFrameActivity, false);
         frameGeneration.incrementAndGet();
         latest.set(null);
+        inventoryMessage.setText("Loading terrain tile inventory…");
         heading.setText(map + " · Map #" + map.id());
         zones.getItems()
                 .setAll(
@@ -660,10 +673,14 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                             if (error != null
                                                     || data == null
                                                     || data.world() == null) {
-                                                status.setText(
-                                                        data == null
-                                                                ? "Terrain inventory unavailable"
-                                                                : data.issue());
+                                                String message = data != null && data.issue() != null
+                                                        && !data.issue().isBlank() ? data.issue()
+                                                        : "Terrain inventory unavailable for this map. Select another map or try again.";
+                                                inventoryMessage.setText(message);
+                                                status.setText(message);
+                                                open.setDisable(true);
+                                                drawTiles();
+                                                areaButtons();
                                                 return;
                                             }
                                             inventory = data;
@@ -683,8 +700,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                             .orElse(null);
                                             open.setDisable(selected == null);
                                             drawTiles();
-                                            status.setText(
-                                                    data.world().tiles().size()
+                                            status.setText(data.world().tiles().isEmpty()
+                                                    ? inventoryMessage.getText()
+                                                    : data.world().tiles().size()
                                                             + " terrain tiles · Select a tile and"
                                                             + " open the explorer"
                                                             + (data.world().globalModel()
@@ -697,7 +715,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         return inventory == null || inventory.world() == null
                 ? "Select an area after the terrain inventory loads. Missing files may be"
                         + " downloaded."
-                : "Find terrain checks "
+                : inventory.world().tiles().isEmpty()
+                        ? emptyInventoryMessage()
+                        : "Find terrain checks "
                         + inventory.world().tiles().size()
                         + " files for this exact area. Missing files may be downloaded; you can"
                         + " cancel.";
@@ -710,6 +730,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         && !explorer
                         && inventory != null
                         && inventory.world() != null
+                        && !inventory.world().tiles().isEmpty()
                         && zones.getSelectionModel().getSelectedItem() != null
                         && zones.getSelectionModel().getSelectedItem().id() > 0
                         && revision == revisions.getAsLong()
@@ -926,13 +947,29 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                 areaMatches,
                                 new Label("Terrain tiles below cover the entire selected map."),
                                 new Label("TERRAIN TILES · click to choose a starting location"),
-                                tiles)));
+                                tileInventory)));
         content.setBottom(new HBox(10, open));
         drawTiles();
         areaButtons();
     }
 
+    private String emptyInventoryMessage() {
+        return inventory.world().globalModel()
+                ? "This map records a global world model instead of terrain tiles. World-model previews are not available yet."
+                : "No terrain tiles are recorded for this map. Select another map to explore terrain.";
+    }
+
     private void drawTiles() {
+        boolean empty = inventory == null || inventory.world() == null || inventory.world().tiles().isEmpty();
+        if (inventory != null && inventory.world() != null && inventory.world().tiles().isEmpty()) {
+            inventoryMessage.setText(emptyInventoryMessage());
+        }
+        double height = empty ? 224 : 512;
+        tiles.setHeight(height);
+        tileInventory.setMinHeight(height);
+        tileInventory.setMaxHeight(height);
+        inventoryMessage.setVisible(empty);
+        inventoryMessage.setManaged(empty);
         // WDT/ADT filename x is the north/south row, y the east/west column.
         // Keep file and explorer coordinates intact; transpose only the 2D presentation.
         var g = tiles.getGraphicsContext2D();

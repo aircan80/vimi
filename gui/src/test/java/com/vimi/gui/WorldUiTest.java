@@ -27,6 +27,7 @@ import java.util.function.BooleanSupplier;
 public final class WorldUiTest {
     private WorldUiTest() {}
 
+    private static final CompletableFuture<Void> emptyChecks = new CompletableFuture<>();
     private static final CompletableFuture<Void> areaChecks = new CompletableFuture<>();
     private static final CompletableFuture<Void> orientationChecks = new CompletableFuture<>();
 
@@ -36,12 +37,14 @@ public final class WorldUiTest {
                 (value, error) -> {
                     if (error != null) done.completeExceptionally(error);
                 });
+        emptyChecks.whenComplete((value,error) -> { if(error!=null) done.completeExceptionally(error); });
         var closes = new AtomicInteger();
         Platform.startup(
                 () ->
                         Platform.runLater(
                                 () -> {
                                     Platform.setImplicitExit(false);
+                                    emptyInventoryStates();
                                     gridOrientation();
                                     areaNavigation();
                                     var stage = new Stage();
@@ -358,6 +361,7 @@ public final class WorldUiTest {
         try {
             done.get(30, TimeUnit.SECONDS);
             orientationChecks.get(10, TimeUnit.SECONDS);
+            emptyChecks.get(10, TimeUnit.SECONDS);
             areaChecks.get(15, TimeUnit.SECONDS);
         } finally {
             Platform.exit();
@@ -1007,6 +1011,79 @@ public final class WorldUiTest {
                             orientationChecks);
                 },
                 orientationChecks);
+    }
+
+    private static void emptyInventoryStates() {
+        var records = java.util.stream.IntStream.range(0, 6)
+                .mapToObj(i -> new WorldService.MapInfo(i, "Empty-state case " + i, "Authored", 0, 1L))
+                .toList();
+        var delayed = new CompletableFuture<WorldService.Inventory>();
+        BuildWorld handle = new BuildWorld() {
+            public CompletableFuture<WorldService.Catalog> catalog(Cancellation cancel) {
+                return CompletableFuture.completedFuture(new WorldService.Catalog(records,
+                        records.stream().map(m -> new WorldService.Area(m.id()+1,"Area",0,m.id())).toList(), List.of()));
+            }
+            public CompletableFuture<WorldService.Inventory> inventory(WorldService.MapInfo map, Cancellation cancel) {
+                if(map.id()==5) return delayed;
+                if(map.id()==4) return CompletableFuture.failedFuture(new IllegalStateException("Authored inventory failure"));
+                return CompletableFuture.completedFuture(new WorldService.Inventory(map,
+                        map.id()==3 ? null : new WorldFormats.World(map.id()==0
+                            ? List.of(new WorldFormats.Tile(32,32,1,0,0)) : List.of(),map.id()==1),
+                        map.id()==3 ? "Authored WDT unavailable" : null));
+            }
+            public CompletableFuture<WorldService.LoadedTile> tile(WorldService.MapInfo map, WorldFormats.Tile tile, Cancellation cancel) {
+                throw new AssertionError("Empty inventory must never request a terrain tile");
+            }
+            public CompletableFuture<Void> closeAsync() { throw new AssertionError("Borrowed handle"); }
+        };
+        var view = new WorldView(() -> handle, () -> 1);
+        var stage = new Stage();
+        stage.setScene(new Scene(view,1320,850)); stage.show(); view.ensureLoaded();
+        await(() -> ((ListView<?>)view.lookup("#world-maps")).getItems().size()==6,
+                () -> emptyInventoryCase(view,stage,records,delayed,0),emptyChecks);
+    }
+
+    private static void emptyInventoryCase(WorldView view, Stage stage,
+            List<WorldService.MapInfo> maps, CompletableFuture<WorldService.Inventory> delayed, int at) {
+        @SuppressWarnings("unchecked")
+        var choices=(ListView<WorldService.MapInfo>)view.lookup("#world-maps");
+        choices.getSelectionModel().select(maps.get(at));
+        view.applyCss();
+        view.layout();
+        var message=(javafx.scene.control.Label)view.lookup("#world-inventory-message");
+        require(message.isVisible() && message.getText().contains("Loading"),"Inventory overlay explains pending map");
+        if(at==5) {
+            require(view.lookup("#world-local-activity").isVisible(),"Delayed map activity");
+            view.close(); stage.close();
+            delayed.complete(new WorldService.Inventory(maps.get(at),new WorldFormats.World(List.of(),true),null));
+            await(() -> true, () -> {
+                require(!view.lookup("#world-local-activity").isVisible(),"Close clears inventory activity");
+                require(!message.getText().contains("global world model"),"Closed late inventory cannot replace status");
+                System.out.println("World inventory: loading, global model, empty terrain, unavailable/error and closed late completion passed");
+                emptyChecks.complete(null);
+            },emptyChecks);
+            return;
+        }
+        await(() -> !view.lookup("#world-local-activity").isVisible()
+                        && (at==0 ? !message.isVisible() : !message.getText().contains("Loading")),
+                () -> {
+                    var open=(Button)view.lookup("#world-open");
+                    if(at==0) require(!open.isDisabled(),"Readable tile enables explorer and removes overlay");
+                    else {
+                        require(open.isDisabled(),"Empty or unavailable map disables explorer");
+                        @SuppressWarnings("unchecked")
+                        var areas=(ListView<WorldService.Area>)view.lookup("#world-areas");
+                        areas.getSelectionModel().selectFirst();
+                        require(view.lookup("#world-area-find").isDisabled(),"No terrain discovery action for empty/unavailable inventory");
+                        String expected=at==1 ? "global world model" : at==2 ? "No terrain tiles" : at==3 ? "Authored WDT unavailable" : "Terrain inventory unavailable";
+                        require(message.isVisible() && message.getText().contains(expected),"Precise map-local empty explanation "+at);
+                        if(at!=1) require(!message.getText().contains("global world model"),"No guessed world-model classification");
+                        require(message.localToScene(message.getBoundsInLocal()).getMaxY() < view.getScene().getHeight(),
+                                "Empty-map explanation is visible without scrolling");
+                        if(at==1) snapshot(stage.getScene(),System.getProperty("vimi.world.screenshot") == null ? null : System.getProperty("vimi.world.screenshot") + ".empty.png");
+                    }
+                    emptyInventoryCase(view,stage,maps,delayed,at+1);
+                },emptyChecks);
     }
 
     private static void externalRetirementAndFailure(CompletableFuture<Void> done) {
