@@ -20,8 +20,11 @@ All current areas are present. Only Files and Tables request work; other areas
 say Not implemented. The first release compares selected-locale file metadata
 and frozen table inventory, not arbitrary table rows or semantic concepts. No
 schema-complete claim is made. Summary retains session/area/coverage context and
-has no fabricated full-build change totals. Search and status filters explicitly
-apply to the current result page; pagination remains available. Unknown states,
+has no fabricated full-build change totals. The default scan stages findings only: known-equal records are omitted, while
+changed, membership-only, unknown and incomparable observations remain. Scanned
+identity progress is not a finding count. Search and status filters explicitly
+apply to the current findings page; pagination follows the findings continuation.
+There is no All records or Unchanged listing in this initial slice. Unknown states,
 observed-only membership, field evidence dimensions and per-side completeness
 remain visible. The source inspector exposes the captured descriptor dependencies.
 

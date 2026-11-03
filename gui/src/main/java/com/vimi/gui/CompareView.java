@@ -195,18 +195,16 @@ final class CompareView extends BorderPane implements AutoCloseable {
         search.textProperty().addListener((o, a, b) -> filterPage());
         filter.valueProperty().addListener((o, a, b) -> filterPage());
         search.setPromptText("Search this area's labels or IDs");
-        search.setAccessibleText("Search comparison results");
+        search.setAccessibleText("Search current findings page");
         filter.getItems()
                 .setAll(
-                        "Differences",
-                        "All records",
+                        "All findings",
                         "Added",
                         "Removed",
                         "Modified",
                         "Readability changed",
                         "Cannot determine",
-                        "Source / interpretation changed",
-                        "Unchanged");
+                        "Source / interpretation changed");
         filter.getSelectionModel().selectFirst();
         filter.setAccessibleText("Comparison status filter");
         details.setOnAction(
@@ -227,7 +225,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                         new HBox(12, heading, details),
                         new HBox(8, search, filter),
                         text("No comparison has run. Counts are not assessed.", "muted"));
-        results.setAccessibleText("Comparison result page");
+        results.setAccessibleText("Comparison findings page");
         results.setCellFactory(
                 ignored ->
                         new javafx.scene.control.ListCell<>() {
@@ -292,7 +290,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                             ? "Not compared. Choose Files or Tables, then Compare local data."
                                             : "Session-only "
                                                     + runArea
-                                                    + " inventory results. Other areas are not assessed.",
+                                                    + " inventory findings. Known-equal records are omitted; other areas are not assessed.",
                                     "muted"));
             content.getChildren().add(pageStatus);
         } else if (area.equals("Files") || area.equals("Tables")) {
@@ -417,7 +415,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                 words(progress.state().toString())
                         + " · "
                         + progress.observed()
-                        + " observed identities · session-only results. "
+                        + " scanned identities · session-only findings, known-equal records omitted. "
                         + safe(progress.message()));
         pageStatus.setText(
                 "Before: " + coverage(progress.a()) + " · After: " + coverage(progress.b()));
@@ -471,10 +469,8 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                         row -> {
                                             var label = resultLabel(row);
                                             return (mode == null
-                                                            || mode.equals("All records")
-                                                            || (mode.equals("Differences")
-                                                                    ? !label.equals("Unchanged")
-                                                                    : label.equals(mode)))
+                                                            || mode.equals("All findings")
+                                                            || label.equals(mode))
                                                     && (query.isEmpty()
                                                             || (row.key() + " " + row.fields())
                                                                     .toLowerCase(
@@ -482,7 +478,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                                                     .contains(query));
                                         })
                                 .toList());
-        search.setPromptText("Search this result page's IDs and evidence");
+        search.setPromptText("Search this findings page's IDs and evidence");
         if (!results.getItems().isEmpty()) results.getSelectionModel().selectFirst();
         else inspect(null);
     }

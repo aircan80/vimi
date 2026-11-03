@@ -67,6 +67,22 @@ public final class CompareUiTest {
                         view.applyCss();
                         view.layout();
                         require(starts.get() == 0, "Opening must not compare/download");
+                        require(
+                                view.lookupAll(".combo-box").stream()
+                                        .filter(
+                                                node ->
+                                                        node instanceof ComboBox<?> box
+                                                                && box.getItems()
+                                                                        .contains("All findings"))
+                                        .allMatch(
+                                                node ->
+                                                        !((ComboBox<?>) node)
+                                                                        .getItems()
+                                                                        .contains("Unchanged")
+                                                                && !((ComboBox<?>) node)
+                                                                        .getItems()
+                                                                        .contains("All records")),
+                                "Findings-only UI must not promise equal-record listing");
                         @SuppressWarnings("unchecked")
                         var areas =
                                 (ListView<String>)
