@@ -223,3 +223,20 @@ graph identity, retains old/custom UNKNOWN channels, separates provenance from
 semantic field admission and preserves current LIMITED-row cell semantics.
 Implementation must still prove actual native reader/store/reopen/capture round
 trips, unchanged legacy/C# bytes, no local repair and no membership promotion.
+
+
+## Linux implementation checkpoint — 2026-11-03
+
+Revision `f0a6d5b` implements the reviewed native issue-certificate contract, including
+producer capability/sealed content, distinct native identities and metadata,
+actual scoped/unscoped certificate validation, native-first/legacy-on-absence
+selection and capture-only null normalization. Compact raw/Items evidence metadata
+is separate from semantic field admission. Legacy identity/RowCodec/C# goldens are
+unchanged. `GeneratedTableContent` representation changes are documented in the
+tables README.
+
+Root Linux `check assemble` passed; final affected checks plus table C# interop
+passed with 110 table unit, 2 disk/pack pipeline, 3 interoperability and 156 comparison
+tests, all without failures/errors/skips. This is author validation, **not independent
+implementation approval**. Architecture/domain implementation acceptance and hosted
+CI remain required before integration. No live-library test or new release is claimed.

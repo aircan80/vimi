@@ -1,5 +1,46 @@
 # vimi development handoff
 
+## Linux continuation — 2026-11-03
+
+Development remains on Linux x64; no Mac/data transfer is in progress. Native issue
+certificate implementation is on `resume/native-issue-certificates`, rebased onto
+main's transfer checkpoint. Implementation revision `f0a6d5b` completes the audited
+origin/factory, separate native graph identities and certificates, native/legacy
+selection, capture normalization and compact comparison evidence provenance.
+This is locally validated work awaiting independent implementation review and
+hosted CI, not merged or released. Design approvals remain historical and are not
+implementation acceptance. Keep Build Comparison #117 open.
+
+Fresh Linux evidence: root `check assemble` passed, followed by final affected
+`:formats-tables:check :concepts-comparison:check :gui:check` and table C# interop.
+Final counts: 110 table unit, 2 native disk/pack pipeline, 3 C# interop and 156
+comparison tests, with zero failures/errors/skips. GUI contracts include the native
+raw/Items SQLite/pack comparison proof. The extended pipeline proves actual native
+reader → factory → store → reopen → capture, including reopening without original
+encoded bytes. Focused fixtures cover scoped/unscoped identity, mutation rejection,
+legacy UNKNOWN/no repair, native invalid/empty UTF-8, copies, issue-budget limits,
+resource cleanup and provenance-independent field admission. No live-library proof
+or hosted/native-machine acceptance is claimed by these local results.
+
+Use this machine's Java 25 and `/lib64/libsqlite3.so.0`; table interop uses
+`-Pdotnet=/usr/bin/dotnet` and the existing sibling C# reference. Original C# goldens
+remain unchanged. No application data was copied or modified for these tests.
+
+The user hit `NoClassDefFoundError: TableTypes$PageState` after a development build
+replaced a JAR underneath their running `:gui:run` JVM. The class is present in the
+source and rebuilt JAR. A fixed clean-main distribution was built independently
+and copied to ignored `.local/apps/main-767ec16`; launch it with
+`.local/apps/main-767ec16/bin/vimi-gui-prototype` after closing the old app. It uses
+the existing Linux data. Do not rebuild/copy over that running distribution.
+README documents reproducible isolated distribution copies for concurrent app use
+and development. User confirmation of the relaunch is still outstanding.
+
+Next: obtain independent architecture/domain implementation reviews of the actual
+branch, fix findings, verify hosted CI and only then integrate with FF/squash.
+No release should be made before those gates pass. Preserve all legacy/custom
+UNKNOWN channels, LIMITED overrides, session-only results and uncertified membership.
+
+
 ## Mac transfer checkpoint (2026-11-03)
 
 The reboot recovery and Mac transfer are documented in
