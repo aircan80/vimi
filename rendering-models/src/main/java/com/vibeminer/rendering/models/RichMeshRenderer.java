@@ -208,7 +208,22 @@ final class RichMeshRenderer {
                 by = camera.screenY(new PreviewCamera.Eye(b.x, b.y, -b.depth));
         double cx = camera.screenX(new PreviewCamera.Eye(c.x, c.y, -c.depth)),
                 cy = camera.screenY(new PreviewCamera.Eye(c.x, c.y, -c.depth));
-        double area = edge(ax, ay, bx, by, cx, cy);
+        double area = Edge.of(ax, ay, bx, by).value(cx, cy);
+        if (area < 0) {
+            var swap = b;
+            b = c;
+            c = swap;
+            double xSwap = bx;
+            bx = cx;
+            cx = xSwap;
+            double ySwap = by;
+            by = cy;
+            cy = ySwap;
+            area = -area;
+        }
+        var ab = Edge.of(ax, ay, bx, by);
+        var bc = Edge.of(bx, by, cx, cy);
+        var ca = Edge.of(cx, cy, ax, ay);
         if (!Double.isFinite(area) || Math.abs(area) < .001) {
             return budget;
         }
@@ -227,13 +242,14 @@ final class RichMeshRenderer {
                 check(cancel);
             }
             for (int x = minX; x <= maxX; x++) {
-                double wa = edge(bx, by, cx, cy, x + .5, y + .5) / area,
-                        wb = edge(cx, cy, ax, ay, x + .5, y + .5) / area,
-                        wc = 1 - wa - wb;
-                if (wa < 0
-                        || wb < 0
-                        || wc < 0
-                        || edges && Math.min(wa, Math.min(wb, wc)) >= threshold) {
+                double ea = bc.value(x + .5, y + .5),
+                        eb = ca.value(x + .5, y + .5),
+                        ec = ab.value(x + .5, y + .5);
+                if (!bc.owns(ea) || !ca.owns(eb) || !ab.owns(ec)) {
+                    continue;
+                }
+                double wa = ea / area, wb = eb / area, wc = 1 - wa - wb;
+                if (edges && Math.min(wa, Math.min(wb, wc)) >= threshold) {
                     continue;
                 }
                 double z = 1 / (wa / a.depth + wb / b.depth + wc / c.depth);
@@ -324,8 +340,20 @@ final class RichMeshRenderer {
         return (int) Math.max(0, Math.min(255, value));
     }
 
-    private static double edge(double ax, double ay, double bx, double by, double x, double y) {
-        return (x - ax) * (by - ay) - (y - ay) * (bx - ax);
+    /** Canonical line coefficients make reversed shared edges exactly antisymmetric. */
+    private record Edge(double a, double b, double c, boolean inclusive) {
+        static Edge of(double ax, double ay, double bx, double by) {
+            double dx = bx - ax, dy = by - ay;
+            return new Edge(dy, -dx, ay * bx - ax * by, dy > 0 || dy == 0 && dx < 0);
+        }
+
+        double value(double x, double y) {
+            return (a * x + b * y) + c;
+        }
+
+        boolean owns(double value) {
+            return value > 0 || value == 0 && inclusive;
+        }
     }
 
     private static void check(BooleanSupplier cancel) {

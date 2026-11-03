@@ -372,6 +372,53 @@ class RichRendererTest {
                 "Legacy ordinary path still omits the whole near-crossing triangle");
     }
 
+    @Test
+    void additiveQuadSharedDiagonalContributesOnceForBothTriangulationsAndWindings() {
+        float[] positions = {0, -1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1};
+        int[][] triangulations = {
+            {0, 1, 2, 0, 2, 3}, {0, 2, 1, 0, 3, 2}, {0, 1, 3, 1, 2, 3}, {0, 3, 1, 1, 3, 2}
+        };
+        int[] first = null;
+        for (int[] indices : triangulations) {
+            var mesh = new PreviewMesh(positions, indices, List.of(new PreviewMesh.Part(0, 0, 6)));
+            var appearance =
+                    new MeshAppearance(
+                            mesh,
+                            new float[8],
+                            List.of(
+                                    new MeshAppearance.Surface(
+                                            0,
+                                            material(
+                                                    MeshAppearance.Lighting.UNLIT,
+                                                    MeshAppearance.Blend.ADDITIVE))),
+                            List.of(new MeshAppearance.Texture(1, 1, new int[] {0x80640000})));
+            int[] pixels =
+                    StaticMeshRenderer.render(appearance, 200, 200, VIEW, () -> false).argb();
+            int covered = 0;
+            for (int y = 0; y < 200; y++) {
+                for (int x = 0; x < 200; x++) {
+                    int background = 18 + (int) (10.0 * y / 200), value = pixels[y * 200 + x];
+                    int contribution = (value >>> 16 & 255) - background;
+                    assertTrue(
+                            contribution == 0 || contribution == 50,
+                            "Each pixel receives at most one additive contribution across shared edges");
+                    if (contribution == 50) {
+                        covered++;
+                    }
+                    assertEquals(background + 8, value >>> 8 & 255);
+                    assertEquals(background + 10, value & 255);
+                }
+            }
+            assertTrue(covered > 1000, "Authored quad covers a substantial region");
+            if (first == null) {
+                first = pixels;
+            } else {
+                assertArrayEquals(
+                        first, pixels, "Diagonal choice and winding cannot create seams or holes");
+            }
+        }
+    }
+
     private static double[] sphere(double[] p, double[] n) {
         double lp = Math.sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]),
                 ln = Math.sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
