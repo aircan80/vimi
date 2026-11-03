@@ -1,6 +1,16 @@
 # Mac continuation checkpoint — 2026-11-03
 
-## Transfer state
+## Historical checkpoint — superseded by Linux continuation
+
+The user stayed on Linux. These recovery instructions preserve the state before
+implementation resumed; do not follow the old incomplete-certificate prompt as
+current work. Native issue certificates are now merged on main at `6eeaf5a`,
+with independent implementation approval of `66700ad`. Current work is automatic
+**inline** GPU previews and their remaining verification, as recorded at the top
+of [HANDOFF.md](../HANDOFF.md). No Mac/data transfer is active. A future move to
+macOS should use [continue-macos.md](continue-macos.md) against the current checkout.
+
+## Transfer state (historical)
 
 Main before this documentation checkpoint: `c6815467a62ef93e8973975844611d5cf1a0b61c`.
 The checkout was clean after reboot. Session logs and committed branches were
@@ -18,7 +28,7 @@ with 18 uploaded assets across Linux x64/ARM64, macOS Intel/Apple Silicon and
 Windows x64, including checksums and manifests. No new release is needed for
 this documentation transfer.
 
-## Unfinished work to resume
+## Then-unfinished work (historical)
 
 Continue native text-issue certificates, under the existing Build Comparison #117
 scope. Design approval is recorded on the integration branch. Implementation is
@@ -42,7 +52,7 @@ remain locally marked prunable; their committed branches survive. Unsaved edits,
 local toolchains, scratch libraries and Gradle caches are not transferred by Git.
 Do not rely on old session processes or agents still running.
 
-## Resume on the Mac
+## Original Mac resume instructions (historical)
 
 For a fresh checkout:
 

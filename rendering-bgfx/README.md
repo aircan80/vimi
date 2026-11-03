@@ -4,6 +4,42 @@ LWJGL **3.4.3**, bgfx **API156**, core bindings are pinned together. This module
 uses Java25 and depends on the immutable `rendering-models` scene contracts. The
 isolated offscreen helper entry is `com.vibeminer.rendering.bgfx.GpuViewerMain`.
 
+## Inline presentation contract
+
+The user's selected behavior is automatic rendering inside the existing JavaFX
+model viewport. `GpuPreviewService` owns an isolated **offscreen** bgfx child; it
+creates no preview window and needs no GLFW runtime. The previous separate-window
+prototype is superseded.
+
+The child uploads the immutable scene, draws into an offscreen target, and keeps
+three bounded asynchronous texture-readback slots alive until their ready frames.
+Completed top-down BGRA pixels are copied into the bounded mapped-frame bridge.
+The parent validates framing/checksums and copies the newest applicable frame off
+the FX thread; JavaFX performs a bulk image upload into the existing viewport.
+Request generations reject stale delivery; hidden/closed views drain their owner,
+and a failed native path can return to software without a respawn loop. Native
+readback and shutdown waits remain outside the FX thread. These are ownership and
+work-placement rules, not a guarantee that all FX callbacks are inexpensive.
+
+This is **not zero-copy**: GPU readback, shared-memory publication, parent pixel
+copy and FX image upload remain real costs. A GPU backend does not imply a speedup
+for every mesh, driver or view size. The software renderer remains a fallback.
+
+## Evidence and limits at the 2026-11-03 checkpoint
+
+Actual hardware evidence is **Linux Vulkan only**, using authored geometry and
+materials rather than game/user data. `GpuMaterialProof` covers 16 material cases;
+`GpuInlineProof` exercises the real offscreen child and frame transport;
+`GpuInlineUiProof` exercises JavaFX presentation, camera changes, hide/restart and
+failure fallback. The fresh native run recorded cold 324.7 ms, warm
+request-to-copied-frame p50 30.65 ms / p95 39.09 ms, sampled 31.17 fps and copy 1.82 ms.
+These local fixture observations are not live-build or cross-platform benchmarks.
+
+At `93da682`, independent GUI review still has two delivery races under correction;
+final implementation approval and fresh full/hosted checks remain pending. Pinned
+Metal/DX11 resources, runtime classifiers and a successful GPU-free native load
+probe do **not** constitute actual Metal/D3D hardware rendering acceptance.
+
 Supported runtime targets and native classifiers:
 
 | Target | Classifier |

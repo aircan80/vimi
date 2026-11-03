@@ -1,27 +1,53 @@
 # vimi development handoff
 
-## GPU viewport work — 2026-11-03
+## Current Linux / inline GPU checkpoint — 2026-11-03
 
-The user selected Java + LWJGL/bgfx hardware rendering and explicitly authorized
-persistent sub-agent use. GPU work is isolated on `feature/gpu-model-preview` in
-`/tmp/vimi-gpu-integration`; preserve committed branches against reboot and commit
-meaningful checkpoints. The architect's GUI activity audit is complete. Model/GPU
-pending states and the first-load Files/browser fixes are under implementation.
-Native GPU rendering is a separate app-managed GLFW child window: JavaFX has no
-public cross-platform external GPU texture import, and macOS GLFW event loops
-cannot safely share the JavaFX process. A user preference question for inline vs
-separate first delivery was offered; no response has been received as of this note.
-The stated implementation assumption is separate-window first, retaining software
-inline previews and explicit unsupported/failure states. Never imply inline GPU
-presentation, complete WoW materials, animation, or measured FPS without evidence.
+The user remains on Linux and explicitly chose **automatic inline GPU previews**.
+No Mac transfer is active. Native issue certificates are merged on main at
+`6eeaf5a`; the independently approved implementation is `66700ad`, including the
+publication-order correction and focused native acceptance fixtures. Preserve
+legacy/custom UNKNOWN channels, LIMITED overrides, unchanged field admission,
+prepared-local/session-only comparison and uncertified membership. Build
+Comparison #117 has remaining areas; this merge does not complete the epic.
 
-Native issue certificates PR #137 has independent architecture/domain approval at
-`66700ad`; publication correction and full acceptance fixtures are included.
-Final affected Linux checks and unchanged C# interoperability pass. Recorded exact
-independent review evidence is in docs/comparison/review.md. Corrected hosted CI is
-required before FF/squash integration and prerelease.
+GPU work is on `feature/gpu-model-preview`, through local proof revision
+`93da682` at this documentation checkpoint. The production path is an isolated
+**offscreen bgfx child**, not a separate preview window: bounded render/readback
+slots publish completed BGRA frames through a bounded mapped file; the GUI copies
+validated frames off FX and uploads the latest applicable image into its existing
+JavaFX viewport. Heavy native drawing/readback/draining stays in the child. This
+path includes CPU copies and FX image upload; it is not zero-copy and does not
+establish a universal speedup. Software fallback remains available. Earlier
+separate-window/direct-presentation exploration is superseded by the user's inline
+choice. LWJGL core/bgfx 3.4.3 remain pinned; GLFW is removed.
 
-## Linux continuation — 2026-11-03
+Linux authored-data evidence includes actual hardware Vulkan materials, sidecar
+transport and JavaFX inline proof. Fresh native log `/tmp/vimi-gpu-final-native.log`
+reported 16 material cases passing; one local run measured cold 324.7 ms, warm
+request-to-copied-frame p50 30.65 ms / p95 39.09 ms, sampled 31.17 fps and copy 1.82 ms.
+These are machine/fixture-specific observations, not end-to-end live-build or
+cross-platform performance claims. The GUI proof covers camera changes, hidden
+viewport shutdown/restart and failure fallback, but independent review has found
+two delivery races still being corrected. **Final GPU implementation approval is
+pending.** Full fresh checks are also in progress; do not infer a final pass from
+older logs. No actual Metal/D3D hardware rendering or new release is claimed.
+
+The default native runtime probe loads core/bgfx, enumerates native backends,
+constructs native init parameters and checks eight packaged shader hashes without
+opening a GPU. This proves library/resource availability, not driver readiness.
+See [rendering-bgfx/README.md](rendering-bgfx/README.md) for the path and checks,
+and [docs/gui-loading-audit.md](docs/gui-loading-audit.md) for implemented browser/
+race activity feedback and the remaining audited UI gaps. No blanket FX-thread
+responsiveness claim is made.
+
+Next: finish independent GUI delivery/lifetime corrections, rerun the affected
+native/GUI proofs and full checks, then required hosted platform checks before
+integration/release decisions. Continue using isolated distributions when an app
+is running; do not replace its JARs with a development build. The older Mac and
+certificate recovery notes below are historical, not instructions to resume an
+already merged implementation.
+
+## Historical Linux continuation — 2026-11-03 (superseded above)
 
 Development remains on Linux x64; no Mac/data transfer is in progress. Native issue
 certificate implementation is on `resume/native-issue-certificates`, rebased onto
@@ -62,11 +88,12 @@ No release should be made before those gates pass. Preserve all legacy/custom
 UNKNOWN channels, LIMITED overrides, session-only results and uncertified membership.
 
 
-## Mac transfer checkpoint (2026-11-03)
+## Historical Mac transfer checkpoint (2026-11-03)
 
 The reboot recovery and Mac transfer are documented in
 [docs/mac-handoff-2026-11-03.md](docs/mac-handoff-2026-11-03.md).
-Read that checkpoint before the older running notes below. Alpha.9 is now
+That checkpoint records the pre-continuation recovery state; the current Linux
+checkpoint above takes precedence. Alpha.9 is now
 published (18 assets, explicit prerelease), rather than still packaging.
 The native certificate integration branch contains only a partial implementation;
 its committed state is preserved separately from main. Temporary worktrees and

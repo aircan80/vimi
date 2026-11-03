@@ -232,6 +232,7 @@ consumed with `testImplementation testFixtures(project(':object-store'))`.
 - `concepts-world/`: lazy build map/area metadata and terrain access through owned files.
 - `rendering-world/`: perspective terrain camera, clipping and bounded CPU fallback rendering.
 - `rendering-models/`: bounded CPU static-mesh/diffuse rendering, atlas composition and versioned derivatives, independent of JavaFX/GPU support.
+- `rendering-bgfx/`: pinned offscreen native model renderer and bounded frame bridge for automatic inline JavaFX previews, with software fallback; see [runtime and evidence](rendering-bgfx/README.md).
 - `concepts-effects/`: layer 6 item effects, reviewed rules, spell names and definition provenance.
 - `concepts-core/`: shared layer 6 query/cursor rules and bounded reverse relation indexes.
 - `formats-tables/`: layer 5 DB2/definitions, generated tables, query/relations and preload.
