@@ -833,6 +833,11 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                     });
             inspector.getChildren().add(browse);
             tableContent.getChildren().clear();
+        } else if (value instanceof ResearchSource.ItemDetail selected) {
+            var inspection = selected.inspection();
+            showItem(row, inspection.item(), inspection.attributes(), inspection.scope(), selected.effects());
+            if (selected.effectsIssue() != null)
+                inspector.getChildren().add(text(selected.effectsIssue(), "muted"));
         } else if (value instanceof com.vibeminer.concepts.items.ItemInspection inspection) {
             showItem(row, inspection.item(), inspection.attributes(), inspection.scope());
         } else if (value instanceof ItemResult item) {
@@ -861,6 +866,11 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
 
     private void showItem(
             Row row, ItemResult result, ItemAttributes resolvedAttributes, String scope) {
+        showItem(row, result, resolvedAttributes, scope, null);
+    }
+
+    private void showItem(Row row, ItemResult result, ItemAttributes resolvedAttributes, String scope,
+            com.vibeminer.concepts.effects.EffectsTypes.Tooltip effects) {
         var detail = result.detail();
         var tooltip = new VBox(7);
         tooltip.getStyleClass().add("wow-item-tooltip");
@@ -985,6 +995,20 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
                                     "wow-line"));
         for (String issue : attributes.issues()) inspector.getChildren().add(text(issue, "muted"));
         inspector.getChildren().add(text(scope, "muted"));
+        if (effects != null) {
+            for (var effect : effects.lines()) {
+                String content = effect.text();
+                if (content == null || content.isBlank())
+                    content = safe(effect.name()) + " (" + state(effect.state()) + ")";
+                tooltip.getChildren().add(text(effect.trigger() + ": " + content, "wow-stat"));
+                if (effect.state() == com.vibeminer.concepts.effects.EffectsTypes.TextState.UNRESOLVED_TOKENS)
+                    inspector.getChildren().add(text("Client spell expressions are unresolved; source text shown.", "muted"));
+            }
+            if (effects.state() != com.vibeminer.concepts.effects.EffectsTypes.PageState.OK)
+                inspector.getChildren().add(text("Item effects: " + state(effects.state()), "muted"));
+            if (effects.truncated())
+                inspector.getChildren().add(text("Additional item effects omitted by the query limit", "muted"));
+        }
         if (detail.facts() != null) {
             var factRows = new ArrayList<List<String>>();
             for (var fact : detail.facts().facts()) {

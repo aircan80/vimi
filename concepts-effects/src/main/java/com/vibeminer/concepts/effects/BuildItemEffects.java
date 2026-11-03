@@ -17,6 +17,12 @@ public interface BuildItemEffects extends AutoCloseable {
     CompletableFuture<EffectsTypes.Page> get(
             long itemId, EffectsTypes.Query query, Priority priority, Cancellation cancellation);
 
+    default CompletableFuture<EffectsTypes.Tooltip> tooltip(
+            long itemId, Priority priority, Cancellation cancellation) {
+        return CompletableFuture.failedFuture(
+                new UnsupportedOperationException("Tooltip not supported"));
+    }
+
     default CompletableFuture<com.vibeminer.concepts.core.ConceptWarmup.Result> warmup(
             Priority priority, Cancellation token) {
         return CompletableFuture.failedFuture(

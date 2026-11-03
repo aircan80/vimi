@@ -205,6 +205,28 @@ public final class EffectsTypes {
         }
     }
 
+    /** Selected-item descriptions; unresolved client tokens are preserved, never guessed. */
+    public enum TextState {
+        READY,
+        UNRESOLVED_TOKENS,
+        EMPTY,
+        PROTECTED,
+        UNKNOWN,
+        ABSENT,
+        UNSUPPORTED,
+        INVALID_TEXT
+    }
+
+    public record TooltipLine(
+            String trigger, long spellId, String name, String text, TextState state) {}
+
+    public record Tooltip(
+            long itemId, PageState state, List<TooltipLine> lines, boolean truncated) {
+        public Tooltip {
+            lines = List.copyOf(lines);
+        }
+    }
+
     public record Options(int maxRelationIndexEntries) {
         public Options() {
             this(4_000_000);

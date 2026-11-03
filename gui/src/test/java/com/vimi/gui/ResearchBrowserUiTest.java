@@ -263,6 +263,16 @@ public final class ResearchBrowserUiTest {
                                         null,
                                         null);
                     };
+            if (value instanceof ItemResult itemResult) {
+                value = new ResearchSource.ItemDetail(
+                        new com.vibeminer.concepts.items.ItemInspection(itemResult,
+                                itemResult.detail().attributes(), "Authored base source values"),
+                        new com.vibeminer.concepts.effects.EffectsTypes.Tooltip(row.id(),
+                                com.vibeminer.concepts.effects.EffectsTypes.PageState.OK,
+                                List.of(new com.vibeminer.concepts.effects.EffectsTypes.TooltipLine(
+                                        "Use", 429961, "Unroll Bag", "Rest for one minute.",
+                                        com.vibeminer.concepts.effects.EffectsTypes.TextState.READY)), false), null);
+            }
             return CompletableFuture.completedFuture(value);
         }
 
@@ -467,6 +477,10 @@ public final class ResearchBrowserUiTest {
                                 if (!line)
                                     throw new AssertionError(
                                             "Layer-projected attribute missing from tooltip");
+                                boolean effect = browser.get().lookupAll(".wow-stat").stream()
+                                        .anyMatch(node -> node instanceof javafx.scene.control.Label label
+                                                && label.getText().equals("Use: Rest for one minute."));
+                                if (!effect) throw new AssertionError("Selected item effect description missing");
                             });
                 fx(
                         () -> {

@@ -176,6 +176,124 @@ public final class ItemEffectsService implements ItemEffects {
         }
 
         @Override
+        public CompletableFuture<EffectsTypes.Tooltip> tooltip(
+                long itemId, TableTypes.Priority priority, Cancellation token) {
+            if (itemId < 0 || itemId > 0xffffffffL) {
+                throw new IllegalArgumentException("uint32 item ID required");
+            }
+            return call(
+                    priority,
+                    token,
+                    () -> {
+                        var page = getCore(itemId, new Query(), priority, token);
+                        var lines = new ArrayList<EffectsTypes.TooltipLine>();
+                        for (var entry : page.entries()) {
+                            token.check();
+                            var effect = entry.effect();
+                            Long spell =
+                                    effect.spellId() == null
+                                            ? null
+                                            : signedNumber(effect.spellId(), 1, 0xffffffffL);
+                            if (spell == null) {
+                                lines.add(
+                                        new EffectsTypes.TooltipLine(
+                                                "Effect",
+                                                0,
+                                                null,
+                                                null,
+                                                effect.state() == EffectState.PROTECTED
+                                                        ? EffectsTypes.TextState.PROTECTED
+                                                        : EffectsTypes.TextState.UNKNOWN));
+                                continue;
+                            }
+                            String trigger =
+                                    effect.fields() == null
+                                            ? "Effect"
+                                            : effect.fields().stream()
+                                                    .filter(
+                                                            field ->
+                                                                    field.name()
+                                                                            .equals("TriggerType"))
+                                                    .map(
+                                                            field ->
+                                                                    switch (field.value()) {
+                                                                        case "0" -> "Use";
+                                                                        case "1" -> "Equip";
+                                                                        case "2" -> "Chance on hit";
+                                                                        default ->
+                                                                                "Effect (trigger "
+                                                                                        + field
+                                                                                                .value()
+                                                                                        + ")";
+                                                                    })
+                                                    .findFirst()
+                                                    .orElse("Effect");
+                            lines.add(
+                                    description(
+                                            trigger,
+                                            spell,
+                                            entry.name() == null ? null : entry.name().text(),
+                                            priority,
+                                            token));
+                        }
+                        return new EffectsTypes.Tooltip(
+                                itemId, page.state(), lines, page.next() != null);
+                    });
+        }
+
+        private EffectsTypes.TooltipLine description(
+                String trigger,
+                long spell,
+                String name,
+                TableTypes.Priority priority,
+                Cancellation token) {
+            var ref = TableTypes.Ref.forName("Spell");
+            var schema = tables.schema(ref, priority, token).join();
+            int column = -1;
+            if (schema.schema() != null && schema.columns() != null) {
+                for (int i = 0; i < schema.schema().columns().size(); i++) {
+                    var field = schema.schema().columns().get(i);
+                    if (field.verifiedName()
+                            && field.name().equals("Description_lang")
+                            && field.kind()
+                                    == com.vibeminer.formats.definitions.TableSchema.ColumnKind
+                                            .LOCSTRING
+                            && field.arrayLength() == 1
+                            && i < schema.columns().size()
+                            && "Description_lang".equals(schema.columns().get(i).name())
+                            && "string".equals(schema.columns().get(i).kind())) {
+                        column = i;
+                    }
+                }
+            }
+            if (column < 0) {
+                return new EffectsTypes.TooltipLine(
+                        trigger, spell, name, null, EffectsTypes.TextState.UNSUPPORTED);
+            }
+            var found = tables.get(ref, spell, priority, token).join();
+            if (found.outcome() != TableTypes.RowOutcome.FOUND || found.row() == null) {
+                return new EffectsTypes.TooltipLine(
+                        trigger,
+                        spell,
+                        name,
+                        null,
+                        found.outcome() == TableTypes.RowOutcome.PROTECTED
+                                ? EffectsTypes.TextState.PROTECTED
+                                : found.outcome() == TableTypes.RowOutcome.ABSENT
+                                        ? EffectsTypes.TextState.ABSENT
+                                        : EffectsTypes.TextState.UNKNOWN);
+            }
+            var row = found.row().row();
+            if (row.id() != spell
+                    || column >= row.values().size()
+                    || ItemEffectProfiles.hasIssue(row, column)) {
+                return new EffectsTypes.TooltipLine(
+                        trigger, spell, name, null, EffectsTypes.TextState.INVALID_TEXT);
+            }
+            return ItemEffectText.project(trigger, spell, name, row.values().get(column));
+        }
+
+        @Override
         public CompletableFuture<com.vibeminer.concepts.core.ConceptWarmup.Result> warmup(
                 TableTypes.Priority priority, Cancellation token) {
             return call(

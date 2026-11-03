@@ -158,6 +158,40 @@ public final class ResearchSource implements ResearchDataSource {
                         + (scanned == 2000 ? " · continue to search further" : ""));
     }
 
+    public record ItemDetail(
+            com.vibeminer.concepts.items.ItemInspection inspection,
+            com.vibeminer.concepts.effects.EffectsTypes.Tooltip effects,
+            String effectsIssue) {}
+
+    private CompletableFuture<ItemDetail> itemDetail(
+            NativePreparationWork work, long id, Cancellation token) {
+        return work.itemsHandle()
+                .inspect(id, TableTypes.Priority.INTERACTIVE, token)
+                .thenCompose(
+                        inspection ->
+                                CompletableFuture.supplyAsync(
+                                                () ->
+                                                        work.effectsHandle()
+                                                                .tooltip(
+                                                                        id,
+                                                                        TableTypes.Priority
+                                                                                .INTERACTIVE,
+                                                                        token)
+                                                                .join(),
+                                                command -> Thread.startVirtualThread(command))
+                                        .handle(
+                                                (effects, failure) -> {
+                                                    token.check();
+                                                    return new ItemDetail(
+                                                            inspection,
+                                                            effects,
+                                                            failure == null
+                                                                    ? null
+                                                                    : "Optional item effect text"
+                                                                          + " unavailable");
+                                                }));
+    }
+
     public CompletableFuture<?> detail(String area, Row row, Cancellation token) {
         return CompletableFuture.supplyAsync(
                         () -> {
@@ -166,12 +200,7 @@ public final class ResearchSource implements ResearchDataSource {
                             return switch (area) {
                                 case "Files", "Tables" ->
                                         CompletableFuture.completedFuture(row.source());
-                                case "Items" ->
-                                        work.itemsHandle()
-                                                .inspect(
-                                                        row.id(),
-                                                        TableTypes.Priority.INTERACTIVE,
-                                                        token);
+                                case "Items" -> itemDetail(work, row.id(), token);
                                 default ->
                                         work.creaturesHandle()
                                                 .getData(
