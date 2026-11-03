@@ -15,7 +15,7 @@ Selecting an area alone does not acquire terrain. An explicit **Find terrain**
 action explains the inventory file count and that missing source files may be
 downloaded through the existing file service. It checks that map's WDT root ADTs
 sequentially, showing checked/total, matches, unavailable files and Cancel.
-No invented overall byte/time percentage. Existing source authentication/storage
+Failed files count as checked and unavailable. No invented overall byte/time percentage. Existing source authentication/storage
 ownership remains in BuildFiles. No third-party map/provider or guessed paths
 beyond the already admitted WDT ID/directory reference policy.
 
@@ -26,22 +26,28 @@ never matches an area selection. Do not infer a zone's center from tile indices.
 
 Matching inventory tiles receive a distinct outline while the full continent
 remains visible. Present matching tiles as explicit choices; selecting a match
-sets the existing starting tile. **Open explorer** uses the matching chunk's
-native position as its initial reference, with the existing altitude offset and
-camera orientation; it must not silently jump to a nonmatching tile center.
+sets the existing starting tile. **Open explorer** uses a source height reference
+inside the matching chunk, with the existing altitude offset and camera orientation.
+The raw MCNK origin Z is only a height base. Derive the entry reference from
+MCVT sample72 (row8/column4): X=px−TILE_SIZE/32, Y=py−TILE_SIZE/32,
+Z=pz+height[72], then add the existing camera altitude offset. Retain raw origin
+separately. A hole may occupy that point; this is free flight, not walkable-ground
+or collision certification. Never silently jump to a nonmatching tile center.
 A tile can contain multiple areas. No matches with failures/cancellation means
 not found in the checked readable subset, never proof of absence.
 
 ## Parser and API boundary
 
-Add immutable `WorldFormats.AreaChunk(x,y,areaId,px,py,pz)` and
+Add immutable `WorldFormats.AreaChunk(x,y,areaId,origin,entryReference)` and
 `AreaMetadata(List<AreaChunk>)`, with at most256 unique chunk coordinates, unsigned
 32-bit area IDs and existing finite native coordinate bounds. Expose
 `WorldFormats.adtAreas(byte[], BooleanSupplier)`. Refactor a shared bounded
 ADT18 chunk-header walker so geometry and metadata do not diverge on version,
 chunk bounds/duplicates or header offsets. Metadata admission still requires the
 existing complete supported chunk layout and one valid145-float MCVT per MCNK;
-it must not accept a broader malformed format merely because it skips geometry.
+validate all145 height samples and derived native positions as finite/within the
+existing native coordinate bound, even though it skips geometry. It must not
+accept a broader malformed format merely because it skips geometry.
 No geometry arrays are allocated for metadata. Preserve Terrain constructors and
 all current public APIs; no renderer representation change.
 
@@ -50,9 +56,11 @@ independent of BuildWorld implementations and renderer ownership. Its immutable
 `Request` contains selected MapInfo, selected areaID and inventory tile list.
 Its `Snapshot` contains state, checked/total counts, bounded tile matches,
 unavailable count and bounded diagnostic samples. Each `Match` retains exact
-Tile tuple/root reference, source content key and matching chunk native position.
-One request/worker and one pending latest snapshot; a new request cancels and
-drains the old owner before reading its own files. Close never closes BuildFiles.
+Tile tuple/root reference, source content key, matching-chunk count, and first
+matching chunk raw origin/derived entry reference.
+One request/worker and one pending latest request; a new request cancels and
+drains the old owner before reading its own files, even when an old read stalls.
+Show draining and never create another worker to bypass it. Close never closes BuildFiles.
 The GUI's request generation additionally rejects stale map/area/workspace results.
 
 Reuse/factor World's bounded file-byte read routine rather than duplicating
@@ -93,3 +101,7 @@ No automatic retries or background whole-continent scans.
 - Cold/no-match/partial/canceled outcomes never claim complete zone coverage.
 - Independent review and standard checks precede integration; one separate GitHub
   prerelease follows successful packaged checks.
+
+Review: acceptance approved e42a347 with explicit implementation gates above.
+Domain required deriving entry height from MCVT rather than raw originZ; corrected
+here before implementation. Await corrected entry-reference approval.
