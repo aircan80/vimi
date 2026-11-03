@@ -468,7 +468,16 @@ public final class VimiApp extends Application {
         refresh.getStyleClass().add("refresh-button");
         buildsHeading.getStyleClass().setAll("h2");
         buildCount.getStyleClass().setAll("muted");
-        HBox titleRow = new HBox(12, buildsHeading, buildCount, spacer(), catalogActivity, refreshSourcesButton, refresh);
+        buildsHeading.setMinWidth(80);
+        buildCount.setMinWidth(Region.USE_PREF_SIZE);
+        refreshSourcesButton.setMinWidth(Region.USE_PREF_SIZE);
+        refresh.setMinWidth(Region.USE_PREF_SIZE);
+        var refreshActions = new javafx.scene.layout.FlowPane(8, 6, refreshSourcesButton, refresh);
+        refreshActions.setPrefWrapLength(350);
+        refreshActions.setAlignment(javafx.geometry.Pos.CENTER_RIGHT);
+        HBox.setHgrow(refreshActions, Priority.ALWAYS);
+        HBox titleRow = new HBox(12, buildsHeading, buildCount, catalogActivity, refreshActions);
+        titleRow.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
         titleRow.getStyleClass().addAll("toolbar", "builds-product-heading");
         HBox filters = new HBox(12, search, scope, button("Clear filters", () -> {
             search.clear();
