@@ -87,15 +87,29 @@ views; the abbreviated declarations above do not waive immutable ownership.
 A new appearance constructor accepts the rich surfaces plus immutable rigid-card
 groups. Old constructors provide an empty group list. Constructors validate:
 
-- One or two stages, legal stage/combiner combinations, texture indices and finite
-  UVs/normals; no unrecognized wire codes or arbitrary blend/depth booleans.
+- One or two stages, texture indices and finite UVs/normals; reject unrecognized
+  wire codes and arbitrary blend/depth booleans. The complete material matrix is:
+  DIFFUSE + one UV0 stage + LIT + OPAQUE/ALPHA_KEY; DIFFUSE + one UV0 stage +
+  UNLIT + OPAQUE/ADDITIVE; or OPAQUE_MOD2X_NA + exactly UV0 then ENV_SPHERE + LIT + OPAQUE.
+  Every other combination is invalid, even if its individual enum values exist.
 - At most 256 surfaces, 16 textures, 8,388,608 total texture pixels and the existing
   mesh vertex/index bounds.
-- At most 128 card groups, at most eight members each (1,024 total), no duplicate membership,
-  unique sorted in-range vertex indices, finite bounded model pivots. Initial M2
-  admission is narrower: exactly four vertices and two triangles per group.
-- ENV requires usable vertex normals. Billboard groups are admitted only for the
-  reviewed unlit card passes; lit/ENV billboard combinations remain unsupported.
+- At most 128 card groups, at most eight members each (1,024 total), unique source
+  bone IDs, no duplicate membership, sorted in-range vertex indices and finite
+  bounded model pivots. Bound referenced card triangles as well (at most eight per
+  group / 1,024 total); validation must not introduce unbounded overlapping-range
+  traversal. Initial M2 admission is narrower: exactly four vertices and two
+  triangles per group.
+- Every triangle touching a card member must have all three members in that same
+  group and belong only to an admitted UNLIT ADDITIVE surface. Reject cross-group
+  triangles or sharing with lit, ENV, opaque or unresolved draws.
+- ENV requires finite, nonzero normals on the vertices actually consumed by its
+  section. Zero normals elsewhere do not invalidate unrelated surfaces. Source
+  admission declines the affected ENV section before appearance construction;
+  it must not discard an otherwise readable mount. Codec/data validation rejects
+  a rich ENV material naming unusable consumed normals.
+- Billboard groups are admitted only for the reviewed unlit additive card passes;
+  lit/ENV billboard combinations remain unsupported.
 
 Material state is derived, not accepted as arbitrary flags: opaque and cutout use
 legacy LESS depth test with depth write; additive uses LEQUAL and no depth write.
@@ -140,12 +154,22 @@ shared pure camera transform in rendering-models; `GpuCamera` consumes it rather
 than independently re-deriving another convention. Preserve the existing preview
 center, yaw/pitch orientation and focal framing for ordinary meshes.
 
-For interpolated eye-space position `p` and normalized normal `n`, let
+Generate ENV coordinates **per vertex**, before rasterization, from that vertex's
+fully transformed eye-space position `p` and normal. Let `n = normalize(normal)`,
 `u = normalize(p)`, `f = u - 2*n*dot(n,u)`, and
-`m = 2*sqrt(f.x*f.x + f.y*f.y + (f.z+1)*(f.z+1))`.
-Then ENV is `(0.5 + f.x/m, 0.5 + f.y/m)`. At the singular pole use the documented,
-identical finite center fallback on both backends. Do not add a UV flip to compensate
-for a different viewer's coordinate convention. Stage wrapping remains explicit.
+`q = f.x*f.x + f.y*f.y + (f.z+1)*(f.z+1)`; `m = 2*sqrt(q)`.
+The vertex ENV coordinate is `(0.5 + f.x/m, 0.5 + f.y/m)`. The CPU rasterizer and
+GPU varying then perspective-correctly interpolate **these UVs**, just like UV0.
+The fragment shader samples the ENV stage at that varying. Recomputing reflection
+from interpolated position/normal in the fragment shader is a different contract
+and is not admitted here.
+
+Define finite center (.5,.5) fallback when `dot(p,p) <= 1e-12`,
+`dot(normal,normal) <= 1e-12`, or `q <= 1e-12`; the pure helper also returns center
+for nonfinite inputs. Source admission rejects nonfinite/near-zero consumed ENV
+normals, so the helper's zero-normal fallback is defensive, not wider admission.
+Use the same thresholds and stage placement on both backends. Do not add a UV flip
+to compensate for a different viewer's convention. Stage wrapping remains explicit.
 
 This adopts Khronos GL_SPHERE_MAP in the explicit basis above, also used by the
 reviewed WMV implementation. A different primary viewer uses a negative-UV
@@ -239,6 +263,15 @@ renderer files or use live application data as generated-test output.
 - ENV center and tilted normals: with `u=(0,0,-1)`, `n=(0,0,1)` gives (.5,.5);
   `n=(sqrt(.5),0,sqrt(.5))` gives approximately (.853553,.5); negative X gives
   (.146447,.5), positive Y gives V .853553. Use asymmetric textures and pole tests.
+- Interior-triangle ENV stage oracle: eye vertices (-1,-1,-2), (1,-1,-4),
+  (0,1,-3), with normals (0,0,1), (sqrt(.5),0,sqrt(.5)),
+  (0,sqrt(.5),sqrt(.5)). Their vertex UVs are approximately
+  (.392906752351,.392906752351), (.881283013675,.404679246581),
+  (.5,.905621092588). At screen barycentrics (1/3 each), perspective weights are
+  (6,3,4)/13 and the ENV UV must be (.538560735010,.553381740323).
+  Incorrect per-fragment recomputation from interpolated position/normal gives
+  (.572483221905,.589599499442). An asymmetric gradient must distinguish these
+  outcomes on CPU and GPU; agreement with each other alone is insufficient.
 - NA: base RGB (100,80,60), ENV (128,64,255) gives approximately (100,40,120) before
   lighting, regardless of both alphas being zero. Test deferred clamping:
   `.8*.8*2*.5 = .64`, not .5 from prematurely clamping the product.
@@ -247,7 +280,8 @@ renderer files or use live application data as generated-test output.
   coplanar LEQUAL, no depth write and authored phase order.
 - Cards: nonorigin pivots, asymmetric UVs, several yaw/pitch values and nonzero X
   offset; verify the analytic eye positions, stable pivot, depth-scaled size and
-  conservative bounds. Reject multiple weights, palette disagreement, nonleaf,
+  conservative bounds at several yaw/pitch values for card-only and mixed meshes,
+  near clipping and depth preservation. Reject multiple weights, palette disagreement, nonleaf,
   own TRS, external bones and unreviewed billboard/inheritance modes.
 - Confirm decoded old v2 output and existing Races/qualified/raw diagnostic modes
   are unchanged. CPU/GPU pixel agreement is necessary but is not the only oracle.
@@ -260,6 +294,10 @@ rendering/performance claim follows from these targeted static profiles.
 ## Primary evidence
 
 - [Khronos GL_SPHERE_MAP equations](https://registry.khronos.org/OpenGL-Refpages/gl2.1/xhtml/glTexGen.xml).
+- [Pinned WMV use of GL_SPHERE_MAP](https://github.com/wowmodelviewer/wowmodelviewer/blob/ab6060333415dbcc31328447896ea33c2a36a4f6/Source/games/wow/ModelRenderPass.cpp#L610-L617).
+- [Pinned per-vertex ENV generation](https://github.com/Kruithne/wow.export/blob/4474fa460eb9b1b6130994a42a232ecd6af64681/src/shaders/m2.vertex.shader#L41-L45).
+- [Pinned Opaque_Mod2xNA material equation](https://github.com/Kruithne/wow.export/blob/4474fa460eb9b1b6130994a42a232ecd6af64681/src/shaders/m2.fragment.shader#L107-L109).
+- [Pinned separate RGB/alpha additive factors](https://github.com/Deamon87/WebWowViewerCpp/blob/1a8cccbeffc46231c6497e6b3f5bfbf3507d8071/wowViewerLib/src/gapi/ogl3.3/GDeviceGL33.cpp#L30-L35).
 - [Pinned primary viewer material/state implementation](https://github.com/Deamon87/WebWowViewerCpp/blob/1a8cccbeffc46231c6497e6b3f5bfbf3507d8071/wowViewerLib/src/engine/objects/m2/m2Object.cpp).
 - [Pinned primary flags-8 bind-card implementation](https://github.com/Deamon87/WebWowViewerCpp/blob/1a8cccbeffc46231c6497e6b3f5bfbf3507d8071/wowViewerLib/src/engine/managers/animationManager.cpp#L498-L558).
 - Private authored/read-only target evidence is recorded in the task's scratch
