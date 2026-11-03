@@ -181,3 +181,23 @@ tasks.register('nativeGpuInlineProof', JavaExec) {
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args layout.buildDirectory.dir('native-inline-proof').get().asFile.absolutePath
 }
+
+// Authored-data feasibility only; separate from production terrain and default hardware checks.
+tasks.register('verifyTerrainSpikeShaders', Exec) {
+    group = 'verification'
+    description = 'Verifies separate authored terrain-spike shader resources.'
+    inputs.files(rootProject.file('scripts/rendering/compile_bgfx_terrain_spike.py'), shaderHelper)
+    inputs.dir(layout.projectDirectory.dir('src/test/shaders/terrain-spike'))
+    inputs.dir(layout.projectDirectory.dir('src/test/resources/com/vibeminer/rendering/bgfx/terrain-spike'))
+    workingDir rootProject.layout.projectDirectory
+    commandLine pythonExecutable.get(), rootProject.file('scripts/rendering/compile_bgfx_terrain_spike.py').absolutePath, '--verify'
+}
+tasks.register('nativeGpuTerrainSpike', JavaExec) {
+    group = 'verification'
+    description = 'Proves authored persistent triangle instancing and reversed infinite depth.'
+    dependsOn testClasses, tasks.named('verifyTerrainSpikeShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.GpuTerrainSpike'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-terrain-spike').get().asFile.absolutePath
+}
