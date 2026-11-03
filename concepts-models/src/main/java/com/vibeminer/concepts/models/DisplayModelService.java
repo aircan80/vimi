@@ -11,6 +11,7 @@ import com.vibeminer.formats.images.BlpImages;
 import com.vibeminer.formats.models.BuildModelTypes;
 import com.vibeminer.formats.models.BuildModels;
 import com.vibeminer.formats.models.M2Appearance;
+import com.vibeminer.formats.models.M2BindPoseFacts;
 import com.vibeminer.formats.models.M2Combiners;
 import com.vibeminer.formats.models.M2ModelReader;
 import com.vibeminer.formats.models.M2RestDrawSkinReader;
@@ -26,6 +27,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -38,7 +40,7 @@ import java.util.concurrent.TimeUnit;
  */
 @SuppressWarnings("try")
 public final class DisplayModelService implements BuildDisplayModels {
-    public static final String POLICY = "display-static-diffuse-rest-legacy272-sections-v2";
+    public static final String POLICY = "display-static-materials-env-unlit-bindcards-v3";
     private final TableProjection tables;
     private final BuildFiles files;
     private final GeneratedStore generated;
@@ -132,6 +134,8 @@ public final class DisplayModelService implements BuildDisplayModels {
                                     + "\n"
                                     + M2Appearance.MATERIAL_POLICY
                                     + "\n"
+                                    + M2BindPoseFacts.REVISION
+                                    + "\n"
                                     + Blp2Decoder.REVISION
                                     + "\n"
                                     + MeshAppearanceCodec.REVISION
@@ -215,99 +219,134 @@ public final class DisplayModelService implements BuildDisplayModels {
             receipts.put(reference.modelFileDataId(), content);
             receipts.put(skin.fileDataId(), skin.file().contentKey());
             M2Appearance.ModelFacts facts = null;
+            M2BindPoseFacts.Facts bindFacts = null;
+            boolean sourceFactsComplete = true;
             var opened =
                     files.openRead(FileTypes.FileRef.id(reference.modelFileDataId()), token).join();
             if (opened.stream() != null) {
                 try (var stream = opened.stream()) {
                     if (opened.state() == FileTypes.FileReadState.COMPLETE
                             && stream.holes().isEmpty()) {
-                        facts = M2Appearance.readModel(AssetSources.file(stream), m, token).join();
+                        var source = AssetSources.file(stream);
+                        facts = M2Appearance.readModel(source, m, token).join();
+                        if (m.bones().stream().anyMatch(bone -> bone.flags() == 8)) {
+                            try {
+                                bindFacts = M2BindPoseFacts.read(source, m, token).join();
+                            } catch (RuntimeException unavailable) {
+                                token.check();
+                                sourceFactsComplete = false;
+                                TableProjection.note(
+                                        issues,
+                                        "Own-track facts for billboard cards are unavailable.");
+                            }
+                        }
+                    } else {
+                        sourceFactsComplete = false;
+                        TableProjection.note(
+                                issues,
+                                "Material source facts are unavailable; retry can reassess them.");
                     }
                 }
+            } else {
+                sourceFactsComplete = false;
+                TableProjection.note(
+                        issues, "Material source facts are unavailable; retry can reassess them.");
             }
             var counts = new HashMap<Integer, Integer>();
             for (var batch : skin.skin().batches()) {
                 counts.merge(batch.sectionIndex(), 1, Integer::sum);
             }
-            var textures = new ArrayList<MeshAppearance.Texture>();
-            var decoded = new HashMap<Long, Integer>();
+            long additivePasses =
+                    skin.skin().batches().stream()
+                            .filter(
+                                    batch ->
+                                            m.materials().get(batch.materialIndex()).blendMode()
+                                                    == 4)
+                            .count();
+            M2Types.GeometrySkin cardGeometry = null;
+            if (additivePasses == 1 && bindFacts != null) {
+                var geometryRead = models.readGeometrySkin(read, 0, token).join();
+                if (geometryRead.state() == BuildModelTypes.ReadState.READ
+                        && geometryRead.skin() != null
+                        && geometryRead.fileDataId() == skin.fileDataId()
+                        && geometryRead.file() != null
+                        && geometryRead.file().contentKey().equals(skin.file().contentKey())) {
+                    cardGeometry = geometryRead.skin();
+                } else {
+                    sourceFactsComplete = false;
+                    TableProjection.note(issues, "Billboard skin palette facts are unavailable.");
+                }
+            }
+            var pool = new TexturePool(reference, receipts, token, issues);
             var bindings = new ArrayList<MeshAppearance.Surface>();
-            long pixels = 0;
-            boolean complete = true;
+            var billboards = new ArrayList<MeshAppearance.RigidBillboard>();
             for (var batch : skin.skin().batches()) {
                 token.check();
-                if (counts.get(batch.sectionIndex()) != 1 || !simpleDraw(m, batch, facts)) {
+                var profile = DisplayMaterialProfiles.admit(m, batch, facts);
+                if (counts.get(batch.sectionIndex()) != 1 || profile == null) {
                     TableProjection.note(
                             issues,
                             "Some sections have unsupported material profiles and no qualified texture binding.");
                     continue;
                 }
-                var texture = m.textures().get(m.textureCombos().get(batch.textureComboIndex()));
-                long fid = textureId(texture, reference.textureVariations());
-                if (fid <= 0 || fid > 0xffffffffL) {
-                    complete = false;
+                if (profile.kind() == DisplayMaterialProfiles.Kind.ENVIRONMENT
+                        && !usableNormals(geometry, batch.sectionIndex(), normals, token)) {
                     TableProjection.note(
-                            issues, "Some surface textures have no verified file binding.");
+                            issues, "An environment-mapped section has unusable source normals.");
                     continue;
                 }
-                Integer index = decoded.get(fid);
-                if (index == null) {
-                    if (textures.size() >= 16) {
-                        complete = false;
+                List<MeshAppearance.RigidBillboard> cards = List.of();
+                if (profile.kind() == DisplayMaterialProfiles.Kind.ADDITIVE_CARD) {
+                    cards =
+                            additivePasses == 1
+                                    ? DisplayRigidCards.admit(
+                                            m,
+                                            geometry,
+                                            cardGeometry,
+                                            batch.sectionIndex(),
+                                            bindFacts,
+                                            token)
+                                    : null;
+                    if (cards == null || cards.isEmpty()) {
                         TableProjection.note(
-                                issues, "Additional textures exceed the preview budget.");
+                                issues,
+                                "A glow section has no reviewed rigid bind-pose billboard proof.");
                         continue;
                     }
-                    var textureStat = files.stat(FileTypes.FileRef.id(fid), token).join();
-                    if (textureStat.file() == null
-                            || textureStat.state() != FileTypes.FileLookupState.FOUND) {
-                        complete = false;
-                        TableProjection.note(issues, "Texture #" + fid + " is unavailable.");
-                        continue;
+                }
+                var stages = new ArrayList<MeshAppearance.TextureStage>();
+                for (int stage = 0; stage < profile.stages(); stage++) {
+                    var texture =
+                            m.textures()
+                                    .get(m.textureCombos().get(batch.textureComboIndex() + stage));
+                    Integer index = pool.texture(texture);
+                    if (index == null) {
+                        break;
                     }
-                    var image = decode(fid, token);
-                    if (image == null) {
-                        complete = false;
-                        TableProjection.note(
-                                issues, "Texture #" + fid + " is unavailable or unsupported.");
-                        continue;
-                    }
-                    long count = (long) image.width() * image.height();
-                    if (count > 8_388_608L - pixels) {
-                        complete = false;
-                        TableProjection.note(
-                                issues, "Additional textures exceed the preview pixel budget.");
-                        continue;
-                    }
-                    pixels += count;
-                    byte[] rgba = image.rgba();
-                    int[] argb = new int[image.width() * image.height()];
-                    for (int i = 0; i < argb.length; i++) {
-                        if ((i & 16383) == 0) {
-                            token.check();
-                        }
-                        argb[i] =
-                                (rgba[i * 4 + 3] & 255) << 24
-                                        | (rgba[i * 4] & 255) << 16
-                                        | (rgba[i * 4 + 1] & 255) << 8
-                                        | (rgba[i * 4 + 2] & 255);
-                    }
-                    index = textures.size();
-                    textures.add(new MeshAppearance.Texture(image.width(), image.height(), argb));
-                    decoded.put(fid, index);
-                    receipts.put(fid, textureStat.file().contentKey());
+                    stages.add(
+                            new MeshAppearance.TextureStage(
+                                    index,
+                                    profile.coordinate(stage),
+                                    (texture.flags() & 1) != 0,
+                                    (texture.flags() & 2) != 0));
+                }
+                if (stages.size() != profile.stages()) {
+                    continue;
                 }
                 bindings.add(
                         new MeshAppearance.Surface(
                                 batch.sectionIndex(),
-                                index,
-                                (texture.flags() & 1) != 0,
-                                (texture.flags() & 2) != 0,
-                                m.materials().get(batch.materialIndex()).blendMode() == 1));
+                                new MeshAppearance.Material(
+                                        profile.combiner(),
+                                        stages,
+                                        profile.lighting(),
+                                        profile.blend())));
+                billboards.addAll(cards);
             }
-            var appearance = new MeshAppearance(mesh, uv, normals, bindings, textures);
+            var appearance =
+                    new MeshAppearance(mesh, uv, normals, bindings, pool.textures, billboards);
             limitations(reference, mesh, issues);
-            if (complete) {
+            if (sourceFactsComplete && pool.complete) {
                 cache.save(key, appearance, receipts, token, issues);
             }
             return ready(reference, appearance, issues, false);
@@ -438,6 +477,95 @@ public final class DisplayModelService implements BuildDisplayModels {
         return (texture.flags() & ~3L) == 0;
     }
 
+    private static boolean usableNormals(
+            M2Types.RestSkin geometry, int ordinal, float[] normals, Cancellation token) {
+        var section = geometry.sections().get(ordinal);
+        int first = Math.toIntExact(section.triangleStart());
+        for (int at = first; at < first + section.triangleCount(); at++) {
+            if ((at & 4095) == 0) {
+                token.check();
+            }
+            int vertex = geometry.triangleLookup().get(at) * 3;
+            double x = normals[vertex], y = normals[vertex + 1], z = normals[vertex + 2];
+            if (!Double.isFinite(x * x + y * y + z * z) || x * x + y * y + z * z <= 1e-12) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private final class TexturePool {
+        final List<MeshAppearance.Texture> textures = new ArrayList<>();
+        final Map<Long, Integer> decoded = new HashMap<>();
+        final DisplayModelTypes.Reference reference;
+        final Map<Long, String> receipts;
+        final Cancellation token;
+        final List<String> issues;
+        long pixels;
+        boolean complete = true;
+
+        TexturePool(
+                DisplayModelTypes.Reference reference,
+                Map<Long, String> receipts,
+                Cancellation token,
+                List<String> issues) {
+            this.reference = reference;
+            this.receipts = receipts;
+            this.token = token;
+            this.issues = issues;
+        }
+
+        Integer texture(M2Types.Texture texture) {
+            long fid = textureId(texture, reference.textureVariations());
+            if (fid <= 0 || fid > 0xffffffffL) {
+                return unavailable("Some surface textures have no verified file binding.");
+            }
+            Integer existing = decoded.get(fid);
+            if (existing != null) {
+                return existing;
+            }
+            if (textures.size() >= 16) {
+                return unavailable("Additional textures exceed the preview budget.");
+            }
+            var stat = files.stat(FileTypes.FileRef.id(fid), token).join();
+            if (stat.file() == null || stat.state() != FileTypes.FileLookupState.FOUND) {
+                return unavailable("Texture #" + fid + " is unavailable.");
+            }
+            var image = decode(fid, token);
+            if (image == null) {
+                return unavailable("Texture #" + fid + " is unavailable or unsupported.");
+            }
+            long count = (long) image.width() * image.height();
+            if (count > 8_388_608L - pixels) {
+                return unavailable("Additional textures exceed the preview pixel budget.");
+            }
+            byte[] rgba = image.rgba();
+            int[] argb = new int[image.width() * image.height()];
+            for (int index = 0; index < argb.length; index++) {
+                if ((index & 16383) == 0) {
+                    token.check();
+                }
+                argb[index] =
+                        (rgba[index * 4 + 3] & 255) << 24
+                                | (rgba[index * 4] & 255) << 16
+                                | (rgba[index * 4 + 1] & 255) << 8
+                                | rgba[index * 4 + 2] & 255;
+            }
+            pixels += count;
+            int index = textures.size();
+            textures.add(new MeshAppearance.Texture(image.width(), image.height(), argb));
+            decoded.put(fid, index);
+            receipts.put(fid, stat.file().contentKey());
+            return index;
+        }
+
+        private Integer unavailable(String message) {
+            complete = false;
+            TableProjection.note(issues, message);
+            return null;
+        }
+    }
+
     private Blp2Types.Image decode(long fid, Cancellation token) {
         if (generated != null) {
             return new BlpImages(generated)
@@ -466,7 +594,7 @@ public final class DisplayModelService implements BuildDisplayModels {
             DisplayModelTypes.Reference reference, PreviewMesh mesh, List<String> issues) {
         TableProjection.note(
                 issues,
-                "Static rest geometry and simplified diffuse shading; animation, effects and runtime appearance are not evaluated.");
+                "Static bind/rest preview with reviewed material and rigid-card profiles; animation, particles/ribbons and runtime appearance are not evaluated.");
         if (reference.extendedDisplayInfoId() == null || reference.extendedDisplayInfoId() != 0) {
             TableProjection.note(
                     issues,
