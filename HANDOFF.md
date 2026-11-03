@@ -6,7 +6,7 @@ Keep working without waiting for user input; retain questions/follow-ups here.
 No blocking product question is outstanding.
 
 World #115, Mounts #111, Professions/Recipes #112, Dungeons #108 and NPC/Quest
-zone maps #116 are merged. Prereleases alpha.1 through alpha.7 are published for
+zone maps #116 are merged. Prereleases alpha.1 through alpha.8 are published for
 Linux x64/ARM64, macOS Intel/Apple Silicon and Windows x64, with bundled
 Java/JavaFX/SQLite, installers, portable archives and checksums. All are explicit
 GitHub prereleases, never stable/latest. #22 and CI epic #2 are complete. Continue
@@ -34,8 +34,12 @@ PR #133 is FF-merged and alpha.7 is published with all 18 assets after successfu
 and session-only results. The next Items direction proposal has independent approval;
 concrete increment-A contract a5b9414 has both independent approvals. The pure projector fix 70bafa9 also has both approvals; staging, joins, native composition and UI remain under implementation and separately gated.
 
-Tauren static profiles have both independent approvals at b25fd1d. PR #134 carries
-those narrow profiles and alpha.8 scope; wait for native CI before FF merge and tag.
+Tauren static profiles have both independent approvals at b25fd1d. PR #134 is
+FF-merged at7067460 after all native CI. Alpha.8 is published, explicit prerelease,
+with18 verified assets and successful release workflow41642730844. Initial ARM
+packaging exposed a test-only inline-callback race; retry passed. Deterministic
+fixture gate fix PR #135 is FF-merged at32fd560 after all platform CI and500 fresh
+fixture stress runs; production code is unchanged. Preserve tag immutability.
 Items integration worktree: /tmp/vimi-items-integration, branch feature/items-comparison.
 Source adapter, compact snapshot/codec and final 12 MiB candidate reader are delegated
 in isolated worktrees; root owns streaming joins and app integration. Metadata must
