@@ -1,5 +1,20 @@
 # vimi development handoff
 
+## Active preview and streaming follow-up
+
+Focused integration `/tmp/vimi-preview-loading-release`, branch
+`fix/preview-loading-and-world-streaming`, combines race activity39e4e3d and smooth
+source-wave1cd4b45+7285543. Root reviewed both; integrated GUI, World UI/navigation,
+fake-GPU and Races FX pass. Independent real native boundary proof is running;
+current coalesced case proves accepted frames continue during held arrivals and
+one child replacement, with one remaining cold handoff gap. Hosted/package checks
+still gate alpha.17 notes/tagging; no alpha.17 release exists yet.
+
+Future texture/scenery branch remains separate (draft PR150). Validated grid and
+split-texture metadata ca99757+f3e1819 are integrated and checked; pure512² BASIC
+atlas composition is the active next checkpoint. No terrain texture rendering or
+larger distance control is delivered yet. Keep source-generated game images private.
+
 ## Verified alpha.16 publication and active world appearance work
 
 Alpha.16 is verified published at46ad728 (Desktop prereleases run41732978969):

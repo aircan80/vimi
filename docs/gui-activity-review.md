@@ -48,3 +48,20 @@ App drain/accounting and saving indicators have source review/component checks,
 without new dedicated delayed FX fixtures. Native device behavior and live-build
 latency remain unqualified. Hosted platform checks gate merge; all five packaged
 GUI/runtime checks gate alpha.12 publication.
+
+## Race appearance handoff follow-up
+
+The neutral geometry frame no longer ends the visible appearance phase. The
+viewport owns a separate texture/composition badge, while RaceModelPanel tracks
+its header activity until the target appearance frame is accepted. CPU and GPU
+paths retain existing generation, source, owner and current-display-policy guards.
+Unavailable composition/rendering and close retire the phase explicitly. Textures
+OFF accepts the target appearance under the requested display policy.
+
+Root reviewed39e4e3d and independently ran integrated GUI/unit/fake-GPU/World
+navigation checks plus Races FX. Authored delayed-result tests cover neutral model
+visibility, pending feedback, accepted-frame handoff, obsolete target retirement,
+provider failure and workspace close. This screenshot contains authored geometry
+and fixture rows only.
+
+![Authored pending race appearance](images/races-appearance-loading-authored.png)
