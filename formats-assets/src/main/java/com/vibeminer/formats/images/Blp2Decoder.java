@@ -7,6 +7,7 @@ import com.vibeminer.formats.images.Blp2Types.Encoding;
 import com.vibeminer.formats.images.Blp2Types.Image;
 import com.vibeminer.formats.images.Blp2Types.Limits;
 import com.vibeminer.formats.images.Blp2Types.Mip;
+import com.vibeminer.formats.images.Blp2Types.MipProfile;
 import com.vibeminer.formats.images.Blp2Types.MipStorage;
 import java.util.ArrayList;
 import java.util.List;
@@ -26,7 +27,13 @@ public final class Blp2Decoder {
 
     public static CompletableFuture<Image> decode(
             AssetSource source, int mip, Limits limits, Cancellation token) {
-        return AssetTasks.run(() -> decodeCore(source, mip, 0, limits, token, null));
+        return decode(source, mip, limits, token, MipProfile.STRICT);
+    }
+
+    public static CompletableFuture<Image> decode(
+            AssetSource source, int mip, Limits limits, Cancellation token, MipProfile profile) {
+        Objects.requireNonNull(profile);
+        return AssetTasks.run(() -> decodeCore(source, mip, 0, limits, token, profile, null));
     }
 
     public static CompletableFuture<Image> decode(AssetSource source) {
@@ -35,20 +42,36 @@ public final class Blp2Decoder {
 
     public static CompletableFuture<List<Mip>> readMips(
             AssetSource source, Limits limits, Cancellation token) {
+        return readMips(source, limits, token, MipProfile.STRICT);
+    }
+
+    public static CompletableFuture<List<Mip>> readMips(
+            AssetSource source, Limits limits, Cancellation token, MipProfile profile) {
+        Objects.requireNonNull(profile);
         return AssetTasks.run(
                 () -> {
                     List<Mip> declared = new ArrayList<>();
-                    decodeCore(source, 0, 0, limits, token, declared);
+                    decodeCore(source, 0, 0, limits, token, profile, declared);
                     return List.copyOf(declared);
                 });
     }
 
     public static CompletableFuture<Image> decodeLargestWithin(
             AssetSource source, int maxSide, Limits limits, Cancellation token) {
+        return decodeLargestWithin(source, maxSide, limits, token, MipProfile.STRICT);
+    }
+
+    public static CompletableFuture<Image> decodeLargestWithin(
+            AssetSource source,
+            int maxSide,
+            Limits limits,
+            Cancellation token,
+            MipProfile profile) {
+        Objects.requireNonNull(profile);
         if (maxSide < 1) {
             throw new IllegalArgumentException("maxSide must be positive");
         }
-        return AssetTasks.run(() -> decodeCore(source, 0, maxSide, limits, token, null));
+        return AssetTasks.run(() -> decodeCore(source, 0, maxSide, limits, token, profile, null));
     }
 
     public static boolean isMipFlags(int flags) {
@@ -97,12 +120,36 @@ public final class Blp2Decoder {
         return null;
     }
 
+    private static void validateHandmade(
+            List<Mip> mips, int width, int height, int minimum, long length) {
+        if (Integer.bitCount(width) != 1
+                || Integer.bitCount(height) != 1
+                || mips.size() != 32 - Integer.numberOfLeadingZeros(Math.max(width, height))) {
+            throw error("INVALID", "Handmade BLP requires a complete power-of-two mip chain.");
+        }
+        long previousEnd = minimum;
+        for (Mip mip : mips) {
+            if (mip.storage() != MipStorage.EXACT
+                    || mip.offset() < previousEnd
+                    || mip.offset() > length
+                    || mip.byteLength() > length - mip.offset()) {
+                throw error(
+                        "INVALID", "Handmade BLP mip geometry, interval or source range differs.");
+            }
+            previousEnd = mip.offset() + mip.byteLength();
+        }
+        if (previousEnd != length) {
+            throw error("INVALID", "Handmade BLP mip chain must end at source EOF.");
+        }
+    }
+
     private static Image decodeCore(
             AssetSource source,
             int mipLevel,
             int maxSide,
             Limits limits,
             Cancellation token,
+            MipProfile profile,
             List<Mip> declared) {
         Objects.requireNonNull(source);
         Objects.requireNonNull(token);
@@ -149,7 +196,11 @@ public final class Blp2Decoder {
                             + alpha
                             + " is not supported.");
         }
-        if (!isMipFlags(flags)) {
+        boolean handmade = flags == 2 && profile == MipProfile.DECLARED_HANDMADE_V1;
+        if (handmade && (encoding != Encoding.BC2 || depth != 8 || alpha != 1)) {
+            throw error("UNSUPPORTED", "Declared handmade v1 admits only the reviewed BC2 tuple.");
+        }
+        if (!isMipFlags(flags) && !handmade) {
             throw error(
                     "UNSUPPORTED",
                     "BLP mip byte 0x"
@@ -175,7 +226,7 @@ public final class Blp2Decoder {
                         "INVALID",
                         "BLP mip descriptors must form a contiguous prefix with paired offsets and lengths.");
             }
-            if (level > 0 && !allowsMipLevels(flags)) {
+            if (level > 0 && !allowsMipLevels(flags) && !handmade) {
                 throw error("INVALID", "The BLP mip flag excludes additional declared levels.");
             }
             if (level > 0 && (Math.max(width, height) >> (level - 1)) <= 1) {
@@ -186,6 +237,12 @@ public final class Blp2Decoder {
         }
         if (mips.isEmpty()) {
             throw error("INVALID", "BLP source has no declared top-level mip.");
+        }
+        if (handmade) {
+            validateHandmade(mips, width, height, minimum, length);
+            if (source.length() != length) {
+                throw error("INVALID", "BLP source changed length during handmade validation.");
+            }
         }
         if (declared != null) {
             declared.addAll(mips);

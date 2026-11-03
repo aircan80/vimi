@@ -16,6 +16,12 @@ public final class Blp2Types {
         }
     }
 
+    /** Explicit opt-in source admission; the default image/persistence contract stays strict. */
+    public enum MipProfile {
+        STRICT,
+        DECLARED_HANDMADE_V1
+    }
+
     public enum Encoding {
         PALETTED,
         BC1,
