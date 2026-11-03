@@ -4,13 +4,7 @@ import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.dungeons.BuildDungeons;
 import com.vibeminer.concepts.dungeons.DungeonTypes;
 import com.vibeminer.formats.tables.TableTypes;
-import java.awt.image.BufferedImage;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
+
 import javafx.application.Platform;
 import javafx.scene.Scene;
 import javafx.scene.control.ComboBox;
@@ -20,17 +14,29 @@ import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TextField;
 import javafx.scene.layout.BorderPane;
 import javafx.stage.Stage;
+
+import java.awt.image.BufferedImage;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
 import javax.imageio.ImageIO;
 
 /** Authored-only dungeon layout, filtering, partial metadata and stale/borrowed-lifetime checks. */
 public final class DungeonsUiTest {
     private DungeonsUiTest() {}
 
+    private static final CompletableFuture<Void> loadingChecks = new CompletableFuture<>();
+
     public static void main(String[] args) throws Exception {
         var done = new CompletableFuture<Void>();
         Platform.startup(
                 () -> {
                     try {
+                        loadingFeedback();
                         var dungeon =
                                 new DungeonTypes.Dungeon(
                                         33,
@@ -111,7 +117,9 @@ public final class DungeonsUiTest {
                                                                         1,
                                                                         "Normal",
                                                                         5L,
-                                                                        "An authored entry requirement message from the client."),
+                                                                        "An authored entry"
+                                                                            + " requirement message"
+                                                                            + " from the client."),
                                                                 new DungeonTypes.Difficulty(
                                                                         11, 2, "Heroic", 10L,
                                                                         null)),
@@ -143,7 +151,9 @@ public final class DungeonsUiTest {
                                                                         null)),
                                                         sources,
                                                         List.of(
-                                                                "Readable encounter rows remain available when another section is protected."),
+                                                                "Readable encounter rows remain"
+                                                                        + " available when another"
+                                                                        + " section is protected."),
                                                         null));
                                     }
 
@@ -156,7 +166,8 @@ public final class DungeonsUiTest {
                         var root = new BorderPane(view);
                         root.setTop(
                                 new Label(
-                                        "AUTHORED DUNGEONS UI FIXTURE · no game assets or real build data"));
+                                        "AUTHORED DUNGEONS UI FIXTURE · no game assets or real"
+                                                + " build data"));
                         var scene = new Scene(root, 1320, 850);
                         scene.getStylesheets()
                                 .add(
@@ -183,7 +194,9 @@ public final class DungeonsUiTest {
                                                     .anyMatch(
                                                             s ->
                                                                     s.contains(
-                                                                            "entrance coordinates are not supplied")),
+                                                                            "entrance coordinates"
+                                                                                    + " are not"
+                                                                                    + " supplied")),
                                             "Associated area is not misrepresented as entrance");
                                     @SuppressWarnings("unchecked")
                                     var list =
@@ -238,10 +251,12 @@ public final class DungeonsUiTest {
                                                             .findFirst()
                                                             .orElseThrow();
                                     filter.getSelectionModel().select(2);
+                                    filter.fireEvent(new javafx.event.ActionEvent());
                                     require(
                                             encounterList.getItems().size() == 1,
                                             "Difficulty-specific encounter filtering");
                                     filter.getSelectionModel().selectFirst();
+                                    filter.fireEvent(new javafx.event.ActionEvent());
                                     try {
                                         root.applyCss();
                                         root.layout();
@@ -292,11 +307,13 @@ public final class DungeonsUiTest {
                                                                     .noneMatch(
                                                                             s ->
                                                                                     s.contains(
-                                                                                            "SHOULD NOT APPEAR")),
+                                                                                            "SHOULD"
+                                                                                                + " NOT APPEAR")),
                                                             "Stale selection suppressed");
                                                     require(
                                                             closes.get() == 0,
-                                                            "View retains borrowed handle lifetime");
+                                                            "View retains borrowed handle"
+                                                                    + " lifetime");
                                                     require(
                                                             loads.get() == 1,
                                                             "Catalogue is reused");
@@ -316,8 +333,10 @@ public final class DungeonsUiTest {
                 });
         try {
             done.get(20, TimeUnit.SECONDS);
+            loadingChecks.get(5, TimeUnit.SECONDS);
             System.out.println(
-                    "Dungeons UI: partial metadata, area hierarchy, map-ID search, difficulty filters, resize and stale/borrowed lifetime passed");
+                    "Dungeons UI: partial metadata, area hierarchy, map-ID search, difficulty"
+                            + " filters, resize and stale/borrowed lifetime passed");
         } finally {
             Platform.exit();
         }
@@ -374,6 +393,211 @@ public final class DungeonsUiTest {
         var directory = Path.of(System.getProperty("vimi.uiReviewDirectory", "build/ui-review"));
         Files.createDirectories(directory);
         ImageIO.write(output, "png", directory.resolve(file).toFile());
+    }
+
+    private static long activityCount(javafx.scene.Node node) {
+        if (!node.isVisible()) return 0;
+        long count = node instanceof javafx.scene.control.ProgressIndicator ? 1 : 0;
+        if (node instanceof javafx.scene.Parent parent)
+            for (var child : parent.getChildrenUnmodifiable()) count += activityCount(child);
+        return count;
+    }
+
+    private static boolean accessible(javafx.scene.Node node, String text) {
+        if (text.equals(node.getAccessibleText())) return true;
+        if (node instanceof javafx.scene.Parent parent)
+            for (var child : parent.getChildrenUnmodifiable())
+                if (accessible(child, text)) return true;
+        return false;
+    }
+
+    private static boolean hasColor(javafx.scene.Node node) {
+        if (node instanceof javafx.scene.image.ImageView image
+                && image.getImage() != null
+                && image.getImage().getPixelReader().getArgb(0, 0) == 0xff12aabb
+                && image.getImage().getHeight() == 2
+                && image.getImage().getPixelReader().getArgb(0, 1) == 0xff345678) return true;
+        if (node instanceof javafx.scene.Parent parent)
+            for (var child : parent.getChildrenUnmodifiable()) if (hasColor(child)) return true;
+        return false;
+    }
+
+    private static void awaitColor(DungeonsView view, long deadline) {
+        try {
+            if (!hasColor(view) && System.nanoTime() < deadline) {
+                var pause = new javafx.animation.PauseTransition(javafx.util.Duration.millis(10));
+                pause.setOnFinished(event -> awaitColor(view, deadline));
+                pause.play();
+                return;
+            }
+            require(hasColor(view), "Background RGBA conversion preserves uploaded color");
+            view.close();
+            require(activityCount(view) == 0, "Closing dungeon retires activity");
+            loadingChecks.complete(null);
+        } catch (Throwable error) {
+            view.close();
+            loadingChecks.completeExceptionally(error);
+        }
+    }
+
+    private static void loadingFeedback() {
+        var catalog = new CompletableFuture<DungeonTypes.Catalog>();
+        var overview = new CompletableFuture<DungeonTypes.Overview>();
+        var icon = new CompletableFuture<com.vibeminer.formats.images.BlpImageTypes.Result>();
+        var colorIcon = new CompletableFuture<com.vibeminer.formats.images.BlpImageTypes.Result>();
+        var dungeon =
+                new DungeonTypes.Dungeon(
+                        1, "Pending authored dungeon", DungeonTypes.Kind.DUNGEON, 5L, null, null);
+        BuildDungeons handle =
+                new BuildDungeons() {
+                    public CompletableFuture<DungeonTypes.Catalog> catalog(Cancellation token) {
+                        return catalog;
+                    }
+
+                    public CompletableFuture<DungeonTypes.Overview> overview(
+                            long id, Cancellation token) {
+                        return overview;
+                    }
+
+                    public CompletableFuture<Void> closeAsync() {
+                        return CompletableFuture.completedFuture(null);
+                    }
+                };
+        var view =
+                new DungeonsView(
+                        () -> handle,
+                        () -> 1,
+                        "Authored pending fixture",
+                        (id, token) -> id == 9 ? icon : colorIcon);
+        new Scene(view, 1200, 1000);
+        view.applyCss();
+        view.layout();
+        view.ensureLoaded();
+        view.applyCss();
+        view.layout();
+        require(activityCount(view) > 0, "Pending dungeon catalog has local activity");
+        catalog.complete(
+                new DungeonTypes.Catalog(
+                        DungeonTypes.State.READY, List.of(dungeon), List.of(), List.of(), null));
+        Platform.runLater(
+                () -> {
+                    try {
+                        require(
+                                activityCount(view) > 0,
+                                "Pending dungeon overview keeps local activity");
+                        overview.complete(
+                                new DungeonTypes.Overview(
+                                        DungeonTypes.State.PARTIAL,
+                                        dungeon,
+                                        List.of(),
+                                        List.of(),
+                                        List.of(),
+                                        List.of(),
+                                        List.of(
+                                                new DungeonTypes.Encounter(
+                                                        1,
+                                                        "Pending encounter",
+                                                        null,
+                                                        null,
+                                                        1L,
+                                                        null,
+                                                        9L),
+                                                new DungeonTypes.Encounter(
+                                                        2,
+                                                        "Authored color",
+                                                        null,
+                                                        null,
+                                                        2L,
+                                                        null,
+                                                        10L)),
+                                        List.of(),
+                                        List.of(),
+                                        null));
+                        Platform.runLater(
+                                () -> {
+                                    try {
+                                        view.applyCss();
+                                        view.layout();
+                                        require(
+                                                accessible(view, "Loading encounter icon"),
+                                                "Pending encounter icon is explicit and"
+                                                        + " accessible");
+                                        icon.completeExceptionally(
+                                                new IllegalStateException("Authored icon failure"));
+                                        var pixels =
+                                                new com.vibeminer.formats.images.Blp2Types.Image(
+                                                        1,
+                                                        2,
+                                                        8,
+                                                        new byte[] {
+                                                            0x12,
+                                                            (byte) 0xaa,
+                                                            (byte) 0xbb,
+                                                            (byte) 0xff,
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            0x34,
+                                                            0x56,
+                                                            0x78,
+                                                            (byte) 0xff,
+                                                            0,
+                                                            0,
+                                                            0,
+                                                            0
+                                                        },
+                                                        null,
+                                                        8,
+                                                        0,
+                                                        0,
+                                                        1,
+                                                        2,
+                                                        List.of(),
+                                                        0);
+                                        colorIcon.complete(
+                                                new com.vibeminer.formats.images.BlpImageTypes
+                                                        .Result(
+                                                        com.vibeminer.formats.images.BlpImageTypes
+                                                                .State.READY,
+                                                        pixels,
+                                                        com.vibeminer.formats.images.BlpImageTypes
+                                                                .Cache.NONE,
+                                                        List.of(),
+                                                        null,
+                                                        null,
+                                                        null,
+                                                        null));
+                                        Platform.runLater(
+                                                () -> {
+                                                    try {
+                                                        require(
+                                                                accessible(
+                                                                        view,
+                                                                        "Encounter icon"
+                                                                                + " unavailable"),
+                                                                "Failed encounter icon is"
+                                                                    + " explicitly unavailable");
+                                                        awaitColor(
+                                                                view,
+                                                                System.nanoTime()
+                                                                        + TimeUnit.SECONDS.toNanos(
+                                                                                3));
+                                                    } catch (Throwable error) {
+                                                        view.close();
+                                                        loadingChecks.completeExceptionally(error);
+                                                    }
+                                                });
+                                    } catch (Throwable error) {
+                                        view.close();
+                                        loadingChecks.completeExceptionally(error);
+                                    }
+                                });
+                    } catch (Throwable error) {
+                        view.close();
+                        loadingChecks.completeExceptionally(error);
+                    }
+                });
     }
 
     private static void require(boolean condition, String message) {

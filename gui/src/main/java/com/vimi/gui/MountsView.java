@@ -3,13 +3,7 @@ package com.vimi.gui;
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.mounts.BuildMounts;
 import com.vibeminer.concepts.mounts.MountTypes;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Objects;
-import java.util.function.LongSupplier;
-import java.util.function.Supplier;
+
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -18,6 +12,7 @@ import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
+import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TextField;
 import javafx.scene.control.TitledPane;
@@ -26,6 +21,14 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 /** Build-scoped mount browser; model assets load only for the selected recorded variant. */
 final class MountsView extends BorderPane implements AutoCloseable {
@@ -65,6 +68,7 @@ final class MountsView extends BorderPane implements AutoCloseable {
             previewToken = new Cancellation();
     private long generation, selectionGeneration, previewGeneration, revision = -1;
     private Long selected;
+    private boolean catalogLoading;
     private boolean loaded, closed, settingVariants;
 
     MountsView(Supplier<BuildMounts> handles, LongSupplier revisions, String context) {
@@ -201,6 +205,26 @@ final class MountsView extends BorderPane implements AutoCloseable {
         model.clear("No model selected");
     }
 
+    private static VBox activity(String message) {
+        var spinner = new ProgressIndicator(-1);
+        spinner.setPrefSize(26, 26);
+        spinner.setMaxSize(26, 26);
+        spinner.setAccessibleText(message);
+        var region = new VBox(10, spinner, text(message, "muted"));
+        region.setAlignment(Pos.CENTER);
+        region.setPadding(new Insets(20));
+        return region;
+    }
+
+    private static <T> java.util.concurrent.CompletableFuture<T> request(
+            Supplier<java.util.concurrent.CompletableFuture<T>> operation) {
+        try {
+            return Objects.requireNonNull(operation.get());
+        } catch (RuntimeException failure) {
+            return java.util.concurrent.CompletableFuture.failedFuture(failure);
+        }
+    }
+
     void ensureLoaded() {
         if (closed) {
             return;
@@ -211,6 +235,8 @@ final class MountsView extends BorderPane implements AutoCloseable {
             return;
         }
         if (handle == null) {
+            invalidate();
+            mounts.setPlaceholder(text("Mount records are unavailable.", "muted"));
             status.setText("Mount data unavailable; see Overview.");
             return;
         }
@@ -218,9 +244,11 @@ final class MountsView extends BorderPane implements AutoCloseable {
         bound = handle;
         revision = currentRevision;
         loaded = true;
+        catalogLoading = true;
+        mounts.setPlaceholder(activity("Loading mount records…"));
         long request = generation;
         status.setText("Loading readable mount records…");
-        handle.catalog(catalogToken)
+        request(() -> handle.catalog(catalogToken))
                 .whenComplete(
                         (result, failure) ->
                                 Platform.runLater(
@@ -228,9 +256,17 @@ final class MountsView extends BorderPane implements AutoCloseable {
                                             if (stale(request, handle)) {
                                                 return;
                                             }
+                                            catalogLoading = false;
                                             if (failure != null || result == null) {
+                                                loaded = false;
+                                                mounts.setPlaceholder(
+                                                        text(
+                                                                "Mount records are unavailable."
+                                                                        + " Reload to retry.",
+                                                                "muted"));
                                                 status.setText(
-                                                        "Mount records could not be loaded. Reload to retry.");
+                                                        "Mount records could not be loaded. Reload"
+                                                                + " to retry.");
                                                 return;
                                             }
                                             catalog = result.mounts();
@@ -253,6 +289,7 @@ final class MountsView extends BorderPane implements AutoCloseable {
     }
 
     private void filter() {
+        if (catalogLoading) return;
         String term =
                 search.getText() == null ? "" : search.getText().strip().toLowerCase(Locale.ROOT);
         String state = filter.getValue();
@@ -312,12 +349,13 @@ final class MountsView extends BorderPane implements AutoCloseable {
         variants.getItems().clear();
         settingVariants = false;
         variants.setDisable(true);
-        model.clear("Loading recorded appearances…");
+        model.loading("Loading recorded appearances…");
         previewStatus.setText("Loading mount details…");
         showDetails(mount, List.of(), List.of(), null);
+        rail.getChildren().setAll(activity("Loading mount details…"));
         BuildMounts handle = bound;
         long catalogRequest = generation;
-        handle.overview(mount.id(), selectionToken)
+        request(() -> handle.overview(mount.id(), selectionToken))
                 .whenComplete(
                         (result, failure) ->
                                 Platform.runLater(
@@ -331,6 +369,12 @@ final class MountsView extends BorderPane implements AutoCloseable {
                                                 previewStatus.setText(
                                                         "Mount details could not be loaded.");
                                                 model.clear("Appearance metadata unavailable");
+                                                rail.getChildren()
+                                                        .setAll(
+                                                                text(
+                                                                        "Mount details are"
+                                                                                + " unavailable.",
+                                                                        "muted"));
                                                 return;
                                             }
                                             current = result;
@@ -388,9 +432,9 @@ final class MountsView extends BorderPane implements AutoCloseable {
         BuildMounts handle = bound;
         previewStates.put(mountId, PreviewState.LOADING);
         mounts.refresh();
-        model.clear("Loading selected model assets…");
+        model.loading("Loading selected model assets…");
         previewStatus.setText("Preparing display #" + variant.displayId() + "…");
-        handle.preview(mountId, variant.recordId(), previewToken)
+        request(() -> handle.preview(mountId, variant.recordId(), previewToken))
                 .whenComplete(
                         (result, failure) ->
                                 Platform.runLater(
@@ -410,7 +454,9 @@ final class MountsView extends BorderPane implements AutoCloseable {
                                                 previewStatus.setText(
                                                         result != null && result.message() != null
                                                                 ? result.message()
-                                                                : "Model preview unavailable. Metadata remains readable.");
+                                                                : "Model preview unavailable."
+                                                                        + " Metadata remains"
+                                                                        + " readable.");
                                                 if (result != null) {
                                                     showDetails(
                                                             current.mount(),
@@ -427,8 +473,10 @@ final class MountsView extends BorderPane implements AutoCloseable {
                                             previewStatus.setText(
                                                     "Static model preview · "
                                                             + (result.restored()
-                                                                    ? "restored from saved derivative"
-                                                                    : "prepared from selected build assets"));
+                                                                    ? "restored from saved"
+                                                                            + " derivative"
+                                                                    : "prepared from selected build"
+                                                                            + " assets"));
                                             showDetails(
                                                     current.mount(),
                                                     current.variants(),
@@ -549,6 +597,8 @@ final class MountsView extends BorderPane implements AutoCloseable {
         selectionToken = new Cancellation();
         previewToken = new Cancellation();
         loaded = false;
+        catalogLoading = false;
+        mounts.setPlaceholder(text("Choose a mount record.", "muted"));
         selected = null;
         current = null;
         catalog = List.of();
@@ -556,6 +606,7 @@ final class MountsView extends BorderPane implements AutoCloseable {
         previewStates.clear();
         selectedVariants.clear();
         model.clear("Select a mount");
+        rail.getChildren().setAll(text("Select a mount to inspect its details.", "muted"));
     }
 
     @Override

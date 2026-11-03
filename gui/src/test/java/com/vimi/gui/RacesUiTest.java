@@ -29,6 +29,7 @@ public final class RacesUiTest {
     private RacesUiTest() {}
 
     private static final CompletableFuture<Void> loadingChecks = new CompletableFuture<>();
+    private static final CompletableFuture<Void> voiceLoadingChecks = new CompletableFuture<>();
 
     public static void main(String[] args) throws Exception {
         var done = new CompletableFuture<Void>();
@@ -36,6 +37,7 @@ public final class RacesUiTest {
                 () -> {
                     try {
                         loadingFeedback();
+                        voiceLoadingFeedback();
                         var human = new RaceTypes.Race(1, "Authored Human", 1, 2);
                         var internal = new RaceTypes.Race(99, "Internal record", 99, 0);
                         var pending = new CompletableFuture<RaceTypes.Overview>();
@@ -62,8 +64,8 @@ public final class RacesUiTest {
                                                         RaceTypes.State.PARTIAL,
                                                         human,
                                                         "An authored lore paragraph used to review"
-                                                            + " layout. This screen does not"
-                                                            + " contain real game build data.",
+                                                                + " layout. This screen does not"
+                                                                + " contain real game build data.",
                                                         10L,
                                                         "Authored faction",
                                                         List.of(
@@ -86,7 +88,7 @@ public final class RacesUiTest {
                                                                         102,
                                                                         "Authored racial",
                                                                         "A second recorded"
-                                                                            + " description.",
+                                                                                + " description.",
                                                                         null,
                                                                         1)),
                                                         List.of("Some source rows are protected."),
@@ -142,7 +144,7 @@ public final class RacesUiTest {
                                                         java.util.Set.of(0),
                                                         List.of(
                                                                 "Authored renderer fixture; no game"
-                                                                    + " assets."),
+                                                                        + " assets."),
                                                         false,
                                                         null));
                                     }
@@ -170,7 +172,7 @@ public final class RacesUiTest {
                                                                         200)),
                                                         List.of(
                                                                 "Authored voice metadata; no"
-                                                                    + " recording."),
+                                                                        + " recording."),
                                                         null));
                                     }
 
@@ -227,7 +229,7 @@ public final class RacesUiTest {
                                                                         1001, 4, 2001)),
                                                         List.of(
                                                                 "Authored diffuse fixture; no game"
-                                                                    + " data."),
+                                                                        + " data."),
                                                         true,
                                                         null);
                                         var future =
@@ -251,8 +253,8 @@ public final class RacesUiTest {
                                                                                                             + " and starting"
                                                                                                             + " clothing")),
                                                                 "Pending appearance does not claim"
-                                                                    + " a completed textured"
-                                                                    + " sample");
+                                                                        + " a completed textured"
+                                                                        + " sample");
                                                         require(
                                                                 activityCount(authoredView.get())
                                                                         > 0,
@@ -308,7 +310,7 @@ public final class RacesUiTest {
                         root.setTop(
                                 new Label(
                                         "AUTHORED RACES LAYOUT FIXTURE · no character or real build"
-                                            + " data"));
+                                                + " data"));
                         double width =
                                 Double.parseDouble(
                                         System.getProperty("vimi.racesReviewWidth", "1320"));
@@ -413,7 +415,7 @@ public final class RacesUiTest {
                                                                 !labels(view)
                                                                         .contains("STALE OVERVIEW"),
                                                                 "Stale overview cannot repopulate"
-                                                                    + " invalidated view");
+                                                                        + " invalidated view");
                                                         view.close();
                                                         require(
                                                                 closes.get() == 0,
@@ -436,12 +438,112 @@ public final class RacesUiTest {
         try {
             done.get(20, TimeUnit.SECONDS);
             loadingChecks.get(5, TimeUnit.SECONDS);
+            voiceLoadingChecks.get(5, TimeUnit.SECONDS);
             System.out.println(
                     "Races UI: partial data, icons, internal-record filter, stale selection and"
-                        + " borrowed lifetime passed");
+                            + " borrowed lifetime passed");
         } finally {
             Platform.exit();
         }
+    }
+
+    private static void voiceLoadingFeedback() {
+        var catalog = new CompletableFuture<com.vibeminer.concepts.races.RaceVoiceTypes.Catalog>();
+        var audio = new CompletableFuture<com.vibeminer.concepts.races.RaceVoiceTypes.Audio>();
+        BuildRaces handle =
+                new BuildRaces() {
+                    public CompletableFuture<RaceTypes.Catalog> catalog(Cancellation token) {
+                        return new CompletableFuture<>();
+                    }
+
+                    public CompletableFuture<RaceTypes.Overview> overview(
+                            long id, Cancellation token) {
+                        return new CompletableFuture<>();
+                    }
+
+                    public CompletableFuture<com.vibeminer.concepts.races.RaceVoiceTypes.Catalog>
+                            voices(long race, long playerClass, int sex, Cancellation token) {
+                        return catalog;
+                    }
+
+                    public CompletableFuture<com.vibeminer.concepts.races.RaceVoiceTypes.Audio>
+                            voice(
+                                    long race,
+                                    long playerClass,
+                                    int sex,
+                                    long entry,
+                                    Cancellation token) {
+                        return audio;
+                    }
+
+                    public CompletableFuture<Void> closeAsync() {
+                        return CompletableFuture.completedFuture(null);
+                    }
+                };
+        var panel = new RaceVoicePanel(handle, () -> false);
+        new Scene(panel, 650, 250);
+        panel.applyCss();
+        panel.layout();
+        panel.selection(1, 1, 0);
+        require(activityCount(panel) > 0, "Pending voice catalog has accessible activity");
+        catalog.complete(
+                new com.vibeminer.concepts.races.RaceVoiceTypes.Catalog(
+                        RaceTypes.State.PARTIAL,
+                        "Authored locale",
+                        List.of(
+                                new com.vibeminer.concepts.races.RaceVoiceTypes.Clip(
+                                        1, 1, "Authored joke", 1, 1)),
+                        List.of(),
+                        null));
+        Platform.runLater(
+                () -> {
+                    try {
+                        require(activityCount(panel) == 0, "Ready voice catalog retires activity");
+                        panel.lookupAll(".button").stream()
+                                .filter(
+                                        node ->
+                                                node instanceof javafx.scene.control.Button button
+                                                        && button.getText().equals("Play"))
+                                .map(javafx.scene.control.Button.class::cast)
+                                .findFirst()
+                                .orElseThrow()
+                                .fire();
+                        require(
+                                activityCount(panel) > 0
+                                        && labels(panel).contains("Decoding voice preview…"),
+                                "Voice decode stays visibly pending");
+                        require(
+                                labels(panel).stream()
+                                        .noneMatch(text -> text.startsWith("Playing")),
+                                "Decode cannot claim actual playback");
+                        audio.completeExceptionally(
+                                new IllegalStateException("Authored decode failure"));
+                        Platform.runLater(
+                                () -> {
+                                    try {
+                                        require(
+                                                activityCount(panel) == 0
+                                                        && labels(panel)
+                                                                .contains(
+                                                                        "Voice preview is"
+                                                                                + " unavailable."),
+                                                "Voice failure retires loading");
+                                        panel.selection(1, 1, 1);
+                                        panel.close();
+                                        require(
+                                                activityCount(panel) == 0,
+                                                "Closing cancels pending voice activity");
+                                        voiceLoadingChecks.complete(null);
+                                    } catch (Throwable failure) {
+                                        panel.close();
+                                        voiceLoadingChecks.completeExceptionally(failure);
+                                    }
+                                });
+                    } catch (Throwable failure) {
+                        panel.close();
+                        voiceLoadingChecks.completeExceptionally(failure);
+                    }
+                });
     }
 
     private static void loadingFeedback() {

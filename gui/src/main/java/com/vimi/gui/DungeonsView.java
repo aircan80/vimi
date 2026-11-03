@@ -4,13 +4,7 @@ import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.dungeons.BuildDungeons;
 import com.vibeminer.concepts.dungeons.DungeonTypes;
 import com.vibeminer.formats.images.BlpImageTypes;
-import java.util.List;
-import java.util.Locale;
-import java.util.Objects;
-import java.util.concurrent.CompletableFuture;
-import java.util.function.BiFunction;
-import java.util.function.LongSupplier;
-import java.util.function.Supplier;
+
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -19,6 +13,7 @@ import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
+import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TextField;
 import javafx.scene.control.TitledPane;
@@ -31,6 +26,14 @@ import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
+
+import java.util.List;
+import java.util.Locale;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.BiFunction;
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 /**
  * Selected-build dungeon/raid list and exact client metadata; no inferred entrance or server
@@ -66,6 +69,25 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
     private Cancellation catalogueToken = new Cancellation(), selectionToken = new Cancellation();
     private long generation, selectionGeneration, revision = -1;
     private Long selected, wanted;
+
+    private record IconPixels(int width, int height, int[] argb) {}
+
+    private final java.util.Map<Long, CompletableFuture<IconPixels>> preparedIcons =
+            new java.util.LinkedHashMap<>();
+    private final java.util.concurrent.ThreadPoolExecutor iconWorker =
+            new java.util.concurrent.ThreadPoolExecutor(
+                    1,
+                    1,
+                    0,
+                    java.util.concurrent.TimeUnit.MILLISECONDS,
+                    new java.util.concurrent.ArrayBlockingQueue<>(64),
+                    runnable -> {
+                        var thread = new Thread(runnable, "dungeon-icon-pixels");
+                        thread.setDaemon(true);
+                        return thread;
+                    },
+                    new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
+    private boolean catalogLoading;
     private boolean loaded, closed;
 
     DungeonsView(Supplier<BuildDungeons> handles, LongSupplier revisions, String context) {
@@ -177,6 +199,26 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
         clearDetails("Choose a dungeon or raid to inspect its recorded details.");
     }
 
+    private static VBox activity(String message) {
+        var spinner = new ProgressIndicator(-1);
+        spinner.setPrefSize(26, 26);
+        spinner.setMaxSize(26, 26);
+        spinner.setAccessibleText(message);
+        var region = new VBox(10, spinner, text(message, "muted"));
+        region.setAlignment(Pos.CENTER);
+        region.setPadding(new Insets(20));
+        return region;
+    }
+
+    private static <T> java.util.concurrent.CompletableFuture<T> request(
+            Supplier<java.util.concurrent.CompletableFuture<T>> operation) {
+        try {
+            return Objects.requireNonNull(operation.get());
+        } catch (RuntimeException failure) {
+            return java.util.concurrent.CompletableFuture.failedFuture(failure);
+        }
+    }
+
     void ensureLoaded() {
         if (closed) {
             return;
@@ -187,6 +229,8 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
             return;
         }
         if (handle == null) {
+            invalidate();
+            dungeons.setPlaceholder(text("Dungeon records are unavailable.", "muted"));
             status.setText("Dungeon data unavailable; see Overview.");
             return;
         }
@@ -194,9 +238,11 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
         bound = handle;
         revision = currentRevision;
         loaded = true;
+        catalogLoading = true;
+        dungeons.setPlaceholder(activity("Loading dungeon records…"));
         long request = generation;
         status.setText("Loading readable dungeon and raid maps…");
-        handle.catalog(catalogueToken)
+        request(() -> handle.catalog(catalogueToken))
                 .whenComplete(
                         (result, failure) ->
                                 Platform.runLater(
@@ -204,9 +250,17 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
                                             if (stale(request, handle)) {
                                                 return;
                                             }
+                                            catalogLoading = false;
                                             if (failure != null || result == null) {
+                                                loaded = false;
+                                                dungeons.setPlaceholder(
+                                                        text(
+                                                                "Dungeon records are unavailable."
+                                                                        + " Reload to retry.",
+                                                                "muted"));
                                                 status.setText(
-                                                        "Dungeon records could not be loaded. Reload to retry.");
+                                                        "Dungeon records could not be loaded."
+                                                                + " Reload to retry.");
                                                 return;
                                             }
                                             catalog = result.dungeons();
@@ -220,7 +274,8 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
                                                                                     == DungeonTypes
                                                                                             .State
                                                                                             .PARTIAL
-                                                                            ? " · Some records are unavailable"
+                                                                            ? " · Some records are"
+                                                                                    + " unavailable"
                                                                             : ""));
                                             filter();
                                             if (selected == null
@@ -244,6 +299,7 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
     }
 
     private void filter() {
+        if (catalogLoading) return;
         String term =
                 search.getText() == null ? "" : search.getText().strip().toLowerCase(Locale.ROOT);
         String type = kind.getValue();
@@ -283,6 +339,7 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
         selectionToken = new Cancellation();
         if (icons != null) {
             icons.clear();
+            clearPreparedIcons();
         }
         long selection = ++selectionGeneration;
         long request = generation;
@@ -294,9 +351,9 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
                 .setAll(
                         heading,
                         identity,
-                        text("Loading location, difficulties and encounter records…", "muted"));
+                        activity("Loading location, difficulties and encounter records…"));
         scroller.setVvalue(0);
-        handle.overview(dungeon.mapId(), selectionToken)
+        request(() -> handle.overview(dungeon.mapId(), selectionToken))
                 .whenComplete(
                         (result, failure) ->
                                 Platform.runLater(
@@ -319,7 +376,13 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
                                                                                                         .message()
                                                                                                 != null
                                                                                 ? result.message()
-                                                                                : "Dungeon details could not be loaded. The instance list remains available.",
+                                                                                : "Dungeon details"
+                                                                                      + " could not"
+                                                                                      + " be loaded."
+                                                                                      + " The instance"
+                                                                                      + " list"
+                                                                                      + " remains"
+                                                                                      + " available.",
                                                                         "muted"));
                                                 return;
                                             }
@@ -372,7 +435,8 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
             location.getChildren()
                     .add(
                             text(
-                                    "Recorded area hierarchy · entrance coordinates are not supplied",
+                                    "Recorded area hierarchy · entrance coordinates are not"
+                                            + " supplied",
                                     "muted"));
         }
         details.getChildren().add(location);
@@ -507,7 +571,8 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
                 image.setFitWidth(32);
                 image.setFitHeight(32);
                 image.setPreserveRatio(true);
-                var icon = new StackPane(text("·", "muted"), image);
+                var icon = new StackPane(text("—", "muted"));
+                icon.setAccessibleText("Encounter icon reference unavailable");
                 icon.setMinSize(32, 32);
                 icon.setPrefSize(32, 32);
                 icon.setStyle("-fx-background-color: #e5f1eb; -fx-background-radius: 5;");
@@ -530,68 +595,112 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
                 setGraphic(row);
                 long request = selectionGeneration;
                 if (icons != null && encounter.iconFileDataId() != null) {
-                    icons.request(encounter.iconFileDataId())
+                    var pending = new ProgressIndicator(-1);
+                    pending.setPrefSize(18, 18);
+                    pending.setMaxSize(18, 18);
+                    pending.setAccessibleText("Loading encounter icon");
+                    icon.setAccessibleText("Loading encounter icon");
+                    icon.getChildren().setAll(pending);
+                    long catalogRequest = generation;
+                    BuildDungeons handle = bound;
+                    icon(encounter.iconFileDataId())
                             .whenComplete(
-                                    (result, failure) ->
+                                    (pixels, failure) ->
                                             Platform.runLater(
                                                     () -> {
-                                                        if (closed
+                                                        if (stale(catalogRequest, handle)
                                                                 || request != selectionGeneration
-                                                                || getItem() != encounter
-                                                                || failure != null
-                                                                || result == null
-                                                                || result.image() == null) {
+                                                                || getItem() != encounter) return;
+                                                        if (failure != null || pixels == null) {
+                                                            icon.setAccessibleText(
+                                                                    "Encounter icon unavailable");
+                                                            icon.getChildren()
+                                                                    .setAll(text("—", "muted"));
                                                             return;
-                                                        }
-                                                        var source = result.image();
-                                                        if (source.width() < 1
-                                                                || source.height() < 1
-                                                                || source.width() > 128
-                                                                || source.height() > 128) {
-                                                            return;
-                                                        }
-                                                        byte[] rgba = source.rgba();
-                                                        if (rgba.length
-                                                                != source.width()
-                                                                        * source.height()
-                                                                        * 4) {
-                                                            return;
-                                                        }
-                                                        int[] pixels =
-                                                                new int
-                                                                        [source.width()
-                                                                                * source.height()];
-                                                        for (int i = 0; i < pixels.length; i++) {
-                                                            pixels[i] =
-                                                                    (rgba[i * 4 + 3] & 255) << 24
-                                                                            | (rgba[i * 4] & 255)
-                                                                                    << 16
-                                                                            | (rgba[i * 4 + 1]
-                                                                                            & 255)
-                                                                                    << 8
-                                                                            | (rgba[i * 4 + 2]
-                                                                                    & 255);
                                                         }
                                                         var bitmap =
                                                                 new WritableImage(
-                                                                        source.width(),
-                                                                        source.height());
+                                                                        pixels.width(),
+                                                                        pixels.height());
                                                         bitmap.getPixelWriter()
                                                                 .setPixels(
                                                                         0,
                                                                         0,
-                                                                        source.width(),
-                                                                        source.height(),
+                                                                        pixels.width(),
+                                                                        pixels.height(),
                                                                         PixelFormat
                                                                                 .getIntArgbInstance(),
-                                                                        pixels,
+                                                                        pixels.argb(),
                                                                         0,
-                                                                        source.width());
+                                                                        pixels.width());
                                                         image.setImage(bitmap);
+                                                        icon.setAccessibleText(
+                                                                "Encounter icon for "
+                                                                        + encounter.name());
+                                                        icon.getChildren().setAll(image);
                                                     }));
                 }
             }
         };
+    }
+
+    private CompletableFuture<IconPixels> icon(long id) {
+        var existing = preparedIcons.get(id);
+        if (existing != null) return existing;
+        if (preparedIcons.size() >= 128) {
+            var iterator = preparedIcons.entrySet().iterator();
+            while (iterator.hasNext())
+                if (iterator.next().getValue().isDone()) {
+                    iterator.remove();
+                    break;
+                }
+            if (preparedIcons.size() >= 128)
+                return CompletableFuture.failedFuture(new IllegalStateException("Icon queue full"));
+        }
+        var future =
+                icons.request(id)
+                        .thenApplyAsync(
+                                result -> {
+                                    if (result == null
+                                            || result.state() != BlpImageTypes.State.READY
+                                            || result.image() == null) return null;
+                                    var source = result.image();
+                                    int width = source.width(),
+                                            height = source.height(),
+                                            stride = source.rowStride();
+                                    if (width < 1
+                                            || height < 1
+                                            || width > 128
+                                            || height > 128
+                                            || stride < width * 4
+                                            || stride > 512)
+                                        throw new IllegalArgumentException(
+                                                "Icon dimensions exceed preview bounds");
+                                    byte[] rgba = source.rgba();
+                                    if (rgba.length != stride * height)
+                                        throw new IllegalArgumentException(
+                                                "Icon byte length disagrees");
+                                    int[] argb = new int[width * height];
+                                    for (int y = 0; y < height; y++)
+                                        for (int x = 0; x < width; x++) {
+                                            int at = y * stride + x * 4;
+                                            argb[y * width + x] =
+                                                    (rgba[at + 3] & 255) << 24
+                                                            | (rgba[at] & 255) << 16
+                                                            | (rgba[at + 1] & 255) << 8
+                                                            | (rgba[at + 2] & 255);
+                                        }
+                                    return new IconPixels(width, height, argb);
+                                },
+                                iconWorker);
+        preparedIcons.put(id, future);
+        return future;
+    }
+
+    private void clearPreparedIcons() {
+        preparedIcons.values().forEach(future -> future.cancel(false));
+        preparedIcons.clear();
+        iconWorker.getQueue().clear();
     }
 
     private void showSources(DungeonTypes.Overview result) {
@@ -672,7 +781,8 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
                     .getChildren()
                     .add(
                             text(
-                                    "Showing the first 128 encounter references; all retained encounter records remain in the list.",
+                                    "Showing the first 128 encounter references; all retained"
+                                            + " encounter records remain in the list.",
                                     "muted"));
         }
         var ids = new TitledPane("Record references", references);
@@ -725,8 +835,11 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
         selectionToken = new Cancellation();
         if (icons != null) {
             icons.clear();
+            clearPreparedIcons();
         }
         loaded = false;
+        catalogLoading = false;
+        dungeons.setPlaceholder(text("Choose a dungeon record.", "muted"));
         selected = null;
         catalog = List.of();
         dungeons.getItems().clear();
@@ -737,6 +850,7 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
     public void close() {
         closed = true;
         invalidate();
+        iconWorker.shutdownNow();
         if (icons != null) {
             icons.close();
         }

@@ -6,6 +6,16 @@ import com.vibeminer.concepts.mounts.BuildMounts;
 import com.vibeminer.concepts.mounts.MountTypes;
 import com.vibeminer.rendering.models.MeshAppearance;
 import com.vibeminer.rendering.models.PreviewMesh;
+
+import javafx.application.Platform;
+import javafx.scene.Scene;
+import javafx.scene.control.ComboBox;
+import javafx.scene.control.Label;
+import javafx.scene.control.ListView;
+import javafx.scene.control.TextField;
+import javafx.scene.layout.BorderPane;
+import javafx.stage.Stage;
+
 import java.awt.image.BufferedImage;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -15,31 +25,28 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import javafx.application.Platform;
-import javafx.scene.Scene;
-import javafx.scene.control.ComboBox;
-import javafx.scene.control.Label;
-import javafx.scene.control.ListView;
-import javafx.scene.control.TextField;
-import javafx.scene.layout.BorderPane;
-import javafx.stage.Stage;
+
 import javax.imageio.ImageIO;
 
 /** Authored-only UI proof: readable partial records, lazy variants, search and stale selection. */
 public final class MountsUiTest {
     private MountsUiTest() {}
 
+    private static final CompletableFuture<Void> loadingChecks = new CompletableFuture<>();
+
     public static void main(String[] args) throws Exception {
         var done = new CompletableFuture<Void>();
         Platform.startup(
                 () -> {
                     try {
+                        loadingFeedback();
                         var runner =
                                 new MountTypes.Mount(
                                         6,
                                         "Authored Plains Runner",
                                         "An authored description for reviewing the mount layout.",
-                                        "Recorded source text appears here. No player collection state is inferred.",
+                                        "Recorded source text appears here. No player collection"
+                                                + " state is inferred.",
                                         458L,
                                         0L,
                                         10L,
@@ -71,7 +78,9 @@ public final class MountsUiTest {
                                                         MountTypes.State.PARTIAL,
                                                         List.of(runner, hidden),
                                                         List.of(
-                                                                "Authored protected section; readable mounts remain available."),
+                                                                "Authored protected section;"
+                                                                        + " readable mounts remain"
+                                                                        + " available."),
                                                         null));
                                     }
 
@@ -112,7 +121,8 @@ public final class MountsUiTest {
                                                         appearance(),
                                                         Set.of(0),
                                                         List.of(
-                                                                "Authored geometry and diffuse texture; no game assets."),
+                                                                "Authored geometry and diffuse"
+                                                                    + " texture; no game assets."),
                                                         true,
                                                         null));
                                     }
@@ -128,7 +138,8 @@ public final class MountsUiTest {
                         var root = new BorderPane(view);
                         root.setTop(
                                 new Label(
-                                        "AUTHORED MOUNTS UI FIXTURE · no game assets or real build data"));
+                                        "AUTHORED MOUNTS UI FIXTURE · no game assets or real build"
+                                                + " data"));
                         var scene = new Scene(root, 1320, 850);
                         scene.getStylesheets()
                                 .add(MountsUiTest.class.getResource("/vimi.css").toExternalForm());
@@ -201,12 +212,15 @@ public final class MountsUiTest {
                                                                     .anyMatch(
                                                                             t ->
                                                                                     t.startsWith(
-                                                                                            "Static model preview"))
+                                                                                            "Static"
+                                                                                                + " model"
+                                                                                                + " preview"))
                                                             && hasImage(view),
                                             () -> {
                                                 require(
                                                         calls.get() == 2,
-                                                        "Explicit variant selection loads only chosen variant");
+                                                        "Explicit variant selection loads only"
+                                                                + " chosen variant");
                                                 try {
                                                     stage.setWidth(1150);
                                                     stage.setHeight(760);
@@ -244,14 +258,19 @@ public final class MountsUiTest {
                                                                                         t ->
                                                                                                 t
                                                                                                         .contains(
-                                                                                                                "STALE SHOULD NOT APPEAR")),
-                                                                        "Stale selection suppressed after close");
+                                                                                                                "STALE"
+                                                                                                                    + " SHOULD"
+                                                                                                                    + " NOT APPEAR")),
+                                                                        "Stale selection suppressed"
+                                                                                + " after close");
                                                                 require(
                                                                         closes.get() == 0,
-                                                                        "View never closes borrowed handle");
+                                                                        "View never closes borrowed"
+                                                                                + " handle");
                                                                 require(
                                                                         catalogs.get() == 1,
-                                                                        "Catalogue is reused until invalidated");
+                                                                        "Catalogue is reused until"
+                                                                                + " invalidated");
                                                                 stage.close();
                                                                 done.complete(null);
                                                             } catch (Throwable failure) {
@@ -271,8 +290,10 @@ public final class MountsUiTest {
                 });
         try {
             done.get(20, TimeUnit.SECONDS);
+            loadingChecks.get(5, TimeUnit.SECONDS);
             System.out.println(
-                    "Mounts UI: partial records, lazy variants, source-spell search, resize, stale selection and borrowed lifetime passed");
+                    "Mounts UI: partial records, lazy variants, source-spell search, resize, stale"
+                            + " selection and borrowed lifetime passed");
         } finally {
             Platform.exit();
         }
@@ -372,6 +393,104 @@ public final class MountsUiTest {
         var directory = Path.of(System.getProperty("vimi.uiReviewDirectory", "build/ui-review"));
         Files.createDirectories(directory);
         ImageIO.write(image, "png", directory.resolve("mounts-authored.png").toFile());
+    }
+
+    private static long activityCount(javafx.scene.Node node) {
+        if (!node.isVisible()) return 0;
+        long count = node instanceof javafx.scene.control.ProgressIndicator ? 1 : 0;
+        if (node instanceof javafx.scene.Parent parent)
+            for (var child : parent.getChildrenUnmodifiable()) count += activityCount(child);
+        return count;
+    }
+
+    private static void loadingFeedback() {
+        var catalog = new CompletableFuture<MountTypes.Catalog>();
+        var overview = new CompletableFuture<MountTypes.Overview>();
+        var preview = new CompletableFuture<DisplayModelTypes.Preview>();
+        var mount =
+                new MountTypes.Mount(
+                        1, "Pending authored mount", "", "", null, null, null, null, null);
+        BuildMounts handle =
+                new BuildMounts() {
+                    public CompletableFuture<MountTypes.Catalog> catalog(Cancellation token) {
+                        return catalog;
+                    }
+
+                    public CompletableFuture<MountTypes.Overview> overview(
+                            long id, Cancellation token) {
+                        return overview;
+                    }
+
+                    public CompletableFuture<DisplayModelTypes.Preview> preview(
+                            long id, long variant, Cancellation token) {
+                        return preview;
+                    }
+
+                    public CompletableFuture<Void> closeAsync() {
+                        return CompletableFuture.completedFuture(null);
+                    }
+                };
+        var view = new MountsView(() -> handle, () -> 1, "Authored pending fixture");
+        new Scene(view, 1200, 850);
+        view.applyCss();
+        view.layout();
+        view.ensureLoaded();
+        view.applyCss();
+        view.layout();
+        require(activityCount(view) > 0, "Pending mount catalog has animated local activity");
+        catalog.complete(
+                new MountTypes.Catalog(MountTypes.State.READY, List.of(mount), List.of(), null));
+        Platform.runLater(
+                () -> {
+                    try {
+                        require(
+                                activityCount(view) > 0,
+                                "Pending mount details keep activity visible");
+                        overview.complete(
+                                new MountTypes.Overview(
+                                        MountTypes.State.READY,
+                                        mount,
+                                        List.of(new MountTypes.Variant(1, 1, null, "Authored")),
+                                        List.of(),
+                                        null));
+                        Platform.runLater(
+                                () -> {
+                                    try {
+                                        require(
+                                                activityCount(view) > 0,
+                                                "Pending mount model acquisition shows central"
+                                                        + " activity");
+                                        preview.completeExceptionally(
+                                                new IllegalStateException(
+                                                        "Authored asset failure"));
+                                        Platform.runLater(
+                                                () -> {
+                                                    try {
+                                                        require(
+                                                                activityCount(view) == 0,
+                                                                "Failed mount acquisition retires"
+                                                                        + " activity");
+                                                        view.close();
+                                                        require(
+                                                                activityCount(view) == 0,
+                                                                "Closed mount view has no"
+                                                                        + " activity");
+                                                        loadingChecks.complete(null);
+                                                    } catch (Throwable error) {
+                                                        view.close();
+                                                        loadingChecks.completeExceptionally(error);
+                                                    }
+                                                });
+                                    } catch (Throwable error) {
+                                        view.close();
+                                        loadingChecks.completeExceptionally(error);
+                                    }
+                                });
+                    } catch (Throwable error) {
+                        view.close();
+                        loadingChecks.completeExceptionally(error);
+                    }
+                });
     }
 
     private static void require(boolean value, String message) {

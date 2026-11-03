@@ -414,3 +414,11 @@ tasks.register('packageSmokeTest', JavaExec) {
     mainClass = 'com.vimi.gui.PackageSmokeTest'
 }
 tasks.named('check') { dependsOn tasks.named('packageSmokeTest') }
+
+// Authored audio-line lifecycle checks require no sound device or display.
+tasks.register('voicePlaybackTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.VoicePlaybackTest'
+}
+tasks.named('check') { dependsOn tasks.named('voicePlaybackTest') }

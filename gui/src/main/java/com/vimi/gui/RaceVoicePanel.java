@@ -3,14 +3,17 @@ package com.vimi.gui;
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.races.BuildRaces;
 import com.vibeminer.concepts.races.RaceVoiceTypes;
-import java.util.function.BooleanSupplier;
+
 import javafx.application.Platform;
 import javafx.scene.control.Button;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
+import javafx.scene.control.ProgressIndicator;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
+
+import java.util.function.BooleanSupplier;
 
 /** Preview only selected build-locale recorded voice clips; never autoplays on navigation. */
 final class RaceVoicePanel extends VBox implements AutoCloseable {
@@ -20,6 +23,7 @@ final class RaceVoicePanel extends VBox implements AutoCloseable {
     private final Button play = new Button("Play"), stop = new Button("Stop");
     private final Label status = new Label("Choose a recorded model voice");
     private final VoicePlayback playback = new VoicePlayback();
+    private final ProgressIndicator activity = new ProgressIndicator(-1);
     private Cancellation token = new Cancellation();
     private long generation, raceId, classId;
     private int sex;
@@ -50,19 +54,28 @@ final class RaceVoicePanel extends VBox implements AutoCloseable {
         stop.setOnAction(event -> stop());
         status.getStyleClass().add("muted");
         status.setWrapText(true);
-        getChildren().addAll(new Label("Voice previews"), new HBox(10, clips, play, stop), status);
+        activity.setPrefSize(18, 18);
+        activity.setMaxSize(18, 18);
+        activity.setVisible(false);
+        activity.managedProperty().bind(activity.visibleProperty());
+        getChildren()
+                .addAll(
+                        new Label("Voice previews"),
+                        new HBox(10, clips, play, stop),
+                        new HBox(9, activity, status));
     }
 
     void selection(long raceId, long classId, int sex) {
+        if (closed) return;
         stop();
         this.raceId = raceId;
         this.classId = classId;
         this.sex = sex;
         clips.getItems().clear();
         play.setDisable(true);
-        status.setText("Loading recorded voice clips…");
+        busy("Loading recorded voice clips…");
         long request = ++generation;
-        handle.voices(raceId, classId, sex, token)
+        request(() -> handle.voices(raceId, classId, sex, token))
                 .whenComplete(
                         (result, error) ->
                                 Platform.runLater(
@@ -70,13 +83,15 @@ final class RaceVoicePanel extends VBox implements AutoCloseable {
                                             if (stale(request)) {
                                                 return;
                                             }
+                                            activity.setVisible(false);
                                             if (error != null
                                                     || result == null
                                                     || result.clips().isEmpty()) {
                                                 status.setText(
                                                         result != null && result.message() != null
                                                                 ? result.message()
-                                                                : "No readable voice clips are available.");
+                                                                : "No readable voice clips are"
+                                                                        + " available.");
                                                 return;
                                             }
                                             clips.getItems().setAll(result.clips());
@@ -84,13 +99,15 @@ final class RaceVoicePanel extends VBox implements AutoCloseable {
                                             play.setDisable(false);
                                             status.setText(
                                                     result.locale()
-                                                            + " · recorded jokes, flirts and action voices · runtime conditions are not evaluated");
+                                                            + " · recorded jokes, flirts and action"
+                                                            + " voices · runtime conditions are not"
+                                                            + " evaluated");
                                         }));
     }
 
     private void play() {
         var selected = clips.getValue();
-        if (selected == null) {
+        if (closed || selected == null) {
             return;
         }
         token.cancel();
@@ -98,8 +115,8 @@ final class RaceVoicePanel extends VBox implements AutoCloseable {
         long request = ++generation;
         play.setDisable(true);
         stop.setDisable(false);
-        status.setText("Preparing voice preview…");
-        handle.voice(raceId, classId, sex, selected.entryId(), token)
+        busy("Decoding voice preview…");
+        request(() -> handle.voice(raceId, classId, sex, selected.entryId(), token))
                 .whenComplete(
                         (result, error) ->
                                 Platform.runLater(
@@ -110,6 +127,7 @@ final class RaceVoicePanel extends VBox implements AutoCloseable {
                                             if (error != null
                                                     || result == null
                                                     || result.clip() == null) {
+                                                activity.setVisible(false);
                                                 status.setText(
                                                         result != null && result.message() != null
                                                                 ? result.message()
@@ -118,20 +136,37 @@ final class RaceVoicePanel extends VBox implements AutoCloseable {
                                                 stop.setDisable(true);
                                                 return;
                                             }
-                                            status.setText(
-                                                    "Playing "
-                                                            + selected.action()
-                                                            + " · "
-                                                            + (result.restored()
-                                                                    ? "saved PCM"
-                                                                    : "decoded Vorbis"));
-                                            playback.play(result.clip())
+                                            busy("Preparing audio output…");
+                                            playback.play(
+                                                            result.clip(),
+                                                            () ->
+                                                                    Platform.runLater(
+                                                                            () -> {
+                                                                                if (stale(request))
+                                                                                    return;
+                                                                                activity.setVisible(
+                                                                                        false);
+                                                                                status.setText(
+                                                                                        "Playing "
+                                                                                                + selected
+                                                                                                        .action()
+                                                                                                + " · "
+                                                                                                + (result
+                                                                                                                .restored()
+                                                                                                        ? "saved"
+                                                                                                              + " PCM"
+                                                                                                        : "decoded"
+                                                                                                              + " Vorbis"));
+                                                                            }))
                                                     .whenComplete(
                                                             (message, failure) ->
                                                                     Platform.runLater(
                                                                             () -> {
                                                                                 if (!stale(
                                                                                         request)) {
+                                                                                    activity
+                                                                                            .setVisible(
+                                                                                                    false);
                                                                                     play.setDisable(
                                                                                             false);
                                                                                     stop.setDisable(
@@ -139,11 +174,31 @@ final class RaceVoicePanel extends VBox implements AutoCloseable {
                                                                                     status.setText(
                                                                                             message
                                                                                                             == null
-                                                                                                    ? "Ready · select another clip or play again"
+                                                                                                    ? "Ready"
+                                                                                                          + " · select"
+                                                                                                          + " another"
+                                                                                                          + " clip"
+                                                                                                          + " or play"
+                                                                                                          + " again"
                                                                                                     : message);
                                                                                 }
                                                                             }));
                                         }));
+    }
+
+    private void busy(String message) {
+        activity.setAccessibleText(message);
+        activity.setVisible(true);
+        status.setText(message);
+    }
+
+    private static <T> java.util.concurrent.CompletableFuture<T> request(
+            java.util.function.Supplier<java.util.concurrent.CompletableFuture<T>> operation) {
+        try {
+            return java.util.Objects.requireNonNull(operation.get());
+        } catch (RuntimeException failure) {
+            return java.util.concurrent.CompletableFuture.failedFuture(failure);
+        }
     }
 
     private boolean stale(long request) {
@@ -154,6 +209,7 @@ final class RaceVoicePanel extends VBox implements AutoCloseable {
         generation++;
         token.cancel();
         token = new Cancellation();
+        activity.setVisible(false);
         playback.stop();
         play.setDisable(clips.getItems().isEmpty());
         stop.setDisable(true);
@@ -165,6 +221,7 @@ final class RaceVoicePanel extends VBox implements AutoCloseable {
         closed = true;
         generation++;
         token.cancel();
+        activity.setVisible(false);
         playback.close();
     }
 }
