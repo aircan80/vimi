@@ -158,6 +158,17 @@ public final class NetworkTypes {
         }
     }
 
+    public record TactKeyReply(URI url, Instant observedAt, byte[] bytes) {
+        public TactKeyReply {
+            bytes = bytes.clone();
+        }
+
+        @Override
+        public byte[] bytes() {
+            return bytes.clone();
+        }
+    }
+
     public record ListfileReply(URI url, Instant observedAt, byte[] bytes) {
         public ListfileReply {
             bytes = bytes.clone();

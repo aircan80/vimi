@@ -27,6 +27,7 @@ public final class DataSourcesServiceTest {
             persistenceAndLocalInventory(directory.resolve("local"));
             futureSchemaIsReadOnly(directory.resolve("future"));
             mappingRules();
+            communityKeys(directory.resolve("keys"));
             System.out.println(
                     "Data sources: persisted policy, mapping, empty/invalid inventories and future"
                             + " schema passed");
@@ -36,6 +37,58 @@ public final class DataSourcesServiceTest {
                     Files.delete(file);
             }
         }
+    }
+
+    private static void communityKeys(Path directory) throws Exception {
+        var library = ObjectStore.openLibrary(directory.resolve("library")).join();
+        try (var catalog = LibraryCatalog.open(library.databasePath()).join()) {
+            var owner = library.forOwner("provider:tact-keys", LibraryCatalog.Scope.GLOBAL, "source", LibraryCatalog.Role.ORIGINAL);
+            var access = CachingObjectSource.localOnly(owner, owner);
+            var generated = new PackGeneratedStore(library,
+                    library.forOwner("provider:test-names", LibraryCatalog.Scope.GLOBAL, "index", LibraryCatalog.Role.DERIVED));
+            var names = new CommunityFileNames(access, generated, token -> java.util.concurrent.CompletableFuture.completedFuture(true));
+            var calls = new java.util.concurrent.atomic.AtomicInteger();
+            var body = new java.util.concurrent.atomic.AtomicReference<>("FFFFFFFFFFFFFFFF 00112233445566778899AABBCCDDEEFF\n");
+            com.vibeminer.network.TactKeyClient client = token -> {
+                calls.incrementAndGet(); token.check();
+                return java.util.concurrent.CompletableFuture.completedFuture(new com.vibeminer.network.NetworkTypes.TactKeyReply(
+                        com.vibeminer.network.SourceUrls.TACT_KEYS, java.time.Instant.now(), body.get().getBytes(java.nio.charset.StandardCharsets.US_ASCII)));
+            };
+            DataSourcesService service = DataSourcesService.open(library.databasePath(), directory.resolve("questie"), names, catalog, client, owner, owner);
+            try {
+                require(service.policy(DataSourcesService.Id.TACT_KEYS).enabled(), "Public keys default ON");
+                require(service.policy(DataSourcesService.Id.TACT_KEYS).checks() == DataSourcesService.Checks.DAILY, "Public keys default daily");
+                require(service.tactKeysForBuild(com.vibeminer.access.Cancellation.NONE).count() == 1, "First build waits for due public keys");
+                String fingerprint = service.tactState().fingerprint();
+                service.tactKeysForBuild(com.vibeminer.access.Cancellation.NONE);
+                require(calls.get() == 1, "Daily update reused on another build open");
+                body.set("invalid response");
+                var current = service;
+                expectFailure(() -> current.updateTactKeys().join());
+                require(service.tactKeys().count() == 1 && fingerprint.equals(service.tactState().fingerprint()), "Malformed update preserves last valid keys");
+                body.set("FFFFFFFFFFFFFFFF 00112233445566778899AABBCCDDEEFF\n0000000000000001 11112222333344445555666677778888\n");
+                service.updateTactKeys().join();
+                require(service.tactKeys().count() == 2 && !fingerprint.equals(service.tactState().fingerprint()), "New keys change effective fingerprint");
+                service.setEnabled(DataSourcesService.Id.TACT_KEYS, false).join();
+                require(service.tactKeys().count() == 0 && service.tactState().keys() == 2, "Disabled source retains cached inventory without supplying keys");
+                service.setChecks(DataSourcesService.Id.TACT_KEYS, DataSourcesService.Checks.MANUAL).join();
+            } finally { service.closeAsync().join(); }
+            service = DataSourcesService.open(library.databasePath(), directory.resolve("questie"), names, catalog, client, owner, owner);
+            try {
+                require(!service.policy(DataSourcesService.Id.TACT_KEYS).enabled(), "Disabled policy persisted");
+                require(service.tactState().keys() == 2, "Validated key list restored offline");
+                service.setEnabled(DataSourcesService.Id.TACT_KEYS, true).join();
+                int previous = calls.get();
+                require(service.tactKeysForBuild(com.vibeminer.access.Cancellation.NONE).count() == 2 && previous == calls.get(), "Manual policy does not fetch when opening a build");
+                service.setChecks(DataSourcesService.Id.TACT_KEYS, DataSourcesService.Checks.DAILY).join();
+            } finally { service.closeAsync().join(); }
+            new SourcePreferences(library.databasePath()).put("attempt.TACT_KEYS", java.time.Instant.EPOCH.toString());
+            service = DataSourcesService.open(library.databasePath(), directory.resolve("questie"), names, catalog, client, owner, owner);
+            try {
+                int before = calls.get();
+                require(service.tactKeysForBuild(com.vibeminer.access.Cancellation.NONE).count() == 2 && calls.get() == before + 1, "Overdue daily update runs after restart");
+            } finally { service.closeAsync().join(); access.closeAsync().join(); }
+        } finally { library.closeAsync().join(); }
     }
 
     private static void persistenceAndLocalInventory(Path directory) throws Exception {
@@ -97,6 +150,7 @@ public final class DataSourcesServiceTest {
                     sources.setEnabled(DataSourcesService.Id.LISTFILE, false).join();
                     sources.setEnabled(DataSourcesService.Id.DEFINITIONS, false).join();
                     sources.setEnabled(DataSourcesService.Id.QUESTIE, false).join();
+                    sources.setEnabled(DataSourcesService.Id.TACT_KEYS, false).join();
                     sources.setChecks(
                                     DataSourcesService.Id.QUESTIE, DataSourcesService.Checks.DAILY)
                             .join();

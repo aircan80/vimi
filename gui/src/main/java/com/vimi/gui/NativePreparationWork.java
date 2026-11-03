@@ -50,6 +50,9 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         return this;
     }
 
+    private volatile com.vibeminer.files.keys.TactKeys effectiveKeySet = com.vibeminer.files.keys.TactKeys.EMPTY;
+    private com.vibeminer.files.keys.TactKeys communityKeys = com.vibeminer.files.keys.TactKeys.EMPTY;
+    private boolean communityKeysAllowed;
     private DataSourcesService sourcePolicies;
     private boolean listfileAllowed = true, definitionsAllowed = true;
     NativePreparationWork withSourcePolicy(boolean listfile, boolean definitions) {
@@ -58,6 +61,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
 
     NativePreparationWork withSourcePolicies(DataSourcesService sources) {
         sourcePolicies = sources;
+        communityKeysAllowed = sources != null && sources.policy(DataSourcesService.Id.TACT_KEYS).enabled();
         return withSourcePolicy(sources == null || sources.policy(DataSourcesService.Id.LISTFILE).enabled(),
                 sources == null || sources.policy(DataSourcesService.Id.DEFINITIONS).enabled());
     }
@@ -201,8 +205,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                                 defaults.clock(),
                                 defaults.maxReadBytes(),
                                 name -> {
-                                    var available = keys.get();
-                                    return available == null ? null : available.find(name);
+                                    return effectiveKeySet.find(name);
                                 },
                                 names));
     }
@@ -320,10 +323,26 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         return new BuildPreparation.FilesSummary(catalog.files(), 0, catalog.unknownSize(), false);
     }
 
+    private void rebuildEffectiveKeys() {
+        var values = new java.util.HashMap<Long, byte[]>();
+        for (String name : communityKeys.fingerprints().keySet()) {
+            long value = Long.parseUnsignedLong(name, 16);
+            values.put(value, communityKeys.find(value));
+        }
+        var buildKeys = keys.get();
+        if (buildKeys != null) for (String name : buildKeys.names()) {
+            long value = Long.parseUnsignedLong(name, 16);
+            values.put(value, buildKeys.find(value));
+        }
+        effectiveKeySet = new com.vibeminer.files.keys.TactKeys(values);
+    }
+
+    private com.vibeminer.files.keys.TactKeys effectiveKeys() { return effectiveKeySet; }
+
     private TablesService tablesService(Cancellation token, boolean onlinePreparation) {
         var definitions = new TableDefinitions(definitionsAllowed ? BundledDefinitions.open(token).join() : BundledDefinitions.of(List.of(), java.util.Map.of()), null, null);
-        var available = keys.get();
-        var status = available == null ? TactKeyStatus.NONE : available.status();
+        var available = effectiveKeys();
+        var status = new TactKeyStatus(available.fingerprints());
         var defaults =
                 new TablesOptions(
                         (build, cancellation) -> {
@@ -386,14 +405,30 @@ public final class NativePreparationWork implements BuildPreparation.Work {
 
     @Override
     public List<String> keys(Cancellation token) {
-        if (!definitionsAllowed) return List.of("Table definitions are disabled for this workspace");
         var issues = new ArrayList<String>();
+        if (communityKeysAllowed && sourcePolicies != null) {
+            communityKeys = sourcePolicies.tactKeysForBuild(token);
+            rebuildEffectiveKeys();
+            var problem = sourcePolicies.activity(DataSourcesService.Id.TACT_KEYS).problem();
+            if (problem != null) issues.add("Community TACT keys: " + problem);
+        }
+        if (!definitionsAllowed) {
+            issues.add("Table definitions are disabled for this workspace");
+            return List.copyOf(issues);
+        }
         try (var bootstrap = openTables(tablesService(token, true), token)) {
             var found = BuildTactKeys.load(bootstrap, TableTypes.Priority.BACKGROUND, token).join();
             if (found.keyTable().outcome() == BuildTactKeys.Outcome.READ
                     && found.lookupTable().outcome() == BuildTactKeys.Outcome.READ) {
                 token.check();
                 keys.set(found);
+                rebuildEffectiveKeys();
+                for (String name : found.names()) {
+                    long value = Long.parseUnsignedLong(name, 16);
+                    byte[] external = communityKeys.find(value);
+                    if (external != null && !java.util.Arrays.equals(external, found.find(value)))
+                        issues.add("TACT key conflict for " + name + "; build-provided key retained");
+                }
             }
             if (found.keyTable().outcome() != BuildTactKeys.Outcome.READ)
                 issues.add("TactKey: " + found.keyTable().outcome());
@@ -457,13 +492,8 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     }
 
     private String tableCacheIdentity() {
-        var available = keys.get();
-        String keyFingerprint =
-                available == null
-                        ? "none"
-                        : available.names().stream()
-                                .map(name -> name + ":" + available.fingerprintOf(name))
-                                .collect(java.util.stream.Collectors.joining(","));
+        var available = effectiveKeys();
+        String keyFingerprint = available.fingerprint();
         return String.join(
                 "\n",
                 definitionsAllowed ? "native-table-policy-v1" : "native-table-policy-definitions-disabled-v1",
@@ -691,13 +721,8 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     }
 
     private String itemCatalogInputs() {
-        var available = keys.get();
-        var fingerprints =
-                available == null
-                        ? List.of()
-                        : available.names().stream()
-                                .map(name -> name + ":" + available.fingerprintOf(name))
-                                .toList();
+        var available = effectiveKeys();
+        var fingerprints = available.fingerprint();
         return com.vibeminer.formats.internal.Json.sha256(
                 com.vibeminer.formats.internal.Json.bytes(
                         List.of(

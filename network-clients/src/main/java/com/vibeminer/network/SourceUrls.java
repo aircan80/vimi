@@ -12,6 +12,9 @@ public final class SourceUrls {
             MAX_PARTS = 64;
     public static final long MAX_ASSET_BYTES = 512L << 20;
     public static final String ASSET_NAME = "community-listfile-withcapitals.csv";
+    public static final URI TACT_KEYS =
+            URI.create("https://raw.githubusercontent.com/wowdev/TACTKeys/master/WoW.txt");
+    public static final int TACT_KEY_BYTES = 4 << 20;
     public static final URI LATEST_RELEASE =
             URI.create("https://api.github.com/repos/wowdev/wow-listfile/releases/latest");
     public static final Set<String> ASSET_HOSTS =

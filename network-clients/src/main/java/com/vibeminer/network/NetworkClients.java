@@ -37,7 +37,7 @@ import java.util.regex.Pattern;
  * Layer 1 HTTP clients. Owns bounded queues/pools; does not cache, store or interpret observations.
  */
 public final class NetworkClients
-        implements CdnClient, VersionClient, DefinitionClient, ListfileClient {
+        implements CdnClient, VersionClient, DefinitionClient, ListfileClient, TactKeyClient {
     private static final Pattern RANGE = Pattern.compile("bytes ([0-9]+)-([0-9]+)/([0-9]+)");
     private static final Set<String> CDN_MEDIA =
             Set.of(
@@ -400,6 +400,27 @@ public final class NetworkClients
                         }
                     } catch (Fault failure) {
                         throw definitions.failure(at[0], failure);
+                    }
+                });
+    }
+
+    @Override
+    public CompletableFuture<NetworkTypes.TactKeyReply> fetchTactKeys(Cancellation token) {
+        URI url = SourceUrls.TACT_KEYS;
+        return definitions.queue.submit(
+                token,
+                () -> {
+                    Budget budget = new Budget(options.timeouts().definitions());
+                    try (Exchange exchange =
+                            definitions.send(url, githubHeaders(false), token, budget, true)) {
+                        checkGithub(exchange);
+                        noEncoding(exchange);
+                        return new NetworkTypes.TactKeyReply(
+                                url,
+                                exchange.observedAt,
+                                exchange.bytes(SourceUrls.TACT_KEY_BYTES, Failure.TOO_LARGE, true));
+                    } catch (Fault failure) {
+                        throw definitions.failure(url, failure);
                     }
                 });
     }

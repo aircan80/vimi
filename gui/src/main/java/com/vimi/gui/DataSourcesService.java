@@ -27,7 +27,8 @@ public final class DataSourcesService {
     public enum Id {
         QUESTIE,
         LISTFILE,
-        DEFINITIONS
+        DEFINITIONS,
+        TACT_KEYS
     }
 
     public enum Checks {
@@ -61,6 +62,13 @@ public final class DataSourcesService {
     public record Mapping(
             String choice, String flavor, String versionId, String release, String message) {}
 
+    public record TactState(int keys, String fingerprint, long bytes, String problem) {}
+    private volatile com.vibeminer.files.keys.TactKeys tactKeys = com.vibeminer.files.keys.TactKeys.EMPTY;
+    private volatile TactState tactState = new TactState(0, null, 0, null);
+    private final com.vibeminer.network.TactKeyClient tactClient;
+    private final com.vibeminer.store.ObjectReader tactReader;
+    private final com.vibeminer.store.ObjectWriter tactWriter;
+    private final Map<Id, com.vibeminer.network.Cancellation> networkTokens = new java.util.EnumMap<>(Id.class);
     private final SourcePreferences preferences;
     private final QuestieRepository questie;
     private final CommunityFileNames names;
@@ -96,13 +104,19 @@ public final class DataSourcesService {
     static DataSourcesService open(
             Path database, Path directory, CommunityFileNames names, LibraryCatalog catalog)
             throws Exception {
+        return open(database, directory, names, catalog, null, null, null);
+    }
+
+    static DataSourcesService open(Path database, Path directory, CommunityFileNames names,
+            LibraryCatalog catalog, com.vibeminer.network.TactKeyClient client,
+            com.vibeminer.store.ObjectReader reader, com.vibeminer.store.ObjectWriter writer) throws Exception {
         var settings = new SourcePreferences(database);
         var repository =
                 QuestieRepository.open(directory, com.vibeminer.generated.Cancellation.NONE).join();
         DataSourcesService service = null;
         try {
             catalog.retainOwner("provider:community-listfile", LibraryCatalog.Scope.GLOBAL).join();
-            service = new DataSourcesService(settings, repository, names, catalog, directory);
+            service = new DataSourcesService(settings, repository, names, catalog, directory, client, reader, writer);
             service.refreshLocal().join();
             var opened = service;
             service.timer.scheduleWithFixedDelay(opened::checkDue, 1, 60, TimeUnit.SECONDS);
@@ -119,7 +133,9 @@ public final class DataSourcesService {
             QuestieRepository questie,
             CommunityFileNames names,
             LibraryCatalog catalog,
-            Path directory) {
+            Path directory, com.vibeminer.network.TactKeyClient client,
+            com.vibeminer.store.ObjectReader reader, com.vibeminer.store.ObjectWriter writer) {
+        tactClient = client; tactReader = reader; tactWriter = writer;
         this.preferences = preferences;
         this.questie = questie;
         this.names = names;
@@ -134,7 +150,7 @@ public final class DataSourcesService {
     public Policy policy(Id id) {
         return new Policy(
                 Boolean.parseBoolean(preferences.get("enabled." + id, "true")),
-                Checks.valueOf(preferences.get("checks." + id, "MANUAL")));
+                Checks.valueOf(preferences.get("checks." + id, id == Id.TACT_KEYS ? "DAILY" : "MANUAL")));
     }
 
     public long revision() {
@@ -289,6 +305,7 @@ public final class DataSourcesService {
         return submit(
                 () -> {
                     loadQuestie();
+                    loadTactKeys();
                     try {
                         listfile = names.status(com.vibeminer.access.Cancellation.NONE).join();
                     } catch (Throwable error) {
@@ -487,6 +504,98 @@ public final class DataSourcesService {
                 });
     }
 
+    public TactState tactState() { return tactState; }
+
+    com.vibeminer.files.keys.TactKeys tactKeys() {
+        return policy(Id.TACT_KEYS).enabled() ? tactKeys : com.vibeminer.files.keys.TactKeys.EMPTY;
+    }
+
+    private void loadTactKeys() {
+        String document = preferences.get("tact.document", "");
+        if (document.isEmpty() || tactReader == null) return;
+        try {
+            var key = com.vibeminer.store.ObjectKey.parse(com.vibeminer.store.ObjectKey.HISTORY_DOCUMENT, document);
+            var read = tactReader.read(key).join();
+            if (read.state() != com.vibeminer.store.StoreTypes.ReadState.PRESENT) throw new IllegalStateException("Cached TACT key list is unavailable");
+            byte[] bytes = read.bytes();
+            var parsed = com.vibeminer.files.keys.TactKeys.parse(bytes);
+            tactKeys = parsed;
+            tactState = new TactState(parsed.count(), com.vibeminer.files.keys.TactKeys.hash(bytes), bytes.length, null);
+        } catch (RuntimeException error) {
+            tactState = new TactState(tactKeys.count(), tactState.fingerprint(), tactState.bytes(), message(error));
+        }
+    }
+
+    com.vibeminer.files.keys.TactKeys tactKeysForBuild(com.vibeminer.access.Cancellation token) {
+        CompletableFuture<Void> pending;
+        synchronized (this) {
+            if (!policy(Id.TACT_KEYS).enabled()) return com.vibeminer.files.keys.TactKeys.EMPTY;
+            pending = jobs.get(Id.TACT_KEYS);
+            if (pending == null && tactClient != null && !closing) {
+                var checks = policy(Id.TACT_KEYS).checks();
+                boolean due = checks == Checks.STARTUP && startupChecked.add(Id.TACT_KEYS)
+                        || checks == Checks.DAILY && dailyDue(Id.TACT_KEYS);
+                if (due) {
+                    // The shared job reserves this update before another build can request it.
+                    pending = updateTactKeys();
+                }
+            }
+        }
+        if (pending != null) {
+            while (!pending.isDone()) {
+                token.check();
+                try { pending.get(100, TimeUnit.MILLISECONDS); }
+                catch (java.util.concurrent.TimeoutException waiting) { /* Poll cancellation independently of shared source work. */ }
+                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); throw new java.util.concurrent.CancellationException(); }
+                catch (java.util.concurrent.ExecutionException failure) { break; }
+            }
+        }
+        token.check();
+        return tactKeys();
+    }
+
+    private boolean dailyDue(Id id) {
+        try { return !Instant.parse(preferences.get("attempt." + id, Instant.EPOCH.toString())).plus(Duration.ofDays(1)).isAfter(Instant.now()); }
+        catch (java.time.format.DateTimeParseException invalid) { return true; }
+    }
+
+    public CompletableFuture<Void> updateTactKeys() {
+        return job(Id.TACT_KEYS, (token, progress) -> {
+            if (tactClient == null || tactReader == null || tactWriter == null) throw new IllegalStateException("TACT key provider is unavailable");
+            submit(() -> preferences.put("attempt.TACT_KEYS", Instant.now().toString())).join();
+            var network = new com.vibeminer.network.Cancellation();
+            synchronized (this) {
+                networkTokens.put(Id.TACT_KEYS, network);
+                if (token.isCanceled()) network.cancel();
+            }
+            try {
+                var reply = tactClient.fetchTactKeys(network).join();
+                token.check();
+                byte[] bytes = reply.bytes();
+                var parsed = com.vibeminer.files.keys.TactKeys.parse(bytes);
+                var key = new com.vibeminer.store.ObjectKey(com.vibeminer.store.ObjectKey.HISTORY_DOCUMENT,
+                        java.security.MessageDigest.getInstance("MD5").digest(bytes));
+                var stored = tactWriter.put(List.of(new com.vibeminer.store.StoreTypes.PutObject(key, bytes.length, bytes,
+                        com.vibeminer.store.StoreTypes.Origin.UNKNOWN)), true, com.vibeminer.store.Cancellation.NONE).join().getFirst();
+                if (stored.outcome() != com.vibeminer.store.StoreTypes.PutOutcome.STORED
+                        && stored.outcome() != com.vibeminer.store.StoreTypes.PutOutcome.ALREADY_PRESENT)
+                    throw new IllegalStateException("TACT key list could not be stored");
+                token.check();
+                submit(() -> {
+                    token.check();
+                    preferences.put("tact.document", key.hex());
+                    preferences.put("checked.TACT_KEYS", reply.observedAt().toString());
+                    preferences.put("attempt.TACT_KEYS", java.time.Instant.now().toString());
+                    tactKeys = parsed;
+                    tactState = new TactState(parsed.count(), com.vibeminer.files.keys.TactKeys.hash(bytes), bytes.length, null);
+                    revision.incrementAndGet();
+                }).join();
+            } finally {
+                synchronized (this) { networkTokens.remove(Id.TACT_KEYS); }
+            }
+        });
+    }
+
     @FunctionalInterface
     interface Registration extends AutoCloseable {
         @Override
@@ -510,6 +619,8 @@ public final class DataSourcesService {
 
     public synchronized void cancel(Id id) {
         if (id == Id.LISTFILE) for (var acquisition : nameAcquisitions) acquisition.cancel();
+        var network = networkTokens.get(id);
+        if (network != null) network.cancel();
         var token = tokens.get(id);
         if (token != null) token.cancel();
         var access = accessTokens.get(id);
@@ -582,7 +693,17 @@ public final class DataSourcesService {
     private final java.util.Set<Id> startupChecked = ConcurrentHashMap.newKeySet();
 
     private void checkDue() {
-        for (Id id : List.of(Id.QUESTIE, Id.LISTFILE)) {
+        for (Id id : List.of(Id.QUESTIE, Id.LISTFILE, Id.TACT_KEYS)) {
+            if (id == Id.TACT_KEYS) {
+                // The same reservation path serves startup and build preparation.
+                synchronized (this) {
+                    var value = policy(id);
+                    if (!closing && tactClient != null && value.enabled() && !jobs.containsKey(id)
+                            && (value.checks() == Checks.DAILY && dailyDue(id)
+                                || value.checks() == Checks.STARTUP && startupChecked.add(id))) updateTactKeys();
+                }
+                continue;
+            }
             var policy = policy(id);
             if (!policy.enabled() || policy.checks() == Checks.MANUAL || activity(id).busy())
                 continue;
@@ -600,7 +721,8 @@ public final class DataSourcesService {
                     .thenRun(
                             () -> {
                                 if (id == Id.QUESTIE) checkQuestie();
-                                else updateListfile();
+                                else if (id == Id.LISTFILE) updateListfile();
+                                else updateTactKeys();
                             });
         }
     }
@@ -646,6 +768,7 @@ public final class DataSourcesService {
         timer.shutdownNow();
         for (var token : tokens.values()) token.cancel();
         for (var access : accessTokens.values()) access.cancel();
+        for (var network : networkTokens.values()) network.cancel();
         for (var acquisition : nameAcquisitions) acquisition.cancel();
         var accepted = jobs.values().toArray(CompletableFuture[]::new);
         worker.shutdown();

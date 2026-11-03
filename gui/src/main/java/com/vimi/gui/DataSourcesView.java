@@ -76,7 +76,10 @@ final class DataSourcesView extends BorderPane {
                                 "WoWDBDefs",
                                 "Table definitions",
                                 "Manage the definitions used to interpret WoW database tables.",
-                                "github.com/wowdev/WoWDBDefs"));
+                                "github.com/wowdev/WoWDBDefs"),
+                        new Source("TACTKeys", "Decryption keys",
+                                "Public WoW keys used to read encrypted files and table sections.",
+                                "github.com/wowdev/TACTKeys"));
         sources.setAccessibleText("External data sources");
         sources.getStyleClass().add("product-menu");
         sources.setCellFactory(
@@ -131,6 +134,7 @@ final class DataSourcesView extends BorderPane {
                 ? DataSourcesService.Id.QUESTIE
                 : selectedSource.name().equals("Community listfile")
                         ? DataSourcesService.Id.LISTFILE
+                        : selectedSource.name().equals("TACTKeys") ? DataSourcesService.Id.TACT_KEYS
                         : DataSourcesService.Id.DEFINITIONS;
     }
 
@@ -206,6 +210,7 @@ final class DataSourcesView extends BorderPane {
                         progress);
         if (id == DataSourcesService.Id.QUESTIE) liveQuestie(page);
         else if (id == DataSourcesService.Id.LISTFILE) liveListfile(page);
+        else if (id == DataSourcesService.Id.TACT_KEYS) liveTactKeys(page);
         else {
             var definitions = service.definitions();
             if (definitions != null)
@@ -261,7 +266,7 @@ final class DataSourcesView extends BorderPane {
                             settings(
                                     id == DataSourcesService.Id.LISTFILE
                                             ? "Automatic listfile updates"
-                                            : "Release checks",
+                                            : id == DataSourcesService.Id.TACT_KEYS ? "Automatic key updates" : "Release checks",
                                     checks,
                                     "Last successful check: " + checkedDate(id)));
         }
@@ -277,6 +282,22 @@ final class DataSourcesView extends BorderPane {
         provenance.setExpanded(false);
         page.getChildren().add(provenance);
         return page;
+    }
+
+    private void liveTactKeys(VBox page) {
+        var state = service.tactState();
+        page.getChildren().add(metrics(
+                metric("KEYS AVAILABLE", Integer.toString(state.keys()), "Validated public key entries"),
+                metric("CACHED LIST", bytes(state.bytes()), "Available offline"),
+                metric("UPDATE POLICY", service.policy(DataSourcesService.Id.TACT_KEYS).checks().name(), "Daily by default")));
+        Button update = new Button("Update keys now");
+        update.setDisable(!service.policy(DataSourcesService.Id.TACT_KEYS).enabled() || service.activity(DataSourcesService.Id.TACT_KEYS).busy());
+        update.setOnAction(event -> command(service.updateTactKeys()));
+        page.getChildren().addAll(update,
+                text("Public keys supplement the keys included in each build. Build-provided keys take precedence if values conflict.", "muted"),
+                text("Daily updates run while the app is open; overdue updates run when it opens again. Reopen a build to use newly available keys.", "muted"));
+        if (state.problem() != null) page.getChildren().add(text(state.problem(), "muted"));
+        if (state.fingerprint() != null) page.getChildren().add(text("Cached revision " + state.fingerprint().substring(0, 12), "muted"));
     }
 
     private void liveQuestie(VBox page) {

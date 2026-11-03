@@ -341,6 +341,49 @@ final class HttpProtocolTest {
     }
 
     @Test
+    void tactKeysUseFixedBoundedPublicSourceAndRefuseRedirects() throws Exception {
+        String body = "0123456789ABCDEF 00112233445566778899AABBCCDDEEFF\n";
+        try (LoopbackSources fixture =
+                new LoopbackSources(
+                        new NetworkOptions(),
+                        answer(request -> new MockResponse().setBody(body)))) {
+            var reply = fixture.clients().fetchTactKeys(Cancellation.NONE).join();
+            assertEquals(SourceUrls.TACT_KEYS, reply.url());
+            assertEquals(
+                    body, new String(reply.bytes(), java.nio.charset.StandardCharsets.US_ASCII));
+            assertEquals(1, fixture.requestCount());
+        }
+        try (LoopbackSources fixture =
+                new LoopbackSources(
+                        new NetworkOptions(),
+                        answer(
+                                request ->
+                                        new MockResponse()
+                                                .setResponseCode(302)
+                                                .addHeader(
+                                                        "Location", "https://example.com/keys")))) {
+            assertEquals(
+                    Failure.PROTOCOL,
+                    failed(() -> fixture.clients().fetchTactKeys(Cancellation.NONE)).overall());
+            assertEquals(1, fixture.requestCount());
+        }
+        try (LoopbackSources fixture =
+                new LoopbackSources(
+                        new NetworkOptions(),
+                        answer(
+                                request ->
+                                        new MockResponse()
+                                                .setBody("x")
+                                                .setHeader(
+                                                        "Content-Length",
+                                                        SourceUrls.TACT_KEY_BYTES + 1)))) {
+            assertEquals(
+                    Failure.TOO_LARGE,
+                    failed(() -> fixture.clients().fetchTactKeys(Cancellation.NONE)).overall());
+        }
+    }
+
+    @Test
     void definitionsRequireAStrictCommitResponseAndNeverFetchAnUntrustedRevision()
             throws Exception {
         for (String json :

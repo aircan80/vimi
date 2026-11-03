@@ -233,16 +233,17 @@ game-byte decoding, external APIs or backend connections are introduced.
 
 The source selector defaults to an observed US entry, preferring current US evidence.
 Locale is selected separately (default enUS); unsupported build/locale choices are
-reported explicitly. Hide continues the complete pipeline without surprise navigation.
+reported explicitly. Close build stops and releases its workspace, including when
+the opening dialog is dismissed.
 Cancel preparation stops current work, retaining its last completed milestone.
 
 **Retry / enrich** starts a new generation using valid local data. Reopening the app
 restores metadata/index state from stored inputs and rechecks generated artifacts;
 it does not trust a persisted boolean or require CDN reads when local inputs suffice.
 The current configured table catalog/definitions are the pinned bundled WoWDBDefs
-snapshot. Community names refresh through the existing cache/update policy; keys
-come from that build's readable Tact tables. Additional community key/catalog
-providers remain future adapters, not an implemented remote update service.
+snapshot. Community names refresh through the existing cache/update policy. Keys
+combine that build's readable Tact tables with the managed wowdev/TACTKeys source,
+enabled by default with daily updates. See [Data Sources](../docs/data-sources.md).
 
 The preparation table ledger covers known nonzero FileDataIDs and excludes unknown
 tables from scope. Absent build/locale tables are recorded separately. Readable

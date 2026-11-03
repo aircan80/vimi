@@ -8,6 +8,7 @@ import com.vibeminer.builds.Catalog;
 import com.vibeminer.builds.Products;
 import com.vibeminer.network.NetworkClients;
 import com.vibeminer.store.History;
+import com.vibeminer.store.LibraryCatalog;
 import com.vibeminer.store.ObjectStore;
 
 import java.nio.file.Path;
@@ -175,8 +176,11 @@ public final class BuildApplication {
                         cleanup.addFirst(fullContexts::closeAsync);
                         var settings = SettingsService.open(library.databasePath()).join();
                         cleanup.addFirst(settings::closeAsync);
+                        var tactOwner = library.forOwner("provider:tact-keys", LibraryCatalog.Scope.GLOBAL,
+                                "source", LibraryCatalog.Role.ORIGINAL);
+                        ownership.retainOwner("provider:tact-keys", LibraryCatalog.Scope.GLOBAL).join();
                         var dataSources = DataSourcesService.open(library.databasePath(), directory.resolve("questie"),
-                                fullContexts.communityNames(), ownership);
+                                fullContexts.communityNames(), ownership, network, tactOwner, tactOwner);
                         cleanup.addFirst(dataSources::closeAsync);
                         fullContexts.withSources(dataSources);
                         var preparation = new BuildPreparation(fullContexts);

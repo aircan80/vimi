@@ -1,5 +1,19 @@
 # vimi development handoff
 
+## Community TACT keys (#93)
+
+Data Sources includes wowdev/TACTKeys, default enabled/daily. The fixed bounded
+network client downloads WoW.txt; files.keys.TactKeys validates immutable key sets.
+The source service retains raw copies as global ORIGINAL objects and publishes an
+active pointer in sources_preferences only after validation/storage. Offline and
+invalid-update paths keep the prior valid set. Daily work shares one job with build
+preparation and is checked at startup or while running; disabled/manual settings
+prevent implicit acquisition. Native preparation combines public and build keys
+(build wins conflicts), including bootstrap and file reads. Fingerprints invalidate
+prepared table inventories and item catalogs; active workspaces retain snapshots.
+See docs/data-sources.md for details and focused verification commands.
+
+
 ## Build reopen cache (#83)
 
 BuildOpener now optionally borrows an application/library-scoped BuildResolutionCache.
