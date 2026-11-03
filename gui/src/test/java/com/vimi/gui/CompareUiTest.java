@@ -224,6 +224,17 @@ public final class CompareUiTest {
             await(() -> fxUnchecked(() -> resultKeys(view).contains("910001")));
             fx(
                     () -> {
+                        for (double width : new double[] {1320, 900}) {
+                            view.resize(width, 940);
+                            view.applyCss();
+                            view.layout();
+                            require(
+                                    locale(view, "Before locale").getWidth() >= 90
+                                            && locale(view, "After locale").getWidth() >= 90,
+                                    "Locale values must remain visible at width " + width);
+                        }
+                        view.resize(1320, 940);
+                        view.layout();
                         screenshot(stage.getScene());
                         view.resize(820, 760);
                         view.layout();

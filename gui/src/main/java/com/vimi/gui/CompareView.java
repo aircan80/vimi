@@ -767,8 +767,12 @@ final class CompareView extends BorderPane implements AutoCloseable {
 
     private static VBox endpoint(String name, ComboBox<BuildInfo> build, ComboBox<String> locale) {
         build.setMaxWidth(Double.MAX_VALUE);
+        build.setMinWidth(100);
         build.setAccessibleText(name + " build, exact product and version");
         locale.setAccessibleText(name + " locale");
+        locale.setMinWidth(100);
+        locale.setPrefWidth(110);
+        locale.setMaxWidth(110);
         build.getStyleClass().add("build-choice");
         locale.getStyleClass().add("build-choice");
         var line = new HBox(8, build, locale);
