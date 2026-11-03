@@ -12,6 +12,19 @@ public final class MeshAppearanceCodec {
     private MeshAppearanceCodec() {}
 
     public static byte[] encode(MeshAppearance value) {
+        // The API checkpoint must not silently flatten richer materials into the legacy wire type.
+        if (!value.billboards().isEmpty()
+                || value.surfaces().stream()
+                        .anyMatch(
+                                surface ->
+                                        surface.material().combiner()
+                                                        != MeshAppearance.Combiner.DIFFUSE
+                                                || surface.material().lighting()
+                                                        != MeshAppearance.Lighting.LIT
+                                                || surface.material().blend()
+                                                        == MeshAppearance.Blend.ADDITIVE)) {
+            throw new IllegalArgumentException("Rich appearance requires the new material codec");
+        }
         byte[] geometry = PreviewMeshCodec.encode(value.mesh());
         float[] uv = value.uv();
         float[] normals = value.normals();
