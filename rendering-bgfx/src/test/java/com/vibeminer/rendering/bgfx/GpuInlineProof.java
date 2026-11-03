@@ -20,7 +20,9 @@ public final class GpuInlineProof {
     private GpuInlineProof() {}
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 1) throw new IllegalArgumentException("Expected artifact directory");
+        if (args.length != 1) {
+            throw new IllegalArgumentException("Expected artifact directory");
+        }
         Path output = Path.of(args[0]);
         Files.createDirectories(output);
         Path temporary = Files.createTempDirectory("vimi-inline-proof-");
@@ -107,8 +109,9 @@ public final class GpuInlineProof {
                 require(
                         plain.pixels().get(360 * 960 + 480) != first.pixels().get(240 * 640 + 320),
                         "Texture mode changes");
-                for (int revision = 15; revision <= 114; revision++)
+                for (int revision = 15; revision <= 114; revision++) {
                     send(control, revision, 960, 720, .3, 6);
+                }
                 send(control, 115, 640, 480, 0, 6);
                 var stable = await(frames, child, plain.sequence(), 115);
                 checkQuadrants(stable);
@@ -176,7 +179,9 @@ public final class GpuInlineProof {
         long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
         while (System.nanoTime() < deadline) {
             var frame = frames.readLatest(after);
-            if (frame != null && frame.controlRevision() == revision) return frame;
+            if (frame != null && frame.controlRevision() == revision) {
+                return frame;
+            }
             require(child.isAlive(), "Sidecar died awaiting revision " + revision);
             Thread.sleep(2);
         }
@@ -214,9 +219,9 @@ public final class GpuInlineProof {
                             try (input) {
                                 byte[] bytes = new byte[1024];
                                 int n;
-                                while ((n = input.read(bytes)) != -1)
+                                while ((n = input.read(bytes)) != -1) {
                                     synchronized (result) {
-                                        if (result.length() < 16384)
+                                        if (result.length() < 16384) {
                                             result.append(
                                                     new String(
                                                             bytes,
@@ -224,7 +229,9 @@ public final class GpuInlineProof {
                                                             Math.min(n, 16384 - result.length()),
                                                             java.nio.charset.StandardCharsets
                                                                     .UTF_8));
+                                        }
                                     }
+                                }
                             } catch (java.io.IOException ignored) {
                             }
                         });
@@ -236,6 +243,8 @@ public final class GpuInlineProof {
     }
 
     private static void require(boolean condition, String message) {
-        if (!condition) throw new AssertionError(message);
+        if (!condition) {
+            throw new AssertionError(message);
+        }
     }
 }

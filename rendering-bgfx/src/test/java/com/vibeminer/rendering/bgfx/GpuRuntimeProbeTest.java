@@ -26,10 +26,11 @@ class GpuRuntimeProbeTest {
                 () ->
                         GpuRuntimeProbe.verifyBackends(
                                 "Windows 11", List.of(BGFX_RENDERER_TYPE_DIRECT3D11)));
-        for (String os : List.of("Linux", "Mac OS X", "Windows 11"))
+        for (String os : List.of("Linux", "Mac OS X", "Windows 11")) {
             assertThrows(
                     IllegalStateException.class,
                     () -> GpuRuntimeProbe.verifyBackends(os, List.of(BGFX_RENDERER_TYPE_NOOP)));
+        }
         assertThrows(
                 IllegalStateException.class,
                 () ->

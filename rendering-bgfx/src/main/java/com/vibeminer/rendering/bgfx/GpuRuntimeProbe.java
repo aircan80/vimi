@@ -30,16 +30,20 @@ public final class GpuRuntimeProbe {
     private GpuRuntimeProbe() {}
 
     public static void main(String[] args) throws IOException, NoSuchAlgorithmException {
-        if (args.length != 0)
+        if (args.length != 0) {
             throw new IllegalArgumentException("No probe arguments are supported");
-        if (BGFX_API_VERSION != 156) throw new IllegalStateException("Unexpected bgfx API");
+        }
+        if (BGFX_API_VERSION != 156) {
+            throw new IllegalStateException("Unexpected bgfx API");
+        }
         List<Integer> backends = new ArrayList<>();
         List<String> names = new ArrayList<>();
         try (var stack = MemoryStack.stackPush()) {
             var renderers = stack.mallocInt(BGFX_RENDERER_TYPE_COUNT);
             int count = Byte.toUnsignedInt(bgfx_get_supported_renderers(renderers));
-            if (count < 1 || count > renderers.capacity())
+            if (count < 1 || count > renderers.capacity()) {
                 throw new IllegalStateException("Invalid native backend count: " + count);
+            }
             for (int index = 0; index < count; index++) {
                 int backend = renderers.get(index);
                 backends.add(backend);
@@ -47,8 +51,9 @@ public final class GpuRuntimeProbe {
             }
             var init = BGFXInit.calloc(stack);
             bgfx_init_ctor(init);
-            if (init.type() < 0 || init.type() > BGFX_RENDERER_TYPE_COUNT)
+            if (init.type() < 0 || init.type() > BGFX_RENDERER_TYPE_COUNT) {
                 throw new IllegalStateException("Native init constructor returned an invalid type");
+            }
         }
         verifyBackends(System.getProperty("os.name"), backends);
         verifyShaders();
@@ -63,30 +68,37 @@ public final class GpuRuntimeProbe {
     static void verifyBackends(String osName, List<Integer> backends) {
         String os = osName.toLowerCase(Locale.ROOT);
         boolean available;
-        if (os.contains("mac")) available = backends.contains(BGFX_RENDERER_TYPE_METAL);
-        else if (os.contains("win")) available = backends.contains(BGFX_RENDERER_TYPE_DIRECT3D11);
-        else if (os.contains("linux"))
+        if (os.contains("mac")) {
+            available = backends.contains(BGFX_RENDERER_TYPE_METAL);
+        } else if (os.contains("win")) {
+            available = backends.contains(BGFX_RENDERER_TYPE_DIRECT3D11);
+        } else if (os.contains("linux")) {
             available =
                     backends.contains(BGFX_RENDERER_TYPE_VULKAN)
                             || backends.contains(BGFX_RENDERER_TYPE_OPENGL);
-        else throw new IllegalStateException("Unsupported native platform: " + osName);
-        if (!available)
+        } else {
+            throw new IllegalStateException("Unsupported native platform: " + osName);
+        }
+        if (!available) {
             throw new IllegalStateException(
                     "Required compiled backend missing for " + osName + ": " + backends);
+        }
     }
 
     private static void verifyShaders() throws IOException, NoSuchAlgorithmException {
         String manifest = new String(resource("manifest.json"), StandardCharsets.UTF_8);
-        if (!Pattern.compile("\\\"bgfxApi\\\"\\s*:\\s*156\\s*,").matcher(manifest).find())
+        if (!Pattern.compile("\\\"bgfxApi\\\"\\s*:\\s*156\\s*,").matcher(manifest).find()) {
             throw new IllegalStateException("Shader manifest API mismatch");
+        }
         for (String profile : List.of("glsl", "spirv", "metal", "dx11")) {
             for (String stage : List.of("vs", "fs")) {
                 String path = profile + "/" + stage + "_model.bin";
                 byte[] binary = resource(path);
                 String magic = stage.equals("vs") ? "VSH" : "FSH";
                 if (binary.length < 4
-                        || !new String(binary, 0, 3, StandardCharsets.US_ASCII).equals(magic))
+                        || !new String(binary, 0, 3, StandardCharsets.US_ASCII).equals(magic)) {
                     throw new IllegalStateException("Invalid packaged shader: " + path);
+                }
                 var entry =
                         Pattern.compile(
                                         "\\\""
@@ -97,15 +109,18 @@ public final class GpuRuntimeProbe {
                 String digest =
                         HexFormat.of()
                                 .formatHex(MessageDigest.getInstance("SHA-256").digest(binary));
-                if (!entry.find() || !entry.group(1).equals(digest))
+                if (!entry.find() || !entry.group(1).equals(digest)) {
                     throw new IllegalStateException("Packaged shader hash mismatch: " + path);
+                }
             }
         }
     }
 
     private static byte[] resource(String path) throws IOException {
         try (var input = GpuRuntimeProbe.class.getResourceAsStream(SHADERS + path)) {
-            if (input == null) throw new IOException("Missing packaged shader resource: " + path);
+            if (input == null) {
+                throw new IOException("Missing packaged shader resource: " + path);
+            }
             return input.readAllBytes();
         }
     }

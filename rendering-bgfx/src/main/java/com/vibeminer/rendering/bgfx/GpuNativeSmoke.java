@@ -38,7 +38,7 @@ import org.lwjgl.bgfx.BGFXPlatform;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 
-/** Explicit authored-data GPU proof only. Production viewing never reads rendered frames to CPU. */
+/** Explicit authored-data GPU proof, separate from the production inline frame pipeline. */
 final class GpuNativeSmoke {
     private GpuNativeSmoke() {}
 

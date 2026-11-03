@@ -398,3 +398,11 @@ tasks.register('gpuPreviewUiTest', JavaExec) {
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.GpuPreviewUiTest'
 }
+
+// Explicit authored-data proof requiring a display and Vulkan hardware.
+tasks.register('gpuInlineUiProof', JavaExec) {
+    group = 'verification'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.GpuInlineUiProof'
+}

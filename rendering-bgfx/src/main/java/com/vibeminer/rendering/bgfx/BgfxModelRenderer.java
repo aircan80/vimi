@@ -69,7 +69,7 @@ import org.lwjgl.bgfx.BGFXVertexLayout;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 
-/** Context-owned immutable GPU uploads; direct presentation, no production frame readback. */
+/** Context-owned immutable GPU uploads, presented through the bounded inline frame bridge. */
 final class BgfxModelRenderer implements AutoCloseable {
     private static final short INVALID = (short) 0xffff;
     private final GpuModelScene scene;

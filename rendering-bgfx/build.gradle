@@ -170,3 +170,14 @@ tasks.register('nativeRuntimeProbe', JavaExec) {
     onlyIf { targetPlatform == hostSystem + '-' + hostArch }
 }
 tasks.named('check') { dependsOn tasks.named('nativeRuntimeProbe') }
+
+// Explicit real GPU sidecar proof; requires a supported hardware adapter.
+tasks.register('nativeGpuInlineProof', JavaExec) {
+    group = 'verification'
+    description = 'Checks actual offscreen GPU frames, controls, resize and shutdown.'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.GpuInlineProof'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-inline-proof').get().asFile.absolutePath
+}
