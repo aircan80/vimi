@@ -98,6 +98,16 @@ public final class StaticMeshRenderer {
             BooleanSupplier cancel,
             boolean qualifiedMaterialsOnly,
             boolean texturesEnabled) {
+        if (appearance != null && RichMeshRenderer.required(appearance)) {
+            return RichMeshRenderer.render(
+                    appearance,
+                    width,
+                    height,
+                    view,
+                    cancel,
+                    qualifiedMaterialsOnly,
+                    texturesEnabled);
+        }
         if (width < 1 || height < 1 || width > 1600 || height > 1200) {
             throw new IllegalArgumentException("Preview image exceeds bounds");
         }

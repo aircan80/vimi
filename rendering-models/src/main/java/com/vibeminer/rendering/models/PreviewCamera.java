@@ -12,6 +12,9 @@ public final class PreviewCamera {
                     || !Float.isFinite(maxX)
                     || !Float.isFinite(maxY)
                     || !Float.isFinite(maxZ)
+                    || Math.max(Math.abs(minX), Math.abs(maxX)) > 8_000_000
+                    || Math.max(Math.abs(minY), Math.abs(maxY)) > 8_000_000
+                    || Math.max(Math.abs(minZ), Math.abs(maxZ)) > 8_000_000
                     || minX > maxX
                     || minY > maxY
                     || minZ > maxZ) {
