@@ -591,13 +591,20 @@ final class CapturedRowsTest {
                             throw new IllegalStateException(interrupted);
                         }
                     };
+            // Keep opening incomplete until capturePreparedLocal has installed its private
+            // completion handler and returned the public delivery future. Otherwise the delivery
+            // probe can run inline on this test thread and time out before it can be released.
+            fixture.delay.set(true);
             var delivery = tables.capturePreparedLocal(REF, Cancellation.NONE);
+            assertTrue(fixture.reading.await(5, TimeUnit.SECONDS));
+            var openingReleased = CompletableFuture.runAsync(() -> fixture.release.complete(null));
             var candidate = admitted.get(5, TimeUnit.SECONDS);
             assertEquals(CapturedRowsTypes.CaptureState.CAPTURED, candidate.state());
             assertEquals(1, tables.capturedHandles());
             assertTrue(delivery.cancel(true));
             releaseDelivery.countDown();
             ownershipDone.get().get(5, TimeUnit.SECONDS);
+            openingReleased.get(5, TimeUnit.SECONDS);
             assertEquals(0, tables.pendingCaptures());
             assertEquals(0, tables.capturedHandles());
             assertEquals(0, fixture.filesClosed.get());
