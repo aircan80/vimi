@@ -119,11 +119,98 @@ public final class TalentsUiTest {
         }.start();
     }
 
+    private static CompletableFuture<Void> retirementStates(CompletableFuture<Void> ready) {
+        class Fixture implements BuildTalents {
+            CompletableFuture<TalentTypes.Catalog> catalog = new CompletableFuture<>();
+
+            public CompletableFuture<TalentTypes.Catalog> catalog(Cancellation token) {
+                return catalog;
+            }
+
+            public CompletableFuture<TalentTypes.ClassTrees> trees(long id, Cancellation token) {
+                throw new AssertionError("Empty catalog");
+            }
+
+            public CompletableFuture<Void> closeAsync() {
+                throw new AssertionError("Borrowed handle");
+            }
+        }
+        var finished = new CompletableFuture<Void>();
+        var original = new Fixture();
+        var replacement = new Fixture();
+        var handle = new java.util.concurrent.atomic.AtomicReference<BuildTalents>(original);
+        var revision = new java.util.concurrent.atomic.AtomicLong(1);
+        var empty = new TalentTypes.Catalog(TalentTypes.State.READY, List.of(), null, null);
+        var view =
+                new TalentsView(
+                        handle::get,
+                        revision::get,
+                        (id, token) ->
+                                CompletableFuture.failedFuture(new AssertionError("No icons")));
+        new Scene(view);
+        view.ensureLoaded();
+        revision.incrementAndGet();
+        original.catalog.complete(empty);
+        awaitFx(
+                "Retired talent revision",
+                () -> !view.lookup("#talents-activity").isVisible(),
+                () -> {
+                    if (!((javafx.scene.control.ListView<?>)
+                                    ((javafx.scene.layout.VBox) view.getLeft())
+                                            .getChildren()
+                                            .getLast())
+                            .isDisabled())
+                        throw new AssertionError("Retired revision must disable old class actions");
+                    original.catalog = new CompletableFuture<>();
+                    view.ensureLoaded();
+                    handle.set(replacement);
+                    original.catalog.complete(empty);
+                    awaitFx(
+                            "Retired talent handle",
+                            () -> !view.lookup("#talents-activity").isVisible(),
+                            () -> {
+                                view.ensureLoaded();
+                                var old = replacement.catalog;
+                                revision.incrementAndGet();
+                                replacement.catalog = new CompletableFuture<>();
+                                view.ensureLoaded();
+                                old.complete(empty);
+                                Platform.runLater(
+                                        () -> {
+                                            try {
+                                                if (!view.lookup("#talents-activity").isVisible())
+                                                    throw new AssertionError(
+                                                            "Old generation cannot clear newer"
+                                                                    + " catalog activity");
+                                                replacement.catalog.complete(empty);
+                                                awaitFx(
+                                                        "Replacement talent catalog",
+                                                        () ->
+                                                                !view.lookup("#talents-activity")
+                                                                        .isVisible(),
+                                                        () -> {
+                                                            view.close();
+                                                            finished.complete(null);
+                                                        },
+                                                        ready);
+                                            } catch (Throwable failure) {
+                                                ready.completeExceptionally(failure);
+                                                Platform.exit();
+                                            }
+                                        });
+                            },
+                            ready);
+                },
+                ready);
+        return finished;
+    }
+
     public static void main(String[] args) throws Exception {
         var ready = new CompletableFuture<Void>();
         Platform.startup(
                 () -> {
                     try {
+                        var retirementDone = retirementStates(ready);
                         var catalogGate = new CompletableFuture<Void>();
                         var treesGate = new CompletableFuture<Void>();
                         var descriptionGate = new CompletableFuture<Void>();
@@ -421,6 +508,9 @@ public final class TalentsUiTest {
                                         if (!staleMenu.getItems().isEmpty())
                                             throw new AssertionError(
                                                     "Retired catalog populated the new workspace");
+                                        if (staleView.lookup("#talents-activity").isVisible())
+                                            throw new AssertionError(
+                                                    "Retired handle must retire catalog activity");
                                         staleView.close();
                                         if (!requestedIcons.equals(java.util.Set.of(900L, 901L)))
                                             throw new AssertionError(
@@ -554,7 +644,8 @@ public final class TalentsUiTest {
                         awaitFx(
                                 "Decoded icon and selected description",
                                 () ->
-                                        renderedIcons(scene) == 1
+                                        retirementDone.isDone()
+                                                && renderedIcons(scene) == 1
                                                 && tooltipText(scene)
                                                         .contains("Authored chance rises by 5%."),
                                 inspect,

@@ -44,6 +44,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
     private record PendingIcon(
             long id, StackPane target, double size, long request, boolean guarded) {}
 
+    private final java.util.Set<StackPane> pendingIcons = new java.util.HashSet<>();
     private final java.util.List<PendingIcon> waitingIcons = new java.util.ArrayList<>();
     private final javafx.animation.PauseTransition iconPulse =
             new javafx.animation.PauseTransition(javafx.util.Duration.millis(20));
@@ -126,7 +127,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
     private Cancellation token = new Cancellation(), descriptionToken = new Cancellation();
     private long descriptionGeneration;
     private long generation, revision = -1;
-    private boolean loaded, closed;
+    private boolean loaded, closed, sourceRetired;
     private Long selectedClass;
 
     TalentsView(BuildPreparation.Job job) {
@@ -247,17 +248,24 @@ final class TalentsView extends BorderPane implements AutoCloseable {
 
     void invalidate() {
         loaded = false;
+        sourceRetired = false;
         busy(false);
         generation++;
         token.cancel();
         token = new Cancellation();
         icons.clear();
+        pendingIcons.clear();
+        iconWorker.getQueue().clear();
         waitingIcons.clear();
         clearSelection();
     }
 
     void ensureLoaded() {
-        if (closed || loaded) return;
+        if (closed) return;
+        if (boundHandle != null
+                && (boundHandle != handleSupplier.get()
+                        || revision != workspaceRevision.getAsLong())) invalidate();
+        if (loaded) return;
         var handle = handleSupplier.get();
         if (handle == null) {
             status.setText("Talent data is unavailable; see Overview.");
@@ -265,10 +273,12 @@ final class TalentsView extends BorderPane implements AutoCloseable {
         }
         loaded = true;
         boundHandle = handle;
+        sourceRetired = false;
         revision = workspaceRevision.getAsLong();
         long request = ++generation;
         status.setText("Loading class and talent table facts…");
         busy(true);
+        classes.setDisable(true);
         if (classes.getItems().isEmpty())
             treePanels.getChildren().setAll(loading("Loading talent catalog…"));
         request(() -> handle.catalog(token))
@@ -291,6 +301,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                                                             ? "Choose a class to view its talent"
                                                                     + " trees."
                                                             : result.message());
+                                            classes.setDisable(false);
                                             classes.getItems().setAll(result.classes());
                                             treePanels.getChildren().clear();
                                             if (!result.classes().isEmpty())
@@ -312,10 +323,39 @@ final class TalentsView extends BorderPane implements AutoCloseable {
     }
 
     private boolean stale(long request) {
-        return closed
-                || request != generation
-                || workspaceRevision.getAsLong() != revision
-                || handleSupplier.get() != boundHandle;
+        return closed || request != generation || !sourceCurrent();
+    }
+
+    private boolean sourceCurrent() {
+        if (closed || sourceRetired || boundHandle == null || revision < 0) return false;
+        if (workspaceRevision.getAsLong() == revision && handleSupplier.get() == boundHandle)
+            return true;
+        generation++;
+        sourceRetired = true;
+        loaded = false;
+        token.cancel();
+        busy(false);
+        classes.setDisable(true);
+        nodeButtons.values().forEach(node -> node.setDisable(true));
+        clearSelection();
+        iconPulse.stop();
+        waitingIcons.clear();
+        for (var target : pendingIcons) {
+            target.setAccessibleText("Talent icon unavailable after source change");
+            target.getChildren().setAll(text("—", "talent-placeholder"));
+        }
+        pendingIcons.clear();
+        treePanels
+                .lookupAll(".progress-indicator")
+                .forEach(
+                        node -> {
+                            node.setVisible(false);
+                            node.setManaged(false);
+                        });
+        icons.clear();
+        iconWorker.getQueue().clear();
+        status.setText("Talent data changed. Reload to update; previous trees retained.");
+        return false;
     }
 
     private void loadClass(TalentTypes.PlayerClass player) {
@@ -330,6 +370,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
         token = new Cancellation();
         long request = ++generation;
         treePanels.getChildren().clear();
+        pendingIcons.clear();
         nodeButtons.clear();
         clearSelection();
         icons.retain(java.util.Set.of());
@@ -686,10 +727,11 @@ final class TalentsView extends BorderPane implements AutoCloseable {
     }
 
     private void requestVisibleIcons() {
+        if (closed || !sourceCurrent()) return;
         var iterator = waitingIcons.iterator();
         while (iterator.hasNext()) {
             var pending = iterator.next();
-            if (closed || pending.guarded() && stale(pending.request())) {
+            if (closed || pending.guarded() && pending.request() != generation) {
                 iterator.remove();
                 continue;
             }
@@ -712,6 +754,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
     private void loadImage(long id, StackPane target, double size, long request, boolean guarded) {
         var imageHandle = boundHandle;
         long imageRevision = revision;
+        pendingIcons.add(target);
         target.setAccessibleText("Loading talent icon");
         target.getChildren().setAll(spinner("Loading talent icon", Math.min(size, 18)));
         icons.request(id)
@@ -720,11 +763,19 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                         (pixels, error) ->
                                 Platform.runLater(
                                         () -> {
+                                            pendingIcons.remove(target);
                                             if (closed
-                                                    || handleSupplier.get() != imageHandle
-                                                    || workspaceRevision.getAsLong()
-                                                            != imageRevision
-                                                    || (guarded && stale(request))) return;
+                                                    || imageHandle != boundHandle
+                                                    || imageRevision != revision
+                                                    || (guarded && request != generation)) return;
+                                            if (!sourceCurrent()) {
+                                                target.setAccessibleText(
+                                                        "Talent icon unavailable after source"
+                                                            + " change");
+                                                target.getChildren()
+                                                        .setAll(text("—", "talent-placeholder"));
+                                                return;
+                                            }
                                             if (error != null || pixels == null) {
                                                 target.setAccessibleText("Talent icon unavailable");
                                                 target.getChildren()
@@ -769,6 +820,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
         iconPulse.stop();
         if (getScene() != null) getScene().removePostLayoutPulseListener(afterLayout);
         waitingIcons.clear();
+        pendingIcons.clear();
         icons.close();
         iconWorker.shutdownNow();
         busy(false);

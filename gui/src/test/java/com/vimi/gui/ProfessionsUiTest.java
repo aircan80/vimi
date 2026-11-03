@@ -164,6 +164,7 @@ public final class ProfessionsUiTest {
                         });
         try {
             loadingStates();
+            retirementStates();
             await(() -> labels(view).contains("Quantity not resolved"));
             fx(
                     () -> {
@@ -274,6 +275,10 @@ public final class ProfessionsUiTest {
         var detail = new CompletableFuture<ProfessionTypes.Detail>();
         var icon = new CompletableFuture<com.vibeminer.formats.images.BlpImageTypes.Result>();
         var names = new CompletableFuture<String>();
+        var nameRequest =
+                new java.util.concurrent.atomic.AtomicReference<CompletableFuture<String>>(names);
+        var nameTokens = new java.util.concurrent.CopyOnWriteArrayList<Cancellation>();
+        var sourceRevision = new AtomicLong(1);
         var handle =
                 new BuildProfessions() {
                     public CompletableFuture<ProfessionTypes.Catalog> catalog(Cancellation token) {
@@ -299,9 +304,12 @@ public final class ProfessionsUiTest {
                         () ->
                                 new ProfessionsView(
                                         () -> handle,
-                                        () -> 1,
+                                        sourceRevision::get,
                                         (id, token) -> icon,
-                                        (id, token) -> names));
+                                        (id, token) -> {
+                                            nameTokens.add(token);
+                                            return nameRequest.get();
+                                        }));
         var stage =
                 fx(
                         () -> {
@@ -326,7 +334,7 @@ public final class ProfessionsUiTest {
                     });
             page.complete(
                     new ProfessionTypes.Page(
-                            ProfessionTypes.State.READY, List.of(POTION), null, List.of(), null));
+                            ProfessionTypes.State.READY, List.of(POTION), 1L, List.of(), null));
             await(
                     () ->
                             nodes(view).stream()
@@ -372,8 +380,25 @@ public final class ProfessionsUiTest {
                                 "Optional item-name resolution has local activity");
                         return null;
                     });
+            fx(
+                    () -> {
+                        buttons(view).stream()
+                                .filter(b -> b.getText().equals("More recipes"))
+                                .findFirst()
+                                .orElseThrow()
+                                .fire();
+                        return null;
+                    });
+            await(() -> !view.lookup("#professions-activity").isVisible());
+            fx(
+                    () -> {
+                        require(
+                                nameTokens.stream().noneMatch(Cancellation::isCanceled),
+                                "Append must retain the selected detail's token");
+                        return null;
+                    });
             icon.completeExceptionally(new IllegalStateException("Authored missing icon"));
-            names.complete(null);
+            names.complete("Authored resolved item");
             await(
                     () ->
                             nodes(view).stream()
@@ -391,9 +416,42 @@ public final class ProfessionsUiTest {
                                         .noneMatch(Node::isVisible),
                                 "Completed and failed work retires all activity");
                         require(
-                                labels(view).contains("2 × Item #2447"),
-                                "Missing optional names retain item references");
-                        view.close();
+                                labels(view).contains("2 × Authored resolved item (#2447)"),
+                                "Append retains pending item-name work");
+                        nameRequest.set(new CompletableFuture<>());
+                        table(view).getSelectionModel().clearSelection();
+                        table(view).getSelectionModel().selectFirst();
+                        return null;
+                    });
+            await(
+                    () ->
+                            nodes(view).stream()
+                                    .anyMatch(
+                                            n ->
+                                                    n.getAccessibleText() != null
+                                                            && n.getAccessibleText()
+                                                                    .startsWith(
+                                                                            "Resolving item name")
+                                                            && n.isVisible()));
+            fx(
+                    () -> {
+                        sourceRevision.incrementAndGet();
+                        nameRequest.get().complete("Retired name");
+                        return null;
+                    });
+            await(() -> labels(view).contains("Profession sources changed. Reload to update."));
+            fx(
+                    () -> {
+                        require(
+                                table(view).isDisabled(),
+                                "Retired detail sources disable old actions");
+                        require(
+                                nodes(view).stream()
+                                        .filter(
+                                                javafx.scene.control.ProgressIndicator.class
+                                                        ::isInstance)
+                                        .noneMatch(Node::isVisible),
+                                "Retired attached item-name activity is removed");
                         return null;
                     });
         } finally {
@@ -404,6 +462,93 @@ public final class ProfessionsUiTest {
                         return null;
                     });
         }
+    }
+
+    private static void retirementStates() throws Exception {
+        class Fixture implements BuildProfessions {
+            CompletableFuture<ProfessionTypes.Catalog> catalog = new CompletableFuture<>();
+
+            public CompletableFuture<ProfessionTypes.Catalog> catalog(Cancellation token) {
+                return catalog;
+            }
+
+            public CompletableFuture<ProfessionTypes.Page> abilities(
+                    long id, String query, long after, int limit, Cancellation token) {
+                throw new AssertionError("No abilities in empty retirement catalog");
+            }
+
+            public CompletableFuture<ProfessionTypes.Detail> detail(long id, Cancellation token) {
+                throw new AssertionError("No detail");
+            }
+
+            public CompletableFuture<Void> closeAsync() {
+                throw new AssertionError("Borrowed handle");
+            }
+        }
+        var original = new Fixture();
+        var replacement = new Fixture();
+        var handle = new java.util.concurrent.atomic.AtomicReference<BuildProfessions>(original);
+        var revision = new AtomicLong(1);
+        var empty =
+                new ProfessionTypes.Catalog(
+                        ProfessionTypes.State.READY, List.of(), List.of(), List.of(), null);
+        var view =
+                fx(
+                        () ->
+                                new ProfessionsView(
+                                        handle::get,
+                                        revision::get,
+                                        (id, token) ->
+                                                CompletableFuture.failedFuture(
+                                                        new AssertionError("No icon"))));
+        fx(
+                () -> {
+                    view.ensureLoaded();
+                    revision.incrementAndGet();
+                    original.catalog.complete(empty);
+                    return null;
+                });
+        await(() -> !view.lookup("#professions-activity").isVisible());
+        fx(
+                () -> {
+                    require(list(view).isDisabled(), "Retired revision disables old actions");
+                    original.catalog = new CompletableFuture<>();
+                    view.ensureLoaded();
+                    handle.set(replacement);
+                    original.catalog.complete(empty);
+                    return null;
+                });
+        await(() -> !view.lookup("#professions-activity").isVisible());
+        fx(
+                () -> {
+                    require(
+                            list(view).getItems().isEmpty(),
+                            "Same-revision handle exchange rejects old catalog");
+                    view.ensureLoaded();
+                    require(
+                            view.lookup("#professions-activity").isVisible(),
+                            "New generation retains activity");
+                    var old = replacement.catalog;
+                    revision.incrementAndGet();
+                    replacement.catalog = new CompletableFuture<>();
+                    view.ensureLoaded();
+                    old.complete(empty);
+                    return null;
+                });
+        fx(
+                () -> {
+                    require(
+                            view.lookup("#professions-activity").isVisible(),
+                            "Stale old reply cannot hide new activity");
+                    replacement.catalog.complete(empty);
+                    return null;
+                });
+        await(() -> !view.lookup("#professions-activity").isVisible());
+        fx(
+                () -> {
+                    view.close();
+                    return null;
+                });
     }
 
     private static <T> T fx(Callable<T> action) throws Exception {

@@ -283,6 +283,8 @@ final class ProfessionsView extends BorderPane implements AutoCloseable {
         var selected = handle;
         status.setText("Preparing profession records…");
         busy(true);
+        professions.setDisable(true);
+        search.setDisable(false);
         if (professions.getItems().isEmpty())
             abilities.setPlaceholder(loading("Loading profession catalog…"));
         request(() -> selected.catalog(token))
@@ -292,6 +294,7 @@ final class ProfessionsView extends BorderPane implements AutoCloseable {
                                         () -> {
                                             if (!current(selected, request)) return;
                                             busy(false);
+                                            abilities.setDisable(false);
                                             abilities.setPlaceholder(
                                                     text("No readable abilities.", "muted"));
                                             if (failure != null) {
@@ -311,6 +314,7 @@ final class ProfessionsView extends BorderPane implements AutoCloseable {
                                                             : coverage(
                                                                     result.state(),
                                                                     result.issues()));
+                                            professions.setDisable(false);
                                             catalogue = result.professions();
                                             filterProfessions();
                                         }));
@@ -363,8 +367,10 @@ final class ProfessionsView extends BorderPane implements AutoCloseable {
         if (append && nextAfter == null) return;
         token.cancel();
         token = new Cancellation();
-        detailToken.cancel();
-        detailGeneration++;
+        if (!append) {
+            detailToken.cancel();
+            detailGeneration++;
+        }
         long request = ++generation;
         var selected = handle;
         var profession = professions.getSelectionModel().getSelectedItem();
@@ -383,6 +389,7 @@ final class ProfessionsView extends BorderPane implements AutoCloseable {
             return;
         }
         busy(true);
+        abilities.setDisable(true);
         if (abilities.getItems().isEmpty())
             abilities.setPlaceholder(loading("Loading profession abilities…"));
         request(() -> selected.abilities(profession.id(), query, after, 100, token))
@@ -392,6 +399,7 @@ final class ProfessionsView extends BorderPane implements AutoCloseable {
                                         () -> {
                                             if (!current(selected, request)) return;
                                             busy(false);
+                                            abilities.setDisable(false);
                                             abilities.setPlaceholder(
                                                     text("No readable abilities.", "muted"));
                                             if (failure != null) {
@@ -430,7 +438,6 @@ final class ProfessionsView extends BorderPane implements AutoCloseable {
         detailToken = new Cancellation();
         long request = ++detailGeneration;
         var selected = handle;
-        long selectedRevision = revision;
         clearDetail("Reading recipe details…");
         inspection.getChildren().add(spinner("Loading recipe details", 24));
         request(() -> selected.detail(ability.id(), detailToken))
@@ -438,12 +445,7 @@ final class ProfessionsView extends BorderPane implements AutoCloseable {
                         (result, failure) ->
                                 Platform.runLater(
                                         () -> {
-                                            if (closed
-                                                    || request != detailGeneration
-                                                    || selected != handle
-                                                    || selectedRevision
-                                                            != workspaceRevision.getAsLong()
-                                                    || handleSupplier.get() != selected) return;
+                                            if (!detailCurrent(selected, request)) return;
                                             if (failure != null) {
                                                 clearDetail("Recipe details could not be read.");
                                                 return;
@@ -478,12 +480,7 @@ final class ProfessionsView extends BorderPane implements AutoCloseable {
                             (pixels, error) ->
                                     Platform.runLater(
                                             () -> {
-                                                if (closed
-                                                        || request != detailGeneration
-                                                        || handleSupplier.get() != imageHandle
-                                                        || revision
-                                                                != workspaceRevision.getAsLong())
-                                                    return;
+                                                if (!detailCurrent(imageHandle, request)) return;
                                                 if (error != null || pixels == null) {
                                                     icon.setAccessibleText(
                                                             "Recipe icon unavailable");
@@ -646,11 +643,7 @@ final class ProfessionsView extends BorderPane implements AutoCloseable {
                         (name, failure) ->
                                 Platform.runLater(
                                         () -> {
-                                            if (closed
-                                                    || request != detailGeneration
-                                                    || handleSupplier.get() != selected
-                                                    || revision != workspaceRevision.getAsLong())
-                                                return;
+                                            if (!detailCurrent(selected, request)) return;
                                             activity.setVisible(false);
                                             activity.setManaged(false);
                                             if (failure == null
@@ -702,11 +695,34 @@ final class ProfessionsView extends BorderPane implements AutoCloseable {
     }
 
     private boolean current(BuildProfessions selected, long request) {
-        return !closed
-                && request == generation
-                && selected == handle
-                && selected == handleSupplier.get()
-                && revision == workspaceRevision.getAsLong();
+        return !closed && request == generation && sourceCurrent(selected);
+    }
+
+    private boolean detailCurrent(BuildProfessions selected, long request) {
+        return !closed && request == detailGeneration && sourceCurrent(selected);
+    }
+
+    private boolean sourceCurrent(BuildProfessions selected) {
+        if (selected != handle) return false;
+        if (selected == handleSupplier.get() && revision == workspaceRevision.getAsLong())
+            return true;
+        generation++;
+        detailGeneration++;
+        token.cancel();
+        detailToken.cancel();
+        busy(false);
+        loaded = false;
+        icons.clear();
+        iconWorker.getQueue().clear();
+        searchDelay.stop();
+        professions.setDisable(true);
+        abilities.setDisable(true);
+        more.setDisable(true);
+        search.setDisable(true);
+        abilities.setPlaceholder(text("Profession sources changed. Reload to update.", "muted"));
+        clearDetail("Profession sources changed. Reload to update.");
+        status.setText("Profession sources changed. Reload to update; previous rows retained.");
+        return false;
     }
 
     private void clearDetail(String message) {
