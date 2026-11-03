@@ -133,10 +133,15 @@ with alpha 255; texture alpha is a material input, not the frame's transparency.
    `dst.rgb = clamp(src.rgb * src.a + dst.rgb)` and preserves destination alpha.
    Alpha zero contributes nothing; there is no cutout threshold.
 
-Render opaque/cutout first, preserving authored order. Render admitted additive
-passes afterward with LEQUAL/no-Z-write. Their RGB operation is commutative for
-nonnegative UNORM colors, so preserve authored order rather than inventing a
-transparency sorter. This contract does not admit general source-over alpha,
+Render opaque/cutout first in the existing `PreviewMesh.parts()` **section ordinal
+order**, independent of material-list insertion order. This deliberately preserves
+legacy deterministic first-wins behavior for equal depth; it is not a promise to
+reproduce raw M2 batch-array order. Render admitted additive passes afterward in
+section ordinal order with LEQUAL/no-Z-write. Their RGB operation is commutative for
+nonnegative UNORM colors, so retain that deterministic section order rather than
+inventing a transparency sorter. Actual target proof must confirm ENV/body/cutout
+coverage; if coplanar overlaps require raw batch order, stop and review an explicit
+order field instead of claiming full profile support from material counts. This contract does not admit general source-over alpha,
 subtractive blending, arbitrary priority planes or layered/translucent materials.
 The first source admission permits the observed single additive pass per model;
 new blended combinations require separate fixtures/review.
@@ -287,7 +292,9 @@ renderer files or use live application data as generated-test output.
   `.8*.8*2*.5 = .64`, not .5 from prematurely clamping the product.
 - Additive: background (10,20,30) plus source (100,80,60), alpha 128/255 yields
   approximately (60,60,60), output alpha 255. Test zero alpha, opaque occlusion,
-  coplanar LEQUAL, no depth write and authored phase order.
+  coplanar LEQUAL, no depth write and section-ordinal phase order. Reverse material
+  insertion order in an equal-depth opaque fixture and require the first mesh
+  section to win. Do not use the raw M2 batch sequence as the oracle.
 - Cards: nonorigin pivots, asymmetric UVs, several yaw/pitch values and nonzero X
   offset; verify the analytic eye positions, stable pivot, depth-scaled size and
   conservative bounds at several yaw/pitch values for card-only and mixed meshes,
