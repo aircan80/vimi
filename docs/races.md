@@ -62,11 +62,11 @@ exclusive alternatives.
 ## Reviewed diffuse textures and starting clothing
 
 The reviewed character-composition profiles support current Human male/female
-models 1/2, Orc male/female models 3/4, and the isolated Tauren male/female
-models 11/12 described in the [reviewed Tauren profile](races-tauren-profile-proposal.md).
-The Orc and Tauren admissions additionally require
-their exact recorded model/sex/layout predicates. The Dwarf pair is a
-[pre-code proposal](races-dwarf-profile-proposal.md), not current admission.
+models 1/2, Orc male/female models 3/4, Dwarf male/female models 5/6, and the
+isolated Tauren male/female models 11/12. The [Dwarf profile](races-dwarf-profile-proposal.md)
+and [Tauren profile](races-tauren-profile-proposal.md) record their narrow source
+contracts. Orc, Dwarf and Tauren admissions additionally require their exact
+recorded model/sex/layout predicates.
 Other races/layouts retain the available static surface and report that their texture profile is unsupported. The GUI shows geometry first,
 then loads the textured sample asynchronously; rotation/zoom remain usable.
 
@@ -255,3 +255,21 @@ of other layers, and body preservation for bald/non-bald samples. Existing parti
 qualifier, requirement, cancellation and borrowed-lifetime tests remain applicable.
 Animation, full shaders, separate attachments and additional race profiles remain
 outside this static profile.
+
+## Dwarf static appearance profile
+
+The Dwarf pair uses race3, ChrModel5/6, sex0/1 and component layouts107/108.
+The exact ChrModel03FAB755 compatibility slots must retain their recorded signed32
+literal zeros; this contextual gate does not enable fallback traversal.
+The existing eligible-choice, purpose9 clothing, source-qualified texture and
+atlas composition rules remain unchanged.
+
+Dwarf draw admission is separate from the existing race policies. Body draws use
+shader0/type1, opaque material0. Male hair/beard uses the recorded shader16/type6,
+material4 alpha-key draw; female hair remains shader0/type6 opaque material4.
+Each admitted section must have a single batch, the reviewed flags/selectors,
+identity UV transform and full-opacity evidence from the identical parsed model.
+Other passes retain neutral shading and diagnostics, including the sampled eye
+and glow layers. Native normals, UVs, source geoset IDs and render budgets are
+unchanged. The generated composition policy is versioned so old incomplete Dwarf
+bindings cannot restore as the new profile.
