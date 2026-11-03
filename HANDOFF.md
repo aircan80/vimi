@@ -26,9 +26,13 @@ The foundation passed independent integration review and all native CI, and #131
 is FF-merged. The content-inventory cursor optimization is merged and alpha.6 is published;
 Files comparison avoids unused per-file storage presence/name queries. Keep
 #117 open. The selected raw-table contract received independent approval before coding
-(docs/comparison/raw-tables-proposal.md). Implementation is in isolated work:
-nonrepair prepared-local readers, bounded ID sorting, shared scratch/buffer quotas
-and raw-field projection; retain uncertified membership and session-only results.
+(docs/comparison/raw-tables-proposal.md). Implementation has independent architecture/domain approval and passes local checks:
+prepared-local readers/key bootstrap, bounded ID sorting, shared quotas and explicit
+raw-table controls. Native SQLite/pack proof covers missing graphs, maximum IDs,
+zero acquisition/object writes; a live Forever70707 ChrRaces scan completes58rows.
+Finish native PR CI/FF merge and alpha.7 publication. Preserve uncertified membership
+and session-only results. The next Items direction proposal has independent approval;
+concrete pure-projector and bounded-join contracts still require review before code.
 
 Questions/follow-ups for the user's return: Windows MSI installation and deferred
 native Windows filesystem acceptance #24–#26 remain. Native macOS development
