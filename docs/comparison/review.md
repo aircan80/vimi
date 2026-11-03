@@ -137,3 +137,20 @@ checks. Domain reviewed the code/fixtures without a separate test run.
 Approvals remain limited to one selected compatible table, raw verified cells,
 observed-only membership and session-only results. They do not authorize semantic
 claims, COMPLETE membership, cross-layout mappings or persistent reports.
+
+## Recorded Items increment-A contract approval
+
+Both independent architecture and domain reviewers approved exact contract
+`a5b9414b8eff1b731c8dc4276772cab6d4beade0` before implementation. See
+[the Items proposal](items-proposal.md). Approval covers a pure two-source
+Item/ItemSparse projector, independent source/field admission, source-qualified
+facts and uncertainty, bounded stream unions/joins and session-only findings.
+
+Compact metadata remains charged through scanning and paging. The explicit core
+plan and final candidate reader must leave that headroom; the existing raw
+sorter's 14 MiB reader cannot be called with a 12 MiB allowance. Acceptance needs
+an actual joined-items/core/paging fixture with metadata retained throughout,
+plus legacy compatibility, partial-source, maximum-ID and cancellation tests.
+
+This authorizes increment A only. Effects/use-text increment B, certified
+membership, cross-layout mapping, assets and persistent reports remain gated.
