@@ -212,3 +212,14 @@ Approval covers recorded increment A, prepared-local inputs and session-only
 findings. Effects, complete membership, persistent reports and native text-issue
 certification remain separate capabilities. Live-data observations and native CI
 are recorded separately; they must not expand this semantic scope.
+
+
+## Native issue certificate contract approval
+
+Both independent architecture and WoW-data reviewers approved exact design
+`09533d58b41e825999ce392c4317e4ba3b6a60a9` before implementation. The contract
+binds audited native producer evidence to the actual selected scoped/unscoped
+graph identity, retains old/custom UNKNOWN channels, separates provenance from
+semantic field admission and preserves current LIMITED-row cell semantics.
+Implementation must still prove actual native reader/store/reopen/capture round
+trips, unchanged legacy/C# bytes, no local repair and no membership promotion.
