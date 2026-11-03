@@ -221,33 +221,52 @@ public final class DisplayModelService implements BuildDisplayModels {
             M2Appearance.ModelFacts facts = null;
             M2BindPoseFacts.Facts bindFacts = null;
             boolean sourceFactsComplete = true;
-            var opened =
-                    files.openRead(FileTypes.FileRef.id(reference.modelFileDataId()), token).join();
-            if (opened.stream() != null) {
-                try (var stream = opened.stream()) {
-                    if (opened.state() == FileTypes.FileReadState.COMPLETE
-                            && stream.holes().isEmpty()) {
-                        var source = AssetSources.file(stream);
-                        facts = M2Appearance.readModel(source, m, token).join();
-                        if (m.bones().stream().anyMatch(bone -> bone.flags() == 8)) {
+            try {
+                var opened =
+                        files.openRead(FileTypes.FileRef.id(reference.modelFileDataId()), token)
+                                .join();
+                if (opened.stream() != null) {
+                    try (var stream = opened.stream()) {
+                        if (opened.state() == FileTypes.FileReadState.COMPLETE
+                                && stream.holes().isEmpty()) {
+                            var source = AssetSources.file(stream);
                             try {
-                                bindFacts = M2BindPoseFacts.read(source, m, token).join();
+                                facts = M2Appearance.readModel(source, m, token).join();
                             } catch (RuntimeException unavailable) {
                                 token.check();
                                 sourceFactsComplete = false;
                                 TableProjection.note(
                                         issues,
-                                        "Own-track facts for billboard cards are unavailable.");
+                                        "Static opacity facts are unavailable; affected material sections are unresolved.");
                             }
+                            if (m.bones().stream().anyMatch(bone -> bone.flags() == 8)) {
+                                try {
+                                    bindFacts = M2BindPoseFacts.read(source, m, token).join();
+                                } catch (RuntimeException unavailable) {
+                                    token.check();
+                                    sourceFactsComplete = false;
+                                    TableProjection.note(
+                                            issues,
+                                            "Own-track facts for billboard cards are unavailable.");
+                                }
+                            }
+                        } else {
+                            sourceFactsComplete = false;
+                            TableProjection.note(
+                                    issues,
+                                    "Material source facts are unavailable; retry can reassess them.");
                         }
-                    } else {
-                        sourceFactsComplete = false;
-                        TableProjection.note(
-                                issues,
-                                "Material source facts are unavailable; retry can reassess them.");
                     }
+                } else {
+                    sourceFactsComplete = false;
+                    TableProjection.note(
+                            issues,
+                            "Material source facts are unavailable; retry can reassess them.");
                 }
-            } else {
+            } catch (RuntimeException unavailable) {
+                token.check();
+                facts = null;
+                bindFacts = null;
                 sourceFactsComplete = false;
                 TableProjection.note(
                         issues, "Material source facts are unavailable; retry can reassess them.");
@@ -265,14 +284,21 @@ public final class DisplayModelService implements BuildDisplayModels {
                             .count();
             M2Types.GeometrySkin cardGeometry = null;
             if (additivePasses == 1 && bindFacts != null) {
-                var geometryRead = models.readGeometrySkin(read, 0, token).join();
-                if (geometryRead.state() == BuildModelTypes.ReadState.READ
-                        && geometryRead.skin() != null
-                        && geometryRead.fileDataId() == skin.fileDataId()
-                        && geometryRead.file() != null
-                        && geometryRead.file().contentKey().equals(skin.file().contentKey())) {
-                    cardGeometry = geometryRead.skin();
-                } else {
+                try {
+                    var geometryRead = models.readGeometrySkin(read, 0, token).join();
+                    if (geometryRead.state() == BuildModelTypes.ReadState.READ
+                            && geometryRead.skin() != null
+                            && geometryRead.fileDataId() == skin.fileDataId()
+                            && geometryRead.file() != null
+                            && geometryRead.file().contentKey().equals(skin.file().contentKey())) {
+                        cardGeometry = geometryRead.skin();
+                    } else {
+                        sourceFactsComplete = false;
+                        TableProjection.note(
+                                issues, "Billboard skin palette facts are unavailable.");
+                    }
+                } catch (RuntimeException unavailable) {
+                    token.check();
                     sourceFactsComplete = false;
                     TableProjection.note(issues, "Billboard skin palette facts are unavailable.");
                 }
