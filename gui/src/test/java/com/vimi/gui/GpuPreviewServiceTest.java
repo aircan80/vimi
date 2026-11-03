@@ -33,6 +33,7 @@ public final class GpuPreviewServiceTest {
     public static void main(String[] args) throws Exception {
         Path root = Files.createTempDirectory("vimi-gpu-service-test-");
         try {
+            inlineFramesAndCoalescedControls(root);
             normalExitAndOwnerIsolation(root);
             cancelDuringPreparationDoesNotLaunch(root);
             canceledDeliveryStopsOnlyItsRequest(root);
@@ -40,6 +41,7 @@ public final class GpuPreviewServiceTest {
             replacementHasOneChildAndIgnoresOldOwner(root);
             newestPendingRequestReplacesIntermediateScenes(root);
             startupTimeoutStopsUnresponsiveChild(root);
+            readyWithoutFramesTimesOut(root);
             forcedStopAndBadProtocol(root);
             sizeBoundAndStartFailureCleanScratch(root);
         } finally {
@@ -73,6 +75,95 @@ public final class GpuPreviewServiceTest {
             Set<Integer> parts)
             throws IOException {
         Files.writeString(file, "authored scene", StandardCharsets.UTF_8);
+    }
+
+    private static void readyWithoutFramesTimesOut(Path root) throws Exception {
+        var child = new FakeProcess(true);
+        var service =
+                new GpuPreviewService(
+                        root,
+                        GpuPreviewServiceTest::write,
+                        scene -> child,
+                        Duration.ofMillis(100),
+                        Duration.ofMillis(10));
+        Object owner = new Object();
+        var request = service.open(owner, mesh(), null, Set.of(1), ignored -> {});
+        service.update(owner, new GpuPreviewService.ViewRequest(1, 32, 32, 0, 0, 1.15, 2));
+        await(child.started);
+        child.send("VIMI_GPU HELLO Vulkan\nVIMI_GPU READY Vulkan\n");
+        try {
+            request.get(2, TimeUnit.SECONDS);
+            throw new AssertionError("READY without any mapped frame must fail");
+        } catch (java.util.concurrent.ExecutionException expected) {
+            require(!child.isAlive(), "Frame startup timeout drains renderer");
+        }
+        service.closeAsync().get(2, TimeUnit.SECONDS);
+    }
+
+    private static void inlineFramesAndCoalescedControls(Path root) throws Exception {
+        var child = new FakeProcess(true);
+        var frames = new ConcurrentLinkedQueue<GpuPreviewService.Frame>();
+        var received = new ConcurrentLinkedQueue<Long>();
+        var released = new AtomicInteger();
+        var fixture =
+                new GpuPreviewService(
+                        root,
+                        GpuPreviewServiceTest::write,
+                        (scene, mapping) -> child,
+                        path ->
+                                new GpuPreviewService.Frames() {
+                                    public GpuPreviewService.Frame readLatest(long after) {
+                                        return frames.poll();
+                                    }
+
+                                    public void close() {
+                                        released.incrementAndGet();
+                                    }
+                                },
+                        Duration.ofSeconds(2),
+                        Duration.ofMillis(20));
+        Object owner = new Object();
+        var request =
+                fixture.open(
+                        owner,
+                        mesh(),
+                        null,
+                        Set.of(1),
+                        ignored -> {},
+                        frame -> received.add(frame.controlRevision()));
+        for (int revision = 1; revision <= 100; revision++)
+            fixture.update(
+                    owner,
+                    new GpuPreviewService.ViewRequest(
+                            revision, 640, 480, revision * .01, 0, 1.15, 2));
+        await(child.started);
+        child.send("VIMI_GPU HELLO Vulkan\nVIMI_GPU READY Vulkan\n");
+        frames.add(
+                new GpuPreviewService.Frame(
+                        1,
+                        101,
+                        1,
+                        1,
+                        java.nio.IntBuffer.wrap(new int[] {0xff123456}).asReadOnlyBuffer()));
+        frames.add(
+                new GpuPreviewService.Frame(
+                        2,
+                        99,
+                        1,
+                        1,
+                        java.nio.IntBuffer.wrap(new int[] {0xff123456}).asReadOnlyBuffer()));
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while ((!received.contains(99L) || !child.controls.toString().contains("VIEW 100 "))
+                && System.nanoTime() < deadline) Thread.sleep(10);
+        require(
+                received.equals(new ConcurrentLinkedQueue<>(List.of(99L)))
+                        || (received.size() == 1 && received.contains(99L)),
+                "Future revisions rejected while a lagging camera frame can be displayed");
+        require(child.controls.toString().contains("VIEW 100 "), "Latest control reaches child");
+        fixture.closeOwner(owner).get(2, TimeUnit.SECONDS);
+        request.get(2, TimeUnit.SECONDS);
+        require(released.get() == 1, "Frame mapping closes once after renderer termination");
+        fixture.closeAsync().get(2, TimeUnit.SECONDS);
     }
 
     private static void normalExitAndOwnerIsolation(Path root) throws Exception {
@@ -356,13 +447,15 @@ public final class GpuPreviewServiceTest {
         if (!condition) throw new AssertionError(message);
     }
 
-    private static final class FakeProcess extends Process {
+    static final class FakeProcess extends Process {
         private final PipedInputStream output = new PipedInputStream();
         private final PipedOutputStream events;
         private final CompletableFuture<Integer> exit = new CompletableFuture<>();
         private final boolean graceful;
         final CountDownLatch started = new CountDownLatch(1);
         final AtomicInteger forced = new AtomicInteger();
+        final StringBuffer controls = new StringBuffer();
+        private final StringBuilder command = new StringBuilder();
 
         FakeProcess(boolean graceful) throws IOException {
             this.graceful = graceful;
@@ -387,7 +480,13 @@ public final class GpuPreviewServiceTest {
             return new OutputStream() {
                 @Override
                 public void write(int value) {
-                    if (value == '\n' && graceful) finish();
+                    synchronized (command) {
+                        controls.append((char) value);
+                        if (value == '\n') {
+                            if (graceful && command.toString().equals("CLOSE")) finish();
+                            command.setLength(0);
+                        } else command.append((char) value);
+                    }
                 }
             };
         }

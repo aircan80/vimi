@@ -354,27 +354,28 @@ readable data; static combinations do not imply account/server availability.
 Icons are loaded asynchronously through the existing image path. Race portraits
 use an initial until atlas support exists. See [Races](../docs/races.md).
 
-### Separate GPU model preview window
+### Inline GPU model preview
 
-The model inspector keeps its inline software preview. **Open GPU preview** creates
-one application-managed GLFW/bgfx window for the current immutable mesh/appearance
-snapshot. Camera controls run in that window; frames are presented directly there
-and are not read back into JavaFX. This is a separate window, not an embedded GPU
-JavaFX node. The button also closes a pending or active GPU preview. Closing or
-replacing the owning model panel closes its window; an old panel cannot close a
-new panel's preview.
+The active model inspector prefers an offscreen bgfx renderer and displays its
+frames inside the existing viewport. **GPU rendering** enables this preference;
+turning it off uses software. Unsupported backends and startup failures fall back
+to software without restarting repeatedly. Hidden panels stop their renderer.
 
-Scene encoding, process startup, bounded protocol reads and process termination run
-off the JavaFX thread. Only one child process and one latest pending request are
-retained. Application shutdown waits asynchronously for the child to terminate
-before deleting its private temporary scene. Startup/native/backend failures leave
-the inline software preview available and show a visible fallback state. The
-renderer child uses the bundled Java runtime; macOS adds `-XstartOnFirstThread`
-only to that child.
+GPU rasterization is followed by GPU readback, shared-memory copying and a JavaFX
+bulk image upload; this is not zero-copy GPU embedding. Frames preserve viewport
+aspect ratio within 960 × 720, and the bridge polls at most about 30 times per
+second. Camera and display controls coalesce to the latest request. Three mapped
+slots and one pending JavaFX delivery bound frame memory. The image status reports
+the current frame size and JavaFX upload time; it does not measure total GPU time.
 
-`GpuPreviewServiceTest` uses fake processes and authored scene bytes; it never
-launches graphics code or touches application data. The opt-in authored UI fixture
-also uses a fake launcher and needs a display:
+Scene encoding, process startup, shared-memory reads, control writes and process
+termination run outside JavaFX. Only one renderer and one latest pending scene are
+retained. Shutdown asynchronously terminates the renderer before unmapping and
+removing private temporary files. The child uses the bundled Java runtime; macOS
+adds `-XstartOnFirstThread` only to that child. No native window is opened.
+
+The deterministic service tests use fake processes and authored scene bytes. The
+opt-in UI fixture also uses a fake renderer and needs a display:
 
 ```sh
 ./gradlew :gui:gpuPreviewServiceTest

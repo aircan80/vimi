@@ -4,7 +4,7 @@ import com.vibeminer.rendering.models.PreviewMesh;
 
 import javafx.application.Platform;
 import javafx.scene.Scene;
-import javafx.scene.control.Button;
+import javafx.scene.control.CheckBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ProgressIndicator;
 import javafx.stage.Stage;
@@ -19,7 +19,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-/** Authored UI only: pending GPU window and failure fallback; starts no native renderer. */
+/** Authored UI only: pending inline GPU and failure fallback; starts no native renderer. */
 public final class GpuPreviewUiTest {
     private GpuPreviewUiTest() {}
 
@@ -58,7 +58,7 @@ public final class GpuPreviewUiTest {
                         stage.show();
                         view.applyCss();
                         view.layout();
-                        var action = (Button) view.lookup("#model-gpu-preview");
+                        var action = (CheckBox) view.lookup("#model-gpu-preview");
                         require(action.isDisabled(), "No GPU launch before a scene exists");
                         view.setMesh(
                                 new PreviewMesh(
@@ -68,10 +68,10 @@ public final class GpuPreviewUiTest {
                                 Set.of(1));
                         require(
                                 !action.isDisabled(),
-                                "Recorded mesh enables separate-window action");
+                                "Recorded mesh enables inline GPU preference");
                         ((javafx.scene.control.CheckBox) view.lookup("#model-all-surfaces"))
                                 .setSelected(true);
-                        action.fire();
+                        require(action.isSelected(), "GPU is preferred automatically");
                         ready.complete(view);
                     } catch (Throwable failure) {
                         ready.completeExceptionally(failure);
@@ -83,22 +83,20 @@ public final class GpuPreviewUiTest {
             require(entered.await(3, TimeUnit.SECONDS), "GPU launch remains pending in worker");
             require(
                     Set.of(1).equals(selectedParts.get()),
-                    "All-surfaces snapshot carries actual part IDs, not an empty hide mask");
+                    "Scene retains qualified part IDs; All is a control flag");
             final var selected = view;
             fx(
                     () -> {
                         var activity = (ProgressIndicator) selected.lookup("#model-gpu-activity");
                         require(
                                 activity.isVisible() && activity.isManaged(),
-                                "Pending native window has visible activity");
+                                "Pending inline renderer has visible activity");
                         require(
                                 activity.getAccessibleText().contains("activity"),
                                 "Busy state is accessible");
                         require(
-                                ((Button) selected.lookup("#model-gpu-preview"))
-                                        .getText()
-                                        .contains("Close"),
-                                "Pending window can be canceled");
+                                ((CheckBox) selected.lookup("#model-gpu-preview")).isSelected(),
+                                "GPU preference can be disabled while preparing");
                     });
             release.countDown();
             service.closeAsync().get(3, TimeUnit.SECONDS);
@@ -111,15 +109,15 @@ public final class GpuPreviewUiTest {
                         require(
                                 ((Label) selected.lookup("#model-gpu-status"))
                                         .getText()
-                                        .contains("inline software"),
+                                        .toLowerCase(java.util.Locale.ROOT)
+                                        .contains("software"),
                                 "Failure explicitly preserves inline preview");
                         require(
-                                ((Button) selected.lookup("#model-gpu-preview"))
-                                        .getText()
-                                        .contains("Open"),
-                                "Failed launch permits retry");
+                                ((CheckBox) selected.lookup("#model-gpu-preview")).isSelected(),
+                                "Failure preserves user preference without restarting repeatedly");
                         selected.close();
                     });
+            inlineFramesAndVisibility(temporary, selected);
         } finally {
             release.countDown();
             service.closeAsync().get(3, TimeUnit.SECONDS);
@@ -135,8 +133,169 @@ public final class GpuPreviewUiTest {
             }
         }
         System.out.println(
-                "GPU preview authored UI: visible activity, explicit separate window and software"
-                        + " fallback passed");
+                "GPU preview authored UI: automatic inline preference, visible activity and"
+                        + " software fallback passed");
+    }
+
+    private static void inlineFramesAndVisibility(Path temporary, ModelPreviewView oldView)
+            throws Exception {
+        var child = new GpuPreviewServiceTest.FakeProcess(true);
+        var frames = new java.util.concurrent.ConcurrentLinkedQueue<GpuPreviewService.Frame>();
+        var launches = new java.util.concurrent.atomic.AtomicInteger();
+        var renderer =
+                new GpuPreviewService(
+                        temporary,
+                        (file, mesh, appearance, parts) -> Files.writeString(file, "authored"),
+                        (scene, mapping) -> {
+                            launches.incrementAndGet();
+                            return child;
+                        },
+                        file ->
+                                new GpuPreviewService.Frames() {
+                                    public GpuPreviewService.Frame readLatest(long after) {
+                                        return frames.poll();
+                                    }
+
+                                    public void close() {}
+                                },
+                        Duration.ofSeconds(3),
+                        Duration.ofMillis(20));
+        var viewRef = new java.util.concurrent.atomic.AtomicReference<ModelPreviewView>();
+        try {
+            fx(
+                    () -> {
+                        var stage = (Stage) oldView.getScene().getWindow();
+                        var view = new ModelPreviewView(renderer);
+                        stage.setScene(new Scene(view, 640, 560));
+                        view.applyCss();
+                        view.layout();
+                        view.setMesh(
+                                new PreviewMesh(
+                                        new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0},
+                                        new int[] {0, 1, 2},
+                                        List.of(new PreviewMesh.Part(1, 0, 3))),
+                                Set.of(1));
+                        viewRef.set(view);
+                    });
+            require(
+                    child.started.await(3, TimeUnit.SECONDS),
+                    "Visible viewport automatically launches renderer");
+            child.send("VIMI_GPU HELLO Vulkan\nVIMI_GPU READY Vulkan\n");
+            String[] first = latestView(child, 0);
+            long firstRevision = Long.parseLong(first[1]);
+            publish(frames, 1, first, 0xff123456);
+            waitFor(() -> pixel(viewRef.get()) == 0xff123456, "GPU pixels display inline");
+            fx(
+                    () -> {
+                        var viewport = viewRef.get().lookup("#model-preview-viewport");
+                        for (int i = 0; i < 2; i++)
+                            viewport.fireEvent(
+                                    new javafx.scene.input.KeyEvent(
+                                            javafx.scene.input.KeyEvent.KEY_PRESSED,
+                                            "",
+                                            "",
+                                            javafx.scene.input.KeyCode.LEFT,
+                                            false,
+                                            false,
+                                            false,
+                                            false));
+                    });
+            String[] camera = latestView(child, firstRevision);
+            // A new camera request does not invalidate an already completed newer camera frame.
+            long cameraRevision = Long.parseLong(camera[1]);
+            fx(
+                    () ->
+                            viewRef.get()
+                                    .lookup("#model-preview-viewport")
+                                    .fireEvent(
+                                            new javafx.scene.input.KeyEvent(
+                                                    javafx.scene.input.KeyEvent.KEY_PRESSED,
+                                                    "",
+                                                    "",
+                                                    javafx.scene.input.KeyCode.LEFT,
+                                                    false,
+                                                    false,
+                                                    false,
+                                                    false)));
+            String[] finalCamera = latestView(child, cameraRevision);
+            publish(frames, 2, camera, 0xff234567);
+            waitFor(
+                    () -> pixel(viewRef.get()) == 0xff234567,
+                    "Lagging camera frame remains presentable during interaction");
+            fx(() -> ((CheckBox) viewRef.get().lookup("#model-all-surfaces")).fire());
+            String[] policy = latestView(child, Long.parseLong(finalCamera[1]));
+            publish(frames, 3, camera, 0xff345678);
+            Thread.sleep(100);
+            require(pixel(viewRef.get()) == 0xff234567, "Older policy frame is rejected");
+            publish(frames, 4, policy, 0xff456789);
+            waitFor(() -> pixel(viewRef.get()) == 0xff456789, "Current policy frame displays");
+            require(launches.get() == 1, "Camera and display controls do not restart renderer");
+            fx(() -> viewRef.get().setVisible(false));
+            waitFor(() -> !child.isAlive(), "Hidden viewport releases renderer");
+        } finally {
+            fx(
+                    () -> {
+                        if (viewRef.get() != null) viewRef.get().close();
+                    });
+            renderer.closeAsync().get(3, TimeUnit.SECONDS);
+        }
+    }
+
+    private static String[] latestView(GpuPreviewServiceTest.FakeProcess child, long after)
+            throws Exception {
+        var result = new java.util.concurrent.atomic.AtomicReference<String[]>();
+        waitFor(
+                () -> {
+                    for (var line : child.controls.toString().split("\n")) {
+                        var fields = line.split(" ");
+                        if (fields.length == 8
+                                && fields[0].equals("VIEW")
+                                && Long.parseLong(fields[1]) > after) result.set(fields);
+                    }
+                    return result.get() != null;
+                },
+                "Latest viewport control reaches renderer");
+        return result.get();
+    }
+
+    private static void publish(
+            java.util.Queue<GpuPreviewService.Frame> frames,
+            long sequence,
+            String[] command,
+            int color) {
+        int width = Integer.parseInt(command[2]), height = Integer.parseInt(command[3]);
+        int[] pixels = new int[width * height];
+        java.util.Arrays.fill(pixels, color);
+        frames.add(
+                new GpuPreviewService.Frame(
+                        sequence,
+                        Long.parseLong(command[1]),
+                        width,
+                        height,
+                        java.nio.IntBuffer.wrap(pixels).asReadOnlyBuffer()));
+    }
+
+    private static int pixel(ModelPreviewView view) throws Exception {
+        var result = new java.util.concurrent.atomic.AtomicInteger();
+        fx(
+                () -> {
+                    var bitmap =
+                            ((javafx.scene.image.ImageView) view.lookup("#model-preview-image"))
+                                    .getImage();
+                    result.set(bitmap == null ? 0 : bitmap.getPixelReader().getArgb(0, 0));
+                });
+        return result.get();
+    }
+
+    @FunctionalInterface
+    private interface Check {
+        boolean get() throws Exception;
+    }
+
+    private static void waitFor(Check condition, String message) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (!condition.get() && System.nanoTime() < deadline) Thread.sleep(10);
+        require(condition.get(), message);
     }
 
     private static void fx(Runnable action) throws Exception {

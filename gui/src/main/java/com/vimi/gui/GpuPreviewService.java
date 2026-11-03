@@ -1,5 +1,6 @@
 package com.vimi.gui;
 
+import com.vibeminer.rendering.bgfx.GpuFrameFile;
 import com.vibeminer.rendering.bgfx.GpuSceneFile;
 import com.vibeminer.rendering.models.MeshAppearance;
 import com.vibeminer.rendering.models.PreviewMesh;
@@ -7,6 +8,7 @@ import com.vibeminer.rendering.models.PreviewMesh;
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.IntBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -17,9 +19,10 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
-/** Owns one direct-rendering child window; no graphics or process wait runs on the FX thread. */
+/** Owns one offscreen renderer; process, frame reads and control writes run outside JavaFX. */
 final class GpuPreviewService {
     enum State {
         PREPARING,
@@ -47,6 +50,66 @@ final class GpuPreviewService {
         Process start(Path scene) throws IOException;
     }
 
+    @FunctionalInterface
+    interface InlineStarter {
+        Process start(Path scene, Path frames) throws IOException;
+    }
+
+    record ViewRequest(
+            long revision,
+            int width,
+            int height,
+            double yaw,
+            double pitch,
+            double zoom,
+            int flags) {
+        ViewRequest {
+            if (revision < 1
+                    || width < 1
+                    || width > 960
+                    || height < 1
+                    || height > 720
+                    || !Double.isFinite(yaw)
+                    || !Double.isFinite(pitch)
+                    || !Double.isFinite(zoom)
+                    || pitch < -1.1
+                    || pitch > 1.1
+                    || zoom < .4
+                    || zoom > 3
+                    || flags < 0
+                    || flags > 7) throw new IllegalArgumentException("Invalid inline view");
+        }
+
+        String command() {
+            return "VIEW " + revision + " " + width + " " + height + " " + yaw + " " + pitch + " "
+                    + zoom + " " + flags + "\n";
+        }
+    }
+
+    record Frame(
+            long sequence,
+            long controlRevision,
+            int width,
+            int height,
+            IntBuffer pixels,
+            long bridgeNanos) {
+        Frame(long sequence, long controlRevision, int width, int height, IntBuffer pixels) {
+            this(sequence, controlRevision, width, height, pixels, 0);
+        }
+    }
+
+    interface Frames extends AutoCloseable {
+        Frame readLatest(long afterSequence) throws IOException;
+
+        @Override
+        void close() throws IOException;
+    }
+
+    @FunctionalInterface
+    interface FrameFactory {
+        Frames create(Path path) throws IOException;
+    }
+
     private static final class ApplicationService {
         private static final GpuPreviewService INSTANCE = new GpuPreviewService();
     }
@@ -58,7 +121,8 @@ final class GpuPreviewService {
     private static final long MAX_SCENE_BYTES = GpuSceneFile.MAX_BYTES;
     private final Object gate = new Object();
     private final SceneWriter writer;
-    private final Starter starter;
+    private final InlineStarter starter;
+    private final FrameFactory frameFactory;
     private final Path temporaryParent;
     private final long readyNanos, closeMillis;
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
@@ -71,6 +135,9 @@ final class GpuPreviewService {
         final MeshAppearance appearance;
         final Set<Integer> parts;
         final Consumer<Status> listener;
+        final Consumer<Frame> frames;
+        final AtomicReference<ViewRequest> view = new AtomicReference<>();
+        volatile long revision;
         final CompletableFuture<Void> drained = new CompletableFuture<>();
         volatile boolean stopping, ready, protocolFailure;
         volatile String backend = "", errorCode = "";
@@ -78,7 +145,7 @@ final class GpuPreviewService {
         String failureMessage() {
             return "GPU preview unavailable"
                     + (errorCode.isEmpty() ? "" : " (" + errorCode + ")")
-                    + ". The inline software preview remains available.";
+                    + ". Using the software preview.";
         }
 
         Request(
@@ -86,7 +153,9 @@ final class GpuPreviewService {
                 PreviewMesh mesh,
                 MeshAppearance appearance,
                 Set<Integer> parts,
-                Consumer<Status> listener) {
+                Consumer<Status> listener,
+                Consumer<Frame> frames) {
+            this.frames = frames;
             this.owner = owner;
             this.mesh = mesh;
             this.appearance = appearance;
@@ -108,6 +177,7 @@ final class GpuPreviewService {
                 null,
                 GpuSceneFile::write,
                 GpuPreviewService::startChild,
+                GpuPreviewService::createFrames,
                 Duration.ofSeconds(20),
                 Duration.ofSeconds(3));
     }
@@ -118,6 +188,23 @@ final class GpuPreviewService {
             Starter starter,
             Duration readyTimeout,
             Duration closeTimeout) {
+        this(
+                temporaryParent,
+                writer,
+                (scene, frames) -> starter.start(scene),
+                GpuPreviewService::createFrames,
+                readyTimeout,
+                closeTimeout);
+    }
+
+    GpuPreviewService(
+            Path temporaryParent,
+            SceneWriter writer,
+            InlineStarter starter,
+            FrameFactory frameFactory,
+            Duration readyTimeout,
+            Duration closeTimeout) {
+        this.frameFactory = Objects.requireNonNull(frameFactory);
         this.temporaryParent = temporaryParent;
         this.writer = Objects.requireNonNull(writer);
         this.starter = Objects.requireNonNull(starter);
@@ -133,10 +220,22 @@ final class GpuPreviewService {
             MeshAppearance appearance,
             Set<Integer> parts,
             Consumer<Status> listener) {
+        return open(owner, mesh, appearance, parts, listener, ignored -> {});
+    }
+
+    CompletableFuture<Void> open(
+            Object owner,
+            PreviewMesh mesh,
+            MeshAppearance appearance,
+            Set<Integer> parts,
+            Consumer<Status> listener,
+            Consumer<Frame> frames) {
         Objects.requireNonNull(owner);
         Objects.requireNonNull(mesh);
         Objects.requireNonNull(listener);
-        var request = new Request(owner, mesh, appearance, parts, listener);
+        var request =
+                new Request(
+                        owner, mesh, appearance, parts, listener, Objects.requireNonNull(frames));
         Request superseded;
         boolean supersededPending, start;
         synchronized (gate) {
@@ -156,7 +255,7 @@ final class GpuPreviewService {
             superseded.publish(State.CLOSED, "GPU preview superseded");
             superseded.drained.complete(null);
         }
-        request.publish(State.PREPARING, "Preparing GPU preview window…");
+        request.publish(State.PREPARING, "Preparing inline GPU preview…");
         if (start) Thread.ofVirtual().name("gpu-preview-lifecycle").start(this::run);
         var delivery = request.drained.copy();
         delivery.whenComplete(
@@ -164,6 +263,39 @@ final class GpuPreviewService {
                     if (delivery.isCancelled()) cancel(request);
                 });
         return delivery;
+    }
+
+    void update(Object owner, ViewRequest view) {
+        synchronized (gate) {
+            if (desired != null
+                    && desired.owner == owner
+                    && !desired.stopping
+                    && view.revision() > desired.revision) {
+                desired.revision = view.revision();
+                desired.view.set(view);
+            }
+        }
+    }
+
+    private static Frames createFrames(Path path) throws IOException {
+        var mapped = GpuFrameFile.create(path, 960, 720);
+        return new Frames() {
+            public Frame readLatest(long after) throws IOException {
+                var frame = mapped.readLatest(after);
+                return frame == null
+                        ? null
+                        : new Frame(
+                                frame.sequence(),
+                                frame.controlRevision(),
+                                frame.width(),
+                                frame.height(),
+                                frame.pixels());
+            }
+
+            public void close() throws IOException {
+                mapped.close();
+            }
+        };
     }
 
     private void cancel(Request request) {
@@ -250,9 +382,10 @@ final class GpuPreviewService {
     }
 
     private void perform(Request request) {
-        Path directory = null, scene = null;
+        Path directory = null, scene = null, framePath = null;
+        Frames frames = null;
         Process child = null;
-        Thread stdout = null, stderr = null;
+        Thread stdout = null, stderr = null, controls = null;
         Throwable failure = null;
         try {
             if (request.stopping) return;
@@ -265,8 +398,10 @@ final class GpuPreviewService {
             if (Files.size(scene) > MAX_SCENE_BYTES)
                 throw new IOException("GPU scene exceeds its size bound");
             if (request.stopping) return;
-            request.publish(State.STARTING, "Opening GPU preview window…");
-            child = starter.start(scene);
+            framePath = directory.resolve("frames.vgpu");
+            frames = frameFactory.create(framePath);
+            request.publish(State.STARTING, "Starting inline GPU renderer…");
+            child = starter.start(scene, framePath);
             final Process process = child;
             stdout =
                     Thread.ofVirtual()
@@ -276,11 +411,59 @@ final class GpuPreviewService {
                     Thread.ofVirtual()
                             .name("gpu-preview-log")
                             .start(() -> readLines(process.getErrorStream(), request, false));
+            controls =
+                    Thread.ofVirtual()
+                            .name("gpu-preview-controls")
+                            .start(
+                                    () -> {
+                                        try {
+                                            while (process.isAlive() && !request.stopping) {
+                                                var view = request.view.getAndSet(null);
+                                                if (view != null) {
+                                                    process.getOutputStream()
+                                                            .write(
+                                                                    view.command()
+                                                                            .getBytes(
+                                                                                    StandardCharsets
+                                                                                            .US_ASCII));
+                                                    process.getOutputStream().flush();
+                                                }
+                                                Thread.sleep(15);
+                                            }
+                                        } catch (IOException | InterruptedException error) {
+                                            if (!request.stopping) request.protocolFailure = true;
+                                        }
+                                    });
+            long sequence = 0, presentedRevision = 0;
+            long frameProgress = System.nanoTime();
             long deadline = System.nanoTime() + readyNanos;
             while (child.isAlive() && !request.stopping && !request.protocolFailure) {
-                if (!request.ready && System.nanoTime() - deadline >= 0)
+                if ((!request.ready || sequence == 0) && System.nanoTime() - deadline >= 0)
                     throw new IOException("GPU preview did not become ready");
-                child.waitFor(100, TimeUnit.MILLISECONDS);
+                if (request.revision <= presentedRevision) frameProgress = System.nanoTime();
+                else if (System.nanoTime() - frameProgress >= readyNanos)
+                    throw new IOException("GPU preview stopped producing requested frames");
+                long readStarted = System.nanoTime();
+                var frame = frames.readLatest(sequence);
+                if (frame != null) {
+                    frame =
+                            new Frame(
+                                    frame.sequence(),
+                                    frame.controlRevision(),
+                                    frame.width(),
+                                    frame.height(),
+                                    frame.pixels(),
+                                    System.nanoTime() - readStarted);
+                    sequence = frame.sequence();
+                    if (frame.controlRevision() > 0
+                            && frame.controlRevision() <= request.revision
+                            && !request.stopping) {
+                        request.frames.accept(frame);
+                        presentedRevision = Math.max(presentedRevision, frame.controlRevision());
+                        frameProgress = System.nanoTime();
+                    }
+                }
+                child.waitFor(33, TimeUnit.MILLISECONDS);
             }
             if (!request.stopping && child.isAlive())
                 throw new IOException("GPU preview failed during startup");
@@ -293,7 +476,7 @@ final class GpuPreviewService {
             if (child != null) {
                 try {
                     if (child.isAlive()) {
-                        request.publish(State.STOPPING, "Closing GPU preview window…");
+                        request.publish(State.STOPPING, "Stopping inline GPU renderer…");
                         stopChild(child);
                     }
                 } catch (Throwable stopFailure) {
@@ -303,6 +486,15 @@ final class GpuPreviewService {
                 closeStreams(child);
                 joinReader(stdout);
                 joinReader(stderr);
+                joinReader(controls);
+            }
+            if (frames != null) {
+                try {
+                    frames.close();
+                } catch (IOException | RuntimeException closeFailure) {
+                    if (failure == null) failure = closeFailure;
+                    else failure.addSuppressed(closeFailure);
+                }
             }
             if (child != null && !request.stopping && !request.ready && failure == null) {
                 failure = new IOException("GPU preview closed before its first frame");
@@ -311,6 +503,7 @@ final class GpuPreviewService {
             if (terminated) {
                 try {
                     if (scene != null) Files.deleteIfExists(scene);
+                    if (framePath != null) Files.deleteIfExists(framePath);
                     if (directory != null) Files.deleteIfExists(directory);
                 } catch (IOException cleanup) {
                     if (failure == null) failure = cleanup;
@@ -328,7 +521,7 @@ final class GpuPreviewService {
                 }
             }
             if (failure == null) {
-                request.publish(State.CLOSED, "GPU preview window closed");
+                request.publish(State.CLOSED, "Inline GPU renderer stopped");
                 request.drained.complete(null);
             } else {
                 request.publish(State.FAILED, request.failureMessage());
@@ -338,12 +531,18 @@ final class GpuPreviewService {
     }
 
     private void stopChild(Process child) throws IOException, InterruptedException {
-        try {
-            child.getOutputStream().write("CLOSE\n".getBytes(StandardCharsets.US_ASCII));
-            child.getOutputStream().flush();
-        } catch (IOException ignored) {
-            /* A dying child may already have closed stdin. */
-        }
+        Thread.ofVirtual()
+                .name("gpu-preview-close")
+                .start(
+                        () -> {
+                            try {
+                                child.getOutputStream()
+                                        .write("CLOSE\n".getBytes(StandardCharsets.US_ASCII));
+                                child.getOutputStream().flush();
+                            } catch (IOException ignored) {
+                                /* Child may already be gone. */
+                            }
+                        });
         if (child.waitFor(closeMillis, TimeUnit.MILLISECONDS)) return;
         child.destroy();
         if (child.waitFor(250, TimeUnit.MILLISECONDS)) return;
@@ -390,7 +589,7 @@ final class GpuPreviewService {
                 return;
             }
             request.ready = true;
-            request.publish(State.READY, "GPU preview window ready · " + backend);
+            request.publish(State.READY, "Inline GPU renderer ready · " + backend);
         } else if (line.startsWith("VIMI_GPU ERROR ")) {
             String details = line.substring(15);
             String code = details.split(" ", 2)[0];
@@ -421,7 +620,7 @@ final class GpuPreviewService {
         }
     }
 
-    private static Process startChild(Path scene) throws IOException {
+    private static Process startChild(Path scene, Path frames) throws IOException {
         var command = new ArrayList<String>();
         boolean windows =
                 System.getProperty("os.name").toLowerCase(java.util.Locale.ROOT).contains("win");
@@ -436,6 +635,8 @@ final class GpuPreviewService {
         command.add("com.vibeminer.rendering.bgfx.GpuViewerMain");
         command.add("--scene");
         command.add(scene.toAbsolutePath().toString());
+        command.add("--frames");
+        command.add(frames.toAbsolutePath().toString());
         command.add("--parent-pid");
         command.add(Long.toString(ProcessHandle.current().pid()));
         return new ProcessBuilder(command).start();
