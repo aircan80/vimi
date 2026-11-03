@@ -10,10 +10,12 @@ import javafx.application.Platform;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
+import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.Tooltip;
 import javafx.scene.image.Image;
 import javafx.scene.image.PixelFormat;
 import javafx.scene.image.WritableImage;
+import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 
@@ -21,7 +23,10 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
@@ -49,6 +54,57 @@ final class LocationMapView extends VBox implements AutoCloseable {
     private final boolean quest;
     private final ComboBox<Choice> choices = new ComboBox<>();
     private final Label status = new Label(), evidence = new Label(), artStatus = new Label();
+    private final ProgressIndicator locationActivity = activity("location-map-activity"),
+            artworkActivity = activity("location-map-art-activity");
+    private final ThreadPoolExecutor queries = worker("location-map-queries"),
+            pixels = worker("location-map-pixels");
+    private CompletableFuture<?> lookupTask, artworkTask;
+    private long imagePixels;
+
+    private record TilePixels(int width, int height, int stride, byte[] bgra) {}
+
+    private static ThreadPoolExecutor worker(String name) {
+        return new ThreadPoolExecutor(
+                1,
+                1,
+                0,
+                TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(1),
+                Thread.ofPlatform().daemon().name(name).factory(),
+                new ThreadPoolExecutor.AbortPolicy());
+    }
+
+    private static ProgressIndicator activity(String id) {
+        var value = new ProgressIndicator(-1);
+        value.setId(id);
+        value.setPrefSize(18, 18);
+        value.setMaxSize(18, 18);
+        value.setAccessibleText(id.replace('-', ' '));
+        value.setVisible(false);
+        value.setManaged(false);
+        return value;
+    }
+
+    private static void show(ProgressIndicator indicator, boolean value) {
+        indicator.setVisible(value);
+        indicator.setManaged(value);
+    }
+
+    private void cancelArtwork() {
+        if (artworkTask != null) artworkTask.cancel(false);
+        pixels.getQueue().clear();
+        show(artworkActivity, false);
+    }
+
+    private <T> CompletableFuture<T> artworkRequest(
+            java.util.function.Supplier<CompletableFuture<T>> action) {
+        try {
+            return CompletableFuture.supplyAsync(action, pixels).thenCompose(value -> value);
+        } catch (RuntimeException error) {
+            return CompletableFuture.failedFuture(error);
+        }
+    }
+
     private final Canvas canvas = new Canvas(300, 200);
     private final Tooltip tooltip = new Tooltip();
     private final Map<Long, Image> images = new LinkedHashMap<>();
@@ -56,7 +112,7 @@ final class LocationMapView extends VBox implements AutoCloseable {
     private BuildLocations source;
     private BuildLocationMaps bound;
     private MapTypes.Artwork artwork;
-    private long generation, artGeneration, boundSourceRevision;
+    private long generation, artGeneration, boundSourceRevision, boundRevision;
     private String artDescription = "";
     private int unavailableTiles;
     private boolean closed, setting;
@@ -94,6 +150,7 @@ final class LocationMapView extends VBox implements AutoCloseable {
         choices.setId("location-map-choice");
         status.setId("location-map-status");
         canvas.setId("location-map-canvas");
+        artStatus.setId("location-map-art-status");
         choices.setAccessibleText("Location map");
         choices.setOnAction(
                 event -> {
@@ -123,13 +180,24 @@ final class LocationMapView extends VBox implements AutoCloseable {
                     tooltip.setText(text);
                 });
         Tooltip.install(canvas, tooltip);
-        getChildren().addAll(heading, choices, canvas, artStatus, status, evidence);
+        getChildren()
+                .addAll(
+                        heading,
+                        choices,
+                        canvas,
+                        new HBox(8, artworkActivity, artStatus),
+                        new HBox(8, locationActivity, status),
+                        evidence);
         select(null);
     }
 
     void select(Long id) {
         generation++;
         artGeneration++;
+        if (lookupTask != null) lookupTask.cancel(false);
+        queries.getQueue().clear();
+        cancelArtwork();
+        show(locationActivity, false);
         token.cancel();
         artToken.cancel();
         token = new Cancellation();
@@ -146,6 +214,7 @@ final class LocationMapView extends VBox implements AutoCloseable {
         choices.getItems().clear();
         setting = false;
         images.clear();
+        imagePixels = 0;
         artwork = null;
         bound = null;
         draw();
@@ -157,6 +226,7 @@ final class LocationMapView extends VBox implements AutoCloseable {
         }
         bound = maps.get();
         boundSourceRevision = sourceRevision.getAsLong();
+        boundRevision = revision.getAsLong();
         if (bound == null) {
             status.setText("Build map tables are unavailable.");
             return;
@@ -169,62 +239,85 @@ final class LocationMapView extends VBox implements AutoCloseable {
                 version = revision.getAsLong(),
                 sourcesVersion = boundSourceRevision;
         status.setText("Resolving prepared source locations…");
-        CompletableFuture.supplyAsync(
-                        () -> load(id, selectedSource, selectedMaps, cancel),
-                        command -> Thread.startVirtualThread(command))
-                .whenComplete(
-                        (batch, error) ->
-                                Platform.runLater(
-                                        () -> {
-                                            if (closed
-                                                    || request != generation
-                                                    || version != revision.getAsLong()
-                                                    || selectedMaps != maps.get()
-                                                    || sourcesVersion != sourceRevision.getAsLong())
-                                                return;
-                                            if (error != null) {
-                                                status.setText(
-                                                        "Locations unavailable. Select again to"
-                                                                + " retry.");
-                                                return;
-                                            }
-                                            setting = true;
-                                            choices.getItems().setAll(batch.choices());
-                                            choices.getSelectionModel().selectFirst();
-                                            setting = false;
-                                            status.setText(
-                                                    batch.observations()
-                                                            + " observations · "
-                                                            + batch.unresolved()
-                                                            + " without a unique drawable point"
-                                                            + (batch.observations()
-                                                                            == MAX_OBSERVATIONS
-                                                                    ? " · observation limit reached"
-                                                                    : ""));
-                                            evidence.setText(
-                                                    "Source coverage and build compatibility may be"
-                                                        + " partial. Base map artwork does not"
-                                                        + " evaluate character phase or visibility."
-                                                        + " Blue: declared spawn. Amber: observed"
-                                                        + " player interaction, approximate."
-                                                            + (batch.issues().isEmpty()
-                                                                    ? ""
-                                                                    : "\n"
-                                                                            + String.join(
-                                                                                    " · ",
-                                                                                    batch
-                                                                                            .issues()
-                                                                                            .stream()
-                                                                                            .limit(
-                                                                                                    4)
-                                                                                            .toList())));
-                                            if (batch.choices().isEmpty())
-                                                status.setText(
-                                                        status.getText()
-                                                                + " · No drawable map relationship"
-                                                                + " recorded.");
-                                            loadArtwork();
-                                        }));
+        show(locationActivity, true);
+        CompletableFuture<Batch> lookup;
+        try {
+            lookup =
+                    CompletableFuture.supplyAsync(
+                            () -> load(id, selectedSource, selectedMaps, cancel), queries);
+        } catch (RuntimeException error) {
+            lookup = CompletableFuture.failedFuture(error);
+        }
+        lookupTask = lookup;
+        lookup.whenComplete(
+                (batch, error) ->
+                        Platform.runLater(
+                                () -> {
+                                    if (closed || request != generation) return;
+                                    show(locationActivity, false);
+                                    if (version != revision.getAsLong()
+                                            || selectedMaps != maps.get()
+                                            || sourcesVersion != sourceRevision.getAsLong()) {
+                                        status.setText(
+                                                "Location sources changed. Select again to"
+                                                    + " update.");
+                                        return;
+                                    }
+                                    if (error != null || batch == null) {
+                                        status.setText(
+                                                "Locations unavailable. Select again to"
+                                                        + " retry.");
+                                        return;
+                                    }
+                                    setting = true;
+                                    choices.getItems().setAll(batch.choices());
+                                    choices.getSelectionModel().selectFirst();
+                                    setting = false;
+                                    status.setText(
+                                            batch.observations()
+                                                    + " observations · "
+                                                    + batch.unresolved()
+                                                    + " without a unique drawable point"
+                                                    + (batch.observations() == MAX_OBSERVATIONS
+                                                            ? " · observation limit reached"
+                                                            : ""));
+                                    evidence.setText(
+                                            "Source coverage and build compatibility may be"
+                                                    + " partial. Base map artwork does not"
+                                                    + " evaluate character phase or visibility."
+                                                    + " Blue: declared spawn. Amber: observed"
+                                                    + " player interaction, approximate."
+                                                    + (batch.issues().isEmpty()
+                                                            ? ""
+                                                            : "\n"
+                                                                    + String.join(
+                                                                            " · ",
+                                                                            batch.issues().stream()
+                                                                                    .limit(4)
+                                                                                    .toList())));
+                                    if (batch.choices().isEmpty())
+                                        status.setText(
+                                                status.getText()
+                                                        + " · No drawable map relationship"
+                                                        + " recorded.");
+                                    loadArtwork();
+                                }));
+    }
+
+    private static <T> T await(CompletableFuture<T> result, Cancellation cancel) {
+        while (true) {
+            cancel.check();
+            try {
+                return result.get(50, TimeUnit.MILLISECONDS);
+            } catch (java.util.concurrent.TimeoutException pending) {
+                /* Recheck owned cancellation. */
+            } catch (java.util.concurrent.ExecutionException failure) {
+                throw new java.util.concurrent.CompletionException(failure.getCause());
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new java.util.concurrent.CancellationException("Map lookup interrupted");
+            }
+        }
     }
 
     private Batch load(
@@ -232,7 +325,7 @@ final class LocationMapView extends VBox implements AutoCloseable {
         var locations = new ArrayList<LocationTypes.Location>();
         var issues = new ArrayList<String>();
         if (quest) {
-            var result = sources.pickups(id, cancel).join();
+            var result = await(sources.pickups(id, cancel), cancel);
             issues.addAll(result.issues());
             for (var pickup : result.pickups()) {
                 issues.addAll(pickup.locations().issues());
@@ -248,10 +341,11 @@ final class LocationMapView extends VBox implements AutoCloseable {
             }
         } else {
             var result =
-                    sources.locations(
+                    await(
+                            sources.locations(
                                     new LocationTypes.Entity(LocationTypes.EntityKind.NPC, id),
-                                    cancel)
-                            .join();
+                                    cancel),
+                            cancel);
             issues.addAll(result.issues());
             locations.addAll(result.locations().stream().limit(MAX_OBSERVATIONS).toList());
         }
@@ -262,7 +356,7 @@ final class LocationMapView extends VBox implements AutoCloseable {
             cancel.check();
             MapTypes.Resolution resolved;
             try {
-                resolved = maps.resolve(location, cancel).join();
+                resolved = await(maps.resolve(location, cancel), cancel);
             } catch (RuntimeException error) {
                 cancel.check();
                 Throwable cause = error;
@@ -320,11 +414,13 @@ final class LocationMapView extends VBox implements AutoCloseable {
     private void loadArtwork() {
         artToken.cancel();
         artToken = new Cancellation();
+        cancelArtwork();
         long request = ++artGeneration, selection = generation;
         var choice = choices.getValue();
         var selectedMaps = bound;
         var cancel = artToken;
         images.clear();
+        imagePixels = 0;
         artwork = null;
         unavailableTiles = 0;
         artStatus.setText("");
@@ -332,63 +428,61 @@ final class LocationMapView extends VBox implements AutoCloseable {
         draw();
         if (closed || choice == null || selectedMaps == null) return;
         artStatus.setText("Loading selected-build base map artwork…");
-        selectedMaps
-                .artwork(choice.map().id(), cancel)
-                .whenComplete(
-                        (result, error) ->
-                                Platform.runLater(
-                                        () -> {
-                                            if (!current(selection, request, selectedMaps)) return;
-                                            if (error != null) {
-                                                artStatus.setText(
-                                                        "Map artwork unavailable; recorded markers"
-                                                                + " retained.");
-                                                return;
-                                            }
-                                            artwork = result;
-                                            resizeCanvas();
-                                            draw();
-                                            artDescription =
-                                                    result.state()
-                                                            + " · "
-                                                            + result.message()
-                                                            + (result.issues().isEmpty()
-                                                                    ? ""
-                                                                    : " · "
-                                                                            + String.join(
-                                                                                    " · ",
-                                                                                    result
-                                                                                            .issues()
-                                                                                            .stream()
-                                                                                            .limit(
-                                                                                                    3)
-                                                                                            .toList()));
-                                            artStatus.setText(artDescription);
-                                            if (result.layer() == null
-                                                    || result.tiles().isEmpty()) {
-                                                return;
-                                            }
-                                            if (result.tiles().size() > MAX_TILES)
-                                                artStatus.setText(
-                                                        artDescription
-                                                                + " · Artwork tile limit reached;"
-                                                                + " readable prefix shown.");
-                                            loadTile(
-                                                    result,
-                                                    0,
-                                                    selection,
-                                                    request,
-                                                    selectedMaps,
-                                                    cancel);
-                                        }));
+        show(artworkActivity, true);
+        var requestFuture = artworkRequest(() -> selectedMaps.artwork(choice.map().id(), cancel));
+        artworkTask = requestFuture;
+        requestFuture.whenComplete(
+                (result, error) ->
+                        Platform.runLater(
+                                () -> {
+                                    if (!current(selection, request, selectedMaps)) return;
+                                    if (error != null || result == null) {
+                                        show(artworkActivity, false);
+                                        artStatus.setText(
+                                                "Map artwork unavailable; recorded markers"
+                                                        + " retained.");
+                                        return;
+                                    }
+                                    artwork = result;
+                                    resizeCanvas();
+                                    draw();
+                                    artDescription =
+                                            result.state()
+                                                    + " · "
+                                                    + result.message()
+                                                    + (result.issues().isEmpty()
+                                                            ? ""
+                                                            : " · "
+                                                                    + String.join(
+                                                                            " · ",
+                                                                            result.issues().stream()
+                                                                                    .limit(3)
+                                                                                    .toList()));
+                                    artStatus.setText(artDescription);
+                                    if (result.layer() == null || result.tiles().isEmpty()) {
+                                        show(artworkActivity, false);
+                                        return;
+                                    }
+                                    if (result.tiles().size() > MAX_TILES)
+                                        artStatus.setText(
+                                                artDescription
+                                                        + " · Artwork tile limit reached;"
+                                                        + " readable prefix shown.");
+                                    loadTile(result, 0, selection, request, selectedMaps, cancel);
+                                }));
     }
 
     private boolean current(long selection, long request, BuildLocationMaps selectedMaps) {
-        return !closed
-                && selection == generation
-                && request == artGeneration
-                && selectedMaps == maps.get()
-                && boundSourceRevision == sourceRevision.getAsLong();
+        if (closed || selection != generation || request != artGeneration) return false;
+        if (selectedMaps != maps.get()
+                || boundSourceRevision != sourceRevision.getAsLong()
+                || boundRevision != revision.getAsLong()) {
+            show(artworkActivity, false);
+            artStatus.setText(
+                    "Map sources changed; recorded markers retained. Select again to update.");
+            return false;
+        }
+        return true;
     }
 
     private void loadTile(
@@ -398,52 +492,95 @@ final class LocationMapView extends VBox implements AutoCloseable {
             long request,
             BuildLocationMaps selectedMaps,
             Cancellation cancel) {
-        if (index >= Math.min(MAX_TILES, art.tiles().size())
-                || !current(selection, request, selectedMaps)) return;
+        if (!current(selection, request, selectedMaps)) return;
+        int total = Math.min(MAX_TILES, art.tiles().size());
+        if (index >= total) {
+            show(artworkActivity, false);
+            tileProgress(index, total, false, art.tiles().size() > MAX_TILES);
+            return;
+        }
+        show(artworkActivity, true);
+        tileProgress(index, total, true, art.tiles().size() > MAX_TILES);
         var tile = art.tiles().get(index);
-        selectedMaps
-                .tile(art.map().id(), tile.rowId(), cancel)
-                .whenComplete(
-                        (result, error) ->
-                                Platform.runLater(
-                                        () -> {
-                                            if (!current(selection, request, selectedMaps)) return;
-                                            if (error == null
-                                                    && result.image() != null
-                                                    && result.image().image() != null) {
-                                                var data = result.image().image();
-                                                var image =
-                                                        new WritableImage(
-                                                                data.width(), data.height());
-                                                image.getPixelWriter()
-                                                        .setPixels(
-                                                                0,
-                                                                0,
-                                                                data.width(),
-                                                                data.height(),
-                                                                PixelFormat.getByteBgraInstance(),
-                                                                bgra(data.rgba()),
-                                                                0,
-                                                                data.rowStride());
-                                                images.put(tile.rowId(), image);
-                                                draw();
-                                            } else {
-                                                unavailableTiles++;
-                                                artStatus.setText(
-                                                        artDescription
-                                                                + " · "
-                                                                + unavailableTiles
-                                                                + " unavailable tiles; readable"
-                                                                + " tiles retained");
-                                            }
-                                            loadTile(
-                                                    art,
-                                                    index + 1,
-                                                    selection,
-                                                    request,
-                                                    selectedMaps,
-                                                    cancel);
-                                        }));
+        var converted =
+                artworkRequest(() -> selectedMaps.tile(art.map().id(), tile.rowId(), cancel))
+                        .thenApplyAsync(
+                                result -> {
+                                    cancel.check();
+                                    if (result == null
+                                            || result.image() == null
+                                            || result.image().image() == null) return null;
+                                    var data = result.image().image();
+                                    int width = data.width(),
+                                            height = data.height(),
+                                            stride = data.rowStride();
+                                    if (width < 1
+                                            || height < 1
+                                            || width > 8192
+                                            || height > 8192
+                                            || (long) width * height > 16_777_216
+                                            || stride != width * 4)
+                                        throw new IllegalArgumentException(
+                                                "Map tile exceeds preview bounds");
+                                    var bytes = data.rgba();
+                                    if (bytes.length != stride * height)
+                                        throw new IllegalArgumentException(
+                                                "Map tile pixel length disagrees");
+                                    var value = new TilePixels(width, height, stride, bgra(bytes));
+                                    cancel.check();
+                                    return value;
+                                },
+                                pixels);
+        artworkTask = converted;
+        converted.whenComplete(
+                (data, error) ->
+                        Platform.runLater(
+                                () -> {
+                                    if (!current(selection, request, selectedMaps)) return;
+                                    if (error == null
+                                            && data != null
+                                            && imagePixels + (long) data.width() * data.height()
+                                                    <= 16_777_216) {
+                                        var image = new WritableImage(data.width(), data.height());
+                                        image.getPixelWriter()
+                                                .setPixels(
+                                                        0,
+                                                        0,
+                                                        data.width(),
+                                                        data.height(),
+                                                        PixelFormat.getByteBgraInstance(),
+                                                        data.bgra(),
+                                                        0,
+                                                        data.stride());
+                                        images.put(tile.rowId(), image);
+                                        imagePixels += (long) data.width() * data.height();
+                                        draw();
+                                    } else unavailableTiles++;
+                                    loadTile(
+                                            art,
+                                            index + 1,
+                                            selection,
+                                            request,
+                                            selectedMaps,
+                                            cancel);
+                                }));
+    }
+
+    private void tileProgress(int completed, int total, boolean loading, boolean limited) {
+        artStatus.setText(
+                artDescription
+                        + " · "
+                        + completed
+                        + "/"
+                        + total
+                        + " map tiles"
+                        + (loading ? " · loading…" : "")
+                        + (unavailableTiles == 0
+                                ? ""
+                                : " · "
+                                        + unavailableTiles
+                                        + " unavailable tiles; readable tiles retained")
+                        + (limited ? " · Artwork tile limit reached; readable prefix shown." : ""));
     }
 
     private static void issue(List<String> issues, String text) {
@@ -539,8 +676,14 @@ final class LocationMapView extends VBox implements AutoCloseable {
         artGeneration++;
         token.cancel();
         artToken.cancel();
+        cancelArtwork();
+        if (lookupTask != null) lookupTask.cancel(false);
+        show(locationActivity, false);
+        queries.shutdownNow();
+        pixels.shutdownNow();
         if (source != null) source.closeAsync();
         images.clear();
+        imagePixels = 0;
         Tooltip.uninstall(canvas, tooltip);
     }
 }

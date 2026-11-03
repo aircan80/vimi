@@ -33,6 +33,7 @@ public final class LocationMapUiTest {
             pickupCalls = new AtomicInteger(),
             delayedRequests = new AtomicInteger();
     private static CompletableFuture<MapTypes.Artwork> heldArt;
+    private static volatile CompletableFuture<MapTypes.TileImage> heldTile;
     private static final AtomicInteger heldArtRequests = new AtomicInteger(),
             tileCalls = new AtomicInteger();
     private static final CompletableFuture<MapTypes.Resolution> delayed = new CompletableFuture<>();
@@ -132,6 +133,7 @@ public final class LocationMapUiTest {
             }
 
             public CompletableFuture<MapTypes.Artwork> artwork(long id, Cancellation token) {
+                require(!Platform.isFxApplicationThread(), "Artwork acquisition stays outside FX");
                 if (heldArt != null) {
                     heldArtRequests.incrementAndGet();
                     return heldArt;
@@ -153,7 +155,10 @@ public final class LocationMapUiTest {
 
             public CompletableFuture<MapTypes.TileImage> tile(
                     long id, long row, Cancellation token) {
+                require(!Platform.isFxApplicationThread(), "Map tile acquisition stays outside FX");
                 tileCalls.incrementAndGet();
+                var held = heldTile;
+                if (held != null) return held;
                 byte[] rgba = new byte[64 * 42 * 4];
                 for (int i = 0; i < rgba.length; i += 4) {
                     rgba[i] = (byte) (i / 256 >= 34 ? 220 : 20);
@@ -261,9 +266,13 @@ public final class LocationMapUiTest {
             fx(
                     () -> {
                         view.select(101L);
+                        require(
+                                view.lookup("#location-map-activity").isVisible(),
+                                "Delayed locations expose activity");
                         return null;
                     });
             await(() -> delayedRequests.get() == 1);
+            heldTile = new CompletableFuture<>();
             fx(
                     () -> {
                         view.select(202L);
@@ -276,6 +285,25 @@ public final class LocationMapUiTest {
                                     && ((Label) view.lookup("#location-map-status"))
                                             .getText()
                                             .contains("1 without"));
+            await(() -> tileCalls.get() > 0);
+            fx(
+                    () -> {
+                        require(
+                                !view.lookup("#location-map-activity").isVisible(),
+                                "Resolved locations retire activity");
+                        require(
+                                view.lookup("#location-map-art-activity").isVisible(),
+                                "Delayed tile exposes artwork activity");
+                        require(
+                                ((Label) view.lookup("#location-map-art-status"))
+                                        .getText()
+                                        .contains("0/1"),
+                                "Known tile total is shown");
+                        return null;
+                    });
+            var pendingTile = heldTile;
+            heldTile = null;
+            pendingTile.complete(map.tile(42, 1, Cancellation.NONE).join());
             delayed.complete(resolution(location(101, 42)));
             await(
                     () -> {
@@ -299,8 +327,14 @@ public final class LocationMapUiTest {
                                                 (int) (image.getHeight() * .95));
                         return color.getRed() > color.getBlue() + .4;
                     });
+            await(() -> !view.lookup("#location-map-art-activity").isVisible());
             fx(
                     () -> {
+                        require(
+                                ((Label) view.lookup("#location-map-art-status"))
+                                        .getText()
+                                        .contains("1/1"),
+                                "Completed tile total remains visible");
                         var snapshot = view.snapshot(null, null);
                         var bitmap =
                                 new java.awt.image.BufferedImage(
@@ -379,6 +413,7 @@ public final class LocationMapUiTest {
             int before = tileCalls.get();
             sourceVersion.incrementAndGet();
             heldArt.complete(authoredArt);
+            await(() -> !guarded.lookup("#location-map-art-activity").isVisible());
             fx(
                     () -> {
                         require(
@@ -389,6 +424,79 @@ public final class LocationMapUiTest {
                     });
             require(sourceCloses.get() == 3, "Source-revision fixture closes its owned handle");
             require(mapCloses.get() == 0, "Selected-build map handle remains borrowed");
+            heldArt = null;
+            heldTile = new CompletableFuture<>();
+            var failed =
+                    fx(
+                            () ->
+                                    new LocationMapView(
+                                            () -> map,
+                                            LocationMapUiTest::sources,
+                                            () -> 1L,
+                                            false));
+            int callsBeforeFailure = tileCalls.get();
+            fx(
+                    () -> {
+                        failed.select(202L);
+                        return null;
+                    });
+            await(() -> tileCalls.get() > callsBeforeFailure);
+            heldTile.completeExceptionally(new IllegalStateException("Authored tile failure"));
+            await(() -> !failed.lookup("#location-map-art-activity").isVisible());
+            fx(
+                    () -> {
+                        require(
+                                ((Label) failed.lookup("#location-map-art-status"))
+                                        .getText()
+                                        .contains("1 unavailable"),
+                                "Tile error is explicit and activity retires");
+                        require(
+                                ((ComboBox<?>) failed.lookup("#location-map-choice"))
+                                                .getItems()
+                                                .size()
+                                        == 1,
+                                "Artwork failure retains recorded markers");
+                        failed.close();
+                        return null;
+                    });
+            heldTile = null;
+            heldArt = new CompletableFuture<>();
+            var closing =
+                    fx(
+                            () ->
+                                    new LocationMapView(
+                                            () -> map,
+                                            LocationMapUiTest::sources,
+                                            () -> 1L,
+                                            false));
+            int artBeforeClose = heldArtRequests.get();
+            fx(
+                    () -> {
+                        closing.select(202L);
+                        return null;
+                    });
+            await(() -> heldArtRequests.get() > artBeforeClose);
+            int tilesBeforeClose = tileCalls.get();
+            fx(
+                    () -> {
+                        closing.close();
+                        return null;
+                    });
+            heldArt.complete(authoredArt);
+            fx(
+                    () -> {
+                        require(
+                                !closing.lookup("#location-map-art-activity").isVisible(),
+                                "Close retires held artwork activity");
+                        require(
+                                tileCalls.get() == tilesBeforeClose,
+                                "Closed metadata cannot start tile work");
+                        return null;
+                    });
+            require(
+                    sourceCloses.get() == 5,
+                    "Additional error/close fixtures release owned providers");
+
             System.out.println(
                     "Location map UI: partial artwork, readable points after failure, stale"
                             + " selection, resize, quest starters and borrowed lifetime passed");

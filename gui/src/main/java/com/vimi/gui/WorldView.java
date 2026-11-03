@@ -13,6 +13,7 @@ import javafx.scene.control.Button;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListView;
+import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.SplitPane;
 import javafx.scene.control.TextField;
 import javafx.scene.image.ImageView;
@@ -30,6 +31,10 @@ import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -50,6 +55,16 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final ImageView image = new ImageView();
     private final StackPane viewport = new StackPane(image);
     private final Button open = new Button("Open explorer"), back = new Button("Back to map");
+    private final ProgressIndicator catalogActivity = activity("world-catalog-activity", 18),
+            localActivity = activity("world-local-activity", 18),
+            firstFrameActivity = activity("world-first-frame-activity", 32);
+    private final Label localStage = new Label();
+    private final HBox localLoading = new HBox(8, localActivity, localStage);
+    private final ThreadPoolExecutor requests = worker("world-requests"),
+            preparation = worker("world-preparation");
+    private CompletableFuture<?> invocation, sceneTask;
+    private long sceneGeneration;
+
     private final Set<KeyCode> keys = new HashSet<>();
     private final LinkedHashMap<String, WorldService.LoadedTile> loaded = new LinkedHashMap<>();
     private final Set<String> attempted = new HashSet<>();
@@ -70,8 +85,60 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final AtomicReference<Render> latest = new AtomicReference<>();
     private final AtomicBoolean rendering = new AtomicBoolean();
 
+    private record Prepared(
+            TerrainRenderer.Scene scene, TerrainRenderer.Camera camera, double x, double y) {}
+
+    private static ThreadPoolExecutor worker(String name) {
+        return new ThreadPoolExecutor(
+                1,
+                1,
+                0,
+                TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(1),
+                Thread.ofPlatform().daemon().name(name).factory(),
+                new ThreadPoolExecutor.AbortPolicy());
+    }
+
+    private static ProgressIndicator activity(String id, int size) {
+        var indicator = new ProgressIndicator(-1);
+        indicator.setId(id);
+        indicator.setPrefSize(size, size);
+        indicator.setMaxSize(size, size);
+        indicator.setAccessibleText(id.replace('-', ' '));
+        indicator.setVisible(false);
+        indicator.setManaged(false);
+        return indicator;
+    }
+
+    private static void show(ProgressIndicator indicator, boolean visible) {
+        indicator.setVisible(visible);
+        indicator.setManaged(visible);
+    }
+
+    private void busy(String message) {
+        boolean visible = message != null;
+        localStage.setText(visible ? message : "");
+        show(localActivity, visible);
+        localLoading.setVisible(visible);
+        localLoading.setManaged(visible);
+    }
+
+    private <T> CompletableFuture<T> invoke(
+            java.util.function.Supplier<CompletableFuture<T>> action) {
+        if (invocation != null) invocation.cancel(false);
+        requests.getQueue().clear();
+        try {
+            var call = CompletableFuture.supplyAsync(action, requests).thenCompose(value -> value);
+            invocation = call;
+            return call;
+        } catch (RuntimeException error) {
+            return CompletableFuture.failedFuture(error);
+        }
+    }
+
     private record Render(
             long generation,
+            long selection,
             TerrainRenderer.Scene scene,
             TerrainRenderer.Camera camera,
             int width,
@@ -105,7 +172,18 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     invalidate();
                     ensureLoaded();
                 });
-        var sidebar = new VBox(10, new Label("MAPS & CONTINENTS"), search, allMaps, reload, maps);
+        var sidebar =
+                new VBox(
+                        10,
+                        new Label("MAPS & CONTINENTS"),
+                        search,
+                        allMaps,
+                        new HBox(8, reload, catalogActivity),
+                        maps);
+        localLoading.setVisible(false);
+        localLoading.setManaged(false);
+        firstFrameActivity.setMouseTransparent(true);
+        viewport.getChildren().add(firstFrameActivity);
         VBox.setVgrow(maps, Priority.ALWAYS);
         heading.getStyleClass().add("h2");
         status.setWrapText(true);
@@ -243,29 +321,39 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     void ensureLoaded() {
         if (closed) return;
-        if (revision != revisions.getAsLong()) {
+        long currentRevision = revisions.getAsLong();
+        var currentHandle = handles.get();
+        if (revision != currentRevision || handle != currentHandle) {
             invalidate();
-            revision = revisions.getAsLong();
-            handle = handles.get();
+            revision = currentRevision;
+            handle = currentHandle;
         }
         if (catalog != null || catalogLoading || handle == null) return;
         catalogLoading = true;
         long request = selection;
         status.setText("Reading build map records…");
-        handle.catalog(token)
+        show(catalogActivity, true);
+        maps.setDisable(true);
+        maps.setPlaceholder(new VBox(8, new Label("Loading map records…")));
+        var selectedHandle = handle;
+        var cancel = token;
+        invoke(() -> selectedHandle.catalog(cancel))
                 .whenComplete(
                         (data, error) ->
                                 Platform.runLater(
                                         () -> {
                                             if (stale(request)) return;
                                             catalogLoading = false;
-                                            if (error != null) {
+                                            show(catalogActivity, false);
+                                            if (error != null || data == null) {
                                                 status.setText(
                                                         "Map records unavailable; use Reload after"
                                                                 + " preparation");
                                                 return;
                                             }
                                             catalog = data;
+                                            maps.setDisable(false);
+                                            maps.setPlaceholder(new Label("No matching maps"));
                                             filter();
                                             status.setText(
                                                     data.maps().size()
@@ -281,6 +369,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         catalog = null;
         catalogLoading = false;
         loadingTile = false;
+        busy(null);
+        show(catalogActivity, false);
+        show(firstFrameActivity, false);
         inventory = null;
         loaded.clear();
         attempted.clear();
@@ -290,14 +381,23 @@ final class WorldView extends BorderPane implements AutoCloseable {
         terrainScene = null;
         latest.set(null);
         frameGeneration.incrementAndGet();
+        cancelPreparation();
         image.setImage(null);
-        maps.getItems().clear();
+        maps.setDisable(true);
         heading.setText("World");
         showInventory();
     }
 
     private boolean stale(long request) {
-        return closed || request != selection;
+        if (closed || request != selection) return true;
+        if (revision != revisions.getAsLong() || handle != handles.get()) {
+            cancelRequests();
+            maps.setDisable(true);
+            open.setDisable(true);
+            status.setText("World data changed. Reload maps to update; previous content retained.");
+            return true;
+        }
+        return false;
     }
 
     private void filter() {
@@ -328,10 +428,14 @@ final class WorldView extends BorderPane implements AutoCloseable {
         token = new Cancellation();
         catalogLoading = false;
         loadingTile = false;
+        busy(null);
+        show(catalogActivity, false);
+        show(firstFrameActivity, false);
         keys.clear();
         timer.stop();
         frameGeneration.incrementAndGet();
         latest.set(null);
+        cancelPreparation();
         attempted.retainAll(loaded.keySet());
     }
 
@@ -368,6 +472,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         loaded.clear();
         attempted.clear();
         loadingTile = false;
+        busy(null);
+        show(catalogActivity, false);
+        show(firstFrameActivity, false);
         frameGeneration.incrementAndGet();
         latest.set(null);
         heading.setText(map + " · Map #" + map.id());
@@ -380,13 +487,19 @@ final class WorldView extends BorderPane implements AutoCloseable {
         showInventory();
         open.setDisable(true);
         status.setText("Reading terrain tile inventory…");
-        handle.inventory(map, token)
+        busy("Loading terrain inventory…");
+        var selectedHandle = handle;
+        var cancel = token;
+        invoke(() -> selectedHandle.inventory(map, cancel))
                 .whenComplete(
                         (data, error) ->
                                 Platform.runLater(
                                         () -> {
                                             if (stale(request)) return;
-                                            if (error != null || data.world() == null) {
+                                            busy(null);
+                                            if (error != null
+                                                    || data == null
+                                                    || data.world() == null) {
                                                 status.setText(
                                                         data == null
                                                                 ? "Terrain inventory unavailable"
@@ -421,7 +534,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         explorer = false;
         timer.stop();
         keys.clear();
-        content.setTop(new VBox(10, heading, status));
+        content.setTop(new VBox(10, heading, status, localLoading));
         content.setCenter(
                 new javafx.scene.control.ScrollPane(
                         new VBox(
@@ -469,6 +582,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                 + " faster · scroll changes speed")),
                         position));
         status.setText("Loading terrain tile " + selected.key() + "…");
+        show(firstFrameActivity, true);
         timer.start();
         loadTile(selected, true);
         viewport.requestFocus();
@@ -476,16 +590,24 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     private void loadTile(WorldFormats.Tile tile, boolean initial) {
         loadingTile = true;
+        busy(initial ? "Loading first terrain tile…" : "Loading nearby terrain…");
         attempted.add(tile.key());
         long request = selection;
-        handle.tile(inventory.map(), tile, token)
+        var selectedHandle = handle;
+        var map = inventory.map();
+        var cancel = token;
+        invoke(() -> selectedHandle.tile(map, tile, cancel))
                 .whenComplete(
                         (data, error) ->
                                 Platform.runLater(
                                         () -> {
                                             if (stale(request) || !explorer) return;
-                                            loadingTile = false;
-                                            if (error != null || data.terrain() == null) {
+                                            if (error != null
+                                                    || data == null
+                                                    || data.terrain() == null) {
+                                                loadingTile = false;
+                                                busy(null);
+                                                if (initial) show(firstFrameActivity, false);
                                                 status.setText(
                                                         data == null
                                                                 ? "Terrain tile unavailable"
@@ -494,47 +616,97 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                 return;
                                             }
                                             loaded.put(tile.key(), data);
-                                            if (initial) {
-                                                float[] v = data.terrain().vertices();
-                                                double minX = Double.POSITIVE_INFINITY,
-                                                        minY = minX,
-                                                        maxX = -minX,
-                                                        maxY = -minX,
-                                                        maxZ = -minX;
-                                                for (int i = 0; i < v.length; i += 3) {
-                                                    minX = Math.min(minX, v[i]);
-                                                    minY = Math.min(minY, v[i + 1]);
-                                                    maxX = Math.max(maxX, v[i]);
-                                                    maxY = Math.max(maxY, v[i + 1]);
-                                                    maxZ = Math.max(maxZ, v[i + 2]);
-                                                }
-                                                double ground = maxZ,
-                                                        nearest = Double.POSITIVE_INFINITY;
-                                                for (int at = 0; at < v.length; at += 3) {
-                                                    double distance =
-                                                            Math.hypot(
-                                                                    v[at] - (minX + maxX) / 2,
-                                                                    v[at + 1] - (minY + maxY) / 2);
-                                                    if (distance < nearest) {
-                                                        nearest = distance;
-                                                        ground = v[at + 2];
-                                                    }
-                                                }
-                                                originX = maxX;
-                                                originY = maxY;
-                                                camera =
-                                                        new TerrainRenderer.Camera(
-                                                                (minX + maxX) / 2,
-                                                                (minY + maxY) / 2,
-                                                                ground + 100,
-                                                                Math.PI,
-                                                                -.8);
-                                            }
                                             trimLoaded();
-                                            rebuildScene();
-                                            requestFrame();
-                                            loadNext();
+                                            prepareScene(
+                                                    initial ? data.terrain() : null,
+                                                    () -> {
+                                                        loadingTile = false;
+                                                        busy(null);
+                                                        requestFrame();
+                                                        loadNext();
+                                                    });
                                         }));
+    }
+
+    private void cancelPreparation() {
+        ++sceneGeneration;
+        if (sceneTask != null) sceneTask.cancel(false);
+        preparation.getQueue().clear();
+        if (invocation != null) invocation.cancel(false);
+        requests.getQueue().clear();
+    }
+
+    private static Prepared prepare(
+            java.util.List<WorldFormats.Terrain> tiles, WorldFormats.Terrain initial) {
+        TerrainRenderer.Camera camera = null;
+        double originX = 0, originY = 0;
+        if (initial != null) {
+            float[] v = initial.vertices();
+            double minX = Double.POSITIVE_INFINITY,
+                    minY = minX,
+                    maxX = -minX,
+                    maxY = -minX,
+                    maxZ = -minX;
+            for (int i = 0; i < v.length; i += 3) {
+                minX = Math.min(minX, v[i]);
+                minY = Math.min(minY, v[i + 1]);
+                maxX = Math.max(maxX, v[i]);
+                maxY = Math.max(maxY, v[i + 1]);
+                maxZ = Math.max(maxZ, v[i + 2]);
+            }
+            double ground = maxZ, nearest = Double.POSITIVE_INFINITY;
+            for (int at = 0; at < v.length; at += 3) {
+                double distance =
+                        Math.hypot(v[at] - (minX + maxX) / 2, v[at + 1] - (minY + maxY) / 2);
+                if (distance < nearest) {
+                    nearest = distance;
+                    ground = v[at + 2];
+                }
+            }
+            originX = maxX;
+            originY = maxY;
+            camera =
+                    new TerrainRenderer.Camera(
+                            (minX + maxX) / 2, (minY + maxY) / 2, ground + 100, Math.PI, -.8);
+        }
+        return new Prepared(new TerrainRenderer.Scene(tiles), camera, originX, originY);
+    }
+
+    private void prepareScene(WorldFormats.Terrain initial, Runnable ready) {
+        long scene = ++sceneGeneration, request = selection;
+        if (sceneTask != null) sceneTask.cancel(false);
+        preparation.getQueue().clear();
+        var snapshot = loaded.values().stream().map(WorldService.LoadedTile::terrain).toList();
+        CompletableFuture<Prepared> result;
+        try {
+            result = CompletableFuture.supplyAsync(() -> prepare(snapshot, initial), preparation);
+        } catch (RuntimeException error) {
+            result = CompletableFuture.failedFuture(error);
+        }
+        sceneTask = result;
+        result.whenComplete(
+                (prepared, error) ->
+                        Platform.runLater(
+                                () -> {
+                                    if (stale(request) || scene != sceneGeneration || !explorer)
+                                        return;
+                                    if (error != null) {
+                                        loadingTile = false;
+                                        busy(null);
+                                        show(firstFrameActivity, false);
+                                        status.setText(
+                                                "Terrain preview preparation unavailable; readable"
+                                                    + " terrain retained.");
+                                        return;
+                                    }
+                                    terrainScene = prepared.scene();
+                                    if (prepared.camera() != null) {
+                                        camera = prepared.camera();
+                                        originX = prepared.x();
+                                        originY = prepared.y();
+                                    }
+                                    ready.run();
+                                }));
     }
 
     private int tileX() {
@@ -582,9 +754,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void rebuildScene() {
-        terrainScene =
-                new TerrainRenderer.Scene(
-                        loaded.values().stream().map(WorldService.LoadedTile::terrain).toList());
+        prepareScene(null, this::requestFrame);
     }
 
     private void requestFrame() {
@@ -592,7 +762,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         int w = (int) Math.clamp(viewport.getWidth(), 320, 800),
                 h = (int) Math.clamp(viewport.getHeight(), 240, 500);
         long frame = frameGeneration.incrementAndGet();
-        latest.set(new Render(frame, terrainScene, camera, w, h));
+        show(firstFrameActivity, image.getImage() == null);
+        latest.set(new Render(frame, selection, terrainScene, camera, w, h));
         position.setText(
                 String.format(
                         java.util.Locale.ROOT,
@@ -629,7 +800,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                                         != current.generation());
                                 Platform.runLater(
                                         () -> {
-                                            if (closed
+                                            if (stale(current.selection())
                                                     || frameGeneration.get()
                                                             != current.generation()) return;
                                             var bitmap =
@@ -646,6 +817,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                             0,
                                                             frame.width());
                                             image.setImage(bitmap);
+                                            show(firstFrameActivity, false);
                                             status.setText(
                                                     "Terrain explorer · height shading · buildings,"
                                                         + " water and collision are not rendered"
@@ -654,6 +826,17 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                                     : ""));
                                         });
                             } catch (java.util.concurrent.CancellationException ignored) {
+                            } catch (RuntimeException error) {
+                                Platform.runLater(
+                                        () -> {
+                                            if (closed
+                                                    || frameGeneration.get()
+                                                            != current.generation()) return;
+                                            show(firstFrameActivity, false);
+                                            status.setText(
+                                                    "Terrain frame unavailable; previous image"
+                                                        + " retained.");
+                                        });
                             }
                         }
                     } finally {
@@ -667,5 +850,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     public void close() {
         closed = true;
         invalidate();
+        requests.shutdownNow();
+        preparation.shutdownNow();
     }
 }

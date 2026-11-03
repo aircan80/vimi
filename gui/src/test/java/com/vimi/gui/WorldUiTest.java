@@ -33,6 +33,7 @@ public final class WorldUiTest {
                 () ->
                         Platform.runLater(
                                 () -> {
+                                    Platform.setImplicitExit(false);
                                     var stage = new Stage();
                                     try {
                                         var continent =
@@ -49,6 +50,7 @@ public final class WorldUiTest {
                                         var neighbor =
                                                 new CompletableFuture<WorldService.LoadedTile>();
                                         var tileCalls = new AtomicInteger();
+                                        var catalogGate = new CompletableFuture<Void>();
                                         var neighborToken =
                                                 new java.util.concurrent.atomic.AtomicReference<
                                                         Cancellation>();
@@ -56,26 +58,36 @@ public final class WorldUiTest {
                                                 new BuildWorld() {
                                                     public CompletableFuture<WorldService.Catalog>
                                                             catalog(Cancellation t) {
-                                                        return CompletableFuture.completedFuture(
-                                                                new WorldService.Catalog(
-                                                                        List.of(continent, second),
-                                                                        List.of(
-                                                                                new WorldService
-                                                                                        .Area(
-                                                                                        100,
+                                                        require(
+                                                                !Platform.isFxApplicationThread(),
+                                                                "Catalog acquisition is off FX");
+                                                        return catalogGate.thenApply(
+                                                                ignored ->
+                                                                        new WorldService.Catalog(
+                                                                                List.of(
+                                                                                        continent,
+                                                                                        second),
+                                                                                List.of(
+                                                                                        new WorldService
+                                                                                                .Area(
+                                                                                                100,
+                                                                                                "Authored"
+                                                                                                    + " zone",
+                                                                                                0,
+                                                                                                0)),
+                                                                                List.of(
                                                                                         "Authored"
-                                                                                            + " zone",
-                                                                                        0,
-                                                                                        0)),
-                                                                        List.of(
-                                                                                "Authored partial"
-                                                                                    + " fixture")));
+                                                                                            + " partial"
+                                                                                            + " fixture")));
                                                     }
 
                                                     public CompletableFuture<WorldService.Inventory>
                                                             inventory(
                                                                     WorldService.MapInfo map,
                                                                     Cancellation t) {
+                                                        require(
+                                                                !Platform.isFxApplicationThread(),
+                                                                "Inventory acquisition is off FX");
                                                         return map.id() == 1
                                                                 ? delayed
                                                                 : CompletableFuture.completedFuture(
@@ -102,6 +114,9 @@ public final class WorldUiTest {
                                                                     WorldService.MapInfo map,
                                                                     WorldFormats.Tile location,
                                                                     Cancellation t) {
+                                                        require(
+                                                                !Platform.isFxApplicationThread(),
+                                                                "Tile acquisition is off FX");
                                                         int call = tileCalls.getAndIncrement();
                                                         if (call == 0) return oldTile;
                                                         if (call == 2) {
@@ -129,6 +144,11 @@ public final class WorldUiTest {
                                         stage.setScene(scene);
                                         stage.show();
                                         view.ensureLoaded();
+                                        require(
+                                                view.lookup("#world-catalog-activity").isVisible(),
+                                                "Delayed catalog exposes activity");
+                                        CompletableFuture.delayedExecutor(80, TimeUnit.MILLISECONDS)
+                                                .execute(() -> catalogGate.complete(null));
                                         await(
                                                 () ->
                                                         ((ListView<?>) view.lookup("#world-maps"))
@@ -139,7 +159,15 @@ public final class WorldUiTest {
                                                     var maps =
                                                             (ListView<?>)
                                                                     view.lookup("#world-maps");
+                                                    require(
+                                                            !view.lookup("#world-catalog-activity")
+                                                                    .isVisible(),
+                                                            "Catalog activity retires");
                                                     maps.getSelectionModel().select(1);
+                                                    require(
+                                                            view.lookup("#world-local-activity")
+                                                                    .isVisible(),
+                                                            "Delayed inventory exposes activity");
                                                     maps.getSelectionModel().select(0);
                                                     delayed.complete(
                                                             new WorldService.Inventory(
@@ -158,6 +186,12 @@ public final class WorldUiTest {
                                                                                 view.lookup(
                                                                                         "#world-open"))
                                                                         .fire();
+                                                                require(
+                                                                        view.lookup(
+                                                                                        "#world-first-frame-activity")
+                                                                                .isVisible(),
+                                                                        "Initial terrain has"
+                                                                            + " central activity");
                                                                 ((Button)
                                                                                 view.lookup(
                                                                                         "#world-back"))
@@ -234,7 +268,31 @@ public final class WorldUiTest {
                                                                                     "Neighbor"
                                                                                         + " request"
                                                                                         + " has started");
+                                                                            require(
+                                                                                    view.lookup(
+                                                                                                    "#world-local-activity")
+                                                                                            .isVisible(),
+                                                                                    "Nearby"
+                                                                                        + " acquisition"
+                                                                                        + " retains"
+                                                                                        + " local"
+                                                                                        + " activity");
+                                                                            require(
+                                                                                    !view.lookup(
+                                                                                                    "#world-first-frame-activity")
+                                                                                            .isVisible(),
+                                                                                    "Readable frame"
+                                                                                        + " retires"
+                                                                                        + " initial"
+                                                                                        + " activity");
                                                                             view.deactivate();
+                                                                            require(
+                                                                                    !view.lookup(
+                                                                                                    "#world-local-activity")
+                                                                                            .isVisible(),
+                                                                                    "Deactivation"
+                                                                                        + " retires"
+                                                                                        + " activity");
                                                                             require(
                                                                                     neighborToken
                                                                                             .get()
@@ -260,14 +318,21 @@ public final class WorldUiTest {
                                                                             snapshot(scene);
                                                                             view.close();
                                                                             require(
+                                                                                    !view.lookup(
+                                                                                                    "#world-catalog-activity")
+                                                                                            .isVisible(),
+                                                                                    "Close retires"
+                                                                                        + " catalog"
+                                                                                        + " activity");
+                                                                            require(
                                                                                     closes.get()
                                                                                             == 0,
                                                                                     "View borrows"
                                                                                         + " the workspace"
                                                                                         + " handle");
                                                                             stage.close();
-                                                                            done.complete(null);
-                                                                            Platform.exit();
+                                                                            externalRetirementAndFailure(
+                                                                                    done);
                                                                         },
                                                                         done);
                                                             },
@@ -287,7 +352,258 @@ public final class WorldUiTest {
         }
         System.out.println(
                 "World UI: continent drill-down, stale inventory, terrain frame and borrowed"
-                    + " lifetime passed");
+                        + " lifetime passed");
+    }
+
+    private static void externalRetirementAndFailure(CompletableFuture<Void> done) {
+        var map = new WorldService.MapInfo(9, "Delayed authored", "Delayed", 0, 1L);
+        var catalog = new WorldService.Catalog(List.of(map), List.of(), List.of());
+        class Fixture implements BuildWorld {
+            volatile CompletableFuture<WorldService.Catalog> catalogue = new CompletableFuture<>();
+            volatile CompletableFuture<WorldService.Inventory> inventory =
+                    CompletableFuture.failedFuture(
+                            new IllegalStateException("Authored inventory failure"));
+            final AtomicInteger calls = new AtomicInteger();
+
+            public CompletableFuture<WorldService.Catalog> catalog(Cancellation cancel) {
+                calls.incrementAndGet();
+                return catalogue;
+            }
+
+            public CompletableFuture<WorldService.Inventory> inventory(
+                    WorldService.MapInfo map, Cancellation cancel) {
+                return inventory;
+            }
+
+            public CompletableFuture<WorldService.LoadedTile> tile(
+                    WorldService.MapInfo map, WorldFormats.Tile tile, Cancellation cancel) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("Authored tile failure"));
+            }
+
+            public CompletableFuture<Void> closeAsync() {
+                throw new AssertionError("Borrowed handle");
+            }
+        }
+        var original = new Fixture();
+        var replacement = new Fixture();
+        var current = new java.util.concurrent.atomic.AtomicReference<BuildWorld>(original);
+        var revision = new java.util.concurrent.atomic.AtomicLong(1);
+        var view = new WorldView(current::get, revision::get);
+        new Scene(view, 1320, 850);
+        view.applyCss();
+        view.layout();
+        view.ensureLoaded();
+        await(
+                () -> original.calls.get() == 1,
+                () -> {
+                    revision.incrementAndGet();
+                    original.catalogue.complete(catalog);
+                    await(
+                            () -> !view.lookup("#world-catalog-activity").isVisible(),
+                            () -> {
+                                require(
+                                        ((ListView<?>) view.lookup("#world-maps"))
+                                                .getItems()
+                                                .isEmpty(),
+                                        "Old revision cannot commit catalog");
+                                original.catalogue = new CompletableFuture<>();
+                                view.ensureLoaded();
+                                await(
+                                        () -> original.calls.get() == 2,
+                                        () -> {
+                                            current.set(replacement);
+                                            original.catalogue.complete(catalog);
+                                            await(
+                                                    () ->
+                                                            !view.lookup("#world-catalog-activity")
+                                                                    .isVisible(),
+                                                    () -> {
+                                                        require(
+                                                                ((ListView<?>)
+                                                                                view.lookup(
+                                                                                        "#world-maps"))
+                                                                        .getItems()
+                                                                        .isEmpty(),
+                                                                "Changed handle cannot commit"
+                                                                    + " catalog");
+                                                        replacement.catalogue =
+                                                                CompletableFuture.failedFuture(
+                                                                        new IllegalStateException(
+                                                                                "Authored catalog"
+                                                                                    + " failure"));
+                                                        view.ensureLoaded();
+                                                        await(
+                                                                () ->
+                                                                        !view.lookup(
+                                                                                        "#world-catalog-activity")
+                                                                                .isVisible(),
+                                                                () -> {
+                                                                    replacement.catalogue =
+                                                                            CompletableFuture
+                                                                                    .completedFuture(
+                                                                                            catalog);
+                                                                    view.ensureLoaded();
+                                                                    await(
+                                                                            () ->
+                                                                                    ((ListView<?>)
+                                                                                                            view
+                                                                                                                    .lookup(
+                                                                                                                            "#world-maps"))
+                                                                                                    .getItems()
+                                                                                                    .size()
+                                                                                            == 1,
+                                                                            () -> {
+                                                                                var rows =
+                                                                                        (ListView<
+                                                                                                        ?>)
+                                                                                                view
+                                                                                                        .lookup(
+                                                                                                                "#world-maps");
+                                                                                rows.getSelectionModel()
+                                                                                        .selectFirst();
+                                                                                await(
+                                                                                        () ->
+                                                                                                !view.lookup(
+                                                                                                                "#world-local-activity")
+                                                                                                        .isVisible(),
+                                                                                        () -> {
+                                                                                            require(
+                                                                                                    ((Button)
+                                                                                                                    view
+                                                                                                                            .lookup(
+                                                                                                                                    "#world-open"))
+                                                                                                            .isDisabled(),
+                                                                                                    "Inventory"
+                                                                                                        + " failure"
+                                                                                                        + " keeps"
+                                                                                                        + " explorer"
+                                                                                                        + " disabled");
+                                                                                            replacement
+                                                                                                            .inventory =
+                                                                                                    CompletableFuture
+                                                                                                            .completedFuture(
+                                                                                                                    new WorldService
+                                                                                                                            .Inventory(
+                                                                                                                            map,
+                                                                                                                            new WorldFormats
+                                                                                                                                    .World(
+                                                                                                                                    List
+                                                                                                                                            .of(
+                                                                                                                                                    new WorldFormats
+                                                                                                                                                            .Tile(
+                                                                                                                                                            32,
+                                                                                                                                                            32,
+                                                                                                                                                            10,
+                                                                                                                                                            0,
+                                                                                                                                                            0)),
+                                                                                                                                    false),
+                                                                                                                            null));
+                                                                                            rows.getSelectionModel()
+                                                                                                    .clearSelection();
+                                                                                            rows.getSelectionModel()
+                                                                                                    .selectFirst();
+                                                                                            await(
+                                                                                                    () ->
+                                                                                                            !((Button)
+                                                                                                                            view
+                                                                                                                                    .lookup(
+                                                                                                                                            "#world-open"))
+                                                                                                                    .isDisabled(),
+                                                                                                    () -> {
+                                                                                                        ((Button)
+                                                                                                                        view
+                                                                                                                                .lookup(
+                                                                                                                                        "#world-open"))
+                                                                                                                .fire();
+                                                                                                        await(
+                                                                                                                () ->
+                                                                                                                        !view.lookup(
+                                                                                                                                        "#world-first-frame-activity")
+                                                                                                                                .isVisible(),
+                                                                                                                () -> {
+                                                                                                                    require(
+                                                                                                                            !view.lookup(
+                                                                                                                                            "#world-local-activity")
+                                                                                                                                    .isVisible(),
+                                                                                                                            "Failed"
+                                                                                                                                + " first"
+                                                                                                                                + " tile"
+                                                                                                                                + " retires"
+                                                                                                                                + " all activity");
+                                                                                                                    replacement
+                                                                                                                                    .inventory =
+                                                                                                                            new CompletableFuture<>();
+                                                                                                                    rows.getSelectionModel()
+                                                                                                                            .clearSelection();
+                                                                                                                    rows.getSelectionModel()
+                                                                                                                            .selectFirst();
+                                                                                                                    require(
+                                                                                                                            view.lookup(
+                                                                                                                                            "#world-local-activity")
+                                                                                                                                    .isVisible(),
+                                                                                                                            "Held inventory"
+                                                                                                                                + " exposes"
+                                                                                                                                + " activity");
+                                                                                                                    view
+                                                                                                                            .close();
+                                                                                                                    replacement
+                                                                                                                            .inventory
+                                                                                                                            .complete(
+                                                                                                                                    new WorldService
+                                                                                                                                            .Inventory(
+                                                                                                                                            map,
+                                                                                                                                            new WorldFormats
+                                                                                                                                                    .World(
+                                                                                                                                                    List
+                                                                                                                                                            .of(),
+                                                                                                                                                    false),
+                                                                                                                                            null));
+                                                                                                                    Platform
+                                                                                                                            .runLater(
+                                                                                                                                    () -> {
+                                                                                                                                        try {
+                                                                                                                                            require(
+                                                                                                                                                    !view.lookup(
+                                                                                                                                                                    "#world-local-activity")
+                                                                                                                                                            .isVisible(),
+                                                                                                                                                    "Closed"
+                                                                                                                                                        + " late"
+                                                                                                                                                        + " inventory"
+                                                                                                                                                        + " cannot"
+                                                                                                                                                        + " restore"
+                                                                                                                                                        + " activity");
+                                                                                                                                            done
+                                                                                                                                                    .complete(
+                                                                                                                                                            null);
+                                                                                                                                        } catch (
+                                                                                                                                                Throwable
+                                                                                                                                                        error) {
+                                                                                                                                            done
+                                                                                                                                                    .completeExceptionally(
+                                                                                                                                                            error);
+                                                                                                                                        }
+                                                                                                                                        Platform
+                                                                                                                                                .exit();
+                                                                                                                                    });
+                                                                                                                },
+                                                                                                                done);
+                                                                                                    },
+                                                                                                    done);
+                                                                                        },
+                                                                                        done);
+                                                                            },
+                                                                            done);
+                                                                },
+                                                                done);
+                                                    },
+                                                    done);
+                                        },
+                                        done);
+                            },
+                            done);
+                },
+                done);
     }
 
     private static void await(
