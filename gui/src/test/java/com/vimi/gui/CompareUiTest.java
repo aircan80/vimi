@@ -123,28 +123,28 @@ public final class CompareUiTest {
                                             long offset, int limit) {
                                         var old =
                                                 new ComparisonTypes.Field(
-                                                        "required-level",
-                                                        ComparisonTypes.ValueKind.INTEGER,
+                                                        "content-identity",
+                                                        ComparisonTypes.ValueKind.BYTES_IDENTITY,
                                                         ComparisonTypes.ValueState.VALUE,
-                                                        "12",
+                                                        "authored-content-before",
                                                         ComparisonTypes.Aspect.CONTENT,
                                                         List.of(
                                                                 new ComparisonTypes.Evidence(
                                                                         "Authored",
                                                                         "910001",
-                                                                        "level",
-                                                                        "12")));
+                                                                        "content-identity",
+                                                                        "authored-content-before")));
                                         var current =
                                                 new ComparisonTypes.Field(
-                                                        "required-level",
-                                                        ComparisonTypes.ValueKind.INTEGER,
+                                                        "content-identity",
+                                                        ComparisonTypes.ValueKind.BYTES_IDENTITY,
                                                         ComparisonTypes.ValueState.VALUE,
-                                                        "14",
+                                                        "authored-content-after",
                                                         ComparisonTypes.Aspect.CONTENT,
                                                         List.of());
                                         var delta =
                                                 new ComparisonTypes.FieldDelta(
-                                                        "required-level",
+                                                        "content-identity",
                                                         old,
                                                         current,
                                                         ComparisonTypes.Difference.CHANGED,
@@ -155,11 +155,11 @@ public final class CompareUiTest {
                                                         ComparisonTypes.Membership.BOTH,
                                                         new ComparisonTypes.Record(
                                                                 "910001",
-                                                                Map.of("level", old),
+                                                                Map.of("content-identity", old),
                                                                 List.of()),
                                                         new ComparisonTypes.Record(
                                                                 "910001",
-                                                                Map.of("level", current),
+                                                                Map.of("content-identity", current),
                                                                 List.of()),
                                                         List.of(delta));
                                         return CompletableFuture.completedFuture(
@@ -182,7 +182,9 @@ public final class CompareUiTest {
                                                 () -> {
                                                     try {
                                                         require(
-                                                                labels(view).contains("Before: 12"),
+                                                                labels(view)
+                                                                        .contains(
+                                                                                "Before: authored-content-before"),
                                                                 "Typed field evidence visible");
                                                         require(
                                                                 labels(view).contains("Partial"),

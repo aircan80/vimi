@@ -92,6 +92,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
     private Session session;
     private long generation, pageOffset;
     private Long nextOffset;
+    private final java.util.ArrayDeque<Long> pageHistory = new java.util.ArrayDeque<>();
     private List<ComparisonTypes.Result> pageRows = List.of();
     private String selectedArea = "Summary";
     private boolean pending;
@@ -243,10 +244,16 @@ final class CompareView extends BorderPane implements AutoCloseable {
         VBox.setVgrow(results, Priority.ALWAYS);
         previous.setDisable(true);
         next.setDisable(true);
-        previous.setOnAction(event -> loadPage(Math.max(0, pageOffset - 100)));
+        previous.setOnAction(
+                event -> {
+                    if (!pageHistory.isEmpty()) loadPage(pageHistory.pop());
+                });
         next.setOnAction(
                 event -> {
-                    if (nextOffset != null) loadPage(nextOffset);
+                    if (nextOffset != null) {
+                        pageHistory.push(pageOffset);
+                        loadPage(nextOffset);
+                    }
                 });
         inspector.setPadding(new Insets(14));
         inspector
@@ -342,6 +349,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
         compare.setDisable(true);
         runArea = selectedArea;
         pageRows = List.of();
+        pageHistory.clear();
         results.getItems().clear();
         pageStatus.setText("Not assessed · comparison starting");
         status.setText("Opening dedicated local inputs… No acquisition is requested.");
@@ -448,7 +456,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                             nextOffset = page.nextOffset();
                                             pageRows = page.rows();
                                             filterPage();
-                                            previous.setDisable(pageOffset == 0);
+                                            previous.setDisable(pageHistory.isEmpty());
                                             next.setDisable(nextOffset == null);
                                         }));
     }
