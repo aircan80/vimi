@@ -474,24 +474,52 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         }
         try (var bootstrap = openTables(tablesService(token, true), token)) {
             var found = BuildTactKeys.load(bootstrap, TableTypes.Priority.BACKGROUND, token).join();
-            if (found.keyTable().outcome() == BuildTactKeys.Outcome.READ
-                    && found.lookupTable().outcome() == BuildTactKeys.Outcome.READ) {
-                token.check();
-                keys.set(found);
-                rebuildEffectiveKeys();
-                for (String name : found.names()) {
-                    long value = Long.parseUnsignedLong(name, 16);
-                    byte[] external = communityKeys.find(value);
-                    if (external != null && !java.util.Arrays.equals(external, found.find(value)))
-                        issues.add("TACT key conflict for " + name + "; build-provided key retained");
-                }
-            }
-            if (found.keyTable().outcome() != BuildTactKeys.Outcome.READ)
-                issues.add("TactKey: " + found.keyTable().outcome());
-            if (found.lookupTable().outcome() != BuildTactKeys.Outcome.READ)
-                issues.add("TactKeyLookup: " + found.lookupTable().outcome());
+            applyBuildKeys(found, issues, token);
         }
         return List.copyOf(issues);
+    }
+
+    /** Cached generated key graphs only; never invokes normal table preparation or source refresh. */
+    public List<String> keysPreparedLocal(Cancellation token) {
+        var issues = new ArrayList<String>();
+        if (!definitionsAllowed) {
+            issues.add("Table definitions are disabled for this workspace");
+            return List.copyOf(issues);
+        }
+        try (var bootstrap = openTables(tablesService(token, false), token)) {
+            var found = BuildTactKeys.loadPreparedLocal(bootstrap, token).join();
+            applyBuildKeys(found, issues, token);
+        }
+        return List.copyOf(issues);
+    }
+
+    /** Caller owns this dedicated local table handle and closes it before this work context. */
+    public BuildTables openLocalTablesForComparison(Cancellation token) {
+        if (!definitionsAllowed) throw new IllegalStateException("Table definitions are disabled");
+        token.check();
+        return openTables(tablesService(token, false), token);
+    }
+
+    private void applyBuildKeys(BuildTactKeys.KeySet found, List<String> issues, Cancellation token) {
+        if (found.keyTable().outcome() == BuildTactKeys.Outcome.READ
+                && found.lookupTable().outcome() == BuildTactKeys.Outcome.READ) {
+            token.check();
+            keys.set(found);
+            rebuildEffectiveKeys();
+            for (String name : found.names()) {
+                long value = Long.parseUnsignedLong(name, 16);
+                byte[] external = communityKeys.find(value);
+                if (external != null && !java.util.Arrays.equals(external, found.find(value))) {
+                    issues.add("TACT key conflict for " + name + "; build-provided key retained");
+                }
+            }
+        }
+        if (found.keyTable().outcome() != BuildTactKeys.Outcome.READ) {
+            issues.add("TactKey: " + found.keyTable().outcome());
+        }
+        if (found.lookupTable().outcome() != BuildTactKeys.Outcome.READ) {
+            issues.add("TactKeyLookup: " + found.lookupTable().outcome());
+        }
     }
 
     @Override

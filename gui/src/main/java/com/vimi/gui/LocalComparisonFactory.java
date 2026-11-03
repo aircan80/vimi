@@ -3,7 +3,9 @@ package com.vimi.gui;
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.comparison.ComparisonInput;
 import com.vibeminer.concepts.comparison.ComparisonTypes;
+import com.vibeminer.concepts.comparison.TempBudget;
 import com.vibeminer.concepts.comparison.inputs.FilesInventoryInput;
+import com.vibeminer.concepts.comparison.inputs.PreparedTableRowsSource;
 import com.vibeminer.concepts.comparison.inputs.TableInventoryInput;
 import com.vibeminer.files.keys.TactKeys;
 
@@ -20,10 +22,15 @@ import java.util.Map;
 final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
     private final NativePreparationContexts contexts;
     private final DataSourcesService sources;
+    private final java.nio.file.Path temporaryParent;
 
-    LocalComparisonFactory(NativePreparationContexts contexts, DataSourcesService sources) {
+    LocalComparisonFactory(
+            NativePreparationContexts contexts,
+            DataSourcesService sources,
+            java.nio.file.Path temporaryParent) {
         this.contexts = contexts;
         this.sources = sources;
+        this.temporaryParent = java.util.Objects.requireNonNull(temporaryParent);
     }
 
     @Override
@@ -36,14 +43,52 @@ final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
         boolean definitions =
                 sources == null || sources.policy(DataSourcesService.Id.DEFINITIONS).enabled();
         var receipts = contexts.comparisonReceipts();
-        return (build, locale, area, cancellation) ->
-                open(build, locale, area, keys, definitions, receipts, cancellation);
+        var budget = request.tableId() == null ? null : new TempBudget();
+        return new ComparisonCoordinator.EndpointOpener() {
+            @Override
+            public ComparisonCoordinator.Opened open(
+                    BuildInfo build, String locale, String area, Cancellation cancellation) {
+                return LocalComparisonFactory.this.open(
+                        build,
+                        locale,
+                        area,
+                        request.tableId(),
+                        budget,
+                        keys,
+                        definitions,
+                        receipts,
+                        cancellation);
+            }
+
+            @Override
+            public void prepare(
+                    ComparisonCoordinator.Opened before,
+                    ComparisonCoordinator.Opened after,
+                    Cancellation cancellation) {
+                if (request.tableId() != null) {
+                    ((PreparedRawComparisonInput) before.input()).prepare(cancellation);
+                    ((PreparedRawComparisonInput) after.input()).prepare(cancellation);
+                }
+            }
+
+            @Override
+            public TempBudget budget() {
+                return budget;
+            }
+
+            @Override
+            public void close() {
+                if (budget != null) budget.close();
+            }
+        };
     }
 
     private ComparisonCoordinator.Opened open(
             BuildInfo build,
             String locale,
             String area,
+            Long tableId,
+            TempBudget budget,
             TactKeys keys,
             boolean definitions,
             java.util.List<PreparationHistory.Receipt> receipts,
@@ -83,6 +128,15 @@ final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
                                 FilesInventoryInput.SCOPE,
                                 dependencies);
                 input = new FilesInventoryInput(work.filesHandle(), descriptor, null);
+            } else if (tableId != null) {
+                if (!definitions)
+                    throw new IllegalStateException(
+                            "Table definitions are disabled. Files can still be compared.");
+                var issues = work.keysPreparedLocal(token);
+                dependencies.put(
+                        "raw.bootstrap.key-issues",
+                        String.join("; ", issues.stream().limit(16).toList()));
+                input = rawInput(work, locale, tableId, dependencies, budget, token);
             } else {
                 if (!definitions)
                     throw new IllegalStateException(
@@ -128,6 +182,61 @@ final class LocalComparisonFactory implements ComparisonCoordinator.Factory {
                 }
             try {
                 work.close();
+            } catch (Throwable cleanup) {
+                failure.addSuppressed(cleanup);
+            }
+            throw failure instanceof RuntimeException runtime
+                    ? runtime
+                    : new java.util.concurrent.CompletionException(failure);
+        }
+    }
+
+    private ComparisonInput rawInput(
+            NativePreparationWork work,
+            String locale,
+            long tableId,
+            Map<String, String> dependencies,
+            TempBudget budget,
+            Cancellation token) {
+        var tables = work.openLocalTablesForComparison(token);
+        com.vibeminer.formats.tables.CapturedRows held = null;
+        PreparedTableRowsSource source = null;
+        try {
+            var capture =
+                    tables.capturePreparedLocal(
+                                    com.vibeminer.formats.tables.TableTypes.Ref.id(tableId), token)
+                            .join();
+            if (capture.state()
+                    != com.vibeminer.formats.tables.CapturedRowsTypes.CaptureState.CAPTURED) {
+                throw new IllegalStateException(
+                        "Prepared raw table is unavailable: "
+                                + capture.state()
+                                + " ("
+                                + capture.code()
+                                + "). Open/prepare this build first; comparison does not rebuild"
+                                + " it.");
+            }
+            held = capture.rows();
+            var receipt = held.receipt();
+            if (!receipt.build().equals(work.filesHandle().build())
+                    || !receipt.locale().equals(locale)
+                    || receipt.table().fileDataId() != tableId) {
+                throw new IllegalStateException(
+                        "Prepared table receipt does not match the requested build, locale and"
+                                + " table.");
+            }
+            source = new PreparedTableRowsSource(held, dependencies, budget, token);
+            held = null;
+            return new PreparedRawComparisonInput(source, tables, temporaryParent, budget);
+        } catch (Throwable failure) {
+            try {
+                if (source != null) source.closeAsync().join();
+                else if (held != null) held.closeAsync().join();
+            } catch (Throwable cleanup) {
+                failure.addSuppressed(cleanup);
+            }
+            try {
+                tables.close();
             } catch (Throwable cleanup) {
                 failure.addSuppressed(cleanup);
             }

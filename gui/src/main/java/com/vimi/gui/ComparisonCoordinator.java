@@ -4,6 +4,7 @@ import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.comparison.ComparisonInput;
 import com.vibeminer.concepts.comparison.ComparisonService;
 import com.vibeminer.concepts.comparison.ComparisonTypes;
+import com.vibeminer.concepts.comparison.TempBudget;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -20,9 +21,18 @@ final class ComparisonCoordinator implements BuildComparisons {
         }
     }
 
-    interface EndpointOpener {
+    interface EndpointOpener extends AutoCloseable {
         Opened open(BuildInfo build, String locale, String area, Cancellation token)
                 throws Exception;
+
+        default TempBudget budget() {
+            return null;
+        }
+
+        default void prepare(Opened before, Opened after, Cancellation token) throws Exception {}
+
+        @Override
+        default void close() {}
     }
 
     interface Factory {
@@ -30,7 +40,7 @@ final class ComparisonCoordinator implements BuildComparisons {
     }
 
     interface ServiceFactory {
-        ComparisonService create(Path parent) throws java.io.IOException;
+        ComparisonService create(Path parent, TempBudget budget) throws java.io.IOException;
     }
 
     private final ServiceFactory services;
@@ -41,7 +51,13 @@ final class ComparisonCoordinator implements BuildComparisons {
     private CompletableFuture<Void> closed;
 
     ComparisonCoordinator(Factory factory, Path temporaryParent) throws java.io.IOException {
-        this(factory, temporaryParent, ComparisonService::new);
+        this(
+                factory,
+                temporaryParent,
+                (parent, budget) ->
+                        budget == null
+                                ? new ComparisonService(parent)
+                                : new ComparisonService(parent, budget));
     }
 
     ComparisonCoordinator(Factory factory, Path temporaryParent, ServiceFactory services)
@@ -61,7 +77,11 @@ final class ComparisonCoordinator implements BuildComparisons {
                 || !request.before().product().equals(request.after().product())
                 || request.beforeLocale() == null
                 || !request.beforeLocale().equals(request.afterLocale())
-                || !java.util.Set.of("Files", "Tables").contains(request.area())) {
+                || !java.util.Set.of("Files", "Tables").contains(request.area())
+                || request.tableId() != null
+                        && (!request.area().equals("Tables")
+                                || request.tableId() < 1
+                                || request.tableId() > 0xffffffffL)) {
             return CompletableFuture.failedFuture(
                     new IllegalArgumentException(
                             "Choose the same product and locale, and Files or Tables for this"
@@ -92,6 +112,7 @@ final class ComparisonCoordinator implements BuildComparisons {
             run.callerLink = run.caller.onCancel(run.token::cancel);
             run.token.check();
             var opener = factory.capture(run.request, run.token);
+            run.opener = opener;
             run.a =
                     opener.open(
                             run.request.before(),
@@ -112,8 +133,14 @@ final class ComparisonCoordinator implements BuildComparisons {
                     || !a.locale().equals(b.locale())
                     || !a.namespace().equals(b.namespace())
                     || !a.scope().equals(b.scope()))
-                throw new IllegalArgumentException("Captured inventory scopes are incompatible.");
-            run.service = services.create(temporaryParent);
+                throw new IllegalArgumentException(
+                        run.request.tableId() == null
+                                ? "Captured inventory scopes are incompatible."
+                                : "Raw rows require matching table identity, layout, definition and"
+                                        + " assessed field policy.");
+            opener.prepare(run.a, run.b, run.token);
+            run.token.check();
+            run.service = services.create(temporaryParent, opener.budget());
             run.mergeLink = run.token.onCancel(run.service::cancel);
             run.token.check();
             var completion = run.service.start(run.a.input(), run.b.input());
@@ -219,6 +246,13 @@ final class ComparisonCoordinator implements BuildComparisons {
             } catch (Throwable error) {
                 failure = append(failure, error);
             }
+        if (run.opener != null) {
+            try {
+                run.opener.close();
+            } catch (Throwable error) {
+                failure = append(failure, error);
+            }
+        }
         if (run.mergeLink != null)
             try {
                 run.mergeLink.close();
@@ -270,6 +304,7 @@ final class ComparisonCoordinator implements BuildComparisons {
         final CompletableFuture<Session> opened = new CompletableFuture<>();
         final CompletableFuture<Void> setup = new CompletableFuture<>();
         volatile Opened a, b;
+        volatile EndpointOpener opener;
         volatile ComparisonService service;
         volatile Session session;
         volatile boolean admitted;

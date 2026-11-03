@@ -12,7 +12,17 @@ public interface BuildComparisons extends AutoCloseable {
             String beforeLocale,
             BuildInfo after,
             String afterLocale,
-            String area) {}
+            String area,
+            Long tableId) {
+        public Request(
+                BuildInfo before,
+                String beforeLocale,
+                BuildInfo after,
+                String afterLocale,
+                String area) {
+            this(before, beforeLocale, after, afterLocale, area, null);
+        }
+    }
 
     interface Session {
         ComparisonTypes.Descriptor before();

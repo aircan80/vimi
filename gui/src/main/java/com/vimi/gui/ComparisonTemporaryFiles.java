@@ -17,11 +17,18 @@ final class ComparisonTemporaryFiles {
         try (var directories = Files.newDirectoryStream(parent, "comparison-*")) {
             for (var directory : directories) {
                 if (!Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS)) continue;
+                boolean sorted = directory.getFileName().toString().startsWith("comparison-sort-");
                 var children = new ArrayList<Path>();
                 boolean recognized = true;
                 try (var entries = Files.newDirectoryStream(directory)) {
                     for (var child : entries) {
-                        if (!child.getFileName().toString().equals("results.tmp")
+                        if (!(sorted
+                                        ? child.getFileName().toString().matches("run-[0-9]+\\.tmp")
+                                        : (child.getFileName().toString().equals("results.tmp")
+                                                || child.getFileName()
+                                                        .toString()
+                                                        .matches("results[0-9]+\\.tmp")))
+                                || children.size() >= 2048
                                 || !Files.isRegularFile(child, LinkOption.NOFOLLOW_LINKS)) {
                             recognized = false;
                             break;

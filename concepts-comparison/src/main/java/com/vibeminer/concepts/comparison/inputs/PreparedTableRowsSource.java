@@ -114,6 +114,9 @@ public final class PreparedTableRowsSource implements SortedComparisonInput.Sour
                 keys.put(key.name(), key.fingerprint());
             }
             dependencies.put("raw.used-key-status", digest(keys));
+            dependencies.put(
+                    "raw.unknown-key-status-count",
+                    Long.toString(keys.values().stream().filter(Objects::isNull).count()));
             String namespace =
                     "raw-table:"
                             + receipt.table().fileDataId()

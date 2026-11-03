@@ -19,7 +19,8 @@ final class ComparisonControllers {
                                     request.beforeLocale(),
                                     request.after(),
                                     request.afterLocale(),
-                                    request.area()),
+                                    request.area(),
+                                    request.tableId()),
                             token)
                     .thenApply(
                             handle ->

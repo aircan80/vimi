@@ -297,7 +297,7 @@ public final class ComparisonCoordinatorTest {
                                                         false),
                                                 contexts),
                         directory,
-                        parent -> {
+                        (parent, budget) -> {
                             var service =
                                     new com.vibeminer.concepts.comparison.ComparisonService(parent);
                             service.closeAsync().join();

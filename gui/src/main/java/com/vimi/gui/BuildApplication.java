@@ -190,7 +190,7 @@ public final class BuildApplication {
                         Path comparisonWork = directory.resolve("derived").resolve("comparison-work");
                         ComparisonTemporaryFiles.cleanStale(comparisonWork);
                         var comparisons = new ComparisonCoordinator(
-                                new LocalComparisonFactory(fullContexts, dataSources), comparisonWork);
+                                new LocalComparisonFactory(fullContexts, dataSources, comparisonWork), comparisonWork);
                         cleanup.addFirst(comparisons::closeAsync);
                         var preparation = new BuildPreparation(fullContexts);
                         cleanup.addFirst(preparation::closeAsync);

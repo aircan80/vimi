@@ -124,7 +124,7 @@ public final class NativeComparisonTest {
                                         .join();
                         var manager =
                                 new ComparisonCoordinator(
-                                        new LocalComparisonFactory(contexts, null),
+                                        new LocalComparisonFactory(contexts, null, directory.resolve("work")),
                                         directory.resolve("work"));
                         try {
                             for (String area : List.of("Files", "Tables")) {
