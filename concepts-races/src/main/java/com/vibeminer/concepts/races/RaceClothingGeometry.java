@@ -13,7 +13,9 @@ final class RaceClothingGeometry {
     static Set<Integer> apply(
             PreviewMesh mesh, Set<Integer> sample, List<RaceAppearancePlan.Item> items) {
         var visible = new HashSet<>(sample);
-        boolean robe = items.stream().anyMatch(item -> item.inventoryType() == 20);
+        boolean robe =
+                items.stream()
+                        .anyMatch(item -> item.inventoryType() == 20 && item.geosets().size() == 6);
         for (var item :
                 items.stream()
                         .sorted(
@@ -42,7 +44,7 @@ final class RaceClothingGeometry {
                     }
                 }
                 case 8 -> {
-                    set(visible, mesh, 5, robe ? 1 : 1 + g.get(0));
+                    set(visible, mesh, 5, robe ? 1 : 1 + g.get(0), robe);
                     set(visible, mesh, 20, g.get(1) == 0 ? 2 : g.get(1));
                 }
                 case 6 -> set(visible, mesh, 18, 1 + g.get(0));
@@ -59,6 +61,16 @@ final class RaceClothingGeometry {
     }
 
     private static void set(Set<Integer> visible, PreviewMesh mesh, int group, int variant) {
+        set(visible, mesh, group, variant, false);
+    }
+
+    private static void set(
+            Set<Integer> visible, PreviewMesh mesh, int group, int variant, boolean force) {
+        if (!force
+                && variant == 1
+                && visible.stream().anyMatch(id -> id / 100 == group && id % 100 > 1)) {
+            return;
+        }
         visible.removeIf(id -> id / 100 == group);
         int target = group * 100 + variant;
         if (mesh.parts().stream().anyMatch(part -> part.id() == target)) {

@@ -197,12 +197,14 @@ final class RaceCustomization {
                         reqs.number(row, "ReqQuestID"),
                         reqs.number(row, "OverrideArchive"),
                         reqs.number(row, "ReqItemModifiedAppearanceID"),
-                        prerequisites.rows.stream()
-                                .anyMatch(
-                                        candidate ->
-                                                prerequisites.number(
-                                                                candidate, "ChrCustomizationReqID")
-                                                        == id));
+                        !prerequisites.complete()
+                                || prerequisites.rows.stream()
+                                        .anyMatch(
+                                                candidate ->
+                                                        prerequisites.number(
+                                                                        candidate,
+                                                                        "ChrCustomizationReqID")
+                                                                == id));
         var outcome = evaluate(requirement, classId, raceBit);
         if (outcome == Eligibility.UNKNOWN) {
             note(

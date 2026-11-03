@@ -250,4 +250,172 @@ final class RaceAppearancePlanTest {
             }
         }
     }
+
+    private static void replace(
+            List<MemoryTables.FakeTable> values, MemoryTables.FakeTable replacement) {
+        for (int i = 0; i < values.size(); i++) {
+            if (values.get(i).entry().name().equals(replacement.entry().name())) {
+                values.set(i, replacement);
+                return;
+            }
+        }
+        throw new AssertionError("Missing fixture table");
+    }
+
+    private static MemoryTables.FakeTable coverage(
+            MemoryTables.FakeTable value, TableTypes.State state, Map<Long, String> protectedIds) {
+        var e = value.entry();
+        var counts = e.counts();
+        return new MemoryTables.FakeTable(
+                new TableTypes.Entry(
+                        e.fileDataId(),
+                        e.name(),
+                        state,
+                        true,
+                        null,
+                        new TableTypes.Counts(
+                                value.rows().size() + (state == TableTypes.State.PARTIAL ? 1 : 0),
+                                value.rows().size(),
+                                state == TableTypes.State.PARTIAL ? 1 : 0,
+                                state == TableTypes.State.PARTIAL ? 1 : 0,
+                                counts.format(),
+                                counts.layoutHash()),
+                        e.contentKey()),
+                value.columns(),
+                value.rows(),
+                value.schema(),
+                protectedIds,
+                true);
+    }
+
+    @Test
+    void unknownAndProtectedTextureQualifiersAreNotUntaggedButProvenAlternativesRemain() {
+        for (int kind = 0; kind < 3; kind++) {
+            var seed = new ArrayList<>(fixture(false, 9));
+            replace(
+                    seed,
+                    table(
+                            "TextureFileData",
+                            "BD7C74C2",
+                            "UsageType,MaterialResourcesID",
+                            row(10000, "0", "900"),
+                            row(10001, "0", "900"),
+                            row(20000, "0", "901")));
+            var qualifiers =
+                    table(
+                            "ComponentTextureFileData",
+                            "B32B030A",
+                            "GenderIndex,ClassID,RaceID",
+                            row(10001, "1", "0", "0"),
+                            row(20000, "0", "0", "0"));
+            replace(
+                    seed,
+                    coverage(
+                            qualifiers,
+                            kind == 0 ? TableTypes.State.READY : TableTypes.State.PARTIAL,
+                            kind == 2 ? Map.of(10000L, "A".repeat(16)) : Map.of()));
+            replace(
+                    seed,
+                    table(
+                            "ItemDisplayInfoMaterialRes",
+                            "AA462C0E",
+                            "ItemDisplayInfoID,ComponentSection,MaterialResourcesID",
+                            row(700, "600", "3", "900"),
+                            row(701, "600", "3", "901")));
+            var tables =
+                    new MemoryTables()
+                            .add(BUILD, "enUS", seed)
+                            .forBuild(BUILD, "enUS", Cancellation.NONE)
+                            .join()
+                            .tables();
+            var service = new RacesService(tables);
+            try {
+                var notes = new ArrayList<String>();
+                var plan =
+                        new RaceAppearancePlan(
+                                        service, new RaceMedia(service, tables, null, null), tables)
+                                .build(
+                                        1,
+                                        1,
+                                        new RaceMediaTypes.Variant(1, 0, 1, 1, 1),
+                                        Cancellation.NONE,
+                                        notes);
+                assertEquals(
+                        kind == 0 ? java.util.Set.of(10000L, 20000L) : java.util.Set.of(20000L),
+                        plan.layers().stream()
+                                .map(RaceAppearancePlan.Layer::fileDataId)
+                                .collect(java.util.stream.Collectors.toSet()));
+                if (kind > 0) {
+                    assertTrue(
+                            notes.stream()
+                                    .anyMatch(note -> note.contains("qualifiers are unknown")));
+                }
+            } finally {
+                service.closeAsync().join();
+                tables.closeAsync().join();
+            }
+        }
+    }
+
+    @Test
+    void partialPrerequisiteAbsenceIsUnknownAndSelectsProvenUnrestrictedAlternative() {
+        for (var state : List.of(TableTypes.State.READY, TableTypes.State.PARTIAL)) {
+            var seed = new ArrayList<>(fixture(false, 9));
+            replace(
+                    seed,
+                    table(
+                            "ChrCustomizationOption",
+                            "DCC2A86E",
+                            "ChrModelID,Requirement",
+                            row(10, "1", "0")));
+            replace(
+                    seed,
+                    table(
+                            "ChrCustomizationChoice",
+                            "9559C358",
+                            "ChrCustomizationOptionID->ChrCustomizationOption,UiOrderIndex,ChrCustomizationReqID,ChrCustomizationVisReqID",
+                            row(1, "10", "0", "1", "0"),
+                            row(2, "10", "1", "0", "0")));
+            replace(
+                    seed,
+                    coverage(
+                            table(
+                                    "ChrCustomizationReq",
+                                    "CA154412",
+                                    "ReqType,ClassMask,RegionGroupMask,ReqAchievementID,ReqQuestID,OverrideArchive,ReqItemModifiedAppearanceID,RaceMasks:2",
+                                    row(1, "3", "-1", "0", "0", "0", "-1", "0", "-1", "-1")),
+                            TableTypes.State.PARTIAL,
+                            Map.of()));
+            replace(
+                    seed,
+                    coverage(
+                            table("ChrCustomizationReqChoice", "F925BC6F", "ChrCustomizationReqID"),
+                            state,
+                            Map.of()));
+            var tables =
+                    new MemoryTables()
+                            .add(BUILD, "enUS", seed)
+                            .forBuild(BUILD, "enUS", Cancellation.NONE)
+                            .join()
+                            .tables();
+            var service = new RacesService(tables);
+            try {
+                var notes = new ArrayList<String>();
+                var selected =
+                        new RaceCustomization(new RaceMedia(service, tables, null, null))
+                                .select(1, 1, 1, Cancellation.NONE, notes);
+                assertEquals(
+                        java.util.Set.of(state == TableTypes.State.READY ? 1L : 2L),
+                        selected.choices());
+                if (state == TableTypes.State.PARTIAL) {
+                    assertTrue(
+                            notes.stream()
+                                    .anyMatch(note -> note.contains("prerequisite requirements")));
+                }
+            } finally {
+                service.closeAsync().join();
+                tables.closeAsync().join();
+            }
+        }
+    }
 }

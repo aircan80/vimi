@@ -437,7 +437,39 @@ final class RaceAppearancePlan {
             if (row.id() < 1 || row.id() > 0xffffffffL) {
                 continue;
             }
-            var component = get(components, row.id(), token);
+            var qualification =
+                    tables.get(
+                                    TableTypes.Ref.forName(components.name),
+                                    row.id(),
+                                    TableTypes.Priority.INTERACTIVE,
+                                    token)
+                            .join();
+            boolean sameSource =
+                    qualification.table() != null
+                            && components.entry.contentKey() != null
+                            && java.util.Objects.equals(
+                                    components.entry.contentKey(),
+                                    qualification.table().contentKey())
+                            && qualification.table().counts() != null
+                            && qualification.table().counts().layoutHash() != null
+                            && components
+                                    .schema
+                                    .layoutHashes()
+                                    .contains(qualification.table().counts().layoutHash());
+            if (!sameSource
+                    || (qualification.outcome() != TableTypes.RowOutcome.FOUND
+                            && qualification.outcome() != TableTypes.RowOutcome.ABSENT)
+                    || (qualification.outcome() == TableTypes.RowOutcome.FOUND
+                            && qualification.row() == null)) {
+                note(
+                        issues,
+                        "Some texture qualifiers are unknown, protected or changed; only proven alternatives are used.");
+                continue;
+            }
+            var component =
+                    qualification.outcome() == TableTypes.RowOutcome.FOUND
+                            ? qualification.row().row()
+                            : null;
             int score = 32;
             if (component != null) {
                 long gender = components.number(component, "GenderIndex"),

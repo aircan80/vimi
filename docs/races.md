@@ -179,3 +179,14 @@ explicitly unsupported. Existing admitted image outputs and version2 persisted
 payloads/identities remain byte compatible; unsupported outcomes were never cached.
 The primary [js-blp palette reader](https://github.com/Kruithne/js-blp/blob/master/js-blp.js)
 reads alpha from the plane by alpha depth independently of the block-codec selector.
+
+## Partial qualifier and prerequisite safety
+
+A missing texture qualifier is untagged only when the table boundary explicitly
+returns `ABSENT` for the same source identity/layout. `UNKNOWN`, `PROTECTED` or
+changed-source results are omitted; other proven texture layers remain usable.
+An absent prerequisite relationship is treated as no prerequisite only with complete
+`READY` coverage and no excluded records. A partial prerequisite table keeps that
+requirement unknown, while unrestricted readable choices can still be selected.
+Unsupported garment metadata does not activate robe suppression. Recorded default
+geometry variants do not overwrite an already selected specific clothing variant.

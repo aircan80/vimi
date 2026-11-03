@@ -42,4 +42,28 @@ final class RaceClothingGeometryTest {
         assertTrue(RaceClothingGeometry.allowsSection(7, 5));
         assertFalse(RaceClothingGeometry.allowsSection(7, 1));
     }
+
+    @Test
+    void unsupportedRobeDoesNotSuppressOtherGeometryAndDefaultDoesNotEraseSpecificVariant() {
+        var mesh =
+                new PreviewMesh(
+                        new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0},
+                        new int[] {0, 1, 2},
+                        java.util.stream.IntStream.of(
+                                        501, 502, 801, 802, 1001, 1301, 1302, 2002, 2201, 2801)
+                                .mapToObj(id -> new PreviewMesh.Part(id, 0, 3))
+                                .toList());
+        var items =
+                List.of(
+                        new RaceAppearancePlan.Item(1, 4, 1, List.of(1, 0, 0, 0, 0, 0)),
+                        new RaceAppearancePlan.Item(2, 5, 2, List.of(0, 0, 0, 0, 0, 0)),
+                        new RaceAppearancePlan.Item(3, 8, 3, List.of(1, 0, 0, 0, 0, 0)),
+                        new RaceAppearancePlan.Item(4, 20, 4, List.of()));
+        var shown = RaceClothingGeometry.apply(mesh, Set.of(501, 801, 1301), items);
+        assertTrue(shown.contains(802));
+        assertFalse(shown.contains(801));
+        assertTrue(shown.contains(502));
+        assertTrue(shown.contains(1301));
+        assertFalse(shown.contains(1302));
+    }
 }

@@ -479,7 +479,7 @@ public final class RacesService implements BuildRaces {
         if (result.table().state() == TableTypes.State.PARTIAL) {
             issue(issues, name + " is partial; readable records are retained.");
         }
-        return new Data(name, result.columns(), result.schema(), List.of());
+        return new Data(name, result.columns(), result.schema(), List.of(), result.table());
     }
 
     Data read(String name, int bound, Cancellation token, List<String> issues) {
@@ -524,7 +524,7 @@ public final class RacesService implements BuildRaces {
             }
             after = page.nextAfter();
         }
-        return new Data(name, data.columns, data.schema, List.copyOf(rows));
+        return new Data(name, data.columns, data.schema, List.copyOf(rows), data.entry);
     }
 
     static final class Data {
@@ -532,12 +532,25 @@ public final class RacesService implements BuildRaces {
         final List<Db2Types.Column> columns;
         final TableSchema schema;
         final List<Db2Types.Row> rows;
+        final TableTypes.Entry entry;
+
+        boolean complete() {
+            return entry.state() == TableTypes.State.READY
+                    && entry.counts() != null
+                    && entry.counts().declaredRows() >= 0
+                    && entry.counts().readableRows() >= 0
+                    && entry.counts().excludedSections() == 0
+                    && entry.counts().excludedRecords() == 0
+                    && entry.counts().declaredRows() == entry.counts().readableRows();
+        }
 
         Data(
                 String name,
                 List<Db2Types.Column> columns,
                 TableSchema schema,
-                List<Db2Types.Row> rows) {
+                List<Db2Types.Row> rows,
+                TableTypes.Entry entry) {
+            this.entry = entry;
             this.name = name;
             this.columns = columns;
             this.schema = schema;
