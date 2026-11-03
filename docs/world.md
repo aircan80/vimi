@@ -176,3 +176,33 @@ and all four diagonals, asserting both actual requested tiles and the retained
 Space/E ascent, no doubled Space+E speed, Q descent and key release. Independent
 negative controls fail for the previous swapped lookup and previous E-only input.
 Run it with `./gradlew :gui:worldNavigationUiTest` on a JavaFX-capable display.
+
+## Explorer minimap
+
+The top-right minimap stays north-up while recorded artwork scrolls beneath the
+player arrow. Its regional coverage uses at most nine recorded MAID minimap IDs;
+there are no guessed paths or invented markers. A local activity indicator covers
+artwork loading, and missing/protected/unsupported sources remain visibly partial
+or unavailable. The arrow tracks facing even when artwork is missing.
+
+File acquisition and image decoding run off the JavaFX thread. Bounded detached
+pixels are uploaded on FX; hidden views, changed sources and closed builds retire
+requests and ignore late results. A resize cannot revive retired source artwork.
+The dedicated authored proof is `./gradlew :gui:worldMinimapUiTest` on a desktop
+display. These quadrant colors are authored orientation fixtures, not game art.
+
+![Authored north-up minimap](images/world-minimap-authored.png)
+
+The service/component and final lifecycle hook received independent review.
+Integrated World navigation/inventory/minimap and comparison FX checks pass,
+along with the affected source/service/GUI checks. Actual game artwork and private
+source proofs stay outside Git.
+
+A read-only Forever70755 proof decoded recorded minimap IDs204477,204478,204517,
+204476 and204437 for the five neighboring source tiles used in the native-axis
+proof. All produced detached256×256 pixels with identical cold/warm output.
+The first artwork was visually inspected locally. These sources have single
+larger mip levels: the minimap consumer explicitly downsamples a declared mip
+within512 pixels, while the generic decoder never invents or resizes mip levels.
+Larger-only unsupported sources retain the visible fallback. Actual game pixels
+remain private under `/tmp/vimi-live-mount79-proof`; none enter this repository.

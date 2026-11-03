@@ -9,7 +9,10 @@ Diagnostics checkpoints remain preserved; do not spend further implementation
 work there ahead of world appearance. Current integration worktree is
 `/tmp/vimi-world-release-bundle`, branch`feature/world-release-bundle`: World
 navigation/empty-map/Space, reviewed Dwarf and item-effects changes plus minimap
-service/component. Root is wiring minimap hooks and integrated tests. No combined
+service/component. Root minimap hooks and integrated tests pass, including retired-source resize.
+Live five-neighbor artwork cold/warm proof passes after bounded single-mip
+downsampling (e5b5366/b906548). Final source/component/lifecycle and compatibility
+changes have independent review. No combined
 release is published yet. Existing PR146/147/148 are superseded once the combined
 PR is concrete. Texture/source and world placement designs are now parallel agent
 priorities, alongside the bounded view-distance spike.
