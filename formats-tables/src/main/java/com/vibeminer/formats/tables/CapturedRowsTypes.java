@@ -36,6 +36,63 @@ public final class CapturedRowsTypes {
         NOT_CERTIFIED
     }
 
+    public enum IssueChannelState {
+        UNKNOWN,
+        VERIFIED_NATIVE
+    }
+
+    /** Graph-bound decoder provenance; never a certificate of membership or issue-free cells. */
+    public record IssueChannelEvidence(
+            IssueChannelState state,
+            String policyId,
+            String producerId,
+            String graphIdentity,
+            String sourceIdentitySha256,
+            String resolvedBlockSha256,
+            String readerOptionsSha256,
+            String actualColumnsSha256) {
+        public IssueChannelEvidence {
+            Objects.requireNonNull(state);
+            var values =
+                    java.util.Arrays.asList(
+                            policyId,
+                            producerId,
+                            graphIdentity,
+                            sourceIdentitySha256,
+                            resolvedBlockSha256,
+                            readerOptionsSha256,
+                            actualColumnsSha256);
+            if (state == IssueChannelState.UNKNOWN) {
+                if (values.stream().anyMatch(Objects::nonNull)) {
+                    throw new IllegalArgumentException(
+                            "Unknown issue evidence carries no native claims");
+                }
+            } else {
+                if (!"native-row-issues-v1".equals(policyId)
+                        || !"java-db2-native-producer-v1".equals(producerId)
+                        || graphIdentity == null
+                        || !graphIdentity.matches("[0-9a-f]{32}")) {
+                    throw new IllegalArgumentException("Unsupported native issue evidence");
+                }
+                for (var digest :
+                        java.util.Arrays.asList(
+                                sourceIdentitySha256,
+                                resolvedBlockSha256,
+                                readerOptionsSha256,
+                                actualColumnsSha256)) {
+                    if (digest == null || !digest.matches("[0-9a-f]{64}")) {
+                        throw new IllegalArgumentException("Invalid native evidence digest");
+                    }
+                }
+            }
+        }
+
+        public static IssueChannelEvidence unknown() {
+            return new IssueChannelEvidence(
+                    IssueChannelState.UNKNOWN, null, null, null, null, null, null, null);
+        }
+    }
+
     /** Null fingerprint is an explicitly unknown key status, never key bytes. */
     public record KeyFingerprint(String name, String fingerprint) {
         public KeyFingerprint {
@@ -64,7 +121,56 @@ public final class CapturedRowsTypes {
             List<String> holeKeys,
             List<KeyFingerprint> effectiveKeys,
             Retention retention,
-            Membership membership) {
+            Membership membership,
+            IssueChannelEvidence issueChannelEvidence) {
+        /** Existing custom producers remain unknown without explicit validated native evidence. */
+        public Receipt(
+                BuildRef build,
+                String locale,
+                TableTypes.Entry table,
+                TableSchema schema,
+                List<Db2Types.Column> columns,
+                String definitionSha256,
+                String blockIdentity,
+                String graphIdentity,
+                String sourceIdentity,
+                String readerOptions,
+                String readerRevision,
+                String rowEncoding,
+                String encodingScope,
+                long rowCount,
+                Db2Types.Header header,
+                Db2Types.Completion completion,
+                List<Db2Types.Section> sections,
+                List<String> holeKeys,
+                List<KeyFingerprint> effectiveKeys,
+                Retention retention,
+                Membership membership) {
+            this(
+                    build,
+                    locale,
+                    table,
+                    schema,
+                    columns,
+                    definitionSha256,
+                    blockIdentity,
+                    graphIdentity,
+                    sourceIdentity,
+                    readerOptions,
+                    readerRevision,
+                    rowEncoding,
+                    encodingScope,
+                    rowCount,
+                    header,
+                    completion,
+                    sections,
+                    holeKeys,
+                    effectiveKeys,
+                    retention,
+                    membership,
+                    IssueChannelEvidence.unknown());
+        }
+
         public Receipt {
             Objects.requireNonNull(build);
             Objects.requireNonNull(locale);
@@ -85,6 +191,7 @@ public final class CapturedRowsTypes {
             effectiveKeys = List.copyOf(effectiveKeys);
             Objects.requireNonNull(retention);
             Objects.requireNonNull(membership);
+            Objects.requireNonNull(issueChannelEvidence);
             if (rowCount < 0) {
                 throw new IllegalArgumentException("Negative captured row count");
             }
