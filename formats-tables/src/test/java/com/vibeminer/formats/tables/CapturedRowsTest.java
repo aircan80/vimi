@@ -267,6 +267,10 @@ final class CapturedRowsTest {
                                     GeneratedStore.class.getClassLoader(),
                                     new Class<?>[] {GeneratedStore.class},
                                     (proxy, method, args) -> {
+                                        assertEquals(
+                                                0,
+                                                filesClosed.get(),
+                                                "Source read after parent files closed");
                                         if (!List.of("read", "readRange", "has")
                                                 .contains(method.getName())) {
                                             throw new AssertionError(
@@ -546,6 +550,84 @@ final class CapturedRowsTest {
                 CapturedRowsTypes.CaptureState.CANCELED,
                 capturing.get(5, TimeUnit.SECONDS).state());
         closing.get(5, TimeUnit.SECONDS);
+        assertEquals(1, fixture.filesClosed.get());
+    }
+
+    @Test
+    void cancelDeliveryWhileOpenHeldKeepsPrivateRequestUntilActualDrain() throws Exception {
+        var fixture = new Fixture(true, false, false);
+        var tables = fixture.open();
+        fixture.delay.set(true);
+        var delivery = tables.capturePreparedLocal(REF, Cancellation.NONE);
+        assertTrue(fixture.reading.await(5, TimeUnit.SECONDS));
+        assertTrue(delivery.cancel(true));
+        assertEquals(1, tables.pendingCaptures());
+        var closing = tables.closeAsync();
+        assertFalse(closing.isDone());
+        assertEquals(0, fixture.filesClosed.get());
+        fixture.release.complete(null);
+        closing.get(5, TimeUnit.SECONDS);
+        assertTrue(delivery.isCancelled());
+        assertEquals(0, tables.pendingCaptures());
+        assertEquals(0, tables.capturedHandles());
+        assertEquals(1, fixture.filesClosed.get());
+    }
+
+    @Test
+    void canceledDeliveryAfterAdmissionClosesLostHandleAndAllowsNewCapture() throws Exception {
+        var fixture = new Fixture(true, false, false);
+        try (var tables = fixture.open()) {
+            var admitted = new CompletableFuture<CapturedRowsTypes.Capture>();
+            var ownershipDone = new AtomicReference<CompletableFuture<Void>>();
+            var releaseDelivery = new CountDownLatch(1);
+            tables.captureDeliveryProbe =
+                    (capture, finished) -> {
+                        ownershipDone.set(finished);
+                        admitted.complete(capture);
+                        try {
+                            assertTrue(releaseDelivery.await(5, TimeUnit.SECONDS));
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new IllegalStateException(interrupted);
+                        }
+                    };
+            var delivery = tables.capturePreparedLocal(REF, Cancellation.NONE);
+            var candidate = admitted.get(5, TimeUnit.SECONDS);
+            assertEquals(CapturedRowsTypes.CaptureState.CAPTURED, candidate.state());
+            assertEquals(1, tables.capturedHandles());
+            assertTrue(delivery.cancel(true));
+            releaseDelivery.countDown();
+            ownershipDone.get().get(5, TimeUnit.SECONDS);
+            assertEquals(0, tables.pendingCaptures());
+            assertEquals(0, tables.capturedHandles());
+            assertEquals(0, fixture.filesClosed.get());
+            assertEquals(
+                    CapturedRowsTypes.ReadState.CLOSED,
+                    candidate.rows().readOrdinalPage(0, 1, Cancellation.NONE).join().state());
+            tables.captureDeliveryProbe = (capture, finished) -> {};
+            try (var next =
+                    tables.capturePreparedLocal(REF, Cancellation.NONE)
+                            .get(5, TimeUnit.SECONDS)
+                            .rows()) {
+                assertNotNull(next);
+                assertEquals(1, tables.capturedHandles());
+            }
+        }
+    }
+
+    @Test
+    void deliveryCallbackCanSynchronouslyCloseParentAfterPrivateCleanup() throws Exception {
+        var fixture = new Fixture(true, false, false);
+        var tables = fixture.open();
+        tables.capturePreparedLocal(REF, Cancellation.NONE)
+                .thenAccept(
+                        capture -> {
+                            assertEquals(CapturedRowsTypes.CaptureState.CAPTURED, capture.state());
+                            tables.closeAsync().join();
+                        })
+                .get(5, TimeUnit.SECONDS);
+        assertEquals(0, tables.pendingCaptures());
+        assertEquals(0, tables.capturedHandles());
         assertEquals(1, fixture.filesClosed.get());
     }
 }

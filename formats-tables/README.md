@@ -196,6 +196,10 @@ corruption invalidates the handle; subsequent reads report invalidation and neve
 reopen/reprepare another graph. Closed/failed pages carry no rows or EOF claim.
 Consumers must inspect page state, not treat any null continuation as success.
 
+Capture delivery futures are separate from private completion ownership. Canceling
+one requests operation cancellation but does not detach cleanup or parent draining;
+a handle admitted after delivery is abandoned is closed before private completion.
+
 Close rejects new work, cancels/drains accepted reads, and releases reader/block
 references. Parent table close also cancels pending capture opens and closes live
 captured handles before closing borrowed files. The shared application library

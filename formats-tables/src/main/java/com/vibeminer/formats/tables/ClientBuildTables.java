@@ -48,6 +48,21 @@ final class ClientBuildTables implements BuildTables {
     private int active;
     private final java.util.Set<CapturedRowsHandle> captures = new java.util.HashSet<>();
     private final java.util.Set<Cancellation> captureRequests = new java.util.HashSet<>();
+    java.util.function.BiConsumer<CapturedRowsTypes.Capture, CompletableFuture<Void>>
+            captureDeliveryProbe = (value, finished) -> {};
+
+    int pendingCaptures() {
+        synchronized (gate) {
+            return captureRequests.size();
+        }
+    }
+
+    int capturedHandles() {
+        synchronized (gate) {
+            return captures.size();
+        }
+    }
+
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
 
     ClientBuildTables(
@@ -986,7 +1001,8 @@ final class ClientBuildTables implements BuildTables {
             Cancellation caller, Function<Cancellation, CapturedRowsTypes.Capture> action) {
         java.util.Objects.requireNonNull(caller);
         var request = new Cancellation();
-        CompletableFuture<CapturedRowsTypes.Capture> future;
+        var delivery = new CompletableFuture<CapturedRowsTypes.Capture>();
+        CompletableFuture<CapturedRowsTypes.Capture> owned;
         Cancellation.Registration registration;
         synchronized (gate) {
             if (closed) {
@@ -994,24 +1010,80 @@ final class ClientBuildTables implements BuildTables {
             }
             registration = caller.onCancel(request::cancel);
             captureRequests.add(request);
-            future = operation(request, action);
+            // Private completion ownership outlives caller delivery cancellation and worker finish.
+            active++;
+            try {
+                owned = operation(request, action);
+            } catch (Throwable failure) {
+                captureRequests.remove(request);
+                registration.close();
+                active--;
+                throw failure;
+            }
         }
-        return future.exceptionally(
-                        error ->
-                                captureFailure(
-                                        request.isCanceled()
-                                                ? CapturedRowsTypes.CaptureState.CANCELED
-                                                : CapturedRowsTypes.CaptureState.SOURCE_UNAVAILABLE,
-                                        request.isCanceled()
-                                                ? "CAPTURE_CANCELED"
-                                                : "CAPTURE_LOCAL_SOURCE_FAILED"))
-                .whenComplete(
-                        (value, error) -> {
+        // Observe abandonment without returning this dependent stage to the caller.
+        delivery.whenComplete(
+                (value, error) -> {
+                    if (delivery.isCancelled()) {
+                        request.cancel();
+                    }
+                });
+        owned.whenComplete(
+                (value, error) -> {
+                    var finished = new CompletableFuture<Void>();
+                    try {
+                        CapturedRowsTypes.Capture result =
+                                error == null
+                                        ? value
+                                        : captureFailure(
+                                                request.isCanceled()
+                                                        ? CapturedRowsTypes.CaptureState.CANCELED
+                                                        : CapturedRowsTypes.CaptureState
+                                                                .SOURCE_UNAVAILABLE,
+                                                request.isCanceled()
+                                                        ? "CAPTURE_CANCELED"
+                                                        : "CAPTURE_LOCAL_SOURCE_FAILED");
+                        try {
+                            try {
+                                captureDeliveryProbe.accept(result, finished);
+                            } catch (Throwable probeFailure) {
+                                if (result.rows() != null) {
+                                    result.rows().closeAsync().join();
+                                }
+                                result =
+                                        captureFailure(
+                                                CapturedRowsTypes.CaptureState.SOURCE_UNAVAILABLE,
+                                                "CAPTURE_DELIVERY_FAILED");
+                            }
+                            if (request.isCanceled() || delivery.isDone()) {
+                                if (result.rows() != null) {
+                                    result.rows().closeAsync().join();
+                                }
+                                result =
+                                        captureFailure(
+                                                CapturedRowsTypes.CaptureState.CANCELED,
+                                                "CAPTURE_DELIVERY_ABANDONED");
+                            }
+                        } finally {
                             synchronized (gate) {
                                 captureRequests.remove(request);
                             }
                             registration.close();
-                        });
+                            // Release before delivery callbacks, which may close/join the parent.
+                            finish();
+                        }
+                        // Cancellation may win after the earlier check; that handle is still
+                        // privately owned.
+                        if (!delivery.complete(result) && result.rows() != null) {
+                            result.rows().closeAsync().join();
+                        }
+                        finished.complete(null);
+                    } catch (Throwable failure) {
+                        delivery.completeExceptionally(failure);
+                        finished.completeExceptionally(failure);
+                    }
+                });
+        return delivery;
     }
 
     private static CapturedRowsTypes.Capture captureFailure(
