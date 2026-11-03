@@ -109,3 +109,8 @@ partial facts, stale details, workspace revisions, resizing and ownership.
 ![Authored professions layout](images/professions-authored.png)
 
 The image contains invented fixture records and no game assets or local-library data.
+
+The build workspace opens Professions beside Mounts. Icons use the existing
+build-owned asset decoder; selected recipe item names use prepared data-only item
+lookups with ID fallback. No recipe-list scan downloads item assets. The cold
+profession handle shares workspace revision and drains before tables close.

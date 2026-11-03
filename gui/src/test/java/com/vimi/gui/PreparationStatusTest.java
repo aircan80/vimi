@@ -33,7 +33,7 @@ public final class PreparationStatusTest {
                         "Closed must not report active preparation");
                 boolean files = ready.ordinal() >= BuildPreparation.Ready.FILES_READY.ordinal();
                 require(PreparationStatus.available("Files", ready) == files, "Files milestone");
-                for (String area : List.of("Tables", "Items", "Creatures", "Talents", "Races")) {
+                for (String area : List.of("Tables", "Items", "Creatures", "Talents", "Races", "Mounts", "Professions", "World")) {
                     require(
                             PreparationStatus.available(area, ready)
                                     == (ready == BuildPreparation.Ready.TABLES_READY),

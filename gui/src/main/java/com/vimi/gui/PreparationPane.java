@@ -26,6 +26,8 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
     private NpcsView npcs;
     private QuestsView quests;
     private WorldView world;
+    private MountsView mounts;
+    private ProfessionsView professions;
     private final DataSourcesService sources;
     private boolean closed;
     private long workspaceRevision;
@@ -46,14 +48,19 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         this.sources = sources;
         var navigation = new HBox(4);
         navigation.getStyleClass().add("area-navigation");
-        for (String area : List.of("Overview", "Files", "Tables", "Items", "Creatures", "NPCs", "Quests", "Talents", "Races", "World")) {
+        for (String area : List.of("Overview", "Files", "Tables", "Items", "Creatures", "NPCs", "Quests", "Talents", "Races", "Mounts", "Professions", "World")) {
             var button = new Button(area);
             button.getStyleClass().add("area-link");
             button.setOnAction(event -> show(area));
             areas.put(area, button);
             navigation.getChildren().add(button);
         }
-        setTop(navigation);
+        var navigationScroll = new ScrollPane(navigation);
+        navigationScroll.setFitToHeight(true);
+        navigationScroll.setVbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        navigationScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
+        navigationScroll.setMaxHeight(javafx.scene.layout.Region.USE_PREF_SIZE);
+        setTop(navigationScroll);
         retry = new Button("Retry / enrich");
         retry.setOnAction(event -> enrich.run());
         cancel = new Button("Cancel preparation");
@@ -86,6 +93,8 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             if (npcs != null) npcs.invalidate();
             if (quests != null) quests.invalidate();
             if (world != null) world.invalidate();
+            if (mounts != null) mounts.invalidate();
+            if (professions != null) professions.invalidate();
             if (currentArea.equals("Races") && races != null) races.ensureLoaded();
             if (currentArea.equals("Talents") && talents != null) talents.ensureLoaded();
             var visible = browsers.get(currentArea);
@@ -94,6 +103,8 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         if (currentArea.equals("NPCs") && npcs != null) npcs.ensureLoaded();
         if (currentArea.equals("Quests") && quests != null) quests.ensureLoaded();
         if (currentArea.equals("World") && world != null) world.ensureLoaded();
+        if (currentArea.equals("Mounts") && mounts != null) mounts.ensureLoaded();
+        if (currentArea.equals("Professions") && professions != null) professions.ensureLoaded();
         liveOverview.update(snapshot, job.enrichingNames(), job.namesProblem());
         cancel.setDisable(!snapshot.busy() && !job.enrichingNames());
         retry.setDisable(snapshot.busy() || job.enrichingNames());
@@ -137,6 +148,14 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             setCenter(scroll);
             return;
         }
+        if (area.equals("Mounts") && job.work() instanceof NativePreparationWork work) {
+            if (mounts == null) mounts = new MountsView(work::mountsHandle, work::revision, job.build().version() + " · " + job.locale());
+            setCenter(mounts); mounts.ensureLoaded(); return;
+        }
+        if (area.equals("Professions") && job.work() instanceof NativePreparationWork work) {
+            if (professions == null) professions = new ProfessionsView(work::professionsHandle, work::revision, work::icon, work::itemName);
+            setCenter(professions); professions.ensureLoaded(); return;
+        }
         if (area.equals("World")) {
             if (world == null) world = new WorldView(job);
             setCenter(world); world.activate(); return;
@@ -178,6 +197,8 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         if (npcs != null) npcs.close();
         if (quests != null) quests.close();
         if (world != null) world.close();
+        if (mounts != null) mounts.close();
+        if (professions != null) professions.close();
     }
 
     private void showSourceTable(String table) {

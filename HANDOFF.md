@@ -29,8 +29,10 @@ search/paging and workspace/source revision invalidation are preserved. See
 docs/npcs-quests.md for exact snapshot selection and focused checks.
 Dungeons is queued as #108. Mounts (#111) and Professions/Recipes (#112) have
 WoW-data/UI-reviewed designs and authored SVG mockups in
-docs/mounts-professions-design.md; standalone implementations are ready in PRs #119 and #118 respectively, awaiting
-workspace/navigation integration.
+docs/mounts-professions-design.md; standalone implementations from PRs #119 and #118 are squash-integrated on
+feature/browser-integration, with workspace/navigation wiring, cold handles,
+readiness/refresh and borrowed-resource retirement tests. Component checks and
+authored JavaFX screens pass; native CI and final integration remain.
 
 Static race models and recorded voices (#105/#107) are merged; textured class
 appearance #104 is merged, including physical-layout compatibility fixes.
