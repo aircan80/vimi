@@ -6,11 +6,12 @@ PR #141 is FF-merged at `f10febd`: legacy cutout qualification, mount controls a
 World continent-grid orientation. All hosted checks passed. Alpha.12 is published
 as an explicit prerelease with 18 assets (run `41699368086`).
 
-Full static materials are implemented on `feature/model-material-profiles`,
-worktree `/tmp/vimi-model-materials-integration`, production revision `4167c4c`.
-Independent scoped implementation approvals and full local checks pass; see
-[material review](docs/model-materials-review.md). Next gate: hosted native CI,
-then FF integration and alpha.13 packaging with committed release notes.
+Full static materials are FF-merged through PR #142 at `405ed5e` after all hosted
+Linux/Windows/macOS unit/integration, shader and compatibility checks passed.
+Production revision `4167c4c` has independent scoped approvals and full local
+checks; see [material review](docs/model-materials-review.md). Alpha.13 is tagged
+at `405ed5e` with committed notes. Packaging run `41711301691` is queued/running;
+verify all five targets and 18 assets before claiming publication. Preserve tags.
 
 Read-only Forever 1.60.1.70755 proofs qualify Mount79 Black War Raptor 5/5 sections
 and Mount103 Great Brown Kodo 4/4, with reflective armor, unlit detail and additive
@@ -20,7 +21,16 @@ mode does not evaluate ancestor animation, particles or arbitrary materials.
 Linux Vulkan is exercised; native Metal/D3D runtime acceptance remains open.
 
 Never overwrite a running snapshot. Existing immutable launcher:
-`.local/apps/mount-world-f10febd/bin/vimi-gui-prototype`.
+`.local/apps/materials-4167c4c/bin/vimi-gui-prototype`
+passed native startup smoke and contains the complete reviewed implementation.
+Next concrete design: [GPU terrain proposal](docs/gpu-terrain-proposal.md),
+reviewed by architecture/domain/acceptance with an explicit unresolved depth
+feasibility gate. First prove 48-byte persistent triangle instancing and reversed
+infinite-far depth using authored actual Vulkan plus all four offline shader
+profiles. Preserve current triangle-flat fog/color and first-wins depth; do not
+claim production approval until close-separated overlap fixtures qualify depth.
+No terrain implementation has begun.
+
 After delivery: GPU terrain (World remains CPU rendered), verified zone-to-terrain
 navigation, native platform acceptance, broader comparison, race profiles,
 animation and equipment. The user explicitly requests parallel agents and wants
