@@ -104,7 +104,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private boolean explorer, loadingTile, catalogLoading;
     private volatile boolean closed;
     private boolean active = true;
-    private long revision = -1, selection, lastTick, lastRender;
+    private long revision = -1, selection, lastTick, lastRender, lastNearby;
     private final AnimationTimer timer;
     private final AtomicLong frameGeneration = new AtomicLong();
     private final AtomicReference<Render> latest = new AtomicReference<>();
@@ -456,6 +456,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
                             if (now - lastRender > cadence) {
                                 lastRender = now;
                                 requestFrame();
+                            }
+                            if (now - lastNearby > 100_000_000) {
+                                lastNearby = now;
                                 loadNext();
                             }
                         }
@@ -1068,7 +1071,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                             areaPoint.z() + 100, Math.PI, -.8);
         }
         var cpu = new TerrainRenderer.Scene(tiles.stream().map(WorldService.LoadedTile::terrain).toList());
-        var nativeScene = prepareGpu ? new TerrainScene(tiles.stream()
+        var nativeScene = prepareGpu && !tiles.isEmpty() ? new TerrainScene(tiles.stream()
                 .map(tile -> new TerrainScene.Tile(tile.tile().x(), tile.tile().y(), tile.terrain()))
                 .toList()) : null;
         return new Prepared(cpu, nativeScene, camera, originX, originY);
@@ -1106,6 +1109,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                     }
                                     terrainScene = prepared.scene();
                                     gpuScene = prepared.gpuScene();
+                                    if (gpuScene == null && gpu != null) {
+                                        retireGpu();
+                                        gpuStatus.setText("Software terrain · no loaded nearby tiles");
+                                    }
                                     if (prepared.camera() != null) {
                                         camera = prepared.camera();
                                         originX = prepared.x();
