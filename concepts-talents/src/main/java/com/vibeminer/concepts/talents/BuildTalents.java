@@ -9,6 +9,12 @@ public interface BuildTalents extends AutoCloseable {
 
     CompletableFuture<TalentTypes.ClassTrees> trees(long classId, Cancellation token);
 
+    default CompletableFuture<com.vibeminer.concepts.effects.SpellTexts.Description> description(
+            long spellId, Cancellation token) {
+        return CompletableFuture.failedFuture(
+                new UnsupportedOperationException("Spell preview unavailable"));
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override

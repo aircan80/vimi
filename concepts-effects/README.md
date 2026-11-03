@@ -31,3 +31,16 @@ Preparation builds only reviewed, bounded table indexes and reports unsupported,
 partial or resource-limited inputs explicitly. Retain the same warmed handles in
 the application context; closing and reopening them discards in-memory indexes.
 Warmup performs no icon/model/texture I/O and does not claim universal table readiness.
+
+## Bounded spell text previews
+
+`SpellTexts` borrows immutable build/locale tables and resolves selected spell
+text asynchronously, with at most four accepted operations, 128 cached previews,
+200,000 relation-index entries, 16 KiB text and 256 substitutions. Close cancels
+and drains its own accepted work without closing borrowed tables or cancelling
+caller tokens. Plain descriptions do not build a SpellEffect index.
+
+The first numeric profile supports reviewed Forever fixed percentage aura
+amounts. Other tokens/formulas remain typed unresolved values; raw templates and
+source cells are retained separately from display text. See the profile and
+read-only validation details in [Talents](../docs/talents.md#spell-value-previews).

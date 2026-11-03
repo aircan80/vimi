@@ -47,3 +47,8 @@ bounded on-demand image path and shared library accounting.
 
 The UI is a reference browser, not a planner: rank badges mean recorded maximum
 ranks, not learned/available points or calculated gameplay eligibility.
+
+Selected first-rank spell descriptions are resolved lazily through the effects
+component's bounded `SpellTexts` service. No numeric projection is added to
+class/tree loading. The talent handle owns and drains this resolver before its
+borrowed tables retire; raw templates remain available in Source details.

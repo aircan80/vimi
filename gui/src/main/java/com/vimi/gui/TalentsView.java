@@ -34,8 +34,6 @@ import java.util.Map;
 /** Read-only, build-derived Classic trees; domain queries and media never block JavaFX. */
 final class TalentsView extends BorderPane implements AutoCloseable {
     private static final double ICON = 44, PITCH = 62, PADDING = 24;
-    private static final java.util.regex.Pattern UNRESOLVED_TEXT =
-            java.util.regex.Pattern.compile("\\$[A-Za-z0-9@?{]|\\|[A-Za-z0-9]");
     private final java.util.function.Supplier<com.vibeminer.concepts.talents.BuildTalents>
             handleSupplier;
     private final java.util.function.LongSupplier workspaceRevision;
@@ -56,7 +54,8 @@ final class TalentsView extends BorderPane implements AutoCloseable {
             classTitle = text("Talents", "h1");
     private final AsyncIconRequests icons;
     private final Map<Long, Button> nodeButtons = new HashMap<>();
-    private Cancellation token = new Cancellation();
+    private Cancellation token = new Cancellation(), descriptionToken = new Cancellation();
+    private long descriptionGeneration;
     private long generation, revision = -1;
     private boolean loaded, closed;
     private Long selectedClass;
@@ -468,22 +467,13 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                                             + " · rank "
                                             + (edge.rankIndex() + 1),
                                     "wow-line"));
-        selection
-                .getChildren()
-                .add(
-                        text(
-                                talent.description() == null || talent.description().isEmpty()
-                                        ? "Description unavailable in the readable data."
-                                        : talent.description(),
-                                "wow-level"));
+        var description = text("Loading description…", "wow-level");
+        selection.getChildren().add(description);
         evidence.getChildren()
                 .setAll(
                         text(
                                 "Previewing the first recorded rank, not character talent points.",
                                 "muted"));
-        if (talent.description() != null && UNRESOLVED_TEXT.matcher(talent.description()).find())
-            evidence.getChildren()
-                    .add(text("Raw client spell text; substitutions are not evaluated.", "muted"));
         var sourceDetails =
                 new TitledPane(
                         "Source details",
@@ -500,9 +490,96 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                                 text("Rank spell IDs: " + talent.rankSpells(), "muted")));
         sourceDetails.setExpanded(false);
         evidence.getChildren().add(sourceDetails);
+        var facts = (VBox) sourceDetails.getContent();
+        if (talent.description() != null && talent.description().length() <= 16384)
+            facts.getChildren()
+                    .add(text("Raw client description: " + talent.description(), "muted"));
+        descriptionToken.cancel();
+        descriptionToken = new Cancellation();
+        long preview = ++descriptionGeneration;
+        long workspace = generation;
+        if (talent.description() == null
+                || talent.description().isBlank()
+                || talent.description().length() > 16384) {
+            description.setText("Description unavailable in the readable data.");
+        } else if (!talent.description().contains("$") && !talent.description().contains("|")) {
+            description.setText(talent.description());
+        } else {
+            boundHandle
+                    .description(talent.rankSpells().getFirst(), descriptionToken)
+                    .whenComplete(
+                            (result, error) ->
+                                    Platform.runLater(
+                                            () -> {
+                                                if (preview != descriptionGeneration
+                                                        || stale(workspace)) return;
+                                                if (error != null || result == null) {
+                                                    description.setText(
+                                                            "Description values are unavailable.");
+                                                    return;
+                                                }
+                                                description.setText(
+                                                        result.display() == null
+                                                                        || result.display()
+                                                                                .isBlank()
+                                                                ? "Description values are"
+                                                                        + " unavailable."
+                                                                : result.display());
+                                                if (result.state()
+                                                        == com.vibeminer.concepts.effects.SpellTexts
+                                                                .State.UNRESOLVED)
+                                                    evidence.getChildren()
+                                                            .add(
+                                                                    1,
+                                                                    text(
+                                                                            "Some spell values are"
+                                                                                + " unavailable;"
+                                                                                + " raw text is in"
+                                                                                + " Source"
+                                                                                + " details.",
+                                                                            "muted"));
+                                                for (var substitution : result.substitutions()) {
+                                                    facts.getChildren()
+                                                            .add(
+                                                                    text(
+                                                                            substitution.token()
+                                                                                    + " → "
+                                                                                    + (substitution
+                                                                                                            .value()
+                                                                                                    == null
+                                                                                            ? "unavailable:"
+                                                                                                  + " "
+                                                                                                    + substitution
+                                                                                                            .issue()
+                                                                                            : substitution
+                                                                                                    .value()),
+                                                                            "muted"));
+                                                    for (var source : substitution.sources())
+                                                        facts.getChildren()
+                                                                .add(
+                                                                        text(
+                                                                                source.table()
+                                                                                        + " row "
+                                                                                        + source
+                                                                                                .rowId()
+                                                                                        + " · "
+                                                                                        + source
+                                                                                                .column()
+                                                                                        + " = "
+                                                                                        + source
+                                                                                                .value(),
+                                                                                "muted"));
+                                                }
+                                                for (var issue : result.issues())
+                                                    facts.getChildren().add(text(issue, "muted"));
+                                            }));
+        }
     }
 
     private void clearSelection() {
+        descriptionGeneration++;
+        descriptionToken.cancel();
+        descriptionToken = new Cancellation();
         selection
                 .getChildren()
                 .setAll(
@@ -598,6 +675,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
         closed = true;
         generation++;
         token.cancel();
+        descriptionToken.cancel();
         iconPulse.stop();
         if (getScene() != null) getScene().removePostLayoutPulseListener(afterLayout);
         waitingIcons.clear();

@@ -27,6 +27,7 @@ public final class TalentsService implements BuildTalents {
             MAX_CLASS_TALENTS = 512;
     private final BuildTables tables;
     private final String version;
+    private final com.vibeminer.concepts.effects.SpellTexts spellTexts;
     private final ThreadPoolExecutor worker =
             new ThreadPoolExecutor(
                     1,
@@ -50,6 +51,7 @@ public final class TalentsService implements BuildTalents {
     public TalentsService(BuildTables tables, String buildVersion) {
         this.tables = Objects.requireNonNull(tables);
         this.version = buildVersion;
+        this.spellTexts = new com.vibeminer.concepts.effects.SpellTexts(tables, buildVersion);
     }
 
     public static boolean classicModel(String product, String version) {
@@ -60,6 +62,17 @@ public final class TalentsService implements BuildTalents {
                         || product.startsWith("wow_classic"))
                 && version != null
                 && version.matches("[1-4]\\.[0-9]+\\.[0-9]+(?:\\.[0-9]+)?");
+    }
+
+    @Override
+    public CompletableFuture<com.vibeminer.concepts.effects.SpellTexts.Description> description(
+            long spellId, Cancellation token) {
+        return submit(
+                token,
+                request ->
+                        spellTexts
+                                .description(spellId, TableTypes.Priority.INTERACTIVE, request)
+                                .join());
     }
 
     @Override
@@ -852,11 +865,13 @@ public final class TalentsService implements BuildTalents {
                 cancellationFailure = error;
             }
             var failure = cancellationFailure;
+            var spellClosing = spellTexts.closeAsync();
             worker.shutdown();
             Thread.startVirtualThread(
                     () -> {
                         try {
                             while (!worker.awaitTermination(1, TimeUnit.SECONDS)) {}
+                            spellClosing.join();
                             if (failure == null) {
                                 closing.complete(null);
                             } else {

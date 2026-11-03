@@ -31,3 +31,32 @@ This screenshot uses authored fixture nodes and placeholder icons to review the
 layout. It does not represent a real build's talent data or a character's points.
 
 ![Authored three-tree talent layout](images/talents-tooltip-authored.png)
+
+## Spell value previews
+
+The selected first rank resolves reviewed `$s1`–`$s3` fixed percentage amounts
+through same-build SpellEffect rows. Unsupported values show `?`; complex client
+expressions show an unavailable message. Raw templates and exact substitution
+provenance remain in collapsed Source details, not the styled tooltip.
+
+The initial numeric profile is deliberately limited to Forever 1.60, layout
+`5362E3D4`, APPLY_AURA effects with percentage modifier/critical chance aura IDs
+108/290. It uses integral `EffectBasePointsF` directly, with no legacy `+1`;
+random, level, resource and scaling coefficients must be zero, and the reviewed
+bonus/group/PvP defaults must equal one. The unverified field name at raw integer
+column 24 has no assigned semantics; the reviewed layout conservatively requires
+its value to be zero. Other profiles and formulas remain unresolved.
+
+Read-only verification against the cached 1.60.1.70707 build matched spell 16942,
+EffectIndex 0, SpellEffect row 693970 and base amount 2, yielding `2%`. Spells
+16858 and 16998 also matched base previews 8%/3% and 20%. No game data payloads or
+local cache paths are included in the repository.
+
+Relevant primary implementations are the
+[WoWTools effect formatter](https://github.com/Marlamin/WoWTools.SpellDescParser/blob/master/WoWTools.SpellDescParser/Nodes/Property.cs),
+[SpellEffect definitions](https://github.com/wowdev/WoWDBDefs/blob/master/definitions/SpellEffect.dbd),
+and [aura constants](https://github.com/TrinityCore/TrinityCore/blob/master/src/server/game/Spells/Auras/SpellAuraDefines.h).
+
+![Authored resolved spell preview](images/talents-spell-text-authored.png)
+
+This image uses authored text/pixels to test numeric preview presentation.

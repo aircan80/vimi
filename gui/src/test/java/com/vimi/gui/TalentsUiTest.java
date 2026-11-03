@@ -22,12 +22,19 @@ import javax.imageio.ImageIO;
 /** Optional authored layout review. Does not open a native store or acquire any game data. */
 public final class TalentsUiTest {
     private static final String TOKEN_WARNING =
-            "Raw client spell text; substitutions are not evaluated.";
+            "Some spell values are unavailable; raw text is in Source details.";
 
     private TalentsUiTest() {}
 
+    private static String fixtureDescription(long id) {
+        if (id == 2) return null;
+        if (id == 4) return "Authored chance rises by $s1%.";
+        if (id == 5) return "Authored $d text";
+        return "Authored spell text";
+    }
+
     private static Long fixtureIconId(long id) {
-        if (id == 1) return 900L;
+        if (id == 4) return 900L;
         if (id == 2) return 901L;
         return null;
     }
@@ -56,6 +63,20 @@ public final class TalentsUiTest {
                 null,
                 null,
                 null);
+    }
+
+    private static javafx.scene.control.Button talent(Scene scene, long id) {
+        return scene.getRoot().lookupAll(".talent-node").stream()
+                .map(value -> (javafx.scene.control.Button) value)
+                .filter(value -> value.getAccessibleText().startsWith("Fixture talent " + id + ","))
+                .findFirst()
+                .orElseThrow();
+    }
+
+    private static List<String> tooltipText(Scene scene) {
+        return scene.getRoot().lookup(".talent-tooltip").lookupAll(".label").stream()
+                .map(value -> ((Label) value).getText())
+                .toList();
     }
 
     public static void main(String[] args) throws Exception {
@@ -119,14 +140,7 @@ public final class TalentsUiTest {
                                                                                                 0))
                                                                                 : prerequisites,
                                                                         "Fixture talent " + id,
-                                                                        id == 2
-                                                                                ? null
-                                                                                : id == 4
-                                                                                        ? "Authored"
-                                                                                              + " $s1 text"
-                                                                                        : "Authored"
-                                                                                              + " spell"
-                                                                                              + " text",
+                                                                        fixtureDescription(id),
                                                                         fixtureIconId(id)));
                                                     }
                                             trees.add(
@@ -146,6 +160,31 @@ public final class TalentsUiTest {
                                                         List.of(),
                                                         null,
                                                         null));
+                                    }
+
+                                    public CompletableFuture<
+                                                    com.vibeminer.concepts.effects.SpellTexts
+                                                            .Description>
+                                            description(long spell, Cancellation token) {
+                                        boolean resolved = spell == 1004;
+                                        return CompletableFuture.completedFuture(
+                                                new com.vibeminer.concepts.effects.SpellTexts
+                                                        .Description(
+                                                        spell,
+                                                        resolved
+                                                                ? "Authored chance rises by $s1%."
+                                                                : "Authored $d text",
+                                                        resolved
+                                                                ? "Authored chance rises by 5%."
+                                                                : "Authored ? text",
+                                                        resolved
+                                                                ? com.vibeminer.concepts.effects
+                                                                        .SpellTexts.State.RESOLVED
+                                                                : com.vibeminer.concepts.effects
+                                                                        .SpellTexts.State
+                                                                        .UNRESOLVED,
+                                                        List.of(),
+                                                        List.of()));
                                     }
 
                                     public CompletableFuture<Void> closeAsync() {
@@ -217,79 +256,52 @@ public final class TalentsUiTest {
                                         javafx.util.Duration.millis(300));
                         selectPause.setOnFinished(
                                 event -> {
-                                    var unavailable =
-                                            scene.getRoot().lookupAll(".talent-node").stream()
-                                                    .map(
-                                                            value ->
-                                                                    (javafx.scene.control.Button)
-                                                                            value)
-                                                    .filter(
-                                                            value ->
-                                                                    value.getAccessibleText()
-                                                                            .startsWith(
-                                                                                    "Fixture talent"
-                                                                                        + " 2,"))
-                                                    .findFirst()
-                                                    .orElseThrow();
-                                    unavailable.fire();
-                                    var missingText =
-                                            scene
-                                                    .getRoot()
-                                                    .lookup(".talent-tooltip")
-                                                    .lookupAll(".label")
-                                                    .stream()
-                                                    .map(
-                                                            value ->
-                                                                    ((javafx.scene.control.Label)
-                                                                                    value)
-                                                                            .getText())
-                                                    .toList();
-                                    if (!missingText.contains(
-                                                    "Description unavailable in the readable data.")
-                                            || !missingText.contains(
-                                                    "Requires unavailable talent #999 · rank 1"))
-                                        throw new AssertionError(
-                                                "Unreadable talent metadata must remain explicit in"
-                                                        + " the tooltip");
-                                    var tokenNode =
-                                            scene.getRoot().lookupAll(".talent-node").stream()
-                                                    .map(
-                                                            value ->
-                                                                    (javafx.scene.control.Button)
-                                                                            value)
-                                                    .filter(
-                                                            value ->
-                                                                    value.getAccessibleText()
-                                                                            .startsWith(
-                                                                                    "Fixture talent"
-                                                                                        + " 4,"))
-                                                    .findFirst()
-                                                    .orElseThrow();
-                                    tokenNode.fire();
-                                    if (scene.getRoot().lookupAll(".label").stream()
-                                            .map(
-                                                    value ->
-                                                            ((javafx.scene.control.Label) value)
-                                                                    .getText())
-                                            .noneMatch(TOKEN_WARNING::equals))
-                                        throw new AssertionError(
-                                                "Unresolved client substitutions need a warning"
-                                                    + " outside the tooltip");
-                                    var node =
-                                            scene.getRoot().lookupAll(".talent-node").stream()
-                                                    .map(
-                                                            value ->
-                                                                    (javafx.scene.control.Button)
-                                                                            value)
-                                                    .filter(
-                                                            value ->
-                                                                    value.getAccessibleText()
-                                                                            .startsWith(
-                                                                                    "Fixture talent"
-                                                                                        + " 1,"))
-                                                    .findFirst()
-                                                    .orElseThrow();
-                                    node.fire();
+                                    try {
+                                        talent(scene, 2).fire();
+                                        if (!tooltipText(scene)
+                                                        .contains(
+                                                                "Description unavailable in the"
+                                                                        + " readable data.")
+                                                || !tooltipText(scene)
+                                                        .contains(
+                                                                "Requires unavailable talent #999 ·"
+                                                                        + " rank 1"))
+                                            throw new AssertionError(
+                                                    "Missing description/prerequisite must remain"
+                                                            + " explicit");
+                                        talent(scene, 5).fire();
+                                        Platform.runLater(
+                                                () -> {
+                                                    try {
+                                                        if (!tooltipText(scene)
+                                                                        .contains("Authored ? text")
+                                                                || scene
+                                                                        .getRoot()
+                                                                        .lookupAll(".label")
+                                                                        .stream()
+                                                                        .map(
+                                                                                value ->
+                                                                                        ((Label)
+                                                                                                        value)
+                                                                                                .getText())
+                                                                        .noneMatch(
+                                                                                TOKEN_WARNING
+                                                                                        ::equals))
+                                                            throw new AssertionError(
+                                                                    "Unknown values need safe"
+                                                                            + " placeholders and a"
+                                                                            + " warning outside the"
+                                                                            + " tooltip");
+                                                        talent(scene, 4).fire();
+                                                    } catch (Throwable failure) {
+                                                        ready.completeExceptionally(failure);
+                                                        Platform.exit();
+                                                    }
+                                                });
+                                    } catch (Throwable failure) {
+                                        ready.completeExceptionally(failure);
+                                        Platform.exit();
+                                    }
                                 });
                         selectPause.play();
                         var pause =
@@ -365,9 +377,10 @@ public final class TalentsUiTest {
                                                                                         value)
                                                                                 .getText())
                                                         .toList();
-                                        if (!tooltipText.contains("Fixture talent 1")
+                                        if (!tooltipText.contains("Fixture talent 4")
                                                 || !tooltipText.contains("Rank 1/3")
-                                                || !tooltipText.contains("Authored spell text"))
+                                                || !tooltipText.contains(
+                                                        "Authored chance rises by 5%."))
                                             throw new AssertionError(
                                                     "Selected talent details did not reach the"
                                                             + " right tooltip");
@@ -379,7 +392,7 @@ public final class TalentsUiTest {
                                                 .anyMatch(TOKEN_WARNING::equals))
                                             throw new AssertionError(
                                                     "Plain descriptions must not show an"
-                                                        + " unresolved-token warning");
+                                                            + " unresolved-token warning");
                                         var right = view.getRight();
                                         if (right.getBoundsInParent().getMinX()
                                                         <= view.getCenter()
@@ -407,7 +420,7 @@ public final class TalentsUiTest {
                                         Path path =
                                                 Path.of(
                                                         System.getProperty("java.io.tmpdir"),
-                                                        "vimi-talents-tooltip"
+                                                        "vimi-talents-spell-text"
                                                                 + (args.length == 0
                                                                         ? ""
                                                                         : "-" + args[0])

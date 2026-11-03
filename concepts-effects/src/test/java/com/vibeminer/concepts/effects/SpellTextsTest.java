@@ -1,0 +1,370 @@
+package com.vibeminer.concepts.effects;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.vibeminer.access.Cancellation;
+import com.vibeminer.builds.BuildTypes.BuildRef;
+import com.vibeminer.formats.db2.Db2Types;
+import com.vibeminer.formats.definitions.TableSchema;
+import com.vibeminer.formats.definitions.WowLocale;
+import com.vibeminer.formats.tables.MemoryTables;
+import com.vibeminer.formats.tables.TableTypes;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import org.junit.jupiter.api.Test;
+
+final class SpellTextsTest {
+    private static final BuildRef BUILD =
+            new BuildRef("wowf", "a".repeat(32), "b".repeat(32), "us");
+    private static final List<String> FIELDS =
+            List.of(
+                    "ID",
+                    "EffectAura",
+                    "DifficultyID",
+                    "EffectIndex",
+                    "Effect",
+                    "EffectAmplitude",
+                    "EffectAttributes",
+                    "EffectAuraPeriod",
+                    "EffectBonusCoefficient",
+                    "EffectChainAmplitude",
+                    "EffectChainTargets",
+                    "EffectItemType",
+                    "EffectMechanic",
+                    "EffectPointsPerResource",
+                    "EffectPos_facing",
+                    "EffectRealPointsPerLevel",
+                    "EffectTriggerSpell",
+                    "BonusCoefficientFromAP",
+                    "PvpMultiplier",
+                    "Coefficient",
+                    "Variance",
+                    "ResourceCoefficient",
+                    "GroupSizeBasePointsCoefficient",
+                    "EffectBasePointsF",
+                    "ScalingClass",
+                    "Unknown25",
+                    "EffectMiscValue[0]",
+                    "EffectMiscValue[1]",
+                    "EffectRadiusIndex[0]",
+                    "EffectRadiusIndex[1]",
+                    "EffectSpellClassMask[0]",
+                    "EffectSpellClassMask[1]",
+                    "EffectSpellClassMask[2]",
+                    "EffectSpellClassMask[3]",
+                    "ImplicitTarget[0]",
+                    "ImplicitTarget[1]",
+                    "SpellID");
+    private static final java.util.Set<String> FLOATS =
+            java.util.Set.of(
+                    "EffectAmplitude",
+                    "EffectBonusCoefficient",
+                    "EffectChainAmplitude",
+                    "EffectPointsPerResource",
+                    "EffectPos_facing",
+                    "EffectRealPointsPerLevel",
+                    "BonusCoefficientFromAP",
+                    "PvpMultiplier",
+                    "Coefficient",
+                    "Variance",
+                    "ResourceCoefficient",
+                    "GroupSizeBasePointsCoefficient",
+                    "EffectBasePointsF");
+
+    private static Db2Types.Row row(long id, String... cells) {
+        return new Db2Types.Row(id, false, null, List.of(cells), List.of());
+    }
+
+    private static MemoryTables.FakeTable table(
+            long id,
+            String name,
+            List<String> names,
+            List<Db2Types.Row> rows,
+            TableTypes.State state) {
+        var columns = new ArrayList<Db2Types.Column>();
+        var fields = new ArrayList<TableSchema.SchemaColumn>();
+        for (String field : names) {
+            boolean text = field.endsWith("_lang");
+            boolean floating = FLOATS.contains(field);
+            var kind =
+                    text
+                            ? TableSchema.ColumnKind.LOCSTRING
+                            : floating ? TableSchema.ColumnKind.FLOAT : TableSchema.ColumnKind.INT;
+            columns.add(
+                    new Db2Types.Column(
+                            field,
+                            text ? "string" : floating ? "float" : "integer",
+                            false,
+                            null,
+                            null));
+            fields.add(
+                    new TableSchema.SchemaColumn(
+                            field,
+                            kind,
+                            text || floating ? null : 32,
+                            text || floating ? null : false,
+                            1,
+                            null,
+                            TableSchema.KeyStorage.NONE,
+                            TableSchema.KeyStorage.NONE,
+                            !field.equals("ScalingClass"),
+                            WowLocale.parse("enUS"),
+                            null,
+                            null));
+        }
+        return new MemoryTables.FakeTable(
+                new TableTypes.Entry(
+                        id,
+                        name,
+                        state,
+                        true,
+                        null,
+                        new TableTypes.Counts(
+                                rows.size(), rows.size(), 0, 0, "fixture", "5362E3D4"),
+                        "c".repeat(32)),
+                columns,
+                rows,
+                new TableSchema(
+                        fields,
+                        List.of("5362E3D4"),
+                        TableSchema.SchemaMatch.BUILD,
+                        WowLocale.parse("enUS"),
+                        null),
+                Map.of(),
+                true);
+    }
+
+    private static Db2Types.Row effect(long id, String base, String contextField) {
+        var cells = new ArrayList<>(java.util.Collections.nCopies(FIELDS.size(), "0"));
+        cells.set(FIELDS.indexOf("ID"), Long.toString(id));
+        cells.set(FIELDS.indexOf("SpellID"), "16929");
+        cells.set(FIELDS.indexOf("Effect"), "6");
+        cells.set(FIELDS.indexOf("EffectAura"), "108");
+        cells.set(FIELDS.indexOf("EffectBasePointsF"), base);
+        for (String field :
+                List.of(
+                        "EffectBonusCoefficient",
+                        "EffectChainAmplitude",
+                        "GroupSizeBasePointsCoefficient",
+                        "PvpMultiplier")) {
+            cells.set(FIELDS.indexOf(field), "1");
+        }
+        if (contextField != null) {
+            cells.set(FIELDS.indexOf(contextField), "2");
+        }
+        return new Db2Types.Row(id, false, null, cells, List.of());
+    }
+
+    private static MemoryTables world(List<Db2Types.Row> effects, boolean legacy) {
+        var names = new ArrayList<>(FIELDS);
+        if (legacy) {
+            names.add("EffectBasePoints");
+        }
+        return new MemoryTables()
+                .add(
+                        BUILD,
+                        "enUS",
+                        List.of(
+                                table(
+                                        1,
+                                        "Spell",
+                                        List.of("Description_lang"),
+                                        List.of(row(16929, "Increases armor by $s1%.")),
+                                        TableTypes.State.PARTIAL),
+                                table(2, "SpellEffect", names, effects, TableTypes.State.PARTIAL)));
+    }
+
+    @Test
+    void resolvesSameBuildEffectIndexZeroFromPartialReadableRowsWithoutAddingOne() {
+        var world = world(List.of(effect(99, "4.0", null)), false);
+        try (var tables = world.forBuild(BUILD, "enUS", Cancellation.NONE).join().tables();
+                var service = new SpellTexts(tables, "1.60.1.70707")) {
+            var result =
+                    service.description(16929, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                            .join();
+            assertEquals("Increases armor by 4%.", result.display());
+            assertEquals(SpellTexts.State.RESOLVED, result.state());
+            assertEquals(99, result.substitutions().getFirst().sources().getFirst().rowId());
+            assertEquals(
+                    "SpellID", result.substitutions().getFirst().sources().getFirst().column());
+            assertTrue(result.issues().stream().anyMatch(issue -> issue.contains("PARTIAL")));
+            int reads = world.calls("get");
+            assertEquals(
+                    result,
+                    service.description(16929, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                            .join());
+            assertEquals(reads, world.calls("get"));
+            assertEquals(
+                    SpellTexts.State.UNAVAILABLE,
+                    service.description(1000, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                            .join()
+                            .state());
+        }
+    }
+
+    @Test
+    void reviewedForeverCritAuraMapsTheFirstTokenToTwoPercent() {
+        var sample = effect(693970, "2", null);
+        var values = new ArrayList<>(sample.values());
+        values.set(FIELDS.indexOf("SpellID"), "16942");
+        values.set(FIELDS.indexOf("EffectAura"), "290");
+        var world =
+                new MemoryTables()
+                        .add(
+                                BUILD,
+                                "enUS",
+                                List.of(
+                                        table(
+                                                1,
+                                                "Spell",
+                                                List.of("Description_lang"),
+                                                List.of(row(16942, "Chance rises by $s1%.")),
+                                                TableTypes.State.PARTIAL),
+                                        table(
+                                                2,
+                                                "SpellEffect",
+                                                FIELDS,
+                                                List.of(
+                                                        new Db2Types.Row(
+                                                                693970, false, null, values,
+                                                                List.of())),
+                                                TableTypes.State.PARTIAL)));
+        try (var tables = world.forBuild(BUILD, "enUS", Cancellation.NONE).join().tables();
+                var service = new SpellTexts(tables, "1.60.1.70707")) {
+            var result =
+                    service.description(16942, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                            .join();
+            assertEquals("Chance rises by 2%.", result.display());
+            assertEquals("2", result.substitutions().getFirst().value());
+            assertEquals(0, result.substitutions().getFirst().effectIndex());
+            assertTrue(
+                    result.substitutions().getFirst().sources().stream()
+                            .anyMatch(
+                                    source ->
+                                            source.rowId() == 693970
+                                                    && source.column().equals("EffectBasePointsF")
+                                                    && source.value().equals("2")));
+        }
+    }
+
+    @Test
+    void dynamicAmbiguousLegacyAndMissingEffectsRemainUnresolved() {
+        for (String context :
+                List.of(
+                        "Variance",
+                        "EffectRealPointsPerLevel",
+                        "Coefficient",
+                        "EffectPointsPerResource",
+                        "ScalingClass",
+                        "Effect",
+                        "EffectAura",
+                        "GroupSizeBasePointsCoefficient",
+                        "EffectBonusCoefficient",
+                        "PvpMultiplier")) {
+            assertUnknown(world(List.of(effect(99, "5", context)), false));
+        }
+        assertUnknown(world(List.of(effect(99, "5", null), effect(100, "5", null)), false));
+        assertUnknown(world(List.of(effect(99, "5", null)), true));
+        assertUnknown(world(List.of(), false));
+    }
+
+    private static void assertUnknown(MemoryTables world) {
+        try (var tables = world.forBuild(BUILD, "enUS", Cancellation.NONE).join().tables();
+                var service = new SpellTexts(tables, "1.60.1.70707")) {
+            var result =
+                    service.description(16929, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                            .join();
+            assertEquals(SpellTexts.State.UNRESOLVED, result.state());
+            assertEquals("Increases armor by ?%.", result.display());
+            assertFalse(result.display().contains("$"));
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void admissionIsBoundedAndCloseCancelsAndDrainsAcceptedReads() throws Exception {
+        var entered = new java.util.concurrent.CountDownLatch(4);
+        var waiting =
+                new java.util.concurrent.CopyOnWriteArrayList<
+                        java.util.concurrent.CompletableFuture<TableTypes.SchemaResult>>();
+        var tables =
+                (com.vibeminer.formats.tables.BuildTables)
+                        java.lang.reflect.Proxy.newProxyInstance(
+                                com.vibeminer.formats.tables.BuildTables.class.getClassLoader(),
+                                new Class<?>[] {com.vibeminer.formats.tables.BuildTables.class},
+                                (proxy, method, args) -> {
+                                    if (method.getName().equals("build")) {
+                                        return BUILD;
+                                    }
+                                    if (method.getName().equals("locale")) {
+                                        return "enUS";
+                                    }
+                                    if (method.getName().equals("schema")) {
+                                        var future =
+                                                new java.util.concurrent.CompletableFuture<
+                                                        TableTypes.SchemaResult>();
+                                        var token = (Cancellation) args[2];
+                                        token.onCancel(
+                                                () ->
+                                                        future.completeExceptionally(
+                                                                new java.util.concurrent
+                                                                        .CancellationException()));
+                                        waiting.add(future);
+                                        entered.countDown();
+                                        return future;
+                                    }
+                                    throw new AssertionError(
+                                            "Unexpected borrowed-table call: " + method.getName());
+                                });
+        var caller = new Cancellation();
+        var service = new SpellTexts(tables, "1.60.1.70707");
+        var accepted =
+                new ArrayList<java.util.concurrent.CompletableFuture<SpellTexts.Description>>();
+        for (int i = 0; i < 4; i++) {
+            accepted.add(service.description(16929 + i, TableTypes.Priority.INTERACTIVE, caller));
+        }
+        assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+        assertThrows(
+                java.util.concurrent.CompletionException.class,
+                () -> service.description(17000, TableTypes.Priority.INTERACTIVE, caller).join());
+        service.closeAsync().get(5, java.util.concurrent.TimeUnit.SECONDS);
+        for (var future : accepted) {
+            assertThrows(RuntimeException.class, future::join);
+        }
+        assertFalse(caller.isCanceled());
+        assertTrue(
+                waiting.stream()
+                        .allMatch(
+                                java.util.concurrent.CompletableFuture::isCompletedExceptionally));
+    }
+
+    @Test
+    void closeDoesNotCloseBorrowedTablesOrCancelCallerToken() {
+        var world = world(List.of(effect(99, "5", null)), false);
+        try (var tables = world.forBuild(BUILD, "enUS", Cancellation.NONE).join().tables()) {
+            var token = new Cancellation();
+            var service = new SpellTexts(tables, "1.60.1.70707");
+            service.description(16929, TableTypes.Priority.INTERACTIVE, token).join();
+            service.close();
+            assertFalse(token.isCanceled());
+            assertThrows(
+                    java.util.concurrent.CompletionException.class,
+                    () ->
+                            service.description(16929, TableTypes.Priority.INTERACTIVE, token)
+                                    .join());
+            assertEquals(
+                    TableTypes.State.PARTIAL,
+                    tables.schema(
+                                    TableTypes.Ref.forName("Spell"),
+                                    TableTypes.Priority.INTERACTIVE,
+                                    token)
+                            .join()
+                            .table()
+                            .state());
+        }
+    }
+}
