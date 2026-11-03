@@ -1,5 +1,6 @@
 package com.vimi.gui;
 
+import com.vibeminer.rendering.models.MeshAppearance;
 import com.vibeminer.rendering.models.PreviewMesh;
 
 import javafx.application.Platform;
@@ -120,6 +121,7 @@ public final class GpuPreviewUiTest {
             var ownerStage = (Stage) selected.getScene().getWindow();
             inlineFramesAndVisibility(temporary, selected);
             terminalFailureRejectsQueuedFrame(temporary, ownerStage);
+            appearanceOnlyControlsAndRetry(temporary, ownerStage);
         } finally {
             release.countDown();
             service.closeAsync().get(3, TimeUnit.SECONDS);
@@ -315,6 +317,104 @@ public final class GpuPreviewUiTest {
                     });
             renderer.closeAsync().get(3, TimeUnit.SECONDS);
         }
+    }
+
+    private static void appearanceOnlyControlsAndRetry(Path temporary, Stage stage)
+            throws Exception {
+        var attempts = new java.util.concurrent.atomic.AtomicInteger();
+        var service =
+                new GpuPreviewService(
+                        temporary,
+                        (file, mesh, appearance, parts) -> Files.writeString(file, "authored"),
+                        scene -> {
+                            attempts.incrementAndGet();
+                            throw new IOException("Authored GPU failure");
+                        },
+                        Duration.ofSeconds(2),
+                        Duration.ofMillis(20));
+        var mesh =
+                new PreviewMesh(
+                        new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0},
+                        new int[] {0, 1, 2},
+                        List.of(new PreviewMesh.Part(1, 0, 3)));
+        var appearance =
+                new MeshAppearance(mesh, new float[] {0, 0, 1, 0, 0, 1}, List.of(), List.of());
+        var view = new java.util.concurrent.atomic.AtomicReference<ModelPreviewView>();
+        try {
+            fx(
+                    () -> {
+                        var panel = new ModelPreviewView(service);
+                        stage.setScene(new Scene(panel, 640, 560));
+                        panel.applyCss();
+                        panel.layout();
+                        panel.loading("Loading authored mount…");
+                        var preference = (CheckBox) panel.lookup("#model-gpu-preview");
+                        require(
+                                preference.isDisabled(),
+                                "Loading disables GPU control before appearance");
+                        panel.setAppearance(appearance, Set.of(1));
+                        require(
+                                !preference.isDisabled() && preference.isSelected(),
+                                "Appearance-only mount path re-enables preferred GPU rendering");
+                        view.set(panel);
+                    });
+            waitFor(
+                    () -> attempts.get() == 1 && softwareStatus(view.get()),
+                    "First appearance reaches software fallback");
+            fx(() -> view.get().setAppearance(appearance, Set.of(1)));
+            fx(() -> {});
+            require(
+                    attempts.get() == 1 && softwareStatus(view.get()),
+                    "Repeated identical appearance does not restart failed renderer");
+            fx(
+                    () -> {
+                        view.get().loading("Reloading cached appearance…");
+                        view.get().setAppearance(appearance, Set.of(1));
+                    });
+            waitFor(
+                    () -> attempts.get() == 2 && softwareStatus(view.get()),
+                    "Cached appearance after clear admits one fresh GPU attempt");
+            var replacement =
+                    new MeshAppearance(mesh, new float[] {0, 0, 1, 0, 0, 1}, List.of(), List.of());
+            fx(() -> view.get().setAppearance(replacement, Set.of(1)));
+            waitFor(
+                    () -> attempts.get() == 3 && softwareStatus(view.get()),
+                    "Different immutable appearance admits one fresh GPU attempt");
+            fx(
+                    () -> {
+                        view.get().clear("Closed authored viewer");
+                        view.get().close();
+                        view.get().setAppearance(appearance, Set.of(1));
+                        require(
+                                ((CheckBox) view.get().lookup("#model-gpu-preview")).isDisabled(),
+                                "Closed view cannot re-enable GPU control");
+                        require(
+                                ((javafx.scene.image.ImageView)
+                                                        view.get().lookup("#model-preview-image"))
+                                                .getImage()
+                                        == null,
+                                "Closed view cannot restore an appearance");
+                    });
+            require(attempts.get() == 3, "Closed view cannot launch another renderer");
+        } finally {
+            fx(
+                    () -> {
+                        if (view.get() != null) view.get().close();
+                    });
+            service.closeAsync().get(3, TimeUnit.SECONDS);
+        }
+    }
+
+    private static boolean softwareStatus(ModelPreviewView view) throws Exception {
+        var software = new java.util.concurrent.atomic.AtomicBoolean();
+        fx(
+                () ->
+                        software.set(
+                                ((Label) view.lookup("#model-gpu-status"))
+                                        .getText()
+                                        .toLowerCase(java.util.Locale.ROOT)
+                                        .contains("software")));
+        return software.get();
     }
 
     private static String[] latestView(GpuPreviewServiceTest.FakeProcess child, long after)

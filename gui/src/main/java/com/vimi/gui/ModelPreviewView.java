@@ -270,9 +270,14 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
     }
 
     void setAppearance(MeshAppearance value, Set<Integer> visibleParts) {
+        if (closed) return;
+        var parts = Set.copyOf(visibleParts);
+        boolean newScene = mesh != value.mesh() || appearance != value || !visible.equals(parts);
+        if (newScene) gpuFailed = false;
         appearance = value;
         mesh = value.mesh();
-        visible = Set.copyOf(visibleParts);
+        visible = parts;
+        gpuButton.setDisable(false);
         textures.setDisable(false);
         request();
     }
