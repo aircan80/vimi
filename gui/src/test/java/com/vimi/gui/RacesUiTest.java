@@ -30,6 +30,7 @@ public final class RacesUiTest {
 
     private static final CompletableFuture<Void> loadingChecks = new CompletableFuture<>();
     private static final CompletableFuture<Void> voiceLoadingChecks = new CompletableFuture<>();
+    private static final CompletableFuture<Void> voiceRetirementChecks = new CompletableFuture<>();
 
     public static void main(String[] args) throws Exception {
         var done = new CompletableFuture<Void>();
@@ -38,6 +39,7 @@ public final class RacesUiTest {
                     try {
                         loadingFeedback();
                         voiceLoadingFeedback();
+                        voiceRetirementFeedback();
                         var human = new RaceTypes.Race(1, "Authored Human", 1, 2);
                         var internal = new RaceTypes.Race(99, "Internal record", 99, 0);
                         var pending = new CompletableFuture<RaceTypes.Overview>();
@@ -439,12 +441,176 @@ public final class RacesUiTest {
             done.get(20, TimeUnit.SECONDS);
             loadingChecks.get(5, TimeUnit.SECONDS);
             voiceLoadingChecks.get(5, TimeUnit.SECONDS);
+            voiceRetirementChecks.get(5, TimeUnit.SECONDS);
             System.out.println(
                     "Races UI: partial data, icons, internal-record filter, stale selection and"
                             + " borrowed lifetime passed");
         } finally {
             Platform.exit();
         }
+    }
+
+    private static void voiceRetirementFeedback() {
+        var first = new CompletableFuture<com.vibeminer.concepts.races.RaceVoiceTypes.Catalog>();
+        var superseded =
+                new CompletableFuture<com.vibeminer.concepts.races.RaceVoiceTypes.Catalog>();
+        var latest = new CompletableFuture<com.vibeminer.concepts.races.RaceVoiceTypes.Catalog>();
+        var catalogs =
+                new java.util.ArrayDeque<
+                        CompletableFuture<com.vibeminer.concepts.races.RaceVoiceTypes.Catalog>>();
+        catalogs.add(first);
+        catalogs.add(superseded);
+        catalogs.add(latest);
+        var audio = new CompletableFuture<com.vibeminer.concepts.races.RaceVoiceTypes.Audio>();
+        var external = new java.util.concurrent.atomic.AtomicBoolean();
+        BuildRaces handle =
+                new BuildRaces() {
+                    public CompletableFuture<RaceTypes.Catalog> catalog(Cancellation token) {
+                        return new CompletableFuture<>();
+                    }
+
+                    public CompletableFuture<RaceTypes.Overview> overview(
+                            long id, Cancellation token) {
+                        return new CompletableFuture<>();
+                    }
+
+                    public CompletableFuture<com.vibeminer.concepts.races.RaceVoiceTypes.Catalog>
+                            voices(long race, long playerClass, int sex, Cancellation token) {
+                        return catalogs.remove();
+                    }
+
+                    public CompletableFuture<com.vibeminer.concepts.races.RaceVoiceTypes.Audio>
+                            voice(
+                                    long race,
+                                    long playerClass,
+                                    int sex,
+                                    long entry,
+                                    Cancellation token) {
+                        return audio;
+                    }
+
+                    public CompletableFuture<Void> closeAsync() {
+                        return CompletableFuture.completedFuture(null);
+                    }
+                };
+        var ready =
+                new com.vibeminer.concepts.races.RaceVoiceTypes.Catalog(
+                        RaceTypes.State.READY,
+                        "Authored",
+                        List.of(
+                                new com.vibeminer.concepts.races.RaceVoiceTypes.Clip(
+                                        1, 1, "Authored", 1, 1)),
+                        List.of(),
+                        null);
+        var panel = new RaceVoicePanel(handle, external::get);
+        new Scene(panel, 650, 250);
+        panel.applyCss();
+        panel.layout();
+        panel.selection(1, 1, 0);
+        external.set(true);
+        first.complete(ready);
+        Platform.runLater(
+                () -> {
+                    try {
+                        require(activityCount(panel) == 0, "Retired voice catalog clears activity");
+                        require(
+                                panel.lookupAll(".combo-box").stream()
+                                        .allMatch(javafx.scene.Node::isDisabled),
+                                "Retired voice choices disabled");
+                        external.set(false);
+                        panel.selection(1, 1, 1);
+                        panel.selection(1, 2, 1);
+                        superseded.complete(ready);
+                        Platform.runLater(
+                                () -> {
+                                    try {
+                                        require(
+                                                activityCount(panel) > 0,
+                                                "Old voice catalog cannot clear newer pending"
+                                                    + " state");
+                                        latest.complete(ready);
+                                        Platform.runLater(
+                                                () -> {
+                                                    try {
+                                                        var play =
+                                                                panel.lookupAll(".button").stream()
+                                                                        .filter(
+                                                                                node ->
+                                                                                        node
+                                                                                                        instanceof
+                                                                                                        javafx
+                                                                                                                        .scene
+                                                                                                                        .control
+                                                                                                                        .Button
+                                                                                                                button
+                                                                                                && button.getText()
+                                                                                                        .equals(
+                                                                                                                "Play"))
+                                                                        .map(
+                                                                                javafx.scene.control
+                                                                                                .Button
+                                                                                                .class
+                                                                                        ::cast)
+                                                                        .findFirst()
+                                                                        .orElseThrow();
+                                                        play.fire();
+                                                        require(
+                                                                activityCount(panel) > 0,
+                                                                "Voice decode is pending before"
+                                                                    + " retirement");
+                                                        external.set(true);
+                                                        audio.completeExceptionally(
+                                                                new IllegalStateException(
+                                                                        "Authored retired decode"));
+                                                        Platform.runLater(
+                                                                () -> {
+                                                                    try {
+                                                                        require(
+                                                                                activityCount(panel)
+                                                                                                == 0
+                                                                                        && play
+                                                                                                .isDisabled(),
+                                                                                "Retired voice"
+                                                                                    + " decode"
+                                                                                    + " clears busy"
+                                                                                    + " and disables"
+                                                                                    + " old playback");
+                                                                        require(
+                                                                                labels(panel)
+                                                                                        .contains(
+                                                                                                "Build"
+                                                                                                    + " changed."
+                                                                                                    + " Reload"
+                                                                                                    + " voice"
+                                                                                                    + " records."),
+                                                                                "Voice retirement"
+                                                                                    + " explicit");
+                                                                        panel.close();
+                                                                        voiceRetirementChecks
+                                                                                .complete(null);
+                                                                    } catch (Throwable failure) {
+                                                                        panel.close();
+                                                                        voiceRetirementChecks
+                                                                                .completeExceptionally(
+                                                                                        failure);
+                                                                    }
+                                                                });
+                                                    } catch (Throwable failure) {
+                                                        panel.close();
+                                                        voiceRetirementChecks.completeExceptionally(
+                                                                failure);
+                                                    }
+                                                });
+                                    } catch (Throwable failure) {
+                                        panel.close();
+                                        voiceRetirementChecks.completeExceptionally(failure);
+                                    }
+                                });
+                    } catch (Throwable failure) {
+                        panel.close();
+                        voiceRetirementChecks.completeExceptionally(failure);
+                    }
+                });
     }
 
     private static void voiceLoadingFeedback() {

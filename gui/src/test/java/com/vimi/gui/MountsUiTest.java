@@ -33,6 +33,7 @@ public final class MountsUiTest {
     private MountsUiTest() {}
 
     private static final CompletableFuture<Void> loadingChecks = new CompletableFuture<>();
+    private static final CompletableFuture<Void> retirementChecks = new CompletableFuture<>();
 
     public static void main(String[] args) throws Exception {
         var done = new CompletableFuture<Void>();
@@ -40,6 +41,7 @@ public final class MountsUiTest {
                 () -> {
                     try {
                         loadingFeedback();
+                        retirementFeedback();
                         var runner =
                                 new MountTypes.Mount(
                                         6,
@@ -291,6 +293,7 @@ public final class MountsUiTest {
         try {
             done.get(20, TimeUnit.SECONDS);
             loadingChecks.get(5, TimeUnit.SECONDS);
+            retirementChecks.get(5, TimeUnit.SECONDS);
             System.out.println(
                     "Mounts UI: partial records, lazy variants, source-spell search, resize, stale"
                             + " selection and borrowed lifetime passed");
@@ -401,6 +404,196 @@ public final class MountsUiTest {
         if (node instanceof javafx.scene.Parent parent)
             for (var child : parent.getChildrenUnmodifiable()) count += activityCount(child);
         return count;
+    }
+
+    private static void retirementFeedback() {
+        var pages = new java.util.ArrayDeque<CompletableFuture<MountTypes.Catalog>>();
+        var first = new CompletableFuture<MountTypes.Catalog>();
+        var superseded = new CompletableFuture<MountTypes.Catalog>();
+        var latest = new CompletableFuture<MountTypes.Catalog>();
+        pages.add(first);
+        pages.add(superseded);
+        pages.add(latest);
+        var detail = new CompletableFuture<MountTypes.Overview>();
+        var newerDetail = new CompletableFuture<MountTypes.Overview>();
+        var details = new java.util.ArrayDeque<CompletableFuture<MountTypes.Overview>>();
+        details.add(detail);
+        details.add(newerDetail);
+        var other = new MountTypes.Mount(2, "New selection", "", "", null, null, null, null, null);
+        var record =
+                new MountTypes.Mount(1, "Retirement fixture", "", "", null, null, null, null, null);
+        var revision = new java.util.concurrent.atomic.AtomicLong(1);
+        BuildMounts handle =
+                new BuildMounts() {
+                    public CompletableFuture<MountTypes.Catalog> catalog(Cancellation token) {
+                        return pages.remove();
+                    }
+
+                    public CompletableFuture<MountTypes.Overview> overview(
+                            long id, Cancellation token) {
+                        return details.remove();
+                    }
+
+                    public CompletableFuture<
+                                    com.vibeminer.concepts.models.DisplayModelTypes.Preview>
+                            preview(long id, long variant, Cancellation token) {
+                        return new CompletableFuture<>();
+                    }
+
+                    public CompletableFuture<Void> closeAsync() {
+                        return CompletableFuture.completedFuture(null);
+                    }
+                };
+        var handles = new java.util.concurrent.atomic.AtomicReference<BuildMounts>(handle);
+        var view = new MountsView(handles::get, revision::get, "Authored retirement fixture");
+        new Scene(view, 1200, 850);
+        view.applyCss();
+        view.layout();
+        view.ensureLoaded();
+        view.applyCss();
+        view.layout();
+        revision.incrementAndGet();
+        first.complete(new MountTypes.Catalog(MountTypes.State.READY, List.of(), List.of(), null));
+        Platform.runLater(
+                () -> {
+                    try {
+                        require(
+                                activityCount(view) == 0,
+                                "External revision retires current catalog activity");
+                        require(
+                                view.lookupAll(".list-view").stream()
+                                        .anyMatch(javafx.scene.Node::isDisabled),
+                                "Retired catalog actions disabled");
+                        view.ensureLoaded();
+                        view.invalidate();
+                        view.ensureLoaded();
+                        superseded.complete(
+                                new MountTypes.Catalog(
+                                        MountTypes.State.READY, List.of(), List.of(), null));
+                        Platform.runLater(
+                                () -> {
+                                    try {
+                                        require(
+                                                activityCount(view) > 0,
+                                                "Old catalog cannot clear newer pending activity");
+                                        latest.complete(
+                                                new MountTypes.Catalog(
+                                                        MountTypes.State.READY,
+                                                        List.of(record, other),
+                                                        List.of(),
+                                                        null));
+                                        Platform.runLater(
+                                                () -> {
+                                                    try {
+                                                        require(
+                                                                activityCount(view) > 0,
+                                                                "Current detail remains pending");
+                                                        var list =
+                                                                (javafx.scene.control.ListView<?>)
+                                                                        view
+                                                                                .lookupAll(
+                                                                                        ".list-view")
+                                                                                .stream()
+                                                                                .filter(
+                                                                                        node ->
+                                                                                                ((javafx
+                                                                                                                                        .scene
+                                                                                                                                        .control
+                                                                                                                                        .ListView<
+                                                                                                                                ?>)
+                                                                                                                        node)
+                                                                                                                .getItems()
+                                                                                                                .size()
+                                                                                                        == 2)
+                                                                                .findFirst()
+                                                                                .orElseThrow();
+                                                        list.getSelectionModel().select(1);
+                                                        handles.set(null);
+                                                        detail.completeExceptionally(
+                                                                new IllegalStateException(
+                                                                        "Authored retired detail"));
+                                                        Platform.runLater(
+                                                                () -> {
+                                                                    try {
+                                                                        require(
+                                                                                activityCount(view)
+                                                                                        > 0,
+                                                                                "Older selection"
+                                                                                    + " cannot"
+                                                                                    + " retire"
+                                                                                    + " newer"
+                                                                                    + " pending"
+                                                                                    + " detail");
+                                                                        newerDetail
+                                                                                .completeExceptionally(
+                                                                                        new IllegalStateException(
+                                                                                                "Authored"
+                                                                                                    + " current"
+                                                                                                    + " retired"
+                                                                                                    + " detail"));
+                                                                        Platform.runLater(
+                                                                                () -> {
+                                                                                    try {
+                                                                                        require(
+                                                                                                activityCount(
+                                                                                                                view)
+                                                                                                        == 0,
+                                                                                                "External"
+                                                                                                    + " handle"
+                                                                                                    + " retirement"
+                                                                                                    + " clears"
+                                                                                                    + " detail"
+                                                                                                    + " activity");
+                                                                                        require(
+                                                                                                labels(
+                                                                                                                view)
+                                                                                                        .stream()
+                                                                                                        .anyMatch(
+                                                                                                                text ->
+                                                                                                                        text
+                                                                                                                                .contains(
+                                                                                                                                        "Build"
+                                                                                                                                            + " changed")),
+                                                                                                "Retirement"
+                                                                                                    + " is explicit");
+                                                                                        view
+                                                                                                .close();
+                                                                                        retirementChecks
+                                                                                                .complete(
+                                                                                                        null);
+                                                                                    } catch (
+                                                                                            Throwable
+                                                                                                    failure) {
+                                                                                        view
+                                                                                                .close();
+                                                                                        retirementChecks
+                                                                                                .completeExceptionally(
+                                                                                                        failure);
+                                                                                    }
+                                                                                });
+                                                                    } catch (Throwable failure) {
+                                                                        view.close();
+                                                                        retirementChecks
+                                                                                .completeExceptionally(
+                                                                                        failure);
+                                                                    }
+                                                                });
+                                                    } catch (Throwable failure) {
+                                                        view.close();
+                                                        retirementChecks.completeExceptionally(
+                                                                failure);
+                                                    }
+                                                });
+                                    } catch (Throwable failure) {
+                                        view.close();
+                                        retirementChecks.completeExceptionally(failure);
+                                    }
+                                });
+                    } catch (Throwable failure) {
+                        view.close();
+                        retirementChecks.completeExceptionally(failure);
+                    }
+                });
     }
 
     private static void loadingFeedback() {

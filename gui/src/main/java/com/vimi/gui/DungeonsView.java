@@ -238,6 +238,7 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
         bound = handle;
         revision = currentRevision;
         loaded = true;
+        dungeons.setDisable(false);
         catalogLoading = true;
         dungeons.setPlaceholder(activity("Loading dungeon records…"));
         long request = generation;
@@ -333,6 +334,7 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
     }
 
     private void select(DungeonTypes.Dungeon dungeon) {
+        if (stale(generation, bound)) return;
         selected = dungeon.mapId();
         wanted = selected;
         selectionToken.cancel();
@@ -358,9 +360,9 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
                         (result, failure) ->
                                 Platform.runLater(
                                         () -> {
-                                            if (stale(request, handle)
-                                                    || selection != selectionGeneration
-                                                    || !Objects.equals(selected, dungeon.mapId())) {
+                                            if (selection != selectionGeneration
+                                                    || !Objects.equals(selected, dungeon.mapId())
+                                                    || stale(request, handle)) {
                                                 return;
                                             }
                                             if (failure != null
@@ -608,9 +610,10 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
                                     (pixels, failure) ->
                                             Platform.runLater(
                                                     () -> {
-                                                        if (stale(catalogRequest, handle)
-                                                                || request != selectionGeneration
-                                                                || getItem() != encounter) return;
+                                                        if (request != selectionGeneration
+                                                                || getItem() != encounter
+                                                                || stale(catalogRequest, handle))
+                                                            return;
                                                         if (failure != null || pixels == null) {
                                                             icon.setAccessibleText(
                                                                     "Encounter icon unavailable");
@@ -809,11 +812,15 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
     }
 
     private boolean stale(long request, BuildDungeons handle) {
-        return closed
-                || generation != request
-                || bound != handle
-                || revision != revisions.getAsLong()
-                || handles.get() != handle;
+        if (closed || generation != request) return true;
+        if (bound == handle && revision == revisions.getAsLong() && handles.get() == handle)
+            return false;
+        invalidate();
+        dungeons.setDisable(true);
+        dungeons.setPlaceholder(text("Build changed. Reload dungeon records.", "muted"));
+        clearDetails("Build changed. Reload dungeon records.");
+        status.setText("Build changed. Reload dungeon records.");
+        return true;
     }
 
     private void clearDetails(String message) {

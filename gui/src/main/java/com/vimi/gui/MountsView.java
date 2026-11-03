@@ -244,6 +244,7 @@ final class MountsView extends BorderPane implements AutoCloseable {
         bound = handle;
         revision = currentRevision;
         loaded = true;
+        mounts.setDisable(false);
         catalogLoading = true;
         mounts.setPlaceholder(activity("Loading mount records…"));
         long request = generation;
@@ -330,6 +331,7 @@ final class MountsView extends BorderPane implements AutoCloseable {
     }
 
     private void select(MountTypes.Mount mount) {
+        if (stale(generation, bound)) return;
         selected = mount.id();
         selectionToken.cancel();
         previewToken.cancel();
@@ -360,9 +362,9 @@ final class MountsView extends BorderPane implements AutoCloseable {
                         (result, failure) ->
                                 Platform.runLater(
                                         () -> {
-                                            if (stale(catalogRequest, handle)
-                                                    || request != selectionGeneration
-                                                    || !Objects.equals(selected, mount.id())) {
+                                            if (request != selectionGeneration
+                                                    || !Objects.equals(selected, mount.id())
+                                                    || stale(catalogRequest, handle)) {
                                                 return;
                                             }
                                             if (failure != null || result == null) {
@@ -420,6 +422,7 @@ final class MountsView extends BorderPane implements AutoCloseable {
     }
 
     private void preview(MountTypes.Variant variant) {
+        if (stale(generation, bound)) return;
         if (current == null || selected == null) {
             return;
         }
@@ -439,9 +442,9 @@ final class MountsView extends BorderPane implements AutoCloseable {
                         (result, failure) ->
                                 Platform.runLater(
                                         () -> {
-                                            if (stale(catalogRequest, handle)
-                                                    || request != previewGeneration
-                                                    || !Objects.equals(selected, mountId)) {
+                                            if (request != previewGeneration
+                                                    || !Objects.equals(selected, mountId)
+                                                    || stale(catalogRequest, handle)) {
                                                 return;
                                             }
                                             if (failure != null
@@ -579,11 +582,17 @@ final class MountsView extends BorderPane implements AutoCloseable {
     }
 
     private boolean stale(long request, BuildMounts handle) {
-        return closed
-                || request != generation
-                || bound != handle
-                || revisions.getAsLong() != revision
-                || handles.get() != handle;
+        if (closed || request != generation) return true;
+        if (bound == handle && revisions.getAsLong() == revision && handles.get() == handle)
+            return false;
+        invalidate();
+        mounts.setDisable(true);
+        variants.getItems().clear();
+        variants.setDisable(true);
+        mounts.setPlaceholder(text("Build changed. Reload mount records.", "muted"));
+        model.clear("Build changed. Reload mount records.");
+        status.setText("Build changed. Reload mount records.");
+        return true;
     }
 
     void invalidate() {

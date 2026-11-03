@@ -66,12 +66,13 @@ final class RaceVoicePanel extends VBox implements AutoCloseable {
     }
 
     void selection(long raceId, long classId, int sex) {
-        if (closed) return;
+        if (stale(generation)) return;
         stop();
         this.raceId = raceId;
         this.classId = classId;
         this.sex = sex;
         clips.getItems().clear();
+        clips.setDisable(false);
         play.setDisable(true);
         busy("Loading recorded voice clips…");
         long request = ++generation;
@@ -107,7 +108,7 @@ final class RaceVoicePanel extends VBox implements AutoCloseable {
 
     private void play() {
         var selected = clips.getValue();
-        if (closed || selected == null) {
+        if (stale(generation) || selected == null) {
             return;
         }
         token.cancel();
@@ -202,7 +203,15 @@ final class RaceVoicePanel extends VBox implements AutoCloseable {
     }
 
     private boolean stale(long request) {
-        return closed || generation != request || workspaceStale.getAsBoolean();
+        if (closed || generation != request) return true;
+        if (!workspaceStale.getAsBoolean()) return false;
+        stop();
+        clips.getItems().clear();
+        clips.setDisable(true);
+        play.setDisable(true);
+        stop.setDisable(true);
+        status.setText("Build changed. Reload voice records.");
+        return true;
     }
 
     private void stop() {
