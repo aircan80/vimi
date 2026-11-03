@@ -4,9 +4,18 @@ Open a prepared build and choose **World**. The sidebar starts with continent
 records (`Map.InstanceType=0`); include other maps to inspect instances/internal
 records too. Search uses recorded map names and IDs. Select a map, inspect its
 readable areas, choose a tile in its 64×64 terrain inventory, then Open explorer.
-The zone list is reference information; selecting an area changes its description
-and does not filter or navigate the full-map terrain inventory. The highlighted
-tile is a starting location, not a claim about a selected zone's center.
+Selecting an area alone does not acquire terrain. **Find terrain** explicitly
+checks the map's terrain files for that exact recorded area ID. Missing files may
+be downloaded by the existing source service. Checked/total, matches, unavailable
+files and Cancel remain visible. Child areas are not implicitly included.
+
+Matching tiles receive blue outlines and appear in a result list while the full
+continent remains visible. Choose a match, then **Open explorer**. Its source
+content key and chunk evidence are revalidated before the initial camera uses an
+actual retained terrain sample plus the normal altitude offset. A tile may contain
+multiple areas; a fully holed match has no rendered entry. Changed sources require
+finding terrain again. Canceled/failed scans retain explicit partial coverage;
+no observed match does not prove that an entire zone has no terrain.
 
 The screen grid uses filename-coordinate Y horizontally and X vertically. Drawing,
 highlighting and hit testing share that mapping. WDT tuple/file identities and
@@ -89,3 +98,27 @@ not a multi-tile frame-rate guarantee. Actual game payloads/proof images remain
 outside the repository. The image below contains authored geometry only.
 
 ![Authored World explorer](images/world-authored.png)
+
+## Verified area discovery
+
+The metadata path shares ADT18 chunk/header/MCVT validation with geometry, checks
+all source-derived coordinates, and reads unsigned MCNK areaID at offset52.
+It retains source-order chunk identities and chooses the first nonholed cell
+center as an entry reference. Raw MCNK origin Z is a height base; the entry Z
+includes the recorded MCVT sample. Fully holed chunks remain area evidence but
+cannot supply an automatic terrain entry.
+
+Discovery has one active worker and one latest pending request. It reads one
+bounded32MiB source at a time, checks at most4096 unique inventory tiles, retains
+at most4096 tile matches and32 diagnostic samples, and publishes counts at most
+10Hz. It creates no persistent area index. Close drains reads without closing
+borrowed file/table handles; stale area/map/workspace results cannot overwrite
+newer activity or matching tiles.
+
+Read-only/scratch Forever1.60.1.70755 acceptance resolved Eastern Kingdoms'736
+inventory tiles and root ADT777947 at32,32. Its256 chunks recorded seven distinct
+area IDs. An exact-area279 lookup matched one chunk, revalidated its source,
+and used an entry point equal to an actual native mesh vertex. The original
+application library stayed read-only; one missing tile was acquired into a
+private scratch store. This is a one-tile source proof, not a completed continent
+or zone-coverage scan. No game assets or screenshots enter Git.
