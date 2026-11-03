@@ -36,6 +36,7 @@ final class SortedComparisonInputTest {
         final AtomicInteger closes = new AtomicInteger();
         final CompletableFuture<Void> closed;
         String identity = "captured";
+        volatile Thread readerThread;
 
         Fixture(List<Record> rows) {
             this(rows, CompletableFuture.completedFuture(null));
@@ -58,6 +59,7 @@ final class SortedComparisonInputTest {
 
         public CompletableFuture<SortedComparisonInput.UnsortedPage> read(
                 String cursor, int maxRows, long maxBytes, Cancellation token) {
+            readerThread = Thread.currentThread();
             token.check();
             int start = cursor == null ? 0 : Integer.parseInt(cursor);
             var page = new ArrayList<Record>();
@@ -336,6 +338,177 @@ final class SortedComparisonInputTest {
                 read.handle((value, failure) -> null).join();
             }
             assertDrained(budget);
+        }
+    }
+
+    @Test
+    void cancelingCaptureFutureCancelsHeldSourceReadAndWaitsForItsDrain() throws Exception {
+        try (var budget = new TempBudget()) {
+            var profile = budget.reserveMemory("held-profile", 512, Cancellation.NONE);
+            var readEntered = new CompletableFuture<Void>();
+            var readerThread = new java.util.concurrent.atomic.AtomicReference<Thread>();
+            var closeEntered = new CompletableFuture<Void>();
+            var releaseClose = new CompletableFuture<Void>();
+            var reads = new CompletableFuture<SortedComparisonInput.UnsortedPage>();
+            var closes = new AtomicInteger();
+            SortedComparisonInput.Source source =
+                    new SortedComparisonInput.Source() {
+                        public Descriptor descriptor() {
+                            return new Fixture(List.of()).descriptor();
+                        }
+
+                        public CompletableFuture<SortedComparisonInput.UnsortedPage> read(
+                                String cursor, int count, long bytes, Cancellation token) {
+                            readerThread.set(Thread.currentThread());
+                            var registration =
+                                    token.onCancel(
+                                            () ->
+                                                    reads.completeExceptionally(
+                                                            new java.util.concurrent
+                                                                    .CancellationException(
+                                                                    "held source canceled")));
+                            reads.whenComplete((value, failure) -> registration.close());
+                            readEntered.complete(null);
+                            return reads;
+                        }
+
+                        public CompletableFuture<Void> closeAsync() {
+                            closes.incrementAndGet();
+                            closeEntered.complete(null);
+                            return releaseClose.thenRun(profile::close);
+                        }
+                    };
+            var capture =
+                    SortedComparisonInput.capture(source, temporary, budget, Cancellation.NONE);
+            readEntered.get(3, java.util.concurrent.TimeUnit.SECONDS);
+            assertTrue(capture.cancel(false));
+            closeEntered.get(3, java.util.concurrent.TimeUnit.SECONDS);
+            assertTrue(
+                    reads.isCompletedExceptionally(),
+                    "Private capture cancellation reaches the held source read");
+            assertEquals(
+                    512,
+                    budget.snapshot().memory(),
+                    "Source profile remains charged until close drains");
+            releaseClose.complete(null);
+            awaitDrained(budget);
+            assertStopped(readerThread.get());
+            assertEquals(1, closes.get());
+        }
+    }
+
+    @Test
+    void canceledDeliveryCannotOrphanAnAlreadySealedSortedInput() throws Exception {
+        try (var budget = new TempBudget()) {
+            var source = new Fixture(List.of(row(2, "b"), row(1, "a")));
+            var delivery = new java.util.concurrent.ArrayBlockingQueue<Runnable>(1);
+            var capture =
+                    SortedComparisonInput.capture(
+                            source, temporary, budget, Cancellation.NONE, delivery::add);
+            var deliver = delivery.poll(3, java.util.concurrent.TimeUnit.SECONDS);
+            assertTrue(deliver != null, "Capture reached its deterministic delivery boundary");
+            assertEquals(1, source.closes.get());
+            assertTrue(
+                    budget.snapshot().disk() > 0,
+                    "Sealed input still owns charged scratch before delivery");
+            assertTrue(capture.cancel(false));
+            deliver.run();
+            awaitDrained(budget);
+            assertStopped(source.readerThread);
+        }
+    }
+
+    @Test
+    void tokenCancellationAtSealedDeliveryBoundaryReturnsTypedFailureAndDrains() throws Exception {
+        try (var budget = new TempBudget()) {
+            var token = new Cancellation();
+            var delivery = new java.util.concurrent.ArrayBlockingQueue<Runnable>(1);
+            var capture =
+                    SortedComparisonInput.capture(
+                            new Fixture(List.of(row(1, "a"))),
+                            temporary,
+                            budget,
+                            token,
+                            delivery::add);
+            var deliver = delivery.poll(3, java.util.concurrent.TimeUnit.SECONDS);
+            assertTrue(deliver != null);
+            token.cancel();
+            deliver.run();
+            var error = assertThrows(CompletionException.class, capture::join);
+            assertEquals(
+                    SortedComparisonInput.Reason.CANCELED,
+                    assertInstanceOf(SortedComparisonInput.CaptureFailure.class, error.getCause())
+                            .reason());
+            assertDrained(budget);
+        }
+    }
+
+    @Test
+    void tokenCancellationWhileSourceCloseIsHeldCannotPublishSealedInput() throws Exception {
+        try (var budget = new TempBudget()) {
+            var release = new CompletableFuture<Void>();
+            var source = new Fixture(List.of(row(1, "a")), release);
+            var token = new Cancellation();
+            var capture = SortedComparisonInput.capture(source, temporary, budget, token);
+            var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(3);
+            while (source.closes.get() == 0) {
+                if (System.nanoTime() > deadline) {
+                    throw new AssertionError("Capture did not reach source drain");
+                }
+                Thread.sleep(5);
+            }
+            token.cancel();
+            assertFalse(capture.isDone());
+            release.complete(null);
+            var error = assertThrows(CompletionException.class, capture::join);
+            assertEquals(
+                    SortedComparisonInput.Reason.CANCELED,
+                    assertInstanceOf(SortedComparisonInput.CaptureFailure.class, error.getCause())
+                            .reason());
+            assertDrained(budget);
+        }
+    }
+
+    @Test
+    void rejectedDeliveryAlsoDrainsTheUnpublishedInput() throws Exception {
+        try (var budget = new TempBudget()) {
+            var source = new Fixture(List.of(row(1, "a")));
+            var capture =
+                    SortedComparisonInput.capture(
+                            source,
+                            temporary,
+                            budget,
+                            Cancellation.NONE,
+                            task -> {
+                                throw new java.util.concurrent.RejectedExecutionException(
+                                        "authored delivery rejection");
+                            });
+            assertThrows(CompletionException.class, capture::join);
+            assertEquals(1, source.closes.get());
+            assertDrained(budget);
+        }
+    }
+
+    private static void assertStopped(Thread worker) throws Exception {
+        assertTrue(worker != null);
+        worker.join(3000);
+        assertFalse(worker.isAlive(), "Canceled capture terminates its owned worker");
+    }
+
+    private void awaitDrained(TempBudget budget) throws Exception {
+        var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(3);
+        while (budget.snapshot().reservations() != 0 || scratchCount() != 0) {
+            if (System.nanoTime() > deadline) {
+                throw new AssertionError("Canceled capture did not drain owned resources");
+            }
+            Thread.sleep(5);
+        }
+        assertDrained(budget);
+    }
+
+    private long scratchCount() throws Exception {
+        try (var files = Files.list(temporary)) {
+            return files.count();
         }
     }
 

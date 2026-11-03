@@ -127,11 +127,25 @@ public final class SortedComparisonInput implements ComparisonInput {
 
     /**
      * Takes ownership of source. Complete capture/sort before passing the returned input to
-     * core.start.
+     * core.start. Cancel the supplied token and await this future when the caller needs a drain
+     * barrier. Canceling the future also cancels capture and disposes an undeliverable input, but
+     * CompletableFuture cancellation itself completes immediately, before asynchronous cleanup.
      */
     public static CompletableFuture<SortedComparisonInput> capture(
             Source source, Path parent, TempBudget budget, Cancellation token) {
+        return capture(source, parent, budget, token, Runnable::run);
+    }
+
+    // Inject delivery only for deterministic ownership-race fixtures; delivery is dispatched
+    // from the common pool, never from the sort worker that closeAsync must drain.
+    static CompletableFuture<SortedComparisonInput> capture(
+            Source source,
+            Path parent,
+            TempBudget budget,
+            Cancellation token,
+            java.util.concurrent.Executor delivery) {
         Objects.requireNonNull(token);
+        Objects.requireNonNull(delivery);
         SortedComparisonInput input;
         try {
             input = new SortedComparisonInput(source, parent, budget);
@@ -146,11 +160,18 @@ public final class SortedComparisonInput implements ComparisonInput {
                             });
         }
         var result = new CompletableFuture<SortedComparisonInput>();
+        var link = token.onCancel(input.lifetime::cancel);
+        result.whenComplete(
+                (value, failure) -> {
+                    if (result.isCancelled()) {
+                        input.lifetime.cancel();
+                    }
+                });
         input.worker.execute(
                 () -> {
                     Throwable failure = null;
                     try {
-                        input.captureAndSort(token);
+                        input.captureAndSort(input.lifetime);
                     } catch (Throwable caught) {
                         failure = input.classify(caught);
                     }
@@ -163,6 +184,9 @@ public final class SortedComparisonInput implements ComparisonInput {
                             failure.addSuppressed(cleanup);
                         }
                     }
+                    if (failure == null && input.lifetime.isCanceled()) {
+                        failure = input.classify(new java.util.concurrent.CancellationException());
+                    }
                     if (failure != null) {
                         try {
                             input.cleanup();
@@ -170,10 +194,51 @@ public final class SortedComparisonInput implements ComparisonInput {
                             failure.addSuppressed(cleanup);
                         }
                         input.worker.shutdown();
+                        link.close();
                         var terminal = failure;
                         CompletableFuture.runAsync(() -> result.completeExceptionally(terminal));
                     } else {
-                        CompletableFuture.runAsync(() -> result.complete(input));
+                        CompletableFuture.runAsync(
+                                () -> {
+                                    try {
+                                        delivery.execute(
+                                                () -> {
+                                                    link.close();
+                                                    if (input.lifetime.isCanceled()) {
+                                                        input.closeAsync()
+                                                                .whenComplete(
+                                                                        (ignored, cleanup) -> {
+                                                                            var canceled =
+                                                                                    input.classify(
+                                                                                            new java
+                                                                                                    .util
+                                                                                                    .concurrent
+                                                                                                    .CancellationException());
+                                                                            if (cleanup != null) {
+                                                                                canceled
+                                                                                        .addSuppressed(
+                                                                                                cleanup);
+                                                                            }
+                                                                            result
+                                                                                    .completeExceptionally(
+                                                                                            canceled);
+                                                                        });
+                                                    } else if (!result.complete(input)) {
+                                                        input.closeAsync();
+                                                    }
+                                                });
+                                    } catch (Throwable rejected) {
+                                        link.close();
+                                        input.closeAsync()
+                                                .whenComplete(
+                                                        (ignored, cleanup) -> {
+                                                            if (cleanup != null) {
+                                                                rejected.addSuppressed(cleanup);
+                                                            }
+                                                            result.completeExceptionally(rejected);
+                                                        });
+                                    }
+                                });
                     }
                 });
         return result;
@@ -251,6 +316,7 @@ public final class SortedComparisonInput implements ComparisonInput {
                             indexMemory.grow(2048, token);
                             runs.add(writeChunk(chunk, token));
                             chunk.clear();
+                            chunk.trimToSize();
                             chunkMemory.shrink(chunkMemory.size());
                         }
                         chunkMemory.grow(bytes, token);
@@ -272,6 +338,7 @@ public final class SortedComparisonInput implements ComparisonInput {
                 indexMemory.grow(2048, token);
                 runs.add(writeChunk(chunk, token));
                 chunk.clear();
+                chunk.trimToSize();
                 chunkMemory.shrink(chunkMemory.size());
             }
             // Keep at most two record heads and one output writer, regardless of run count.
