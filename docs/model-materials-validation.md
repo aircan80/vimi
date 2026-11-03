@@ -1,7 +1,8 @@
 # Static mount material acceptance plan
 
 Companion to the [material proposal](model-materials-proposal.md), aligned with
-approved root/domain integration `b4d4fcc` (proposal `6496b4c`). This companion
+approved root/domain integration `f770e62`, including the texture-off contract
+(proposal `30d769d`, following `6496b4c`). This companion
 records planned acceptance, not completed tests or implementation approval. Keep
 dependent work aligned to that approved shared API/math. Keep game assets and live-library payloads out of Git; committed
 fixtures must be authored geometry and textures.
@@ -80,6 +81,21 @@ the independent scalar oracle.
   selectable nonzero geoset. Selecting ID 0 must retain all its qualified sections;
   raw/all-recorded mode must not quietly promote an unsupported material.
 
+## Texture-off diagnostics
+
+Test every admitted material with textures disabled, including additive source
+alpha 0 versus 1 and an unlit material under changing light. All become the legacy
+neutral, opaque, LESS/depth-write diagnostic: no texture-alpha discard, additive
+blend or unlit override. Preserve the qualified section mask and billboard
+transforms; this switch must not expand unsupported material coverage.
+
+Use overlapping ADD cards with alpha 0/1 to verify both draw as opaque geometry,
+not glow or missing geometry. Check card-face flat lighting against the legacy
+headlight transformed into eye space through `PreviewCamera.lightingEye`; do not
+invent a new billboard normal policy. Ordinary legacy texture-off pixels remain
+unchanged. Include the separate edge diagnostic with the same qualification and
+geometry transformations.
+
 ## Rigid billboard groups in a static bind pose
 
 Author two independent four-vertex cards around different finite pivots, with an
@@ -106,9 +122,12 @@ asymmetric four-corner texture. Include ordinary geometry in the same mesh.
 - Verify ordinary geometry/normals are unchanged and ordinary ENV sampling receives
   the intended eye-space normal. Billboard materials are UNLIT: reject lit/ENV
   billboard combinations rather than inventing a lit-card normal transform.
-- Move a card across the near plane: retain correct clipping/interpolation with
-  finite positions and UVs; no NaN, exploding triangles or disappearing unrelated
-  groups. Reject a degenerate camera basis according to the declared policy.
+- Move a rich-material card/triangle across the near plane: retain correct
+  clipping/interpolation with finite positions and UVs; no NaN, exploding
+  triangles or disappearing unrelated groups. Preserve the legacy ordinary
+  whole-triangle-skip behavior where the approved compatibility path requires it.
+  Exercise `PreviewCamera` degeneracy handling, including its .001 radius floor
+  for point bounds; do not turn a valid point mesh into an arbitrary rejection.
 - Bounds must include the rotated cards at every admitted camera, including a
   large off-center pivot. Camera fit/culling and any accelerated screen bounds
   must not use a smaller unrotated rectangle. Exercise offscreen and edge pixels.
@@ -144,7 +163,9 @@ failure/close cleanup. Do not serialize expanded GPU vertices into the codec.
   change subsequent rendering or encoded output.
 - Reject unknown enum/version tags, wrong optional-array lengths, duplicate or
   conflicting section/group mappings, invalid texture-stage indices, nonfinite
-  pivots/normals/offsets and cyclic/out-of-range bone references.
+  pivots/normals/offsets and invalid numeric bone IDs. Sparse codec groups have no
+  raw bone hierarchy: cycle/parent-index tests belong to source facts/admission,
+  while codec/data constructors check bone-ID uniqueness and member ownership.
 - Check count/byte arithmetic before allocation or upload. Exercise multiplication
   overflow, truncated payloads, trailing data and an envelope larger than the cap.
   Individual maxima need not all fit simultaneously: test a payload valid per
