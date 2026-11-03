@@ -50,12 +50,13 @@ final class DisplayMaterialProfiles {
         }
         var material = model.materials().get(batch.materialIndex());
         Kind kind;
-        if (model.version() == 274
+        if ((model.version() == 274 && batch.flags2() == 0 && material.flags() == 0
+                        || model.version() == 272
+                                && batch.flags2() == batch.sectionIndex()
+                                && (material.flags() == 0 || material.flags() == 4))
                 && batch.shaderId() == 14
                 && batch.textureCount() == 2
                 && batch.flags() == 0x90
-                && batch.flags2() == 0
-                && material.flags() == 0
                 && material.blendMode() == 0
                 && model.textureCoordinates().isEmpty()) {
             kind = Kind.ENVIRONMENT;

@@ -40,7 +40,7 @@ import java.util.concurrent.TimeUnit;
  */
 @SuppressWarnings("try")
 public final class DisplayModelService implements BuildDisplayModels {
-    public static final String POLICY = "display-static-materials-env-unlit-bindcards-v3";
+    public static final String POLICY = "display-static-materials-env-unlit-bindcards-v4";
     private final TableProjection tables;
     private final BuildFiles files;
     private final GeneratedStore generated;

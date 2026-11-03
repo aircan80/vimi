@@ -140,6 +140,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
         gpuButton.setId("model-gpu-preview");
         gpuButton.setAccessibleText("Use inline GPU model rendering");
         gpuButton.setSelected(true);
+        all.setTooltip(new Tooltip("Show every recorded mesh section, including alternate parts and sections without supported materials. Unresolved materials appear neutral."));
         gpuButton.setTooltip(
                 new Tooltip(
                         "GPU rasterization with copied frames displayed here. Software is used when"

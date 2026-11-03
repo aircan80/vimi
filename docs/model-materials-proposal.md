@@ -38,7 +38,7 @@ universally inert:
 
 | Profile | Exact initial source conditions beyond shared guards |
 | --- | --- |
-| Reflective armor | M2 v274; shader 14; batch flags 0x90; second raw field 0; two textures; material flags 0, blend 0; empty coordinate lookup with the shader's UV0/ENV convention; both transform lookups identity. Unknown 0x80 combinations stay declined. |
+| Reflective armor | M2 v274 with second raw field 0 and material flags 0, or v272 with second raw field equal to section index and material flags exactly 0 or 4; shader 14; batch flags 0x90; two textures; blend 0; empty coordinate lookup with the shader's UV0/ENV convention; both transform lookups identity. Unknown 0x80 combinations stay declined. |
 | Unlit opaque | M2 v272; shader 0; batch flags 0x10; second raw field equals the section index; one UV0 texture; material flags 1, blend 0. |
 | Unlit additive card | M2 v274/raw-second 0/material flags 0x11, or v272/raw-second equals section/material flags 0x15; shader 16, batch flags 0x10, one UV0 texture, raw blend 4; admitted rigid-card evidence. |
 
@@ -324,3 +324,7 @@ rendering/performance claim follows from these targeted static profiles.
 - Private authored/read-only target evidence is recorded in the task's scratch
   material/bone logs and CPU/Vulkan PNGs; those files and game assets are not
   repository test fixtures. New committed tests must be independently authored.
+
+## Legacy reflective armor qualification
+
+The reviewed v272 ENV extension is evidenced by wowf 1.60.1.70755 Swift Timber Wolf (Mount105/display14575/record176, M2 123410, SKIN473965) and Swift Brown Ram (Mount94/display14347/record89, M2 125522, SKIN479324). Both reflective section ordinals are1 with raw second field1; the wolf material flags are4 and the ram flags0. Both have shader14, batch flags0x90, two recorded texture sources, empty coordinate lookup, proven full opacity and two identity transforms. The wolf ENV texture is249237 and ram144337. Material flag4 disables back-face culling in the pinned primary viewer, matching the existing two-sided contract; no shader math is added. Composition policy v4 prevents restoration of old partial appearances. The additive card section remains independently unsupported in each model; this extension does not claim full material coverage.

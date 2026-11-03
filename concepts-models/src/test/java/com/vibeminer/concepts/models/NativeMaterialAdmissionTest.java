@@ -24,13 +24,58 @@ class NativeMaterialAdmissionTest {
         assertNull(transformed.parse().profile());
         var legacy = environment();
         legacy.body.putInt(4, 272);
-        assertNull(legacy.parse().profile());
+        assertEquals(DisplayMaterialProfiles.Kind.ENVIRONMENT, legacy.parse().profile().kind());
         var flags = environment();
         flags.skin.put(140, (byte) 0x91);
         assertNull(flags.parse().profile());
         var texture = environment();
         texture.body.putInt(texture.textures + 16 + 4, 4);
         assertNull(texture.parse().profile());
+    }
+
+    private NativeMaterialFixture legacyEnvironment(int version, int materialFlags)
+            throws Exception {
+        var fixture = new NativeMaterialFixture(version, 0x90, 14, 2, materialFlags, 0);
+        byte[] section = java.util.Arrays.copyOfRange(fixture.skin.array(), 92, 140);
+        byte[] batch = java.util.Arrays.copyOfRange(fixture.skin.array(), 140, 164);
+        fixture.skin.position(140);
+        fixture.skin.put(section).put(batch);
+        fixture.skin.putInt(28, 2).putInt(40, 188);
+        fixture.skin.putShort(192, (short) 1).putShort(194, (short) 1);
+        return fixture;
+    }
+
+    @Test
+    void legacyTwoSidedEnvironmentRequiresExactVersionAndRepeatedSectionIndex() throws Exception {
+        var good = legacyEnvironment(272, 4).parse();
+        assertEquals(DisplayMaterialProfiles.Kind.ENVIRONMENT, good.profile().kind());
+        assertEquals(2, good.profile().stages());
+        var mismatch = legacyEnvironment(272, 4);
+        mismatch.skin.putShort(194, (short) 0);
+        assertNull(mismatch.parse().profile());
+        assertNull(legacyEnvironment(274, 4).parse().profile());
+        org.junit.jupiter.api.Assertions.assertThrows(
+                java.util.concurrent.CompletionException.class,
+                () -> legacyEnvironment(273, 4).parse());
+        assertEquals(
+                DisplayMaterialProfiles.Kind.ENVIRONMENT,
+                legacyEnvironment(272, 0).parse().profile().kind());
+        assertNull(legacyEnvironment(272, 16).parse().profile());
+        assertNull(legacyEnvironment(272, 5).parse().profile());
+        var batchFlags = legacyEnvironment(272, 4);
+        batchFlags.skin.put(188, (byte) 0x91);
+        assertNull(batchFlags.parse().profile());
+        var transform = legacyEnvironment(272, 4);
+        transform.body.putShort(transform.transforms + 2, (short) 0);
+        assertNull(transform.parse().profile());
+        var opaque = legacyEnvironment(272, 4);
+        int track = opaque.body.getInt(92);
+        int values = opaque.body.getInt(track + 16);
+        opaque.body.putShort(opaque.body.getInt(values + 4), (short) 16384);
+        assertNull(opaque.parse().profile());
+        assertNull(
+                DisplayMaterialProfiles.admit(
+                        good.model(), good.rest().batches().getFirst(), null));
     }
 
     @Test
