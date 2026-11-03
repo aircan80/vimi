@@ -15,7 +15,11 @@ Production fix73ba6c6 in `/tmp/vimi-world-streaming-navigation` also adds Space 
 an ascent alias for E (Q descends; E+Space does not double speed). Independent
 asymmetric traversal/key-input tests are in progress. Empty/unavailable map
 feedback8980e5b is reviewed and integrated as6cc2b10; no parser profile widening.
-Integrated `:gui:check` passes. Review/FX/hosted checks still gate release.
+Integrated `:gui:check`, World UI, 13-move navigation/key FX regression and fresh
+distribution native startup (24 shader blobs) pass. Independent old-axis and
+old-Space negative controls fail as expected. PR146 at3118c17 awaits hosted gates;
+alpha.16 notes are committed. Frozen local launcher:
+`.local/apps/world-3118c17/bin/vimi-gui-prototype`.
 
 Parallel agents: `/tmp/vimi-world-minimap` design7b6d66a provides a top-right
 north-up player-centered minimap from recorded minimap IDs, bounded asynchronous

@@ -161,3 +161,18 @@ world Y. Camera lookup uses the loaded origin tile’s native maximum on each
 matching axis. This differs from the continent grid’s screen layout (filename Y
 horizontally, X vertically). Keeping these mappings separate prevents walking
 toward a tile from loading its transposed neighbor and evicting visible terrain.
+
+Maps with no recorded terrain show an explanation directly over the tile panel.
+A recorded global-world-model map explains the current model-preview limitation;
+unavailable inventory is reported separately. These states disable actions that
+require terrain tiles. This screenshot uses authored map records only.
+
+![Authored empty-map explanation](images/world-empty-inventory-authored.png)
+
+The navigation regression uses an asymmetric origin and physically positioned
+fixture tiles. Thirteen moves cover both directions on both native axes, returns
+and all four diagonals, asserting both actual requested tiles and the retained
+3×3 neighborhood. Actual viewport key events and deterministic timer steps verify
+Space/E ascent, no doubled Space+E speed, Q descent and key release. Independent
+negative controls fail for the previous swapped lookup and previous E-only input.
+Run it with `./gradlew :gui:worldNavigationUiTest` on a JavaFX-capable display.
