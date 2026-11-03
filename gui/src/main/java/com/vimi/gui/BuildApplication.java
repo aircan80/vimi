@@ -184,7 +184,7 @@ public final class BuildApplication {
                                 "source", LibraryCatalog.Role.ORIGINAL);
                         ownership.retainOwner("provider:tact-keys", LibraryCatalog.Scope.GLOBAL).join();
                         var dataSources = DataSourcesService.open(library.databasePath(), directory.resolve("questie"),
-                                fullContexts.communityNames(), ownership, keyClient == null ? network : keyClient, tactOwner, tactOwner, network);
+                                fullContexts.communityNames(), ownership, keyClient == null ? network : keyClient, tactOwner, tactOwner, network, network);
                         cleanup.addFirst(dataSources::closeAsync);
                         fullContexts.withSources(dataSources);
                         var preparation = new BuildPreparation(fullContexts);

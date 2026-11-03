@@ -19,3 +19,4 @@ include 'concepts-talents'
 include 'concepts-races'
 
 include 'eg-link'
+include 'polestar'

@@ -32,7 +32,7 @@ final class DataSourcesView extends BorderPane {
     private final DataSourcesService service;
     private Source selectedSource;
     private String selectedDatabase;
-    private String selectedEgBuild, selectedEgSource;
+    private String selectedPolestar;
     private final Label activityLabel = text("", "muted");
     private final javafx.scene.control.ProgressBar progress =
             new javafx.scene.control.ProgressBar(-1);
@@ -82,7 +82,10 @@ final class DataSourcesView extends BorderPane {
                                 "Public WoW keys used to read encrypted files and table sections.",
                                 "github.com/wowdev/TACTKeys"),
                         new Source("EG Link", "Observed game data", "Download GitHub snapshots and prepare searchable local data.",
-                                "github.com/JIVESCORP/eg-link-output-wowf"));
+                                "github.com/JIVESCORP/eg-link-output-wowf"),
+                        new Source("Polestar", "Forever database",
+                                "Download and prepare Polestar's published quests, NPCs, spawns and item relationships.",
+                                "github.com/fitzforge/polestar/tree/next/forever-db"));
         sources.setAccessibleText("External data sources");
         sources.getStyleClass().add("product-menu");
         sources.setCellFactory(
@@ -139,6 +142,7 @@ final class DataSourcesView extends BorderPane {
                         ? DataSourcesService.Id.LISTFILE
                         : selectedSource.name().equals("TACTKeys") ? DataSourcesService.Id.TACT_KEYS
                         : selectedSource.name().equals("EG Link") ? DataSourcesService.Id.EG_LINK
+                        : selectedSource.name().equals("Polestar") ? DataSourcesService.Id.POLESTAR
                         : DataSourcesService.Id.DEFINITIONS;
     }
 
@@ -216,6 +220,7 @@ final class DataSourcesView extends BorderPane {
         else if (id == DataSourcesService.Id.LISTFILE) liveListfile(page);
         else if (id == DataSourcesService.Id.TACT_KEYS) liveTactKeys(page);
         else if (id == DataSourcesService.Id.EG_LINK) liveEgLink(page);
+        else if (id == DataSourcesService.Id.POLESTAR) livePolestar(page);
         else {
             var definitions = service.definitions();
             if (definitions != null)
@@ -271,7 +276,7 @@ final class DataSourcesView extends BorderPane {
                             settings(
                                     id == DataSourcesService.Id.LISTFILE
                                             ? "Automatic listfile updates"
-                                            : id == DataSourcesService.Id.TACT_KEYS ? "Automatic key updates" : id == DataSourcesService.Id.EG_LINK ? "GitHub snapshot checks" : "Release checks",
+                                            : id == DataSourcesService.Id.TACT_KEYS ? "Automatic key updates" : id == DataSourcesService.Id.POLESTAR ? "Published data checks" : id == DataSourcesService.Id.EG_LINK ? "GitHub snapshot checks" : "Release checks",
                                     checks,
                                     "Last successful check: " + checkedDate(id)));
         }
@@ -356,6 +361,62 @@ final class DataSourcesView extends BorderPane {
             if (selected != null) command(service.prepareEgLink(selected.id()));
         });
         page.getChildren().addAll(text("Downloaded snapshots", "h2"), local, localDetails, prepare);
+    }
+
+    private void livePolestar(VBox page) {
+        var state = service.polestar();
+        var catalog = state.catalog().orElse(null);
+        boolean available = service.policy(DataSourcesService.Id.POLESTAR).enabled()
+                && !service.activity(DataSourcesService.Id.POLESTAR).busy();
+        Button check = new Button("Check GitHub versions");
+        check.setDisable(!available); check.setOnAction(event -> command(service.checkPolestar()));
+        Button download = new Button("Download published data");
+        download.setDisable(!available || catalog == null); download.setOnAction(event -> command(service.downloadPolestar()));
+        Button cancel = new Button("Cancel"); cancel.setDisable(!service.activity(DataSourcesService.Id.POLESTAR).busy());
+        cancel.setOnAction(event -> service.cancel(DataSourcesService.Id.POLESTAR));
+        page.getChildren().add(new HBox(10, check, download, cancel));
+        if (catalog != null) {
+            page.getChildren().add(metrics(
+                    metric("PUBLISHED VERSION", catalog.version(), "Commit " + catalog.revision().substring(0,12)),
+                    metric("CLIENT BUILD", catalog.clientBuild(), "Published source provenance"),
+                    metric("DATASETS", Integer.toString(catalog.resources().size()), bytes(catalog.bytes()) + " of data")));
+            page.getChildren().add(text("This package identifies its own client build. It is not silently substituted for another build or treated as a complete world database.", "muted"));
+        } else page.getChildren().add(text("No checked GitHub version. Checking downloads only the package metadata; download and preparation are separate actions.", "muted"));
+        if (state.issue() != null) page.getChildren().add(text("Inventory unavailable: " + state.issue(), "muted"));
+        TableView<com.vibeminer.polestar.PolestarTypes.Snapshot> table = new TableView<>();
+        column(table,"Version",value -> value.catalog().version(),115);
+        column(table,"Client build",value -> value.catalog().clientBuild(),155);
+        column(table,"State",value -> value.preparedAt() == null ? "Downloaded" : "Prepared",110);
+        column(table,"Records",value -> value.preparedAt() == null ? "—" : String.format(java.util.Locale.ROOT, "%,d", value.records()),100);
+        column(table,"Originals",value -> bytes(value.originalBytes()),100);
+        column(table,"Database",value -> value.preparedAt() == null ? "—" : bytes(value.databaseBytes()),110);
+        table.getItems().setAll(state.snapshots());
+        table.setPlaceholder(text("No downloaded Polestar versions", "muted"));
+        table.setPrefHeight(Math.min(300, Math.max(135, state.snapshots().size()*34+50)));
+        VBox selection = new VBox(12);
+        table.getSelectionModel().selectedItemProperty().addListener((observable,before,value) -> {
+            selection.getChildren().clear(); if (value == null) return;
+            selectedPolestar = value.id();
+            Button prepare = new Button(value.preparedAt() == null ? "Prepare local database" : "Database prepared");
+            prepare.setDisable(!available || value.preparedAt() != null);
+            prepare.setOnAction(event -> command(service.preparePolestar(value.id())));
+            String resources = value.catalog().resources().stream()
+                    .map(resource -> resource.table().wire() + " · " + resource.rows() + " records · " + resource.license())
+                    .collect(java.util.stream.Collectors.joining("\n"));
+            TitledPane datasets = new TitledPane("Datasets & licenses",text(resources,"muted")); datasets.setExpanded(false);
+            String coverage = value.catalog().coverage().stream().map(entry -> entry.what() + ": " + entry.with() + " / " + entry.of())
+                    .collect(java.util.stream.Collectors.joining("\n"));
+            TitledPane coveragePanel = new TitledPane("Published coverage",text(coverage,"muted")); coveragePanel.setExpanded(false);
+            if (!value.issues().isEmpty()) selection.getChildren().add(text(String.join("\n", value.issues()), "muted"));
+            selection.getChildren().addAll(prepare,
+                    text("Snapshot " + value.id().substring(0,12) + " · downloaded " + date(value.downloadedAt()),"muted"), datasets, coveragePanel);
+        });
+        page.getChildren().addAll(text("DOWNLOADED VERSIONS","eyebrow"),table,selection,
+                text("Data from Polestar / forever-db and its credited upstream sources. Database tables are GPL-3.0; authored mechanics, steps and notes are CC BY 4.0. Preparation indexes the downloaded data for fast offline queries.", "muted"),
+                text("Spawn coordinates use world yards on client Map IDs, not zone-map percentages. Coverage mixes client data and credited community sources; missing facts remain unavailable.", "muted"));
+        var selected = state.snapshots().stream().filter(value -> value.id().equals(selectedPolestar)).findFirst();
+        if (selected.isPresent()) table.getSelectionModel().select(selected.get());
+        else if (!state.snapshots().isEmpty()) table.getSelectionModel().selectFirst();
     }
 
     private void liveTactKeys(VBox page) {

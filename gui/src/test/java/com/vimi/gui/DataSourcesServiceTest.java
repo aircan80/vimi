@@ -28,6 +28,7 @@ public final class DataSourcesServiceTest {
             futureSchemaIsReadOnly(directory.resolve("future"));
             mappingRules();
             communityKeys(directory.resolve("keys"));
+            polestar(directory.resolve("polestar"));
             egLink(directory.resolve("eg-link"));
             System.out.println(
                     "Data sources: persisted policy, mapping, empty/invalid inventories and future"
@@ -38,6 +39,47 @@ public final class DataSourcesServiceTest {
                     Files.delete(file);
             }
         }
+    }
+
+    private static void polestar(Path directory) throws Exception {
+        var library = ObjectStore.openLibrary(directory.resolve("library")).join();
+        try (var catalog = LibraryCatalog.open(library.databasePath()).join()) {
+            var owner = library.forOwner("provider:test-names", LibraryCatalog.Scope.GLOBAL, "source", LibraryCatalog.Role.ORIGINAL);
+            var access = CachingObjectSource.localOnly(owner, owner);
+            var generated = new PackGeneratedStore(library, library.forOwner("provider:test-names", LibraryCatalog.Scope.GLOBAL, "index", LibraryCatalog.Role.DERIVED));
+            var names = new CommunityFileNames(access,generated, token -> java.util.concurrent.CompletableFuture.completedFuture(true));
+            var files = com.vibeminer.polestar.PolestarFixtures.files();
+            var calls = new java.util.concurrent.atomic.AtomicInteger();
+            com.vibeminer.network.PolestarClient client = new com.vibeminer.network.PolestarClient() {
+                public java.util.concurrent.CompletableFuture<com.vibeminer.network.NetworkTypes.PolestarReply> fetchPolestarHead(com.vibeminer.network.Cancellation token) {
+                    calls.incrementAndGet(); token.check();
+                    return java.util.concurrent.CompletableFuture.completedFuture(new com.vibeminer.network.NetworkTypes.PolestarReply(
+                            com.vibeminer.network.SourceUrls.POLESTAR_HEAD,java.time.Instant.EPOCH,("{\"object\":{\"sha\":\""+"a".repeat(40)+"\"}}").getBytes(java.nio.charset.StandardCharsets.US_ASCII)));
+                }
+                public java.util.concurrent.CompletableFuture<com.vibeminer.network.NetworkTypes.PolestarReply> fetchPolestarFile(String revision,String path,com.vibeminer.network.Cancellation token) {
+                    calls.incrementAndGet(); token.check();
+                    return java.util.concurrent.CompletableFuture.completedFuture(new com.vibeminer.network.NetworkTypes.PolestarReply(
+                            com.vibeminer.network.SourceUrls.polestar(revision,path),java.time.Instant.EPOCH,files.get(path)));
+                }
+            };
+            var service = DataSourcesService.open(library.databasePath(),directory.resolve("questie"),names,catalog,null,null,null,null,client);
+            try {
+                require(calls.get()==0 && service.polestar().snapshots().isEmpty(),"Opening Polestar settings reads only local metadata");
+                service.checkPolestar().join();
+                require(service.polestar().catalog().isPresent() && service.polestar().snapshots().isEmpty(),"Checking publication does not download datasets");
+                service.downloadPolestar().join();
+                require(service.polestar().snapshots().size()==1 && service.polestar().snapshots().getFirst().preparedAt()==null,"Download and preparation are distinct states");
+                service.preparePolestar(service.polestar().snapshots().getFirst().id()).join();
+                require(service.polestar().snapshots().getFirst().records()==15,"Preparation publishes indexed local records");
+                service.setEnabled(DataSourcesService.Id.POLESTAR,false).join();
+                expectFailure(() -> service.syncPolestar().join());
+                require(service.polestar().snapshots().size()==1,"Disabling retains completed source data");
+            } finally { service.closeAsync().join(); }
+            var reopened = DataSourcesService.open(library.databasePath(),directory.resolve("questie"),names,catalog,null,null,null,null,client);
+            try {
+                require(!reopened.policy(DataSourcesService.Id.POLESTAR).enabled() && reopened.polestar().snapshots().getFirst().records()==15,"Polestar policy and prepared inventory survive restart");
+            } finally { reopened.closeAsync().join(); access.closeAsync().join(); }
+        } finally { library.closeAsync().join(); }
     }
 
     private static void communityKeys(Path directory) throws Exception {
@@ -199,6 +241,7 @@ public final class DataSourcesServiceTest {
                     sources.setEnabled(DataSourcesService.Id.DEFINITIONS, false).join();
                     sources.setEnabled(DataSourcesService.Id.QUESTIE, false).join();
                     sources.setEnabled(DataSourcesService.Id.TACT_KEYS, false).join();
+                    sources.setEnabled(DataSourcesService.Id.POLESTAR, false).join();
                     sources.setEnabled(DataSourcesService.Id.EG_LINK, false).join();
                     sources.setChecks(
                                     DataSourcesService.Id.QUESTIE, DataSourcesService.Checks.DAILY)

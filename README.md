@@ -217,6 +217,7 @@ Future components will declare project dependencies, for example
 `implementation project(':object-store')`; fakes and shared contracts can be
 consumed with `testImplementation testFixtures(project(':object-store'))`.
 
+- `polestar/`: independent GitHub-only forever-db snapshots, validation, preparation and indexed queries.
 - `concepts-items/`: layer 6 item facts, appearances, models, icons and armor material provenance.
 - `concepts-creatures/`: layer 6 creatures, display chains and static appearance evidence.
 - `concepts-talents/`: layer 6 read-only Classic talent trees and prerequisite facts.

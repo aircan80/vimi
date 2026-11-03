@@ -169,6 +169,17 @@ public final class NetworkTypes {
         }
     }
 
+    public record PolestarReply(URI url, Instant observedAt, byte[] bytes) {
+        public PolestarReply {
+            bytes = bytes.clone();
+        }
+
+        @Override
+        public byte[] bytes() {
+            return bytes.clone();
+        }
+    }
+
     public record TactKeyReply(URI url, Instant observedAt, byte[] bytes) {
         public TactKeyReply {
             bytes = bytes.clone();

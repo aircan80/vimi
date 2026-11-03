@@ -17,6 +17,7 @@ dependencies {
     implementation project(':builds')
     implementation project(':questie')
     implementation project(':eg-link')
+    implementation project(':polestar')
     implementation project(':accounting')
     implementation project(':formats-tables')
     implementation project(':concepts-items')
@@ -25,6 +26,7 @@ dependencies {
     implementation project(':concepts-races')
     implementation project(':concepts-effects')
     testImplementation testFixtures(project(':builds'))
+    testImplementation testFixtures(project(':polestar'))
     testImplementation testFixtures(project(':files'))
     testImplementation testFixtures(project(':generated-store'))
     ['base', 'graphics', 'controls'].each {

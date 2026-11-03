@@ -40,6 +40,32 @@ public final class SourceUrls {
                         + path);
     }
 
+    public static final URI POLESTAR_HEAD =
+            URI.create("https://api.github.com/repos/fitzforge/polestar/git/ref/heads/next");
+
+    public static URI polestar(String revision, String path) {
+        if (revision == null
+                || !revision.matches("[0-9a-f]{40}")
+                || path == null
+                || !(java.util.Set.of(
+                                        "index.json",
+                                        "datapackage.json",
+                                        "NOTICE.md",
+                                        "README.md",
+                                        "LICENSE",
+                                        "LICENSE-CC-BY-4.0.txt")
+                                .contains(path)
+                        || path.matches(
+                                "(?:data/[a-z][a-z0-9_]{0,40}\\.jsonl|schema/[a-z][a-z0-9_]{0,40}\\.schema\\.json)"))) {
+            throw new IllegalArgumentException("Invalid Polestar commit or published data path");
+        }
+        return URI.create(
+                "https://raw.githubusercontent.com/fitzforge/polestar/"
+                        + revision
+                        + "/forever-db/"
+                        + path);
+    }
+
     private SourceUrls() {}
 
     public static URI version(String product, String region, DocumentKind kind) {

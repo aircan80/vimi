@@ -204,6 +204,21 @@ class AssetWorkflowWiringTest(unittest.TestCase):
             self.assertIn(path, text)
 
 
+class PolestarWorkflowWiringTest(unittest.TestCase):
+    def test_provider_runs_on_all_platform_suites_and_keeps_reports(self):
+        root = Path(__file__).resolve().parents[2]
+        self.assertTrue(selection.select(["polestar/src/main/java/Repository.java"]))
+        for name, task in [("unit-tests.yml", "test"), ("integration-tests.yml", "check")]:
+            text = (root / ".github/workflows" / name).read_text(encoding="utf-8")
+            self.assertIn(f":polestar:{task}", text)
+            self.assertIn("polestar/build/reports/", text)
+            self.assertIn("polestar/build/test-results/", text)
+        lifecycle = (root / "build.gradle").read_text(encoding="utf-8")
+        self.assertIn("':polestar:check'", lifecycle)
+        self.assertIn("':polestar:assemble'", lifecycle)
+        self.assertIn(":polestar:test", (root / "scripts/check.sh").read_text(encoding="utf-8"))
+
+
 class ConceptWorkflowWiringTest(unittest.TestCase):
     PORTED_MODULES = ("concepts-core", "concepts-items", "concepts-creatures", "concepts-effects")
     MODULES = PORTED_MODULES + ("concepts-talents", "concepts-races", "eg-link")

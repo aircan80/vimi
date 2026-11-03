@@ -42,7 +42,8 @@ public final class NetworkClients
                 DefinitionClient,
                 ListfileClient,
                 TactKeyClient,
-                EgLinkClient {
+                EgLinkClient,
+                PolestarClient {
     private static final Pattern RANGE = Pattern.compile("bytes ([0-9]+)-([0-9]+)/([0-9]+)");
     private static final Set<String> CDN_MEDIA =
             Set.of(
@@ -456,6 +457,41 @@ public final class NetworkClients
                         checkGithub(exchange);
                         noEncoding(exchange);
                         return new NetworkTypes.EgLinkReply(
+                                url,
+                                exchange.observedAt,
+                                exchange.bytes(limit, Failure.TOO_LARGE, true));
+                    } catch (Fault failure) {
+                        throw definitions.failure(url, failure);
+                    }
+                });
+    }
+
+    @Override
+    public CompletableFuture<NetworkTypes.PolestarReply> fetchPolestarHead(Cancellation token) {
+        return polestar(SourceUrls.POLESTAR_HEAD, 64 << 10, true, token);
+    }
+
+    @Override
+    public CompletableFuture<NetworkTypes.PolestarReply> fetchPolestarFile(
+            String revision, String path, Cancellation token) {
+        return polestar(
+                SourceUrls.polestar(revision, path),
+                path.endsWith(".jsonl") ? 16 << 20 : 1 << 20,
+                false,
+                token);
+    }
+
+    private CompletableFuture<NetworkTypes.PolestarReply> polestar(
+            java.net.URI url, int limit, boolean api, Cancellation token) {
+        return definitions.queue.submit(
+                token,
+                () -> {
+                    Budget budget = new Budget(options.timeouts().definitions());
+                    try (Exchange exchange =
+                            definitions.send(url, githubHeaders(api), token, budget, true)) {
+                        checkGithub(exchange);
+                        noEncoding(exchange);
+                        return new NetworkTypes.PolestarReply(
                                 url,
                                 exchange.observedAt,
                                 exchange.bytes(limit, Failure.TOO_LARGE, true));

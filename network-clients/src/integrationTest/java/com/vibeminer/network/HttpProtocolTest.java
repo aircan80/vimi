@@ -382,6 +382,56 @@ final class HttpProtocolTest {
     }
 
     @Test
+    void polestarUsesFixedGitHubEndpointsAndRejectsRedirectsAndOversizeMetadata() throws Exception {
+        try (LoopbackSources fixture =
+                new LoopbackSources(
+                        new NetworkOptions(),
+                        answer(request -> new MockResponse().setBody("authored bytes")))) {
+            var head = fixture.clients().fetchPolestarHead(Cancellation.NONE).join();
+            assertEquals(SourceUrls.POLESTAR_HEAD, head.url());
+            var raw =
+                    fixture.clients()
+                            .fetchPolestarFile("a".repeat(40), "data/npc.jsonl", Cancellation.NONE)
+                            .join();
+            assertEquals(SourceUrls.polestar("a".repeat(40), "data/npc.jsonl"), raw.url());
+            assertEquals(2, fixture.requestCount());
+        }
+        try (LoopbackSources fixture =
+                new LoopbackSources(
+                        new NetworkOptions(),
+                        answer(
+                                request ->
+                                        new MockResponse()
+                                                .setResponseCode(302)
+                                                .setHeader(
+                                                        "Location", "https://example.com/data")))) {
+            assertEquals(
+                    Failure.PROTOCOL,
+                    failed(() -> fixture.clients().fetchPolestarHead(Cancellation.NONE)).overall());
+            assertEquals(1, fixture.requestCount());
+        }
+        try (LoopbackSources fixture =
+                new LoopbackSources(
+                        new NetworkOptions(),
+                        answer(
+                                request ->
+                                        new MockResponse()
+                                                .setBody("x")
+                                                .setHeader("Content-Length", (1 << 20) + 1)))) {
+            assertEquals(
+                    Failure.TOO_LARGE,
+                    failed(
+                                    () ->
+                                            fixture.clients()
+                                                    .fetchPolestarFile(
+                                                            "a".repeat(40),
+                                                            "index.json",
+                                                            Cancellation.NONE))
+                            .overall());
+        }
+    }
+
+    @Test
     void tactKeysUseFixedBoundedPublicSourceAndRefuseRedirects() throws Exception {
         String body = "0123456789ABCDEF 00112233445566778899AABBCCDDEEFF\n";
         try (LoopbackSources fixture =

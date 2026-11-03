@@ -29,7 +29,8 @@ public final class DataSourcesService {
         LISTFILE,
         DEFINITIONS,
         TACT_KEYS,
-        EG_LINK
+        EG_LINK,
+        POLESTAR
     }
 
     public enum Checks {
@@ -74,6 +75,12 @@ public final class DataSourcesService {
             List<com.vibeminer.eglink.EgLinkTypes.Snapshot> snapshots, String issue) {}
     private volatile EgLinkState egLinkState = new EgLinkState(new com.vibeminer.eglink.EgLinkTypes.Catalog(null, null, List.of()), List.of(), null);
     private final com.vibeminer.eglink.EgLinkRepository egLink;
+    public record PolestarState(java.util.Optional<com.vibeminer.polestar.PolestarTypes.Catalog> catalog,
+            List<com.vibeminer.polestar.PolestarTypes.Snapshot> snapshots, String issue) {
+        public PolestarState { snapshots = List.copyOf(snapshots); }
+    }
+    private final com.vibeminer.polestar.PolestarRepository polestar;
+    private volatile PolestarState polestarState = new PolestarState(java.util.Optional.empty(), List.of(), null);
     private final SourcePreferences preferences;
     private final QuestieRepository questie;
     private final CommunityFileNames names;
@@ -115,26 +122,40 @@ public final class DataSourcesService {
     static DataSourcesService open(Path database, Path directory, CommunityFileNames names,
             LibraryCatalog catalog, com.vibeminer.network.TactKeyClient client,
             com.vibeminer.store.ObjectReader reader, com.vibeminer.store.ObjectWriter writer) throws Exception {
-        return open(database, directory, names, catalog, client, reader, writer, null);
+        return open(database, directory, names, catalog, client, reader, writer, null, null);
     }
 
     static DataSourcesService open(Path database, Path directory, CommunityFileNames names,
             LibraryCatalog catalog, com.vibeminer.network.TactKeyClient client,
             com.vibeminer.store.ObjectReader reader, com.vibeminer.store.ObjectWriter writer,
             com.vibeminer.network.EgLinkClient egClient) throws Exception {
+        return open(database,directory,names,catalog,client,reader,writer,egClient,null);
+    }
+
+    static DataSourcesService open(Path database, Path directory, CommunityFileNames names,
+            LibraryCatalog catalog, com.vibeminer.network.TactKeyClient client,
+            com.vibeminer.store.ObjectReader reader, com.vibeminer.store.ObjectWriter writer,
+            com.vibeminer.network.EgLinkClient egClient,
+            com.vibeminer.network.PolestarClient polestarClient) throws Exception {
         var settings = new SourcePreferences(database);
         var repository =
                 QuestieRepository.open(directory, com.vibeminer.generated.Cancellation.NONE).join();
         DataSourcesService service = null;
+        com.vibeminer.polestar.PolestarRepository polestarRepository = null;
         try {
+            polestarRepository = new com.vibeminer.polestar.PolestarRepository(directory.resolveSibling("polestar"),
+                    polestarClient == null ? unavailablePolestar() : polestarClient);
             catalog.retainOwner("provider:community-listfile", LibraryCatalog.Scope.GLOBAL).join();
-            service = new DataSourcesService(settings, repository, names, catalog, directory, client, reader, writer, egClient);
+            service = new DataSourcesService(settings, repository, names, catalog, directory, client, reader, writer, egClient, polestarRepository);
             service.refreshLocal().join();
             var opened = service;
             service.timer.scheduleWithFixedDelay(opened::checkDue, 1, 60, TimeUnit.SECONDS);
             return service;
         } catch (Throwable error) {
-            if (service == null) repository.closeAsync().join();
+            if (service == null) {
+                repository.closeAsync().join();
+                if (polestarRepository != null) polestarRepository.closeAsync().join();
+            }
             else service.closeAsync().join();
             throw error;
         }
@@ -147,8 +168,10 @@ public final class DataSourcesService {
             LibraryCatalog catalog,
             Path directory, com.vibeminer.network.TactKeyClient client,
             com.vibeminer.store.ObjectReader reader, com.vibeminer.store.ObjectWriter writer,
-            com.vibeminer.network.EgLinkClient egClient) throws java.io.IOException {
+            com.vibeminer.network.EgLinkClient egClient,
+            com.vibeminer.polestar.PolestarRepository polestar) throws java.io.IOException {
         egLink = egClient == null ? null : new com.vibeminer.eglink.EgLinkRepository(directory.resolveSibling("eg-link"), egClient);
+        this.polestar = polestar;
         tactClient = client; tactReader = reader; tactWriter = writer;
         this.preferences = preferences;
         this.questie = questie;
@@ -192,7 +215,9 @@ public final class DataSourcesService {
     }
 
     public String checkedAt(Id id) {
-        return preferences.get("checked." + id, "Never checked");
+        String fallback = id == Id.POLESTAR && polestarState.catalog().isPresent()
+                ? polestarState.catalog().get().checkedAt().toString() : "Never checked";
+        return preferences.get("checked." + id, fallback);
     }
 
     public CompletableFuture<Void> setEnabled(Id id, boolean enabled) {
@@ -320,6 +345,7 @@ public final class DataSourcesService {
                 () -> {
                     loadQuestie();
                     loadEgLink();
+                    loadPolestar();
                     loadTactKeys();
                     try {
                         listfile = names.status(com.vibeminer.access.Cancellation.NONE).join();
@@ -572,6 +598,81 @@ public final class DataSourcesService {
         });
     }
 
+    public PolestarState polestar() { return polestarState; }
+
+    private void loadPolestar() {
+        try {
+            polestarState = new PolestarState(polestar.catalog(com.vibeminer.network.Cancellation.NONE).join(),
+                    polestar.snapshots(com.vibeminer.network.Cancellation.NONE).join(), null);
+        } catch (RuntimeException failure) {
+            var previous = polestarState;
+            polestarState = new PolestarState(previous.catalog(), previous.snapshots(), message(failure));
+        }
+    }
+
+    public CompletableFuture<Void> syncPolestar() {
+        return polestarJob((network, progress) -> {
+            polestar.sync(progress, network).join();
+            var checked = polestar.catalog(network).join().orElseThrow().checkedAt();
+            submit(() -> preferences.put("checked.POLESTAR", checked.toString())).join();
+        });
+    }
+
+    public CompletableFuture<Void> checkPolestar() {
+        return polestarJob((network, progress) -> {
+            var value = polestar.check(network).join();
+            submit(() -> {
+                preferences.put("checked.POLESTAR", value.checkedAt().toString());
+                preferences.put("latest.POLESTAR", value.version());
+            }).join();
+        });
+    }
+
+    public CompletableFuture<Void> downloadPolestar() {
+        return polestarJob((network, progress) -> {
+            var value = polestarState.catalog().orElseThrow(() -> new IllegalStateException("Check Polestar versions first"));
+            polestar.download(value, progress, network).join();
+        });
+    }
+
+    public CompletableFuture<Void> preparePolestar(String sourceId) {
+        return polestarJob((network, progress) -> polestar.prepare(sourceId, progress, network).join());
+    }
+
+    @FunctionalInterface
+    private interface PolestarWork {
+        void run(com.vibeminer.network.Cancellation token,
+                Consumer<com.vibeminer.polestar.PolestarTypes.Progress> progress) throws Exception;
+    }
+
+    private CompletableFuture<Void> polestarJob(PolestarWork work) {
+        return job(Id.POLESTAR, (token, progress) -> {
+            var network = new com.vibeminer.network.Cancellation();
+            synchronized (this) {
+                networkTokens.put(Id.POLESTAR, network);
+                if (token.isCanceled()) network.cancel();
+            }
+            try {
+                work.run(network, value -> progress.accept(new QuestieTypes.Progress(QuestieTypes.Stage.IMPORTING,
+                        value.done(), value.total(), "records", value.message())));
+            } finally {
+                synchronized (this) { networkTokens.remove(Id.POLESTAR); }
+                submit(() -> { loadPolestar(); revision.incrementAndGet(); }).join();
+            }
+        });
+    }
+
+    private static com.vibeminer.network.PolestarClient unavailablePolestar() {
+        return new com.vibeminer.network.PolestarClient() {
+            public CompletableFuture<com.vibeminer.network.NetworkTypes.PolestarReply> fetchPolestarHead(com.vibeminer.network.Cancellation token) {
+                return CompletableFuture.failedFuture(new IllegalStateException("Polestar network provider is unavailable"));
+            }
+            public CompletableFuture<com.vibeminer.network.NetworkTypes.PolestarReply> fetchPolestarFile(String revision, String path, com.vibeminer.network.Cancellation token) {
+                return CompletableFuture.failedFuture(new IllegalStateException("Polestar network provider is unavailable"));
+            }
+        };
+    }
+
     public TactState tactState() { return tactState; }
 
     com.vibeminer.files.keys.TactKeys tactKeys() {
@@ -761,7 +862,7 @@ public final class DataSourcesService {
     private final java.util.Set<Id> startupChecked = ConcurrentHashMap.newKeySet();
 
     private void checkDue() {
-        for (Id id : List.of(Id.QUESTIE, Id.LISTFILE, Id.TACT_KEYS, Id.EG_LINK)) {
+        for (Id id : List.of(Id.QUESTIE, Id.LISTFILE, Id.TACT_KEYS, Id.EG_LINK, Id.POLESTAR)) {
             if (id == Id.TACT_KEYS) {
                 // The same reservation path serves startup and build preparation.
                 synchronized (this) {
@@ -790,8 +891,9 @@ public final class DataSourcesService {
                             () -> {
                                 if (id == Id.QUESTIE) checkQuestie();
                                 else if (id == Id.LISTFILE) updateListfile();
+                                else if (id == Id.TACT_KEYS) updateTactKeys();
                                 else if (id == Id.EG_LINK) checkEgLink();
-                                else updateTactKeys();
+                                else checkPolestar();
                             });
         }
     }
@@ -846,8 +948,7 @@ public final class DataSourcesService {
                     try {
                         CompletableFuture.allOf(accepted).handle((v, e) -> null).join();
                         while (!worker.awaitTermination(1, TimeUnit.SECONDS)) {}
-                        if (egLink != null) egLink.closeAsync().join();
-                        questie.closeAsync().join();
+                        CompletableFuture.allOf(questie.closeAsync(), polestar.closeAsync(), egLink == null ? CompletableFuture.completedFuture(null) : egLink.closeAsync()).join();
                         closed.complete(null);
                     } catch (Throwable error) {
                         closed.completeExceptionally(error);

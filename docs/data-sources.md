@@ -1,7 +1,7 @@
 # External data sources
 
 Data Sources manages QuestieDB, the community listfile, bundled WoWDBDefs, and
-public wowdev/TACTKeys and EG Link.
+public wowdev/TACTKeys, EG Link and Polestar forever-db.
 Blizzard CDN acquisition remains in Builds. Native screens use cached typed service
 snapshots; persistence, provider calls and inventory work run off the JavaFX thread.
 The earlier illustrative source figures have been replaced with local measurements.
@@ -87,6 +87,44 @@ preparation state and original/derived catalog payload totals. Payload totals co
 retained provider objects, not just the active snapshot. Per-build filename coverage
 stays in the build Overview. Definitions show the pinned revision, provider table
 count, upstream source and license; provider count is not readable-table coverage.
+
+## Polestar / forever-db
+
+The Polestar page checks the GitHub publication, downloads its published JSONL
+package, and explicitly prepares a provider-local SQLite database. It lists retained
+source versions, exact source client builds, original/database byte counts and record
+counts. Selected versions expose per-table licenses and published coverage. The
+source is enabled by default, with manual periodic metadata checks like Questie;
+the application can invoke its separate full sync operation for startup or a global
+Refresh Sources action. Checking, downloading and preparing remain available as
+individual controls.
+
+All acquisition stays on GitHub: the fixed `fitzforge/polestar` branch reference is
+resolved, then files beneath `forever-db/` are fetched at that immutable commit.
+Redirects and arbitrary manifest URLs/paths are refused. Each published resource's
+byte count, SHA256, declared license, reviewed schema and row count are checked.
+Incomplete downloads/preparations are not published. Cached source data remains
+queryable offline, failed checks preserve the last catalog, and invalid derived
+indexes can be prepared again from retained originals. Disabling cancels active work
+and retains complete snapshots.
+
+The reviewed publication is `2026.11.1`, client `1.60.1.70532`: source provenance,
+not a claim that it matches another build or that every fact was observed in Forever.
+No automatic source substitution, build mapping or NPC browser is added here.
+The package credits client, community, legacy and corrected sources; coverage and
+missing fields stay explicit. Coordinates are world yards on client Map IDs, not
+zone-map percentages. There is no declared localization matrix.
+
+The package declares GPL-3.0-only for database tables and CC BY 4.0 for its authored
+mechanics/steps/notes. Every original snapshot retains `NOTICE.md`, both license
+texts, schemas, index and package manifest. Results retain table license, source ID
+and client-build provenance. See [component details](../polestar/README.md) and
+[upstream review](../polestar/UPSTREAM.md).
+
+An isolated live test validated and prepared all 15 resources: 211,932 records,
+including 13,239 NPCs. It did not modify the user's application library.
+
+![Polestar source management](images/polestar-source-live.png)
 
 ## Validation
 
