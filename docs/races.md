@@ -192,6 +192,13 @@ Unsupported garment metadata does not activate robe suppression. Recorded defaul
 geometry variants do not overwrite an already selected specific clothing variant.
 
 Sample selection does not interpret `ChrCustomizationChoice.UiOrderIndex`: current
-layout9559C358 exposes that unverified candidate16-bit field as a preserved raw
-physical32-bit column. Stable row-ID ordering avoids narrowing or granting raw
+layout `9559C358` exposes that unverified candidate 16-bit field as a preserved raw
+physical 32-bit column. Stable row-ID ordering avoids narrowing or granting raw
 columns semantic admission. The original raw value remains available in Tables.
+
+The reviewed `ChrCustomizationGeoset.GeosetType` adapter is narrower: only layout
+BF55F2FB with the observed raw unsigned 32-bit physical/signed 8-bit candidate metadata tuple
+is admitted. It retains the full physical integer; the geoset consumer still
+checks the group range before arithmetic. Other raw fields/widths remain refused.
+Read-only appearance verification now uses actual `Db2Reader` physical headers,
+including interpretation metadata, rather than columns reconstructed from DBD.

@@ -500,6 +500,28 @@ final class RaceAppearance {
         }
     }
 
+    static boolean reviewedPhysicalInteger(
+            String table,
+            List<String> layouts,
+            String name,
+            com.vibeminer.formats.definitions.TableSchema.SchemaColumn field,
+            com.vibeminer.formats.db2.Db2Types.Column column) {
+        var raw = column.interpretation();
+        return table.equals("ChrCustomizationGeoset")
+                && layouts.contains("BF55F2FB")
+                && name.equals("GeosetType")
+                && field.arrayLength() == 1
+                && java.util.Objects.equals(field.bits(), 8)
+                && Boolean.FALSE.equals(field.unsigned())
+                && column.narrowing() == null
+                && raw != null
+                && raw.policy().equals("raw-physical-integer-v1")
+                && raw.physicalBits() == 32
+                && !raw.physicalSigned()
+                && raw.candidateBits() == 8
+                && !raw.candidateUnsigned();
+    }
+
     static boolean reviewedField(String table, List<String> layouts, String field) {
         return switch (table) {
             case "ChrRaces" -> layouts.contains("4F44C796") && field.equals("PlayableRaceBit");

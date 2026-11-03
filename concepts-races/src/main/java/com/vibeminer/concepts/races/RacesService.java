@@ -597,6 +597,8 @@ public final class RacesService implements BuildRaces {
                 var column = columns.get(at);
                 if (!column.kind().equals(integer ? "integer" : "string")
                         || column.interpretation() != null
+                                && !RaceAppearance.reviewedPhysicalInteger(
+                                        this.name, schema.layoutHashes(), name, field, column)
                         || column.isId()) {
                     throw unsupported("Column mismatch " + name);
                 }

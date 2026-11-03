@@ -485,4 +485,82 @@ final class RaceAppearancePlanTest {
             tables.closeAsync().join();
         }
     }
+
+    @Test
+    void reviewedGeosetGroupKeepsFullPhysicalIntegerAndRejectsOtherRawWidths() {
+        var field =
+                new TableSchema.SchemaColumn(
+                        "GeosetType",
+                        TableSchema.ColumnKind.INT,
+                        8,
+                        false,
+                        1,
+                        null,
+                        TableSchema.KeyStorage.NONE,
+                        TableSchema.KeyStorage.NONE,
+                        false,
+                        WowLocale.parse("enUS"),
+                        null,
+                        null);
+        var schema =
+                new TableSchema(
+                        List.of(field),
+                        List.of("BF55F2FB"),
+                        TableSchema.SchemaMatch.BUILD,
+                        WowLocale.parse("enUS"),
+                        null);
+        var entry =
+                table("ChrCustomizationGeoset", "BF55F2FB", "GeosetType", row(1, "256")).entry();
+        for (int bits : new int[] {32, 64}) {
+            var column =
+                    new Db2Types.Column(
+                            "GeosetType",
+                            "integer",
+                            false,
+                            new Db2Types.Interpretation(
+                                    "raw-physical-integer-v1",
+                                    bits,
+                                    false,
+                                    8,
+                                    false,
+                                    "Unverified physical group integer"),
+                            null);
+            var data =
+                    new RacesService.Data(
+                            "ChrCustomizationGeoset",
+                            List.of(column),
+                            schema,
+                            List.of(row(1, "256")),
+                            entry);
+            if (bits == 32) {
+                data.field("GeosetType", true);
+                assertEquals(256, data.number(data.rows.getFirst(), "GeosetType"));
+            } else {
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        RacesService.Projection.class, () -> data.field("GeosetType", true));
+            }
+        }
+        var wrongCandidate =
+                new Db2Types.Column(
+                        "GeosetType",
+                        "integer",
+                        false,
+                        new Db2Types.Interpretation(
+                                "raw-physical-integer-v1",
+                                32,
+                                false,
+                                16,
+                                false,
+                                "Different raw candidate"),
+                        null);
+        var data =
+                new RacesService.Data(
+                        "ChrCustomizationGeoset",
+                        List.of(wrongCandidate),
+                        schema,
+                        List.of(row(1, "256")),
+                        entry);
+        org.junit.jupiter.api.Assertions.assertThrows(
+                RacesService.Projection.class, () -> data.field("GeosetType", true));
+    }
 }
