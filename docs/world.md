@@ -35,10 +35,12 @@ borrowed tables/files are retired.
 This is a free-fly **terrain preview with height shading**. It renders source
 terrain heights and terrain holes. Buildings, doodads, texture-layer painting,
 water, collision and live NPCs are not rendered yet. Global-WMO-only maps have no
-terrain tiles and remain visible with that limitation. This renderer is a bounded
-CPU fallback that works on Linux ARM machines whose JavaFX pipeline lacks 3D
-support. The rendering component is separate from the source component so a GPU
-backend can be introduced independently.
+terrain tiles and remain visible with that limitation. The default application viewport now uses inline bgfx GPU rendering on a
+capable backend, with the bounded CPU renderer as fallback. No JavaFX3D pipeline
+is required. **GPU terrain** selects the renderer; **Retry GPU** explicitly retries
+a failed scene. Backend/activity feedback stays beside the controls. Unsupported
+or failed native rendering retains the current camera/data and uses software.
+Actual hardware qualification covers Linux Vulkan; Metal/D3D remain pending.
 
 Readable PARTIAL Map/AreaTable rows remain usable. Unavailable tables, protected
 terrain files and failed tiles report independent outcomes. Existing CDN/file
@@ -122,3 +124,34 @@ and used an entry point equal to an actual native mesh vertex. The original
 application library stayed read-only; one missing tile was acquired into a
 private scratch store. This is a one-tile source proof, not a completed continent
 or zone-coverage scan. No game assets or screenshots enter Git.
+
+## Inline GPU terrain
+
+Terrain and model previews share one application-owned offscreen GPU child.
+Height geometry is uploaded once per immutable tile snapshot as bounded48-byte
+triangle instances. Camera updates carry free-flight coordinates without geometry
+reupload or process restart. Tile-set replacement drains the old child serially,
+keeps the previous readable image and shows activity until a current frame is
+accepted by JavaFX. Hidden/iconified/inactive views retire their native owner.
+An empty loaded neighborhood retires stale GPU output and renders software sky.
+
+The GPU uses native coordinates, existing flat height/slope colors, original
+triangle-depth fog, holes and near/far behavior. Qualified reversed D32F depth
+preserves the tested close-surface ordering; homogeneous-depth backends fall back
+to CPU. GPU camera controls may update faster while nearby-file checks stay near
+10Hz. Requested frames preserve aspect ratio within800×500. Readback, parent copy
+and final FX upload remain costs; this is not zero-copy or a universal speedup.
+
+Independent acceptance includes27 feasibility and30 production Vulkan frames,
+maximum nine-tile upload, source index37119, close/far overlap, opaque sky, typed
+child IPC, camera/resize persistence and actual inline FX lifecycle/fallback.
+All24 packaged shader blobs are hash-verified across four offline profiles.
+See [terrain review](gpu-terrain-review.md) for exact scope and platform limits.
+
+```sh
+./gradlew :rendering-bgfx:nativeGpuTerrainProductionAcceptance
+# Linux Vulkan and a working JavaFX display required:
+./gradlew :gui:worldGpuUiProof
+```
+
+![Authored inline GPU terrain](images/world-inline-gpu-authored.png)

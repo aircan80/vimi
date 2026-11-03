@@ -9,6 +9,26 @@ GPU terrain feasibility and independent acceptance, plus a parallel item-effects
 comparison design. Root owns packaging/integration and verified zone-navigation
 scoping. Do not wait for one track to finish before progressing another.
 
+## GPU terrain delivery continuation
+
+Alpha.14 is verified published (run41717386244, all five packages,18assets,
+explicit prerelease). Area navigation PR144 FF-merged at81b0611. Preserve tags.
+
+GPU terrain integration is `/tmp/vimi-gpu-terrain-inline`, branch
+`feature/gpu-terrain-inline`, production through0eae668 plus tests5679b07.
+Source/API/native/GUI independent approvals and native/FX checks pass; see
+[review](docs/gpu-terrain-review.md). Final full checks and hosted CI gate merge
+and separate alpha.15; notes are committed before any tag. Private live terrain
+CPU/Vulkan proof is running with frozen verified JARs; never overwrite its copies
+or running app distributions. Existing material/area frozen launchers remain safe.
+
+Comparison pure projection3e1ff98 and capture/stage528b4e6 have independent reviews.
+Worktree `/tmp/vimi-item-effects-design` continues charged routing/fan-out join;
+no comparison GUI or release yet. Keep its release independent of GPU terrain.
+Continue native hardware qualification, additional race profiles, animation and
+equipment as separately reviewed/prereleased items, with independent tracks in
+parallel. No blocking product permission question is outstanding.
+
 ## Area navigation and parallel feature continuation
 
 Exact-area navigation is implemented on `feature/world-area-navigation`, worktree

@@ -1,7 +1,7 @@
 # Native bgfx rendering support
 
 LWJGL **3.4.3**, bgfx **API156**, core bindings are pinned together. This module
-uses Java25 and depends on the immutable `rendering-models` scene contracts. The
+uses Java25 and depends on immutable `rendering-models` and `rendering-world` scene contracts. The
 isolated offscreen helper entry is `com.vibeminer.rendering.bgfx.GpuViewerMain`.
 
 ## Inline presentation contract
@@ -122,3 +122,20 @@ Cross-target builds skip execution; they retain their pinned target native JARs.
 This proves native loading and compiled backend availability, not hardware support
 or successful Metal/D3D rendering. Hardware rendering remains an explicit smoke.
 The macOS first-thread option applies to the isolated helper, not JavaFX.
+
+## World terrain
+
+The typed `--terrain-scene`/`WORLD` path shares the same process/watchdog and frame
+bridge with model `--scene`/`VIEW` requests. Its bounded scene format and camera
+are separate from model limits. Persistent48-byte triangle instances retain the
+original flat shading/fog semantics; zero-to-one reversed D32F and instancing are
+runtime requirements. Homogeneous-depth backends decline terrain safely.
+
+Production renderer acceptance passes30 actual Linux Vulkan frames, including
+589,824 triangles/27MiB persistent instance data across nine tiles. The logical
+child-owned allocation ledger is conservatively91,353,380 bytes; this is neither
+RSS nor a driver allocation measurement. Frames cap at800×500 and24 model/terrain/
+sky offline blobs are hash-verified. Actual World JavaFX proof covers pixel
+acceptance, camera/resize same-child operation, hidden restart, software toggle
+and stale-GPU retirement for empty neighborhoods. No Metal/D3D execution or general
+performance speedup is claimed. See [review](../docs/gpu-terrain-review.md).

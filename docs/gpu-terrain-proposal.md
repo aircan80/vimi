@@ -1,12 +1,14 @@
 # Inline GPU terrain proposal
 
-Status: design for review; no terrain implementation or backend performance claim.
+Status: reviewed contract with implemented GPU terrain. Available Vulkan
+feasibility and production acceptance pass; actual other-backend hardware
+qualification remains separate. See [implementation review](gpu-terrain-review.md).
 
-Review record: root and domain reviewers agree with the bounded scene/instance
-direction and corrected arithmetic; acceptance review agrees with the semantic
-and lifecycle scope. Acceptance identified depth precision as a feasibility gate.
-The proposal is **not fully approved for production implementation** until the
-reversed-depth spike and independent overlap oracles below qualify that gate.
+Review record: root/domain approved the scene/instance direction; acceptance
+identified the depth gate. Independent reversed-depth overlap fixtures and all
+four offline shader profiles qualified the available Vulkan path before
+production implementation. The historical feasibility section below is scoped
+to that earlier checkpoint, not a claim that GUI work remains unimplemented.
 
 ## First implementation slice
 

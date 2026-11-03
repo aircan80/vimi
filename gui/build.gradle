@@ -407,6 +407,19 @@ tasks.register('gpuPreviewUiTest', JavaExec) {
 }
 
 // Explicit authored-data proof requiring a display and Vulkan hardware.
+tasks.register('worldGpuUiProof', JavaExec) {
+    group = 'verification'
+    description = 'Authored real World inline GPU proof; requires Linux Vulkan and a JavaFX display.'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldGpuUiTest'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    def artifacts = providers.gradleProperty('worldGpuArtifacts')
+    if (artifacts.isPresent()) {
+        systemProperty 'vimi.world.gpu.artifacts', artifacts.get()
+    }
+}
+
 tasks.register('gpuInlineUiProof', JavaExec) {
     group = 'verification'
     dependsOn testClasses
