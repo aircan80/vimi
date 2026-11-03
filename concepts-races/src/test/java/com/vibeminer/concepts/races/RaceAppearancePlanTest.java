@@ -343,6 +343,149 @@ final class RaceAppearancePlanTest {
         return seed;
     }
 
+    private static List<MemoryTables.FakeTable> dwarfFixture(
+            int model, int layout, int sex, String fallback) {
+        var seed = new ArrayList<>(taurenFixture(model, layout, sex, fallback));
+        replace(seed, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(3, "2")));
+        replace(
+                seed,
+                table(
+                        "CharacterLoadout",
+                        "713CE8BB",
+                        "ChrClassID,Purpose,Racemask:2",
+                        row(1, "1", "9", "4", "0")));
+        replace(
+                seed,
+                table(
+                        "ChrModelMaterial",
+                        "22469480",
+                        "CharComponentTextureLayoutsID,TextureType,Width,Height,Flags",
+                        row(1, Integer.toString(layout), "1", "2048", "1024", "0"),
+                        row(2, Integer.toString(layout), "6", "512", "256", "0"),
+                        row(3, Integer.toString(layout), "19", "256", "128", "0")));
+        replace(
+                seed,
+                table(
+                        "ChrModelTextureLayer",
+                        "D0583FB4",
+                        "CharComponentTextureLayoutsID,TextureType,Layer,BlendMode,TextureSectionTypeBitMask,TextureSectionTypeBitMask2,Flags,ChrModelTextureTargetID:2",
+                        row(
+                                50,
+                                Integer.toString(layout),
+                                "6",
+                                "1",
+                                "1",
+                                "-1",
+                                "-1",
+                                "0",
+                                "2",
+                                "0")));
+        return seed;
+    }
+
+    @Test
+    void dwarfPairKeepsSeparateSexProfilesAndSourceQualifiedHairAtlas() {
+        for (int model : new int[] {5, 6}) {
+            var tables =
+                    new MemoryTables()
+                            .add(BUILD, "enUS", dwarfFixture(model, model + 102, model - 5, "0"))
+                            .forBuild(BUILD, "enUS", Cancellation.NONE)
+                            .join()
+                            .tables();
+            var service = new RacesService(tables);
+            try {
+                var plan =
+                        new RaceAppearancePlan(
+                                        service, new RaceMedia(service, tables, null, null), tables)
+                                .build(
+                                        3,
+                                        1,
+                                        new RaceMediaTypes.Variant(model, model - 5, 1, 1, 1),
+                                        Cancellation.NONE,
+                                        new ArrayList<>());
+                assertEquals(
+                        model == 5
+                                ? RaceAppearanceProfiles.Profile.DWARF_MALE
+                                : RaceAppearanceProfiles.Profile.DWARF_FEMALE,
+                        plan.profile());
+                assertEquals(
+                        new RaceAppearancePlan.Canvas(6, 512, 256),
+                        plan.canvases().stream()
+                                .filter(c -> c.type() == 6)
+                                .findFirst()
+                                .orElseThrow());
+                assertEquals(
+                        model == 5 ? 10000 : 10001,
+                        plan.layers().stream()
+                                .filter(l -> l.type() == 6)
+                                .findFirst()
+                                .orElseThrow()
+                                .fileDataId());
+            } finally {
+                service.closeAsync().join();
+                tables.closeAsync().join();
+            }
+        }
+    }
+
+    @Test
+    void dwarfAdmissionRejectsWrongTupleAndBothNonzeroOrNoncanonicalFallbackSlots() {
+        for (int change = 0; change < 7; change++) {
+            var seed =
+                    new ArrayList<>(
+                            dwarfFixture(
+                                    5,
+                                    change == 0 ? 108 : 107,
+                                    change == 1 ? 1 : 0,
+                                    change == 2 ? "7" : change == 3 ? "00" : "0"));
+            if (change == 4) {
+                var original =
+                        seed.stream()
+                                .filter(t -> t.entry().name().equals("ChrModel"))
+                                .findFirst()
+                                .orElseThrow();
+                var values = new ArrayList<>(original.rows().getFirst().values());
+                values.set(13, "6");
+                replace(
+                        seed,
+                        new MemoryTables.FakeTable(
+                                original.entry(),
+                                original.columns(),
+                                List.of(new Db2Types.Row(5, false, null, values, List.of())),
+                                original.schema(),
+                                Map.of(),
+                                true));
+            }
+            var tables =
+                    new MemoryTables()
+                            .add(BUILD, "enUS", seed)
+                            .forBuild(BUILD, "enUS", Cancellation.NONE)
+                            .join()
+                            .tables();
+            var service = new RacesService(tables);
+            final int changed = change;
+            try {
+                assertThrows(
+                        RacesService.Projection.class,
+                        () ->
+                                new RaceAppearancePlan(
+                                                service,
+                                                new RaceMedia(service, tables, null, null),
+                                                tables)
+                                        .build(
+                                                changed == 5 ? 4 : 3,
+                                                1,
+                                                new RaceMediaTypes.Variant(
+                                                        5, changed == 6 ? 1 : 0, 1, 1, 1),
+                                                Cancellation.NONE,
+                                                new ArrayList<>()));
+            } finally {
+                service.closeAsync().join();
+                tables.closeAsync().join();
+            }
+        }
+    }
+
     @Test
     void taurenPairUsesRecordedFurCanvasAndSexQualifiedDiffuseWithoutNewBounds() {
         for (int model : new int[] {11, 12}) {
@@ -439,8 +582,12 @@ final class RaceAppearancePlanTest {
 
     @Test
     void taurenCompatibilityGateRejectsChangedLogicalWidthSignednessOrRawInterpretation() {
-        for (int change = 0; change < 3; change++) {
-            var seed = new ArrayList<>(taurenFixture(11, 113, 0, "0"));
+        for (int scenario = 0; scenario < 6; scenario++) {
+            int change = scenario % 3;
+            boolean dwarf = scenario >= 3;
+            var seed =
+                    new ArrayList<>(
+                            dwarf ? dwarfFixture(5, 107, 0, "0") : taurenFixture(11, 113, 0, "0"));
             var original =
                     seed.stream()
                             .filter(table -> table.entry().name().equals("ChrModel"))
@@ -515,9 +662,10 @@ final class RaceAppearancePlanTest {
                                                 new RaceMedia(service, tables, null, null),
                                                 tables)
                                         .build(
-                                                6,
+                                                dwarf ? 3 : 6,
                                                 1,
-                                                new RaceMediaTypes.Variant(11, 0, 1, 1, 1),
+                                                new RaceMediaTypes.Variant(
+                                                        dwarf ? 5 : 11, 0, 1, 1, 1),
                                                 Cancellation.NONE,
                                                 new ArrayList<>()));
             } finally {
