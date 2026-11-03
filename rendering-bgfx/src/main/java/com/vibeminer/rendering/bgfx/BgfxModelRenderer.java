@@ -219,7 +219,7 @@ final class BgfxModelRenderer implements AutoCloseable {
             flags |= BGFX_SAMPLER_V_CLAMP;
         }
         bgfx_set_texture(0, sampler, sample ? textures.get(draw.textureIndex()) : white, flags);
-        bgfx_set_vertex_buffer(0, vertices, 0, scene.vertexData().remaining() / 8);
+        bgfx_set_vertex_buffer(0, vertices, 0, scene.vertexCount());
         bgfx_set_index_buffer(
                 edgePass ? edges : indices,
                 draw.firstIndex() * (edgePass ? 2 : 1),

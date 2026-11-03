@@ -147,3 +147,13 @@ tasks.register('nativeGpuSmoke', JavaExec) {
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args '--headless-smoke', layout.buildDirectory.dir('native-gpu-proof').get().asFile.absolutePath
 }
+
+tasks.register('nativeGpuMaterialProof', JavaExec) {
+    group = 'verification'
+    description = 'Checks authored material, visibility and depth cases on headless Vulkan.'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.GpuMaterialProof'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-material-proof').get().asFile.absolutePath
+}

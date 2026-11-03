@@ -62,7 +62,7 @@ public final class GpuSceneFile {
             output.writeInt(payload.visibleParts().size());
             output.writeInt(encoded.length);
             output.writeInt(0);
-            output.write(digest(encoded));
+            output.write(digest(encoded, appearance == null ? 0 : 1, payload.visibleParts()));
             for (int part : payload.visibleParts().stream().sorted().toList()) {
                 output.writeInt(part);
             }
@@ -102,7 +102,8 @@ public final class GpuSceneFile {
             }
             byte[] encoded = new byte[length];
             input.readFully(encoded);
-            if (input.read() != -1 || !MessageDigest.isEqual(expected, digest(encoded))) {
+            if (input.read() != -1
+                    || !MessageDigest.isEqual(expected, digest(encoded, flags, parts))) {
                 throw new IOException("GPU preview snapshot integrity mismatch");
             }
             try {
@@ -117,9 +118,14 @@ public final class GpuSceneFile {
         }
     }
 
-    private static byte[] digest(byte[] bytes) {
+    private static byte[] digest(byte[] bytes, int flags, Set<Integer> parts) {
         try {
-            return MessageDigest.getInstance("SHA-256").digest(bytes);
+            var digest = MessageDigest.getInstance("SHA-256");
+            var header = java.nio.ByteBuffer.allocate(24 + parts.size() * Integer.BYTES);
+            header.putLong(MAGIC).putInt(flags).putInt(parts.size()).putInt(bytes.length).putInt(0);
+            parts.stream().sorted().forEach(header::putInt);
+            digest.update(header.array());
+            return digest.digest(bytes);
         } catch (NoSuchAlgorithmException impossible) {
             throw new AssertionError(impossible);
         }

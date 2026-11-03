@@ -68,7 +68,7 @@ final class GpuSceneFileTest {
         Path original = directory.resolve("original.bin");
         GpuSceneFile.write(original, mesh(), null, Set.of(77));
         byte[] valid = Files.readAllBytes(original);
-        for (int kind = 0; kind < 4; kind++) {
+        for (int kind = 0; kind < 5; kind++) {
             byte[] changed =
                     kind == 0 ? java.util.Arrays.copyOf(valid, valid.length - 1) : valid.clone();
             if (kind == 1) {
@@ -79,6 +79,9 @@ final class GpuSceneFileTest {
             }
             if (kind == 3) {
                 ByteBuffer.wrap(changed).putInt(16, Integer.MAX_VALUE);
+            }
+            if (kind == 4) {
+                changed[59] ^= 1;
             }
             Path file = directory.resolve("bad-" + kind);
             Files.write(file, changed);

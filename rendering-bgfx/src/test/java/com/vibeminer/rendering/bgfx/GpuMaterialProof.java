@@ -68,6 +68,8 @@ public final class GpuMaterialProof {
             proof.checkWrapAndClamp();
             proof.checkMaximumIndex();
             var caps = bgfx_get_caps();
+            GpuViewerMain.requireHardware(
+                    Short.toUnsignedInt(caps.vendorId()), Short.toUnsignedInt(caps.deviceId()));
             String report =
                     "{\n  \"renderer\": \""
                             + bgfx_get_renderer_name(caps.rendererType())

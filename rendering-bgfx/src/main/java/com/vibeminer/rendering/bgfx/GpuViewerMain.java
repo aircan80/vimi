@@ -9,6 +9,7 @@ import static org.lwjgl.bgfx.BGFX.BGFX_RENDERER_TYPE_VULKAN;
 import static org.lwjgl.bgfx.BGFX.BGFX_RESET_VSYNC;
 import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_FORMAT_COUNT;
 import static org.lwjgl.bgfx.BGFX.bgfx_frame;
+import static org.lwjgl.bgfx.BGFX.bgfx_get_caps;
 import static org.lwjgl.bgfx.BGFX.bgfx_get_renderer_name;
 import static org.lwjgl.bgfx.BGFX.bgfx_get_renderer_type;
 import static org.lwjgl.bgfx.BGFX.bgfx_init;
@@ -100,9 +101,27 @@ public final class GpuViewerMain {
         if (parent < 1 || ProcessHandle.of(parent).filter(ProcessHandle::isAlive).isEmpty()) {
             throw new IllegalArgumentException("GPU preview parent is unavailable");
         }
+        var parentProcess = ProcessHandle.of(parent).orElseThrow();
+        try (var lifetime =
+                new GpuParentWatchdog(
+                        parentProcess.onExit(),
+                        System.in,
+                        java.time.Duration.ofSeconds(5),
+                        () -> Runtime.getRuntime().halt(2))) {
+            runWindow(options, lifetime);
+        }
+    }
+
+    private static void runWindow(Map<String, String> options, GpuParentWatchdog lifetime)
+            throws IOException {
+        if (lifetime.stopping()) {
+            return;
+        }
         var payload = GpuSceneFile.read(Path.of(options.get("--scene")));
         var scene = GpuModelScene.create(payload.mesh(), payload.appearance());
-        var stopping = new AtomicBoolean();
+        if (lifetime.stopping()) {
+            return;
+        }
         boolean glfw = false, bgfx = false;
         long window = 0;
         var errors = GLFWErrorCallback.createPrint(System.err);
@@ -122,8 +141,8 @@ public final class GpuViewerMain {
                 var width = stack.mallocInt(1);
                 var height = stack.mallocInt(1);
                 glfwGetFramebufferSize(window, width, height);
-                size[0] = Math.max(1, width.get(0));
-                size[1] = Math.max(1, height.get(0));
+                size[0] = Math.clamp(width.get(0), 1, 8192);
+                size[1] = Math.clamp(height.get(0), 1, 8192);
                 var init = BGFXInit.calloc(stack);
                 bgfx_init_ctor(init);
                 init.type(backend(options.get("--backend"))).fallback(false);
@@ -135,6 +154,12 @@ public final class GpuViewerMain {
                     throw new IOException("Unable to initialize GPU backend");
                 }
                 bgfx = true;
+            }
+            requireHardware(
+                    Short.toUnsignedInt(bgfx_get_caps().vendorId()),
+                    Short.toUnsignedInt(bgfx_get_caps().deviceId()));
+            if (lifetime.stopping()) {
+                return;
             }
             String backend = bgfx_get_renderer_name(bgfx_get_renderer_type());
             status("HELLO", backend);
@@ -217,12 +242,9 @@ public final class GpuViewerMain {
                         }
                         dirty.set(true);
                     });
-            Thread.startVirtualThread(() -> readControl(stopping));
             boolean announced = false;
             try (var renderer = new BgfxModelRenderer(scene)) {
-                while (!stopping.get()
-                        && !glfwWindowShouldClose(targetWindow)
-                        && ProcessHandle.of(parent).filter(ProcessHandle::isAlive).isPresent()) {
+                while (!lifetime.stopping() && !glfwWindowShouldClose(targetWindow)) {
                     glfwPollEvents();
                     if (size[0] > 0 && size[1] > 0 && dirty.getAndSet(false)) {
                         int width = Math.min(8192, size[0]), height = Math.min(8192, size[1]);
@@ -302,29 +324,9 @@ public final class GpuViewerMain {
         }
     }
 
-    private static void readControl(AtomicBoolean stopping) {
-        try {
-            var command = new StringBuilder();
-            int value;
-            while ((value = System.in.read()) != -1) {
-                if (value == '\n') {
-                    if (!command.toString().equals("CLOSE")) {
-                        break;
-                    }
-                    stopping.set(true);
-                    return;
-                }
-                if (value != '\r') {
-                    command.append((char) value);
-                }
-                if (command.length() > 64) {
-                    break;
-                }
-            }
-        } catch (IOException ignored) {
-            // Lost parent/control channel terminates the preview rather than leaving an orphan.
-        } finally {
-            stopping.set(true);
+    static void requireHardware(int vendor, int device) throws IOException {
+        if (vendor == 1 || vendor == 5 || vendor == 0x1414 && device == 0x008c) {
+            throw new IOException("The graphics driver selected a software rasterizer");
         }
     }
 

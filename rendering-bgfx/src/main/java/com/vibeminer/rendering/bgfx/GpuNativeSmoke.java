@@ -62,6 +62,8 @@ final class GpuNativeSmoke {
                 initialized = true;
             }
             var caps = bgfx_get_caps();
+            GpuViewerMain.requireHardware(
+                    Short.toUnsignedInt(caps.vendorId()), Short.toUnsignedInt(caps.deviceId()));
             if ((caps.supported() & BGFX_CAPS_TEXTURE_READ_BACK) == 0) {
                 throw new IOException("Diagnostic texture readback is unsupported");
             }
