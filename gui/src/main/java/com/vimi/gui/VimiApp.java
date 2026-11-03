@@ -690,18 +690,31 @@ public final class VimiApp extends Application {
         dialog.setHeaderText(job.build().version() + " · " + job.source().region().toUpperCase(Locale.ROOT) + " · " + job.locale());
         var spinner = new javafx.scene.control.ProgressIndicator(-1); spinner.setPrefSize(28,28);
         dialog.getDialogPane().setContent(new VBox(12,spinner,label("Verifying configurations, ENCODING and ROOT…", "value"),
-                label("Files and Tables continue in the background after metadata is ready. Hide keeps work running.", "muted")));
-        var hide = new javafx.scene.control.ButtonType("Hide",javafx.scene.control.ButtonBar.ButtonData.CANCEL_CLOSE);
+                label("Files and Tables continue after metadata is ready. Closing stops this build workspace.", "muted")));
+        var hide = new javafx.scene.control.ButtonType("Close build",javafx.scene.control.ButtonBar.ButtonData.CANCEL_CLOSE);
         var cancel = new javafx.scene.control.ButtonType("Cancel preparation",javafx.scene.control.ButtonBar.ButtonData.LEFT);
         dialog.getDialogPane().getButtonTypes().addAll(hide,cancel);
         var cancelButton = (Button)dialog.getDialogPane().lookupButton(cancel);
         cancelButton.addEventFilter(javafx.event.ActionEvent.ACTION,event -> {
             event.consume(); cancelButton.setDisable(true); job.cancel(); dialog.setHeaderText("Stopping…");
         });
+        var userClosed = new java.util.concurrent.atomic.AtomicBoolean();
+        var completed = new java.util.concurrent.atomic.AtomicBoolean();
+        dialog.setOnHidden(event -> {
+            if (completed.get() || closing) return;
+            userClosed.set(true);
+            if (realOpeningDialog == dialog) realOpeningDialog = null;
+            if (preparationFocus == job) preparationFocus = null;
+            service.preparation().release(job).whenComplete((ignored, error) -> Platform.runLater(() -> {
+                if (!closing && error != null) status.setText("Close failed: " + problem(error));
+            }));
+        });
         long navigation = navigationGeneration;
         job.metadataReady().whenComplete((value,error) -> Platform.runLater(() -> {
             if (closing) return;
+            if (userClosed.get()) return;
             boolean attached = realOpeningDialog == dialog && dialog.isShowing();
+            completed.set(true);
             dialog.close(); if (realOpeningDialog == dialog) realOpeningDialog = null;
             if (error != null) {
                 status.setText("Metadata unavailable: " + job.snapshot().problem());
@@ -853,7 +866,7 @@ public final class VimiApp extends Application {
         updateOpeningActivity();
         dialog.getDialogPane().setContent(new VBox(12, spinner, message, openingElapsedLabel,
                 label("Hide keeps this operation running. Progress is indeterminate.", "muted")));
-        var hide = new javafx.scene.control.ButtonType("Hide", javafx.scene.control.ButtonBar.ButtonData.CANCEL_CLOSE);
+        var hide = new javafx.scene.control.ButtonType("Close build", javafx.scene.control.ButtonBar.ButtonData.CANCEL_CLOSE);
         var cancel = new javafx.scene.control.ButtonType("Cancel opening", javafx.scene.control.ButtonBar.ButtonData.LEFT);
         dialog.getDialogPane().getButtonTypes().addAll(hide, cancel);
         var cancelButton = (Button) dialog.getDialogPane().lookupButton(cancel);
