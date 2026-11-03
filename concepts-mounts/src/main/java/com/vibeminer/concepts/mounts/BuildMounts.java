@@ -9,6 +9,19 @@ public interface BuildMounts extends AutoCloseable {
 
     CompletableFuture<MountTypes.Overview> overview(long mountId, Cancellation token);
 
+    default CompletableFuture<com.vibeminer.concepts.models.DisplayModelTypes.Preview> preview(
+            long mountId, long variantRecordId, Cancellation token) {
+        return CompletableFuture.completedFuture(
+                new com.vibeminer.concepts.models.DisplayModelTypes.Preview(
+                        com.vibeminer.concepts.models.DisplayModelTypes.State.UNAVAILABLE,
+                        null,
+                        null,
+                        java.util.Set.of(),
+                        java.util.List.of(),
+                        false,
+                        "Model previews unavailable"));
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override

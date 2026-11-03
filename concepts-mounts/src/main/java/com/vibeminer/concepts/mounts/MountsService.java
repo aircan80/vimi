@@ -18,6 +18,7 @@ import java.util.function.Function;
 @SuppressWarnings("try")
 public final class MountsService implements BuildMounts {
     private final TableProjection tables;
+    private final com.vibeminer.concepts.models.BuildDisplayModels models;
     private final ThreadPoolExecutor worker =
             new ThreadPoolExecutor(
                     1,
@@ -35,7 +36,51 @@ public final class MountsService implements BuildMounts {
     private List<String> linkIssues = List.of();
 
     public MountsService(BuildTables tables) {
+        this(tables, null, null);
+    }
+
+    public MountsService(
+            BuildTables tables,
+            com.vibeminer.files.BuildFiles files,
+            com.vibeminer.generated.GeneratedStore generated) {
         this.tables = new TableProjection(tables);
+        models =
+                files == null
+                        ? null
+                        : new com.vibeminer.concepts.models.DisplayModelService(
+                                tables, files, generated);
+    }
+
+    @Override
+    public CompletableFuture<com.vibeminer.concepts.models.DisplayModelTypes.Preview> preview(
+            long mountId, long variantRecordId, Cancellation token) {
+        checkId(mountId);
+        checkId(variantRecordId);
+        if (models == null) {
+            return BuildMounts.super.preview(mountId, variantRecordId, token);
+        }
+        return overview(mountId, token)
+                .thenCompose(
+                        detail -> {
+                            var variant =
+                                    detail.variants().stream()
+                                            .filter(v -> v.recordId() == variantRecordId)
+                                            .findFirst()
+                                            .orElse(null);
+                            if (variant == null) {
+                                return CompletableFuture.completedFuture(
+                                        new com.vibeminer.concepts.models.DisplayModelTypes.Preview(
+                                                com.vibeminer.concepts.models.DisplayModelTypes
+                                                        .State.UNAVAILABLE,
+                                                null,
+                                                null,
+                                                java.util.Set.of(),
+                                                detail.issues(),
+                                                false,
+                                                "Selected mount appearance is unavailable."));
+                            }
+                            return models.preview(variant.displayId(), token);
+                        });
     }
 
     @Override
@@ -260,16 +305,33 @@ public final class MountsService implements BuildMounts {
             return closing.copy();
         }
         closing = new CompletableFuture<>();
-        lifetime.cancel();
+        Throwable cancelFailure = null;
+        try {
+            lifetime.cancel();
+        } catch (Throwable failure) {
+            cancelFailure = failure;
+        }
+        final Throwable failure = cancelFailure;
         worker.shutdown();
+        var modelClosing =
+                models == null
+                        ? CompletableFuture.<Void>completedFuture(null)
+                        : models.closeAsync();
         Thread.startVirtualThread(
                 () -> {
                     try {
                         while (!worker.awaitTermination(1, TimeUnit.SECONDS)) {}
-                        closing.complete(null);
-                    } catch (InterruptedException failure) {
+                        modelClosing.join();
+                        if (failure == null) {
+                            closing.complete(null);
+                        } else {
+                            closing.completeExceptionally(failure);
+                        }
+                    } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt();
-                        closing.completeExceptionally(failure);
+                        closing.completeExceptionally(interrupted);
+                    } catch (RuntimeException unavailable) {
+                        closing.completeExceptionally(unavailable);
                     }
                 });
         return closing.copy();

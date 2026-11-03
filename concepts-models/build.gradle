@@ -38,6 +38,7 @@ dependencies {
     api project(':formats-assets')
     api project(':rendering-models')
     testImplementation testFixtures(project(':formats-tables'))
+    testImplementation testFixtures(project(':formats-assets'))
     testImplementation testFixtures(project(':files'))
     testImplementation testFixtures(project(':generated-store'))
     testImplementation platform('org.junit:junit-bom:5.13.4')
@@ -81,3 +82,5 @@ checkstyle {
 
 
 
+
+sourceSets { test { resources.srcDir '../formats-assets/src/test/resources' } }
