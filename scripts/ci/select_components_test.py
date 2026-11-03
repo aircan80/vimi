@@ -61,6 +61,14 @@ class SelectionTest(unittest.TestCase):
             "concepts-effects/src/testFixtures/java/MemoryBoundary.java",
             "concepts-effects/build.gradle",
             "concepts-effects/gradle.lockfile",
+            "rendering-bgfx/src/main/java/com/vibeminer/rendering/bgfx/GpuViewerMain.java",
+            "rendering-bgfx/src/main/shaders/fs_model.sc",
+            "rendering-bgfx/src/main/resources/com/vibeminer/rendering/bgfx/shaders/metal/fs_model.bin",
+            "rendering-bgfx/src/main/resources/com/vibeminer/rendering/bgfx/shaders/manifest.json",
+            "rendering-bgfx/build.gradle",
+            "rendering-bgfx/gradle.lockfile",
+            "rendering-bgfx/lwjgl-runtime.json",
+            "scripts/rendering/compile_bgfx_shaders.py",
 
         ]:
             with self.subTest(path=path):

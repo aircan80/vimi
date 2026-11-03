@@ -118,7 +118,16 @@ tasks.register('verifyShaders', Exec) {
     inputs.dir(layout.projectDirectory.dir('src/main/resources/com/vibeminer/rendering/bgfx/shaders'))
 }
 tasks.named('processResources') { dependsOn tasks.named('verifyShaders') }
-tasks.named('check') { dependsOn tasks.named('verifyShaders') }
+tasks.register('shaderBuildHelperTest', Exec) {
+    group = 'verification'
+    description = 'Runs offline shader-manifest and compiler-policy regression tests.'
+    workingDir rootProject.layout.projectDirectory
+    commandLine pythonExecutable.get(), '-m', 'unittest', 'discover', '-s', 'scripts/rendering', '-p', '*_test.py'
+    inputs.files(rootProject.fileTree('scripts/rendering') { include '*.py' })
+}
+tasks.named('check') {
+    dependsOn tasks.named('verifyShaders'), tasks.named('shaderBuildHelperTest')
+}
 
 tasks.register('compileShaders', Exec) {
     group = 'build'
