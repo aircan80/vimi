@@ -10,12 +10,14 @@ import javafx.application.Platform;
 import javafx.beans.property.ReadOnlyStringWrapper;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
+import javafx.scene.Node;
 import javafx.scene.control.Button;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
+import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TableColumn;
 import javafx.scene.control.TableView;
@@ -28,6 +30,7 @@ import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
+import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.util.Duration;
 
@@ -42,6 +45,74 @@ final class ProfessionsView extends BorderPane implements AutoCloseable {
     private final Supplier<BuildProfessions> handleSupplier;
     private final LongSupplier workspaceRevision;
     private final AsyncIconRequests icons;
+    private final ProgressIndicator activity = spinner("Loading records", 18);
+    private final java.util.concurrent.ThreadPoolExecutor iconWorker =
+            new java.util.concurrent.ThreadPoolExecutor(
+                    1,
+                    1,
+                    0,
+                    java.util.concurrent.TimeUnit.MILLISECONDS,
+                    new java.util.concurrent.ArrayBlockingQueue<>(64),
+                    runnable -> {
+                        var thread = new Thread(runnable, "professionsview-icon-pixels");
+                        thread.setDaemon(true);
+                        return thread;
+                    },
+                    new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
+
+    private record IconPixels(int width, int height, int[] argb) {}
+
+    private static ProgressIndicator spinner(String message, double size) {
+        var spinner = new ProgressIndicator(-1);
+        spinner.setPrefSize(size, size);
+        spinner.setMaxSize(size, size);
+        spinner.setAccessibleText(message);
+        return spinner;
+    }
+
+    private void busy(boolean value) {
+        activity.setVisible(value);
+        activity.setManaged(value);
+    }
+
+    private static <T> java.util.concurrent.CompletableFuture<T> request(
+            java.util.function.Supplier<java.util.concurrent.CompletableFuture<T>> action) {
+        try {
+            return action.get();
+        } catch (RuntimeException error) {
+            return java.util.concurrent.CompletableFuture.failedFuture(error);
+        }
+    }
+
+    private static IconPixels convert(com.vibeminer.formats.images.BlpImageTypes.Result result) {
+        if (result == null
+                || result.state() != com.vibeminer.formats.images.BlpImageTypes.State.READY
+                || result.image() == null) return null;
+        var image = result.image();
+        int width = image.width(), height = image.height(), stride = image.rowStride();
+        if (width < 1
+                || height < 1
+                || width > 64
+                || height > 64
+                || stride < width * 4
+                || stride > 256)
+            throw new IllegalArgumentException("Icon dimensions exceed preview bounds");
+        byte[] rgba = image.rgba();
+        if (rgba.length != stride * height)
+            throw new IllegalArgumentException("Invalid icon pixels");
+        int[] argb = new int[width * height];
+        for (int y = 0; y < height; y++)
+            for (int x = 0; x < width; x++) {
+                int at = y * stride + x * 4;
+                argb[y * width + x] =
+                        (rgba[at + 3] & 255) << 24
+                                | (rgba[at] & 255) << 16
+                                | (rgba[at + 1] & 255) << 8
+                                | (rgba[at + 2] & 255);
+            }
+        return new IconPixels(width, height, argb);
+    }
+
     private final BiFunction<Long, Cancellation, CompletableFuture<String>> itemNames;
     private int itemNameRequests;
     private final ListView<ProfessionTypes.Profession> professions = new ListView<>();
@@ -162,13 +233,15 @@ final class ProfessionsView extends BorderPane implements AutoCloseable {
                 });
         var heading = new HBox(12, title, spacer(), details, reload);
         heading.setAlignment(Pos.CENTER_LEFT);
+        busy(false);
+        activity.setId("professions-activity");
         var top =
                 new VBox(
                         14,
                         heading,
                         text("Recorded build data · no character skill or learned state", "muted"),
                         search,
-                        status);
+                        new HBox(10, activity, status));
         top.setPadding(new Insets(24, 24, 16, 24));
         var bottom = new HBox(more);
         bottom.setPadding(new Insets(12, 24, 20, 24));
@@ -199,23 +272,37 @@ final class ProfessionsView extends BorderPane implements AutoCloseable {
             revision = currentRevision;
         }
         if (loaded || handle == null) {
-            if (handle == null) status.setText("Profession tables are not available yet.");
+            if (handle == null) {
+                status.setText("Profession tables are not available yet.");
+                busy(false);
+            }
             return;
         }
         loaded = true;
         long request = ++generation;
         var selected = handle;
         status.setText("Preparing profession records…");
-        selected.catalog(token)
+        busy(true);
+        if (professions.getItems().isEmpty())
+            abilities.setPlaceholder(loading("Loading profession catalog…"));
+        request(() -> selected.catalog(token))
                 .whenComplete(
                         (result, failure) ->
                                 Platform.runLater(
                                         () -> {
                                             if (!current(selected, request)) return;
+                                            busy(false);
+                                            abilities.setPlaceholder(
+                                                    text("No readable abilities.", "muted"));
                                             if (failure != null) {
                                                 status.setText(
                                                         "Profession records could not be read."
                                                                 + " Reload to retry.");
+                                                abilities.setPlaceholder(
+                                                        text(
+                                                                "Profession records unavailable.",
+                                                                "muted"));
+                                                loaded = false;
                                                 return;
                                             }
                                             status.setText(
@@ -247,6 +334,7 @@ final class ProfessionsView extends BorderPane implements AutoCloseable {
         } else {
             abilities.getItems().clear();
             clearDetail("No matching profession records are readable.");
+            abilities.setPlaceholder(text("No matching profession records are readable.", "muted"));
         }
     }
 
@@ -258,6 +346,7 @@ final class ProfessionsView extends BorderPane implements AutoCloseable {
         generation++;
         detailGeneration++;
         loaded = false;
+        busy(false);
         icons.clear();
         searchDelay.stop();
         catalogue = List.of();
@@ -288,19 +377,29 @@ final class ProfessionsView extends BorderPane implements AutoCloseable {
         status.setText("Reading " + profession.name() + " abilities…");
         String query = search.getText();
         if (query.length() > 128) {
+            busy(false);
+            abilities.setPlaceholder(text("Search is limited to 128 characters.", "muted"));
             status.setText("Search is limited to 128 characters.");
             return;
         }
-        selected.abilities(profession.id(), query, after, 100, token)
+        busy(true);
+        if (abilities.getItems().isEmpty())
+            abilities.setPlaceholder(loading("Loading profession abilities…"));
+        request(() -> selected.abilities(profession.id(), query, after, 100, token))
                 .whenComplete(
                         (result, failure) ->
                                 Platform.runLater(
                                         () -> {
                                             if (!current(selected, request)) return;
+                                            busy(false);
+                                            abilities.setPlaceholder(
+                                                    text("No readable abilities.", "muted"));
                                             if (failure != null) {
                                                 status.setText(
                                                         "Recipes could not be read. Reload to"
                                                                 + " retry.");
+                                                abilities.setPlaceholder(
+                                                        text("Recipes unavailable.", "muted"));
                                                 return;
                                             }
                                             abilities.getItems().addAll(result.abilities());
@@ -333,7 +432,8 @@ final class ProfessionsView extends BorderPane implements AutoCloseable {
         var selected = handle;
         long selectedRevision = revision;
         clearDetail("Reading recipe details…");
-        selected.detail(ability.id(), detailToken)
+        inspection.getChildren().add(spinner("Loading recipe details", 24));
+        request(() -> selected.detail(ability.id(), detailToken))
                 .whenComplete(
                         (result, failure) ->
                                 Platform.runLater(
@@ -361,42 +461,56 @@ final class ProfessionsView extends BorderPane implements AutoCloseable {
         }
         var ability = detail.ability();
         var heading = new HBox(12);
-        var icon = new ImageView();
-        icon.setFitWidth(38);
-        icon.setFitHeight(38);
+        var icon = new StackPane(text("—", "muted"));
+        icon.setMinSize(38, 38);
+        icon.setMaxSize(38, 38);
+        icon.setAccessibleText("Recipe icon unavailable");
         heading.getChildren().add(icon);
         heading.getChildren().add(text(ability.name(), "h2"));
         inspection.getChildren().add(heading);
-        if (ability.iconFileDataId() != null)
+        if (ability.iconFileDataId() != null) {
+            icon.setAccessibleText("Loading recipe icon");
+            icon.getChildren().setAll(spinner("Loading recipe icon", 18));
+            var imageHandle = handle;
             icons.request(ability.iconFileDataId())
+                    .thenApplyAsync(ProfessionsView::convert, iconWorker)
                     .whenComplete(
-                            (image, error) ->
+                            (pixels, error) ->
                                     Platform.runLater(
                                             () -> {
-                                                if (!closed
-                                                        && request == detailGeneration
-                                                        && revision == workspaceRevision.getAsLong()
-                                                        && image != null
-                                                        && image.image() != null) {
-                                                    var decoded = image.image();
-                                                    var bitmap =
-                                                            new WritableImage(
-                                                                    decoded.width(),
-                                                                    decoded.height());
-                                                    bitmap.getPixelWriter()
-                                                            .setPixels(
-                                                                    0,
-                                                                    0,
-                                                                    decoded.width(),
-                                                                    decoded.height(),
-                                                                    PixelFormat
-                                                                            .getByteBgraInstance(),
-                                                                    rgbaToBgra(decoded.rgba()),
-                                                                    0,
-                                                                    decoded.width() * 4);
-                                                    icon.setImage(bitmap);
+                                                if (closed
+                                                        || request != detailGeneration
+                                                        || handleSupplier.get() != imageHandle
+                                                        || revision
+                                                                != workspaceRevision.getAsLong())
+                                                    return;
+                                                if (error != null || pixels == null) {
+                                                    icon.setAccessibleText(
+                                                            "Recipe icon unavailable");
+                                                    icon.getChildren().setAll(text("—", "muted"));
+                                                    return;
                                                 }
+                                                var bitmap =
+                                                        new WritableImage(
+                                                                pixels.width(), pixels.height());
+                                                bitmap.getPixelWriter()
+                                                        .setPixels(
+                                                                0,
+                                                                0,
+                                                                pixels.width(),
+                                                                pixels.height(),
+                                                                PixelFormat.getIntArgbInstance(),
+                                                                pixels.argb(),
+                                                                0,
+                                                                pixels.width());
+                                                var image = new ImageView(bitmap);
+                                                image.setFitWidth(38);
+                                                image.setFitHeight(38);
+                                                image.setPreserveRatio(true);
+                                                icon.setAccessibleText("Recipe icon");
+                                                icon.getChildren().setAll(image);
                                             }));
+        }
         inspection
                 .getChildren()
                 .add(text("Spell " + ability.spellId() + " · ability " + ability.id(), "muted"));
@@ -521,37 +635,43 @@ final class ProfessionsView extends BorderPane implements AutoCloseable {
         inspection.getChildren().add(text(coverage(detail.state(), detail.issues()), "muted"));
     }
 
-    private Label itemLabel(long id, String prefix, long request) {
+    private Node itemLabel(long id, String prefix, long request) {
         var label = text(prefix + "Item #" + id, "value");
         if (itemNameRequests++ >= 16) return label;
-        try {
-            itemNames
-                    .apply(id, detailToken)
-                    .whenComplete(
-                            (name, failure) ->
-                                    Platform.runLater(
-                                            () -> {
-                                                if (!closed
-                                                        && request == detailGeneration
-                                                        && revision == workspaceRevision.getAsLong()
-                                                        && name != null
-                                                        && !name.isBlank())
-                                                    label.setText(prefix + name + " (#" + id + ")");
-                                            }));
-        } catch (RuntimeException unavailable) {
-            // The recorded item reference remains useful when optional labels are unavailable.
-        }
-        return label;
+        var activity = spinner("Resolving item name for #" + id, 14);
+        var row = new HBox(7, label, activity);
+        var selected = handle;
+        request(() -> itemNames.apply(id, detailToken))
+                .whenComplete(
+                        (name, failure) ->
+                                Platform.runLater(
+                                        () -> {
+                                            if (closed
+                                                    || request != detailGeneration
+                                                    || handleSupplier.get() != selected
+                                                    || revision != workspaceRevision.getAsLong())
+                                                return;
+                                            activity.setVisible(false);
+                                            activity.setManaged(false);
+                                            if (failure == null
+                                                    && name != null
+                                                    && !name.isBlank()) {
+                                                label.setText(prefix + name + " (#" + id + ")");
+                                                row.setAccessibleText(
+                                                        "Recorded item reference " + id);
+                                            } else {
+                                                row.setAccessibleText(
+                                                        "Item name unavailable; recorded item #"
+                                                                + id);
+                                            }
+                                        }));
+        return row;
     }
 
-    private static byte[] rgbaToBgra(byte[] rgba) {
-        var result = rgba.clone();
-        for (int i = 0; i + 3 < result.length; i += 4) {
-            byte red = result[i];
-            result[i] = result[i + 2];
-            result[i + 2] = red;
-        }
-        return result;
+    private static VBox loading(String message) {
+        var box = new VBox(10, spinner(message, 28), text(message, "muted"));
+        box.setAlignment(Pos.CENTER);
+        return box;
     }
 
     private void layoutDetails() {
@@ -640,6 +760,8 @@ final class ProfessionsView extends BorderPane implements AutoCloseable {
         closed = true;
         invalidate();
         icons.close();
+        iconWorker.shutdownNow();
+        busy(false);
         if (drawer != null) drawer.close();
     }
 }

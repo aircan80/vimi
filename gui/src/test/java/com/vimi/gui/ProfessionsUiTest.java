@@ -163,6 +163,7 @@ public final class ProfessionsUiTest {
                             return result;
                         });
         try {
+            loadingStates();
             await(() -> labels(view).contains("Quantity not resolved"));
             fx(
                     () -> {
@@ -264,6 +265,144 @@ public final class ProfessionsUiTest {
                         return null;
                     });
             Platform.exit();
+        }
+    }
+
+    private static void loadingStates() throws Exception {
+        var catalog = new CompletableFuture<ProfessionTypes.Catalog>();
+        var page = new CompletableFuture<ProfessionTypes.Page>();
+        var detail = new CompletableFuture<ProfessionTypes.Detail>();
+        var icon = new CompletableFuture<com.vibeminer.formats.images.BlpImageTypes.Result>();
+        var names = new CompletableFuture<String>();
+        var handle =
+                new BuildProfessions() {
+                    public CompletableFuture<ProfessionTypes.Catalog> catalog(Cancellation token) {
+                        return catalog;
+                    }
+
+                    public CompletableFuture<ProfessionTypes.Page> abilities(
+                            long id, String query, long after, int limit, Cancellation token) {
+                        return page;
+                    }
+
+                    public CompletableFuture<ProfessionTypes.Detail> detail(
+                            long id, Cancellation token) {
+                        return detail;
+                    }
+
+                    public CompletableFuture<Void> closeAsync() {
+                        throw new AssertionError("Borrowed handle");
+                    }
+                };
+        var view =
+                fx(
+                        () ->
+                                new ProfessionsView(
+                                        () -> handle,
+                                        () -> 1,
+                                        (id, token) -> icon,
+                                        (id, token) -> names));
+        var stage =
+                fx(
+                        () -> {
+                            var result = new Stage();
+                            result.setScene(new Scene(view, 1320, 850));
+                            result.show();
+                            view.ensureLoaded();
+                            require(
+                                    view.lookup("#professions-activity").isVisible(),
+                                    "Catalog activity is animated");
+                            return result;
+                        });
+        try {
+            catalog.complete(HANDLE.catalog(new Cancellation()).get());
+            await(() -> labels(view).contains("Reading Authored Alchemy abilities…"));
+            fx(
+                    () -> {
+                        require(
+                                view.lookup("#professions-activity").isVisible(),
+                                "Abilities activity is animated");
+                        return null;
+                    });
+            page.complete(
+                    new ProfessionTypes.Page(
+                            ProfessionTypes.State.READY, List.of(POTION), null, List.of(), null));
+            await(
+                    () ->
+                            nodes(view).stream()
+                                    .anyMatch(
+                                            n ->
+                                                    "Loading recipe details"
+                                                            .equals(n.getAccessibleText())));
+            var original = potion();
+            var illustrated =
+                    new ProfessionTypes.Ability(
+                            1, 171, 100, "Authored illustrated recipe", 900L, 25L, 40L);
+            detail.complete(
+                    new ProfessionTypes.Detail(
+                            original.state(),
+                            illustrated,
+                            original.skill(),
+                            original.reagents(),
+                            original.reagentState(),
+                            original.tools(),
+                            original.toolState(),
+                            original.results(),
+                            original.resultState(),
+                            original.issues(),
+                            original.message()));
+            await(
+                    () ->
+                            nodes(view).stream()
+                                    .anyMatch(
+                                            n ->
+                                                    "Loading recipe icon"
+                                                            .equals(n.getAccessibleText())));
+            fx(
+                    () -> {
+                        require(
+                                nodes(view).stream()
+                                        .anyMatch(
+                                                n ->
+                                                        n.getAccessibleText() != null
+                                                                && n.getAccessibleText()
+                                                                        .startsWith(
+                                                                                "Resolving item"
+                                                                                    + " name")),
+                                "Optional item-name resolution has local activity");
+                        return null;
+                    });
+            icon.completeExceptionally(new IllegalStateException("Authored missing icon"));
+            names.complete(null);
+            await(
+                    () ->
+                            nodes(view).stream()
+                                    .anyMatch(
+                                            n ->
+                                                    "Recipe icon unavailable"
+                                                            .equals(n.getAccessibleText())));
+            fx(
+                    () -> {
+                        require(
+                                nodes(view).stream()
+                                        .filter(
+                                                javafx.scene.control.ProgressIndicator.class
+                                                        ::isInstance)
+                                        .noneMatch(Node::isVisible),
+                                "Completed and failed work retires all activity");
+                        require(
+                                labels(view).contains("2 × Item #2447"),
+                                "Missing optional names retain item references");
+                        view.close();
+                        return null;
+                    });
+        } finally {
+            fx(
+                    () -> {
+                        view.close();
+                        stage.close();
+                        return null;
+                    });
         }
     }
 

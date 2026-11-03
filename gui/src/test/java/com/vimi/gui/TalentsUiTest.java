@@ -84,18 +84,25 @@ public final class TalentsUiTest {
         Platform.startup(
                 () -> {
                     try {
+                        var catalogGate = new CompletableFuture<Void>();
+                        var treesGate = new CompletableFuture<Void>();
+                        var descriptionGate = new CompletableFuture<Void>();
+                        var iconGate =
+                                new CompletableFuture<
+                                        com.vibeminer.formats.images.BlpImageTypes.Result>();
                         var player = new TalentTypes.PlayerClass(1, "Warrior", null, null);
                         BuildTalents fixture =
                                 new BuildTalents() {
                                     public CompletableFuture<TalentTypes.Catalog> catalog(
                                             Cancellation token) {
-                                        return CompletableFuture.completedFuture(
-                                                new TalentTypes.Catalog(
-                                                        TalentTypes.State.PARTIAL,
-                                                        List.of(player),
-                                                        "TALENTS_PARTIAL",
-                                                        "Authored layout fixture · not a real"
-                                                                + " build"));
+                                        return catalogGate.thenApply(
+                                                ignored ->
+                                                        new TalentTypes.Catalog(
+                                                                TalentTypes.State.PARTIAL,
+                                                                List.of(player),
+                                                                "TALENTS_PARTIAL",
+                                                                "Authored layout fixture · not a"
+                                                                    + " real build"));
                                     }
 
                                     public CompletableFuture<TalentTypes.ClassTrees> trees(
@@ -152,14 +159,15 @@ public final class TalentsUiTest {
                                                             "",
                                                             nodes));
                                         }
-                                        return CompletableFuture.completedFuture(
-                                                new TalentTypes.ClassTrees(
-                                                        TalentTypes.State.PARTIAL,
-                                                        player,
-                                                        trees,
-                                                        List.of(),
-                                                        null,
-                                                        null));
+                                        return treesGate.thenApply(
+                                                ignored ->
+                                                        new TalentTypes.ClassTrees(
+                                                                TalentTypes.State.PARTIAL,
+                                                                player,
+                                                                trees,
+                                                                List.of(),
+                                                                null,
+                                                                null));
                                     }
 
                                     public CompletableFuture<
@@ -167,24 +175,41 @@ public final class TalentsUiTest {
                                                             .Description>
                                             description(long spell, Cancellation token) {
                                         boolean resolved = spell == 1004;
-                                        return CompletableFuture.completedFuture(
-                                                new com.vibeminer.concepts.effects.SpellTexts
-                                                        .Description(
-                                                        spell,
-                                                        resolved
-                                                                ? "Authored chance rises by $s1%."
-                                                                : "Authored $d text",
-                                                        resolved
-                                                                ? "Authored chance rises by 5%."
-                                                                : "Authored ? text",
-                                                        resolved
-                                                                ? com.vibeminer.concepts.effects
-                                                                        .SpellTexts.State.RESOLVED
-                                                                : com.vibeminer.concepts.effects
-                                                                        .SpellTexts.State
-                                                                        .UNRESOLVED,
-                                                        List.of(),
-                                                        List.of()));
+                                        return (resolved
+                                                        ? descriptionGate
+                                                        : CompletableFuture.<Void>completedFuture(
+                                                                null))
+                                                .thenApply(
+                                                        ignored ->
+                                                                new com.vibeminer.concepts.effects
+                                                                        .SpellTexts.Description(
+                                                                        spell,
+                                                                        resolved
+                                                                                ? "Authored chance"
+                                                                                      + " rises by"
+                                                                                      + " $s1%."
+                                                                                : "Authored $d"
+                                                                                      + " text",
+                                                                        resolved
+                                                                                ? "Authored chance"
+                                                                                      + " rises by"
+                                                                                      + " 5%."
+                                                                                : "Authored ? text",
+                                                                        resolved
+                                                                                ? com.vibeminer
+                                                                                        .concepts
+                                                                                        .effects
+                                                                                        .SpellTexts
+                                                                                        .State
+                                                                                        .RESOLVED
+                                                                                : com.vibeminer
+                                                                                        .concepts
+                                                                                        .effects
+                                                                                        .SpellTexts
+                                                                                        .State
+                                                                                        .UNRESOLVED,
+                                                                        List.of(),
+                                                                        List.of()));
                                     }
 
                                     public CompletableFuture<Void> closeAsync() {
@@ -226,9 +251,7 @@ public final class TalentsUiTest {
                                         () -> 1,
                                         (id, token) -> {
                                             requestedIcons.add(id);
-                                            if (id == 900)
-                                                return CompletableFuture.completedFuture(
-                                                        authoredIcon());
+                                            if (id == 900) return iconGate;
                                             return CompletableFuture.failedFuture(
                                                     new IllegalStateException(
                                                             "Authored unavailable icon"));
@@ -251,6 +274,23 @@ public final class TalentsUiTest {
                         stage.setScene(scene);
                         stage.show();
                         view.ensureLoaded();
+                        if (!scene.getRoot().lookup("#talents-activity").isVisible())
+                            throw new AssertionError("Delayed catalog has animated activity");
+                        catalogGate.complete(null);
+                        Platform.runLater(
+                                () -> {
+                                    try {
+                                        if (!scene.getRoot()
+                                                .lookup("#talents-activity")
+                                                .isVisible())
+                                            throw new AssertionError(
+                                                    "Delayed trees have animated activity");
+                                        treesGate.complete(null);
+                                    } catch (Throwable error) {
+                                        ready.completeExceptionally(error);
+                                        Platform.exit();
+                                    }
+                                });
                         var selectPause =
                                 new javafx.animation.PauseTransition(
                                         javafx.util.Duration.millis(300));
@@ -293,6 +333,30 @@ public final class TalentsUiTest {
                                                                             + " warning outside the"
                                                                             + " tooltip");
                                                         talent(scene, 4).fire();
+                                                        if (!scene.getRoot()
+                                                                .lookup(
+                                                                        "#talent-description-activity")
+                                                                .isVisible())
+                                                            throw new AssertionError(
+                                                                    "Delayed description has"
+                                                                        + " activity");
+                                                        if (scene
+                                                                .getRoot()
+                                                                .lookupAll(".progress-indicator")
+                                                                .stream()
+                                                                .noneMatch(
+                                                                        n ->
+                                                                                "Loading talent icon"
+                                                                                                .equals(
+                                                                                                        n
+                                                                                                                .getAccessibleText())
+                                                                                        && n
+                                                                                                .isVisible()))
+                                                            throw new AssertionError(
+                                                                    "Delayed icon has pending"
+                                                                        + " state");
+                                                        descriptionGate.complete(null);
+                                                        iconGate.complete(authoredIcon());
                                                     } catch (Throwable failure) {
                                                         ready.completeExceptionally(failure);
                                                         Platform.exit();

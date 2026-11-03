@@ -11,6 +11,7 @@ import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
+import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.TitledPane;
 import javafx.scene.control.Tooltip;
@@ -53,6 +54,74 @@ final class TalentsView extends BorderPane implements AutoCloseable {
     private final Label status = text("Loading talent tables…", "muted"),
             classTitle = text("Talents", "h1");
     private final AsyncIconRequests icons;
+    private final ProgressIndicator activity = spinner("Loading records", 18);
+    private final java.util.concurrent.ThreadPoolExecutor iconWorker =
+            new java.util.concurrent.ThreadPoolExecutor(
+                    1,
+                    1,
+                    0,
+                    java.util.concurrent.TimeUnit.MILLISECONDS,
+                    new java.util.concurrent.ArrayBlockingQueue<>(64),
+                    runnable -> {
+                        var thread = new Thread(runnable, "talentsview-icon-pixels");
+                        thread.setDaemon(true);
+                        return thread;
+                    },
+                    new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
+
+    private record IconPixels(int width, int height, int[] argb) {}
+
+    private static ProgressIndicator spinner(String message, double size) {
+        var spinner = new ProgressIndicator(-1);
+        spinner.setPrefSize(size, size);
+        spinner.setMaxSize(size, size);
+        spinner.setAccessibleText(message);
+        return spinner;
+    }
+
+    private void busy(boolean value) {
+        activity.setVisible(value);
+        activity.setManaged(value);
+    }
+
+    private static <T> java.util.concurrent.CompletableFuture<T> request(
+            java.util.function.Supplier<java.util.concurrent.CompletableFuture<T>> action) {
+        try {
+            return action.get();
+        } catch (RuntimeException error) {
+            return java.util.concurrent.CompletableFuture.failedFuture(error);
+        }
+    }
+
+    private static IconPixels convert(com.vibeminer.formats.images.BlpImageTypes.Result result) {
+        if (result == null
+                || result.state() != com.vibeminer.formats.images.BlpImageTypes.State.READY
+                || result.image() == null) return null;
+        var image = result.image();
+        int width = image.width(), height = image.height(), stride = image.rowStride();
+        if (width < 1
+                || height < 1
+                || width > 64
+                || height > 64
+                || stride < width * 4
+                || stride > 256)
+            throw new IllegalArgumentException("Icon dimensions exceed preview bounds");
+        byte[] rgba = image.rgba();
+        if (rgba.length != stride * height)
+            throw new IllegalArgumentException("Invalid icon pixels");
+        int[] argb = new int[width * height];
+        for (int y = 0; y < height; y++)
+            for (int x = 0; x < width; x++) {
+                int at = y * stride + x * 4;
+                argb[y * width + x] =
+                        (rgba[at + 3] & 255) << 24
+                                | (rgba[at] & 255) << 16
+                                | (rgba[at + 1] & 255) << 8
+                                | (rgba[at + 2] & 255);
+            }
+        return new IconPixels(width, height, argb);
+    }
+
     private final Map<Long, Button> nodeButtons = new HashMap<>();
     private Cancellation token = new Cancellation(), descriptionToken = new Cancellation();
     private long descriptionGeneration;
@@ -129,7 +198,9 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                     invalidate();
                     ensureLoaded();
                 });
-        HBox state = new HBox(12, status, space(), reload);
+        busy(false);
+        activity.setId("talents-activity");
+        HBox state = new HBox(12, activity, status, space(), reload);
         state.setAlignment(Pos.CENTER_LEFT);
         selection.getStyleClass().addAll("wow-item-tooltip", "talent-tooltip");
         selection.setAccessibleText("Selected talent tooltip");
@@ -176,6 +247,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
 
     void invalidate() {
         loaded = false;
+        busy(false);
         generation++;
         token.cancel();
         token = new Cancellation();
@@ -196,12 +268,17 @@ final class TalentsView extends BorderPane implements AutoCloseable {
         revision = workspaceRevision.getAsLong();
         long request = ++generation;
         status.setText("Loading class and talent table facts…");
-        handle.catalog(token)
+        busy(true);
+        if (classes.getItems().isEmpty())
+            treePanels.getChildren().setAll(loading("Loading talent catalog…"));
+        request(() -> handle.catalog(token))
                 .whenComplete(
                         (result, error) ->
                                 Platform.runLater(
                                         () -> {
                                             if (stale(request)) return;
+                                            busy(false);
+                                            treePanels.getChildren().clear();
                                             if (error != null) {
                                                 status.setText(
                                                         "Talent data could not be loaded. Reload to"
@@ -259,12 +336,16 @@ final class TalentsView extends BorderPane implements AutoCloseable {
         status.setText("Loading " + player.name() + " talent trees…");
         var handle = boundHandle;
         if (handle == null) return;
-        handle.trees(player.id(), token)
+        busy(true);
+        treePanels.getChildren().setAll(loading("Loading talent trees…"));
+        request(() -> handle.trees(player.id(), token))
                 .whenComplete(
                         (result, error) ->
                                 Platform.runLater(
                                         () -> {
                                             if (stale(request)) return;
+                                            busy(false);
+                                            treePanels.getChildren().clear();
                                             if (error != null) {
                                                 status.setText(
                                                         "Talent trees could not be loaded. Reload"
@@ -321,6 +402,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
             }
         for (var talent : tree.talents()) {
             StackPane graphic = new StackPane(text("?", "talent-placeholder"));
+            graphic.setAccessibleText("Talent icon unavailable");
             graphic.setMinSize(ICON, ICON);
             graphic.setMaxSize(ICON, ICON);
             Button node = new Button();
@@ -468,7 +550,11 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                                             + (edge.rankIndex() + 1),
                                     "wow-line"));
         var description = text("Loading description…", "wow-level");
-        selection.getChildren().add(description);
+        var descriptionActivity = spinner("Loading talent description", 18);
+        descriptionActivity.setId("talent-description-activity");
+        descriptionActivity.setVisible(false);
+        descriptionActivity.setManaged(false);
+        selection.getChildren().add(new HBox(8, descriptionActivity, description));
         evidence.getChildren()
                 .setAll(
                         text(
@@ -505,14 +591,17 @@ final class TalentsView extends BorderPane implements AutoCloseable {
         } else if (!talent.description().contains("$") && !talent.description().contains("|")) {
             description.setText(talent.description());
         } else {
-            boundHandle
-                    .description(talent.rankSpells().getFirst(), descriptionToken)
+            descriptionActivity.setVisible(true);
+            descriptionActivity.setManaged(true);
+            request(() -> boundHandle.description(talent.rankSpells().getFirst(), descriptionToken))
                     .whenComplete(
                             (result, error) ->
                                     Platform.runLater(
                                             () -> {
                                                 if (preview != descriptionGeneration
                                                         || stale(workspace)) return;
+                                                descriptionActivity.setVisible(false);
+                                                descriptionActivity.setManaged(false);
                                                 if (error != null || result == null) {
                                                     description.setText(
                                                             "Description values are unavailable.");
@@ -591,6 +680,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
     }
 
     private void queueImage(long id, StackPane target, double size, long request, boolean guarded) {
+        target.setAccessibleText("Talent icon pending visibility");
         waitingIcons.add(new PendingIcon(id, target, size, request, guarded));
         iconPulse.playFromStart();
     }
@@ -622,52 +712,52 @@ final class TalentsView extends BorderPane implements AutoCloseable {
     private void loadImage(long id, StackPane target, double size, long request, boolean guarded) {
         var imageHandle = boundHandle;
         long imageRevision = revision;
+        target.setAccessibleText("Loading talent icon");
+        target.getChildren().setAll(spinner("Loading talent icon", Math.min(size, 18)));
         icons.request(id)
+                .thenApplyAsync(TalentsView::convert, iconWorker)
                 .whenComplete(
-                        (result, error) ->
+                        (pixels, error) ->
                                 Platform.runLater(
                                         () -> {
                                             if (closed
                                                     || handleSupplier.get() != imageHandle
                                                     || workspaceRevision.getAsLong()
                                                             != imageRevision
-                                                    || (guarded && stale(request))
-                                                    || error != null
-                                                    || result == null
-                                                    || result.state()
-                                                            != com.vibeminer.formats.images
-                                                                    .BlpImageTypes.State.READY)
+                                                    || (guarded && stale(request))) return;
+                                            if (error != null || pixels == null) {
+                                                target.setAccessibleText("Talent icon unavailable");
+                                                target.getChildren()
+                                                        .setAll(text("—", "talent-placeholder"));
                                                 return;
-                                            var image = result.image();
-                                            WritableImage bitmap =
+                                            }
+                                            var bitmap =
                                                     new WritableImage(
-                                                            image.width(), image.height());
+                                                            pixels.width(), pixels.height());
                                             bitmap.getPixelWriter()
                                                     .setPixels(
                                                             0,
                                                             0,
-                                                            image.width(),
-                                                            image.height(),
-                                                            PixelFormat.getByteBgraInstance(),
-                                                            rgbaToBgra(image.rgba()),
+                                                            pixels.width(),
+                                                            pixels.height(),
+                                                            PixelFormat.getIntArgbInstance(),
+                                                            pixels.argb(),
                                                             0,
-                                                            image.width() * 4);
-                                            ImageView view = new ImageView(bitmap);
+                                                            pixels.width());
+                                            var view = new ImageView(bitmap);
                                             view.setFitWidth(size);
                                             view.setFitHeight(size);
                                             view.setPreserveRatio(true);
+                                            target.setAccessibleText("Talent icon");
                                             target.getChildren().setAll(view);
                                         }));
     }
 
-    private static byte[] rgbaToBgra(byte[] input) {
-        byte[] result = input.clone();
-        for (int i = 0; i < result.length; i += 4) {
-            byte red = result[i];
-            result[i] = result[i + 2];
-            result[i + 2] = red;
-        }
-        return result;
+    private static VBox loading(String message) {
+        var box = new VBox(10, spinner(message, 28), text(message, "muted"));
+        box.setAlignment(Pos.CENTER);
+        box.setPadding(new Insets(24));
+        return box;
     }
 
     @Override
@@ -680,6 +770,8 @@ final class TalentsView extends BorderPane implements AutoCloseable {
         if (getScene() != null) getScene().removePostLayoutPulseListener(afterLayout);
         waitingIcons.clear();
         icons.close();
+        iconWorker.shutdownNow();
+        busy(false);
     }
 
     private static Label text(String value, String style) {
