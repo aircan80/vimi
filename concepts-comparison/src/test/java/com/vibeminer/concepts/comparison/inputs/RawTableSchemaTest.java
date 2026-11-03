@@ -188,6 +188,17 @@ class RawTableSchemaTest {
         var missing = profile.project(row(1, List.of("", "7"), null), "graph-a:1", Map.of());
         assertEquals(ComparisonTypes.ValueState.UNKNOWN, missing.fields().get("cell.Name").state());
         assertEquals("7", missing.fields().get("cell.Count").value());
+        var observed =
+                profile.project(row(1, List.of("Observed name", "7"), null), "graph-a:1", Map.of());
+        assertEquals(
+                ComparisonTypes.ValueState.UNKNOWN, observed.fields().get("cell.Name").state());
+        assertTrue(
+                observed.fields()
+                        .get("cell.Name")
+                        .evidence()
+                        .getFirst()
+                        .raw()
+                        .contains("Observed name"));
         var known = profile.project(row(1, List.of("", "7"), List.of()), "graph-b:1", Map.of());
         assertEquals(
                 ComparisonTypes.ValueState.KNOWN_EMPTY, known.fields().get("cell.Name").state());

@@ -110,3 +110,30 @@ private completion cleanup and a returned observer copy now preserve the busy
 flag until the actual worker drains. Deterministic fixtures exercise saturation,
 cancellation, retry and ID order. The reviewer independently ran Files and
 comparison checks successfully.
+
+## Selected raw-table implementation reviews
+
+Independent architecture and domain reviewers both approved integrated revision
+`a794415b8c11dcb2113e48e1faad89780391fa55`. Component approvals include the captured
+reader cancellation fix `fdd0930`, bounded source/codec `c70896e`, prepared-local
+bootstrap `f0ce742`, shared core/actual-sorter composition through `e7ed681` and
+standalone delivery ownership fix `204dc9a`.
+
+Domain review found an ID-cell mismatch with the actual decoder: inline and
+noninline IDs are emitted as unsigned row identity even when DBD metadata says
+signed32. The required correction `874d85a` gives these cells explicit unsigned32
+semantics and includes that policy in admission. Ordinary signed scalar constraints
+remain unchanged. Inline/noninline and native signed-Item fixtures cover maximum
+row ID, mismatched cells and rejected negative aliases.
+
+Both descriptors are validated before sorting. The application verifies actual
+BuildRef/locale/FileDataID, uses captured-only key bootstrap and prepared graphs,
+and drains inputs/contexts before closing the shared budget. Native proof uses
+SQLite/pack with authored cached rows and an unreadable original payload; it
+asserts missing-graph rejection, zero acquisition/object writes and unchanged build
+status. Architecture independently reran coordinator and native raw integration
+checks. Domain reviewed the code/fixtures without a separate test run.
+
+Approvals remain limited to one selected compatible table, raw verified cells,
+observed-only membership and session-only results. They do not authorize semantic
+claims, COMPLETE membership, cross-layout mappings or persistent reports.

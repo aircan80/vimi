@@ -208,7 +208,9 @@ public final class RawTableSchema {
                         && (cell.kind() == ComparisonTypes.ValueKind.TEXT
                                 || cell.schema().relation() == TableSchema.KeyStorage.NONINLINE)) {
                     state = ComparisonTypes.ValueState.UNKNOWN;
-                    issueEvidence = "Text/relationship issue channel not supplied";
+                    issueEvidence =
+                            "Text/relationship issue channel not supplied; recorded cell: "
+                                    + prefix(raw, 256);
                 }
                 String value = null;
                 if (state == null) {

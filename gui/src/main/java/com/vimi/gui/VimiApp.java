@@ -550,7 +550,7 @@ public final class VimiApp extends Application {
         var page = new BorderPane(comparisonView);
         page.setTop(applicationNavigation("Compare"));
         root.setCenter(page);
-        status.setText("Local Files/table inventory findings · Semantic areas are not implemented in this slice.");
+        status.setText("Local comparison · Inventory and selected raw table rows. Semantic areas remain pending.");
     }
 
     private void leaveComparison(Runnable afterClose) {

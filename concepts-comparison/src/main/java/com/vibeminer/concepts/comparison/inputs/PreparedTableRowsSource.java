@@ -39,6 +39,7 @@ public final class PreparedTableRowsSource implements SortedComparisonInput.Sour
     private final String graphIdentity;
     private final long rowCount;
     private final int width;
+    private final String sourceSummary;
     private long ordinal;
     private boolean failed;
     private volatile CompletableFuture<Void> closing;
@@ -81,12 +82,41 @@ public final class PreparedTableRowsSource implements SortedComparisonInput.Sour
             graphIdentity = receipt.graphIdentity();
             rowCount = receipt.rowCount();
             width = receipt.columns().size();
+            sourceSummary =
+                    "Recorded source "
+                            + receipt.table().state()
+                            + "; "
+                            + rowCount
+                            + " readable rows; "
+                            + receipt.completion().excludedEncryptedSections()
+                            + " excluded encrypted sections, "
+                            + receipt.completion().excludedPhysicalRecords()
+                            + " physical and "
+                            + receipt.completion().excludedCopyRecords()
+                            + " copy rows excluded.";
             var dependencies = new TreeMap<>(endpointDependencies);
             dependencies.put("comparison.policy", "raw-selected-table-v1");
             dependencies.put("comparison.acquisition", "prepared-local-only");
             dependencies.put("comparison.results", "findings-only-session");
             dependencies.put("raw.table.id", Long.toString(receipt.table().fileDataId()));
             dependencies.put("raw.table.name", receipt.table().name());
+            dependencies.put("raw.source.state", receipt.table().state().name());
+            dependencies.put("raw.readable.rows", Long.toString(rowCount));
+            dependencies.put(
+                    "raw.declared.physical-records",
+                    Long.toString(receipt.header().declaredRecords()));
+            dependencies.put(
+                    "raw.declared.copy-records",
+                    Long.toString(receipt.header().declaredCopyRecords()));
+            dependencies.put(
+                    "raw.excluded.encrypted-sections",
+                    Integer.toString(receipt.completion().excludedEncryptedSections()));
+            dependencies.put(
+                    "raw.excluded.physical-records",
+                    Long.toString(receipt.completion().excludedPhysicalRecords()));
+            dependencies.put(
+                    "raw.excluded.copy-records",
+                    Long.toString(receipt.completion().excludedCopyRecords()));
             dependencies.put("raw.table.contentKey", receipt.table().contentKey());
             dependencies.put("raw.layout", receipt.header().layoutHash());
             dependencies.put("raw.definition.sha256", receipt.definitionSha256());
@@ -333,7 +363,8 @@ public final class PreparedTableRowsSource implements SortedComparisonInput.Sour
                 List.of(
                         "Readable prepared-graph rows only; whole-table membership is not certified.",
                         "Raw verified cells only; source loss invalidates capture without repair or fallback.",
-                        "Unverified/raw/narrowed columns and gameplay meaning remain unassessed."));
+                        "Unverified/raw/narrowed columns and gameplay meaning remain unassessed.",
+                        sourceSummary));
     }
 
     private SortedComparisonInput.CaptureFailure failure(

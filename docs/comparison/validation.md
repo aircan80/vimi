@@ -47,3 +47,23 @@ presence/name calls. No payload acquisition or live application mutation was
 performed by the benchmark. Files checks include 90 unit tests and integration/
 style checks; comparison checks now include 37 core/adapter tests. Unknown sizes
 remain uncertain and membership remains UNKNOWN on both fast and fallback paths.
+
+## Selected raw-table slice
+
+The comparison module now passes 104 component/adapter tests, including bounded
+external sorting, combined core/sorter quotas, callback/delivery ownership, raw
+field semantics and captured-row conversion. Table component checks pass 96 unit
+tests plus two integration checks. App coordinator checks include matching and
+incompatible pair admission, cancellation before sorting, and budget close order.
+
+A native SQLite/pack fixture rejects a missing graph, then reads three authored
+cached Item rows with IDs 7, 8 and 4294967295. The original source payload remains
+encrypted/unreadable. Successful comparison performs zero acquisition or object
+writes and leaves the browsed build registry unchanged. Source receipts and
+structural fingerprints are asserted.
+
+A live GUI check against Forever 1.60.1.70707 enUS compared all 58 readable
+ChrRaces rows from its existing prepared graph. The run completed with uncertified
+membership and retained uncertainty rather than claiming gameplay changes. Fields
+without a supplied issue channel remain unknown; bounded observed cell evidence
+is available for inspection. No actual game rows or screenshots are committed.
