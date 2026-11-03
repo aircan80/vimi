@@ -6,6 +6,8 @@ import com.vibeminer.concepts.world.WorldAreaNavigation;
 import com.vibeminer.concepts.world.WorldService;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.rendering.world.TerrainRenderer;
+import com.vibeminer.rendering.world.TerrainScene;
+import com.vibeminer.rendering.world.TerrainCamera;
 
 import javafx.animation.AnimationTimer;
 import javafx.application.Platform;
@@ -69,6 +71,14 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final BorderPane content = new BorderPane();
     private final ImageView image = new ImageView();
     private final StackPane viewport = new StackPane(image);
+    private final TerrainGpuPreview gpu;
+    private final CheckBox gpuEnabled = new CheckBox("GPU terrain");
+    private final Button retryGpu = new Button("Retry GPU");
+    private final Label gpuStatus = new Label();
+    private final ProgressIndicator gpuActivity = activity("world-gpu-activity", 18);
+    private TerrainScene gpuScene;
+    private TerrainRenderer.Scene presentedScene;
+    private boolean gpuVisible;
     private final Button open = new Button("Open explorer"), back = new Button("Back to map");
     private final ProgressIndicator catalogActivity = activity("world-catalog-activity", 18),
             localActivity = activity("world-local-activity", 18),
@@ -101,7 +111,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final AtomicBoolean rendering = new AtomicBoolean();
 
     private record Prepared(
-            TerrainRenderer.Scene scene, TerrainRenderer.Camera camera, double x, double y) {}
+            TerrainRenderer.Scene scene, TerrainScene gpuScene,
+            TerrainRenderer.Camera camera, double x, double y) {}
 
     private static ThreadPoolExecutor worker(String name) {
         return new ThreadPoolExecutor(
@@ -162,12 +173,48 @@ final class WorldView extends BorderPane implements AutoCloseable {
     WorldView(BuildPreparation.Job job) {
         this(
                 () -> job.work() instanceof NativePreparationWork w ? w.worldHandle() : null,
-                () -> job.work() instanceof NativePreparationWork w ? w.revision() : 0);
+                () -> job.work() instanceof NativePreparationWork w ? w.revision() : 0,
+                GpuPreviewService.application());
     }
 
     WorldView(
             java.util.function.Supplier<BuildWorld> handles,
             java.util.function.LongSupplier revisions) {
+        this(handles, revisions, null);
+    }
+
+    WorldView(java.util.function.Supplier<BuildWorld> handles,
+            java.util.function.LongSupplier revisions, GpuPreviewService gpuService) {
+        gpu = gpuService == null ? null : new TerrainGpuPreview(gpuService, Platform::runLater,
+                update -> {
+                    show(gpuActivity, update.busy());
+                    gpuStatus.setText(update.message());
+                    retryGpu.setDisable(update.busy() || update.ready());
+                }, this::presentGpuFrame, this::requestFrame);
+        gpuEnabled.setSelected(gpu != null);
+        gpuEnabled.setDisable(gpu == null);
+        gpuEnabled.setId("world-gpu-enabled");
+        gpuStatus.setId("world-gpu-status");
+        retryGpu.setId("world-gpu-retry");
+        gpuStatus.setWrapText(true);
+        retryGpu.setDisable(true);
+        gpuEnabled.setOnAction(e -> {
+            if (gpu != null && !gpuEnabled.isSelected()) {
+                gpu.hide();
+                show(gpuActivity, false);
+                gpuStatus.setText("Software terrain");
+            } else if (gpu != null) {
+                gpu.retry();
+            }
+            requestFrame();
+        });
+        retryGpu.setOnAction(e -> {
+            if (gpu != null) {
+                gpu.retry();
+                gpuEnabled.setSelected(true);
+                requestFrame();
+            }
+        });
         this.handles = handles;
         this.revisions = revisions;
         setPadding(new javafx.geometry.Insets(16));
@@ -324,6 +371,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         image.fitWidthProperty().bind(viewport.widthProperty());
         image.fitHeightProperty().bind(viewport.heightProperty());
         image.setSmooth(true);
+        image.setPreserveRatio(true);
         viewport.setOnKeyPressed(
                 e -> {
                     keys.add(e.getCode());
@@ -367,6 +415,20 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     @Override
                     public void handle(long now) {
                         if (!active || !explorer || camera == null) return;
+                        if (gpu != null && !viewportActive()) {
+                            if (gpuVisible) {
+                                gpu.hide();
+                                gpuVisible = false;
+                                show(gpuActivity, false);
+                            }
+                            keys.clear();
+                            lastTick = 0;
+                            return;
+                        }
+                        if (gpu != null && !gpuVisible) {
+                            gpuVisible = true;
+                            requestFrame();
+                        }
                         double dt = lastTick == 0 ? 0 : Math.min(.1, (now - lastTick) / 1e9);
                         lastTick = now;
                         double step = speed * dt * (keys.contains(KeyCode.SHIFT) ? 4 : 1),
@@ -390,7 +452,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                 * dt;
                         if (f != 0 || s != 0 || z != 0 || turn != 0 || tilt != 0) {
                             camera = camera.move(f * step, s * step, z * step).look(turn, tilt);
-                            if (now - lastRender > 100_000_000) {
+                            long cadence = gpu != null && gpu.ready() ? 16_000_000 : 100_000_000;
+                            if (now - lastRender > cadence) {
                                 lastRender = now;
                                 requestFrame();
                                 loadNext();
@@ -445,6 +508,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     void invalidate() {
+        retireGpu();
+        gpuScene = null;
+        presentedScene = null;
         stopArea(true);
         areaEntry = null;
         selection++;
@@ -507,6 +573,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void cancelRequests() {
+        retireGpu();
         stopArea(false);
         selection++;
         token.cancel();
@@ -837,6 +904,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void showInventory() {
+        retireGpu();
         explorer = false;
         timer.stop();
         keys.clear();
@@ -898,7 +966,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                 new Label(
                                         "WASD move · Q/E down/up · drag or arrows to look · Shift"
                                                 + " faster · scroll changes speed")),
-                        position));
+                        position,
+                        new HBox(8, gpuEnabled, gpuActivity, retryGpu, gpuStatus)));
         status.setText("Loading terrain tile " + selected.key() + "…");
         show(firstFrameActivity, true);
         timer.start();
@@ -963,7 +1032,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private static Prepared prepare(
-            java.util.List<WorldFormats.Terrain> tiles, WorldFormats.Terrain initial) {
+            java.util.List<WorldService.LoadedTile> tiles, WorldFormats.Terrain initial,
+            boolean prepareGpu, WorldFormats.AreaPoint areaPoint) {
         TerrainRenderer.Camera camera = null;
         double originX = 0, originY = 0;
         if (initial != null) {
@@ -991,21 +1061,30 @@ final class WorldView extends BorderPane implements AutoCloseable {
             }
             originX = maxX;
             originY = maxY;
-            camera =
-                    new TerrainRenderer.Camera(
-                            (minX + maxX) / 2, (minY + maxY) / 2, ground + 100, Math.PI, -.8);
+            camera = areaPoint == null
+                    ? new TerrainRenderer.Camera(
+                            (minX + maxX) / 2, (minY + maxY) / 2, ground + 100, Math.PI, -.8)
+                    : new TerrainRenderer.Camera(areaPoint.x(), areaPoint.y(),
+                            areaPoint.z() + 100, Math.PI, -.8);
         }
-        return new Prepared(new TerrainRenderer.Scene(tiles), camera, originX, originY);
+        var cpu = new TerrainRenderer.Scene(tiles.stream().map(WorldService.LoadedTile::terrain).toList());
+        var nativeScene = prepareGpu ? new TerrainScene(tiles.stream()
+                .map(tile -> new TerrainScene.Tile(tile.tile().x(), tile.tile().y(), tile.terrain()))
+                .toList()) : null;
+        return new Prepared(cpu, nativeScene, camera, originX, originY);
     }
 
     private void prepareScene(WorldFormats.Terrain initial, Runnable ready) {
         long scene = ++sceneGeneration, request = selection;
         if (sceneTask != null) sceneTask.cancel(false);
         preparation.getQueue().clear();
-        var snapshot = loaded.values().stream().map(WorldService.LoadedTile::terrain).toList();
+        var snapshot = java.util.List.copyOf(loaded.values());
+        var areaPoint = initial != null && areaEntry != null && areaEntry.entryChunk() != null
+                ? areaEntry.entryChunk().entryReference() : null;
         CompletableFuture<Prepared> result;
         try {
-            result = CompletableFuture.supplyAsync(() -> prepare(snapshot, initial), preparation);
+            result = CompletableFuture.supplyAsync(
+                    () -> prepare(snapshot, initial, gpu != null, areaPoint), preparation);
         } catch (RuntimeException error) {
             result = CompletableFuture.failedFuture(error);
         }
@@ -1026,26 +1105,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                         return;
                                     }
                                     terrainScene = prepared.scene();
+                                    gpuScene = prepared.gpuScene();
                                     if (prepared.camera() != null) {
-                                        camera =
-                                                areaEntry != null && areaEntry.entryChunk() != null
-                                                        ? new TerrainRenderer.Camera(
-                                                                areaEntry
-                                                                        .entryChunk()
-                                                                        .entryReference()
-                                                                        .x(),
-                                                                areaEntry
-                                                                        .entryChunk()
-                                                                        .entryReference()
-                                                                        .y(),
-                                                                areaEntry
-                                                                                .entryChunk()
-                                                                                .entryReference()
-                                                                                .z()
-                                                                        + 100,
-                                                                Math.PI,
-                                                                -.8)
-                                                        : prepared.camera();
+                                        camera = prepared.camera();
                                         originX = prepared.x();
                                         originY = prepared.y();
                                     }
@@ -1103,11 +1165,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     private void requestFrame() {
         if (!active || !explorer || camera == null || terrainScene == null || closed) return;
-        int w = (int) Math.clamp(viewport.getWidth(), 320, 800),
-                h = (int) Math.clamp(viewport.getHeight(), 240, 500);
+        double targetWidth = Math.max(1, viewport.getWidth()),
+                targetHeight = Math.max(1, viewport.getHeight());
+        double scale = Math.min(1, Math.min(800 / targetWidth, 500 / targetHeight));
+        int w = Math.max(1, (int) (targetWidth * scale)),
+                h = Math.max(1, (int) (targetHeight * scale));
         long frame = frameGeneration.incrementAndGet();
-        show(firstFrameActivity, image.getImage() == null);
-        latest.set(new Render(frame, selection, terrainScene, camera, w, h));
+        show(firstFrameActivity, image.getImage() == null || presentedScene != terrainScene);
         position.setText(
                 String.format(
                         java.util.Locale.ROOT,
@@ -1120,7 +1184,57 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         camera.z(),
                         speed,
                         loaded.size()));
+        if (gpu != null && gpuEnabled.isSelected() && gpuScene != null) {
+            if (!viewportActive()) {
+                retireGpu();
+                return;
+            }
+            gpuVisible = true;
+            try {
+                if (gpu.request(gpuScene, TerrainCamera.from(camera), w, h)) {
+                    latest.set(null);
+                    return;
+                }
+            } catch (RuntimeException invalid) {
+                gpu.hide();
+                show(gpuActivity, false);
+                gpuStatus.setText("GPU terrain unavailable; using software rendering.");
+            }
+        }
+        latest.set(new Render(frame, selection, terrainScene, camera, w, h));
         kick();
+    }
+
+    private void retireGpu() {
+        if (gpu != null) {
+            gpu.hide();
+            gpuVisible = false;
+            show(gpuActivity, false);
+        }
+    }
+
+    private boolean viewportActive() {
+        if (closed || !active || !explorer || getScene() == null
+                || getScene().getWindow() == null || !getScene().getWindow().isShowing()) return false;
+        if (getScene().getWindow() instanceof javafx.stage.Stage stage && stage.isIconified()) return false;
+        for (javafx.scene.Node node = this; node != null; node = node.getParent()) {
+            if (!node.isVisible()) return false;
+        }
+        return true;
+    }
+
+    private boolean presentGpuFrame(GpuPreviewService.Frame frame) {
+        if (stale(selection) || !viewportActive() || !gpuEnabled.isSelected()) return false;
+        var bitmap = image.getImage() instanceof WritableImage existing
+                && existing.getWidth() == frame.width() && existing.getHeight() == frame.height()
+                ? existing : new WritableImage(frame.width(), frame.height());
+        bitmap.getPixelWriter().setPixels(0, 0, frame.width(), frame.height(),
+                PixelFormat.getIntArgbPreInstance(), frame.pixels(), frame.width());
+        image.setImage(bitmap);
+        presentedScene = terrainScene;
+        show(firstFrameActivity, false);
+        status.setText("Terrain explorer · height shading · buildings, water and collision are not rendered");
+        return true;
     }
 
     private void kick() {
@@ -1161,6 +1275,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                             0,
                                                             frame.width());
                                             image.setImage(bitmap);
+                                            presentedScene = current.scene();
+                                            if (gpu != null && !gpu.ready()) {
+                                                show(gpuActivity, false);
+                                            }
                                             show(firstFrameActivity, false);
                                             status.setText(
                                                     "Terrain explorer · height shading · buildings,"
@@ -1193,6 +1311,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     @Override
     public void close() {
         closed = true;
+        if (gpu != null) gpu.close();
         invalidate();
         requests.shutdownNow();
         areaRequests.shutdown();

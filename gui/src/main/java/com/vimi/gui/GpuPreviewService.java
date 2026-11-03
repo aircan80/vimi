@@ -472,7 +472,7 @@ final class GpuPreviewService {
             if (request.terrain == null) {
                 writer.write(scene, request.mesh, request.appearance, request.parts);
             } else {
-                GpuTerrainSceneFile.write(scene, request.terrain);
+                GpuTerrainSceneFile.write(scene, request.terrain, () -> request.stopping);
             }
             long sceneLimit = request.terrain == null ? MAX_SCENE_BYTES : GpuTerrainSceneFile.MAX_BYTES;
             if (Files.size(scene) > sceneLimit)

@@ -25,6 +25,7 @@ import org.lwjgl.system.MemoryStack;
 
 /** Native linkage and packaged-resource proof; deliberately does not initialize a GPU. */
 public final class GpuRuntimeProbe {
+    public static final int PACKAGED_SHADER_BLOBS = 24;
     private static final String SHADERS = "/com/vibeminer/rendering/bgfx/shaders/";
 
     private GpuRuntimeProbe() {}
