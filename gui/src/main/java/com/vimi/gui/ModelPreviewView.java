@@ -48,8 +48,47 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
 
     private record PendingFrame(long token, GpuPreviewService.Frame frame) {}
 
-    private final AtomicReference<PendingFrame> gpuFrame = new AtomicReference<>();
-    private final AtomicBoolean gpuDelivery = new AtomicBoolean();
+    /** One pending UI delivery; completion never extracts and republishes an older value. */
+    static final class LatestDelivery<T> {
+        private final AtomicReference<T> latest = new AtomicReference<>();
+        private final AtomicBoolean queued = new AtomicBoolean();
+        private final java.util.function.Consumer<Runnable> scheduler;
+        private final java.util.function.Consumer<T> consumer;
+
+        LatestDelivery(
+                java.util.function.Consumer<Runnable> scheduler,
+                java.util.function.Consumer<T> consumer) {
+            this.scheduler = scheduler;
+            this.consumer = consumer;
+        }
+
+        void submit(T value) {
+            latest.set(value);
+            schedule();
+        }
+
+        void clear() {
+            latest.set(null);
+        }
+
+        private void schedule() {
+            if (latest.get() != null && queued.compareAndSet(false, true))
+                scheduler.accept(this::drain);
+        }
+
+        private void drain() {
+            try {
+                var value = latest.getAndSet(null);
+                if (value != null) consumer.accept(value);
+            } finally {
+                queued.set(false);
+                schedule();
+            }
+        }
+    }
+
+    private final LatestDelivery<PendingFrame> gpuFrame;
+    private final java.util.function.Consumer<Runnable> gpuScheduler;
     private boolean gpuReady, gpuFailed, active;
     private volatile long gpuBarrier;
     private long gpuPresented;
@@ -88,7 +127,13 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
     }
 
     ModelPreviewView(GpuPreviewService gpu) {
+        this(gpu, Platform::runLater);
+    }
+
+    ModelPreviewView(GpuPreviewService gpu, java.util.function.Consumer<Runnable> gpuScheduler) {
         this.gpu = gpu;
+        this.gpuScheduler = gpuScheduler;
+        gpuFrame = new LatestDelivery<>(gpuScheduler, this::presentGpu);
         gpuButton.setId("model-gpu-preview");
         gpuButton.setAccessibleText("Use inline GPU model rendering");
         gpuButton.setSelected(true);
@@ -408,7 +453,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                             appearance,
                             visible,
                             state ->
-                                    Platform.runLater(
+                                    gpuScheduler.accept(
                                             () -> {
                                                 if (closed || token != gpuGeneration) return;
                                                 gpuStatus.setText(state.message());
@@ -422,6 +467,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                                                 if (state.state() == GpuPreviewService.State.FAILED
                                                         || state.state()
                                                                 == GpuPreviewService.State.CLOSED) {
+                                                    invalidateGpuDelivery();
                                                     gpuRequested = false;
                                                     gpuReady = false;
                                                     gpuFailed = true;
@@ -433,10 +479,11 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                     .whenComplete(
                             (ignored, error) -> {
                                 if (error != null)
-                                    Platform.runLater(
+                                    gpuScheduler.accept(
                                             () -> {
                                                 if (closed || token != gpuGeneration || gpuFailed)
                                                     return;
+                                                invalidateGpuDelivery();
                                                 gpuRequested = false;
                                                 gpuReady = false;
                                                 gpuFailed = true;
@@ -469,68 +516,65 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                 || token != gpuGeneration
                 || frame.controlRevision() < gpuBarrier
                 || frame.controlRevision() > generation.get()) return;
-        gpuFrame.set(new PendingFrame(token, frame));
-        if (!gpuDelivery.compareAndSet(false, true)) return;
-        Platform.runLater(
-                () -> {
-                    try {
-                        var pendingFrame = gpuFrame.getAndSet(null);
-                        if (pendingFrame == null
-                                || closed
-                                || pendingFrame.token() != gpuGeneration
-                                || !viewportActive()) return;
-                        var latestFrame = pendingFrame.frame();
-                        if (latestFrame.controlRevision() < gpuBarrier
-                                || latestFrame.controlRevision() > generation.get()
-                                || latestFrame.controlRevision() <= gpuPresented) return;
-                        long started = System.nanoTime();
-                        WritableImage bitmap =
-                                image.getImage() instanceof WritableImage existing
-                                                && (int) existing.getWidth() == latestFrame.width()
-                                                && (int) existing.getHeight()
-                                                        == latestFrame.height()
-                                        ? existing
-                                        : new WritableImage(
-                                                latestFrame.width(), latestFrame.height());
-                        bitmap.getPixelWriter()
-                                .setPixels(
-                                        0,
-                                        0,
-                                        latestFrame.width(),
-                                        latestFrame.height(),
-                                        PixelFormat.getIntArgbPreInstance(),
-                                        latestFrame.pixels(),
-                                        latestFrame.width());
-                        image.setImage(bitmap);
-                        gpuPresented = latestFrame.controlRevision();
-                        gpuReady = true;
-                        renderingActivity.setVisible(false);
-                        renderingActivity.setManaged(false);
-                        showGpuActivity(false);
-                        status.setText(
-                                "Drag to rotate · scroll or +/− to zoom · arrow keys rotate ·"
-                                        + " static rest surface");
-                        gpuStatus.setText(
-                                "Inline GPU · "
-                                        + latestFrame.width()
-                                        + " × "
-                                        + latestFrame.height()
-                                        + " · copy "
-                                        + String.format(
-                                                java.util.Locale.ROOT,
-                                                "%.1f ms",
-                                                latestFrame.bridgeNanos() / 1_000_000.0)
-                                        + " · upload "
-                                        + String.format(
-                                                java.util.Locale.ROOT,
-                                                "%.1f ms",
-                                                (System.nanoTime() - started) / 1_000_000.0));
-                    } finally {
-                        gpuDelivery.set(false);
-                        var pending = gpuFrame.getAndSet(null);
-                        if (pending != null) deliverGpu(pending.token(), pending.frame());
-                    }
-                });
+        gpuFrame.submit(new PendingFrame(token, frame));
+    }
+
+    private void presentGpu(PendingFrame pendingFrame) {
+        if (pendingFrame == null
+                || closed
+                || !gpuRequested
+                || gpuFailed
+                || pendingFrame.token() != gpuGeneration
+                || !viewportActive()) return;
+        var latestFrame = pendingFrame.frame();
+        if (latestFrame.controlRevision() < gpuBarrier
+                || latestFrame.controlRevision() > generation.get()
+                || latestFrame.controlRevision() <= gpuPresented) return;
+        long started = System.nanoTime();
+        WritableImage bitmap =
+                image.getImage() instanceof WritableImage existing
+                                && (int) existing.getWidth() == latestFrame.width()
+                                && (int) existing.getHeight() == latestFrame.height()
+                        ? existing
+                        : new WritableImage(latestFrame.width(), latestFrame.height());
+        bitmap.getPixelWriter()
+                .setPixels(
+                        0,
+                        0,
+                        latestFrame.width(),
+                        latestFrame.height(),
+                        PixelFormat.getIntArgbPreInstance(),
+                        latestFrame.pixels(),
+                        latestFrame.width());
+        image.setImage(bitmap);
+        gpuPresented = latestFrame.controlRevision();
+        gpuReady = true;
+        renderingActivity.setVisible(false);
+        renderingActivity.setManaged(false);
+        showGpuActivity(false);
+        status.setText(
+                "Drag to rotate · scroll or +/− to zoom · arrow keys rotate ·"
+                        + " static rest surface");
+        gpuStatus.setText(
+                "Inline GPU · "
+                        + latestFrame.width()
+                        + " × "
+                        + latestFrame.height()
+                        + " · copy "
+                        + String.format(
+                                java.util.Locale.ROOT,
+                                "%.1f ms",
+                                latestFrame.bridgeNanos() / 1_000_000.0)
+                        + " · upload "
+                        + String.format(
+                                java.util.Locale.ROOT,
+                                "%.1f ms",
+                                (System.nanoTime() - started) / 1_000_000.0));
+    }
+
+    private void invalidateGpuDelivery() {
+        ++gpuGeneration;
+        gpuFrame.clear();
     }
 
     private void closeGpu() {
@@ -542,8 +586,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
         gpuMesh = null;
         gpuAppearance = null;
         gpuParts = Set.of();
-        ++gpuGeneration;
-        gpuFrame.set(null);
+        invalidateGpuDelivery();
         showGpuActivity(false);
         gpu.closeOwner(gpuOwner);
     }

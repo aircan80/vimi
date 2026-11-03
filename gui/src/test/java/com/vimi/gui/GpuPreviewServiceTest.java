@@ -33,6 +33,7 @@ public final class GpuPreviewServiceTest {
     public static void main(String[] args) throws Exception {
         Path root = Files.createTempDirectory("vimi-gpu-service-test-");
         try {
+            latestFrameHandoffNeverRepublishesOlderWork();
             inlineFramesAndCoalescedControls(root);
             normalExitAndOwnerIsolation(root);
             cancelDuringPreparationDoesNotLaunch(root);
@@ -54,6 +55,31 @@ public final class GpuPreviewServiceTest {
         System.out.println(
                 "GPU preview lifecycle: bounded scene preparation, isolated owners, replacement,"
                         + " cancellation, process drain and fallback passed");
+    }
+
+    private static void latestFrameHandoffNeverRepublishesOlderWork() {
+        var scheduled = new java.util.ArrayDeque<Runnable>();
+        var seen = new java.util.ArrayList<Integer>();
+        var schedules = new AtomicInteger();
+        var delivery = new AtomicReference<ModelPreviewView.LatestDelivery<Integer>>();
+        delivery.set(
+                new ModelPreviewView.LatestDelivery<>(
+                        task -> {
+                            if (schedules.incrementAndGet() == 2) delivery.get().submit(3);
+                            scheduled.add(task);
+                            require(scheduled.size() <= 1, "At most one pending UI frame delivery");
+                        },
+                        value -> {
+                            seen.add(value);
+                            if (value == 1) delivery.get().submit(2);
+                        }));
+        delivery.get().submit(1);
+        scheduled.remove().run();
+        require(seen.equals(List.of(1)), "First frame drained before completion handoff");
+        scheduled.remove().run();
+        require(
+                seen.equals(List.of(1, 3)) && scheduled.isEmpty(),
+                "Newer publication during handoff wins without older-value reinsertion");
     }
 
     private static PreviewMesh mesh() {

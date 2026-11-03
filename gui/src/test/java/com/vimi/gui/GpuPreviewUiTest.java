@@ -117,7 +117,9 @@ public final class GpuPreviewUiTest {
                                 "Failure preserves user preference without restarting repeatedly");
                         selected.close();
                     });
+            var ownerStage = (Stage) selected.getScene().getWindow();
             inlineFramesAndVisibility(temporary, selected);
+            terminalFailureRejectsQueuedFrame(temporary, ownerStage);
         } finally {
             release.countDown();
             service.closeAsync().get(3, TimeUnit.SECONDS);
@@ -236,6 +238,80 @@ public final class GpuPreviewUiTest {
             fx(
                     () -> {
                         if (viewRef.get() != null) viewRef.get().close();
+                    });
+            renderer.closeAsync().get(3, TimeUnit.SECONDS);
+        }
+    }
+
+    private static void terminalFailureRejectsQueuedFrame(Path temporary, Stage stage)
+            throws Exception {
+        var child = new GpuPreviewServiceTest.FakeProcess(true);
+        var frames = new java.util.concurrent.ConcurrentLinkedQueue<GpuPreviewService.Frame>();
+        var scheduled = new java.util.concurrent.ConcurrentLinkedQueue<Runnable>();
+        var renderer =
+                new GpuPreviewService(
+                        temporary,
+                        (file, mesh, appearance, parts) -> Files.writeString(file, "authored"),
+                        (scene, mapping) -> child,
+                        file ->
+                                new GpuPreviewService.Frames() {
+                                    public GpuPreviewService.Frame readLatest(long after) {
+                                        return frames.poll();
+                                    }
+
+                                    public void close() {}
+                                },
+                        Duration.ofSeconds(3),
+                        Duration.ofMillis(20));
+        var view = new java.util.concurrent.atomic.AtomicReference<ModelPreviewView>();
+        try {
+            fx(
+                    () -> {
+                        var panel = new ModelPreviewView(renderer, scheduled::add);
+                        stage.setScene(new Scene(panel, 640, 560));
+                        panel.applyCss();
+                        panel.layout();
+                        panel.setMesh(
+                                new PreviewMesh(
+                                        new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0},
+                                        new int[] {0, 1, 2},
+                                        List.of(new PreviewMesh.Part(1, 0, 3))),
+                                Set.of(1));
+                        view.set(panel);
+                    });
+            require(child.started.await(3, TimeUnit.SECONDS), "Terminal fixture starts renderer");
+            child.send("VIMI_GPU HELLO Vulkan\nVIMI_GPU READY Vulkan\n");
+            var command = latestView(child, 0);
+            Thread.sleep(50);
+            fx(
+                    () -> {
+                        Runnable task;
+                        while ((task = scheduled.poll()) != null) task.run();
+                    });
+            publish(frames, 1, command, 0xff123456);
+            waitFor(() -> !scheduled.isEmpty(), "GPU frame queued before terminal status");
+            Runnable queuedFrame = scheduled.remove();
+            child.send("VIMI_GPU ERROR GPU_UNAVAILABLE Authored failure\n");
+            waitFor(
+                    () -> !child.isAlive() && !scheduled.isEmpty(),
+                    "Failure status precedes held GPU delivery");
+            fx(
+                    () -> {
+                        Runnable task;
+                        while ((task = scheduled.poll()) != null) task.run();
+                        queuedFrame.run();
+                        var status = ((Label) view.get().lookup("#model-gpu-status")).getText();
+                        require(
+                                status.toLowerCase(java.util.Locale.ROOT).contains("software"),
+                                "Queued GPU frame cannot restore GPU-ready status after fallback");
+                    });
+            require(
+                    pixel(view.get()) != 0xff123456,
+                    "Queued GPU pixels are retired by terminal failure");
+        } finally {
+            fx(
+                    () -> {
+                        if (view.get() != null) view.get().close();
                     });
             renderer.closeAsync().get(3, TimeUnit.SECONDS);
         }
