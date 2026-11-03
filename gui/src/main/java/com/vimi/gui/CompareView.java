@@ -2,7 +2,10 @@ package com.vimi.gui;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.comparison.ComparisonTypes;
-
+import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Supplier;
 import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
 import javafx.application.Platform;
@@ -18,11 +21,6 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.VBox;
 import javafx.util.Duration;
-
-import java.util.List;
-import java.util.Objects;
-import java.util.concurrent.CompletableFuture;
-import java.util.function.Supplier;
 
 /** Session-only local inventory comparison. Backend handles belong to the composition owner. */
 final class CompareView extends BorderPane implements AutoCloseable {
@@ -153,9 +151,14 @@ final class CompareView extends BorderPane implements AutoCloseable {
             afterLocale.getSelectionModel().selectFirst();
         }
         if (!choices.isEmpty()) {
-            before.getSelectionModel().selectFirst();
-            var initial = choices.getFirst();
-            after.setValue(
+            // Historical preparation is a useful default hint, not a local-readiness guarantee.
+            var initial =
+                    choices.stream()
+                            .filter(BuildInfo::prepared)
+                            .findFirst()
+                            .orElse(choices.getFirst());
+            before.setValue(initial);
+            var alternatives =
                     choices.stream()
                             .filter(
                                     candidate ->
@@ -163,8 +166,16 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                                     && !candidate
                                                             .identity()
                                                             .equals(initial.identity()))
+                            .toList();
+            after.setValue(
+                    alternatives.stream()
+                            .filter(BuildInfo::prepared)
                             .findFirst()
-                            .orElse(initial));
+                            .orElseGet(
+                                    () ->
+                                            alternatives.isEmpty()
+                                                    ? initial
+                                                    : alternatives.getFirst()));
         }
         var swap = new Button("Swap");
         swap.setAccessibleText("Swap before and after builds and locales");
@@ -324,7 +335,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                             text(
                                     session == null
                                             ? "Not compared. Choose Files or Tables, then Compare"
-                                                  + " local data."
+                                                    + " local data."
                                             : "Session-only "
                                                     + runArea
                                                     + " inventory findings. Known-equal records are"
@@ -345,7 +356,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                         .addAll(
                                 text(
                                         "Search and status filter apply only to the current"
-                                            + " findings page.",
+                                                + " findings page.",
                                         "muted"),
                                 new HBox(8, search, filter),
                                 results,
@@ -357,15 +368,15 @@ final class CompareView extends BorderPane implements AutoCloseable {
                         .add(
                                 text(
                                         "Not compared for this area. Compare local data starts a"
-                                            + " new session-only run.",
+                                                + " new session-only run.",
                                         "muted"));
         } else
             content.getChildren()
                     .add(
                             text(
                                     "Not implemented. This area has no comparison adapter in the"
-                                        + " inventory preview; no zero-change conclusion is"
-                                        + " available.",
+                                            + " inventory preview; no zero-change conclusion is"
+                                            + " available.",
                                     "muted"));
         compare.setDisable(
                 pending || running() || !(area.equals("Files") || area.equals("Tables")));
@@ -381,7 +392,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                 || beforeLocale.getValue() == null) {
             status.setText(
                     "Choose the same product and locale on both sides. Cross-product and"
-                        + " cross-locale comparison is not supported.");
+                            + " cross-locale comparison is not supported.");
             return;
         }
         generation++;
@@ -534,7 +545,7 @@ final class CompareView extends BorderPane implements AutoCloseable {
                                             if (failure != null || page == null) {
                                                 pageError.setText(
                                                         "Findings page unavailable. Existing"
-                                                            + " findings remain; retry this page.");
+                                                                + " findings remain; retry this page.");
                                                 retryOffset = offset;
                                                 retryDirection = direction;
                                                 retryPage.setVisible(true);
@@ -738,8 +749,8 @@ final class CompareView extends BorderPane implements AutoCloseable {
         pendingSelection.setText(
                 changed
                         ? "Selection changed. Findings and progress still belong to the captured"
-                              + " pair above. Compare local data again after this run finishes, or"
-                              + " cancel it."
+                                + " pair above. Compare local data again after this run finishes, or"
+                                + " cancel it."
                         : "");
         pendingSelection.setVisible(changed);
         pendingSelection.setManaged(changed);

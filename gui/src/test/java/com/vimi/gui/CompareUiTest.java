@@ -101,6 +101,61 @@ public final class CompareUiTest {
         // Equal labels and a shared config prefix must still produce distinguishable choices.
         var before = build("aaaaaaaaaa1" + "a".repeat(21));
         var after = build("aaaaaaaaaa2" + "a".repeat(21));
+        var unprepared =
+                new BuildInfo(
+                        "wowf",
+                        "Forever",
+                        "1.60.1.70003",
+                        "us",
+                        "c".repeat(32),
+                        BuildInfo.BuildSource.CURRENT,
+                        false,
+                        null,
+                        0);
+        var retail =
+                new BuildInfo(
+                        "wow",
+                        "Retail",
+                        "12.0.1.80001",
+                        "us",
+                        "d".repeat(32),
+                        BuildInfo.BuildSource.CURRENT,
+                        false,
+                        null,
+                        0);
+        fx(
+                () -> {
+                    assertDefaults(List.of(retail, unprepared, before, after), before, after);
+                    assertDefaults(List.of(unprepared, before), before, unprepared);
+                    var preparedRetail =
+                            new BuildInfo(
+                                    "wow",
+                                    "Retail",
+                                    "12.0.1.80001",
+                                    "us",
+                                    "e".repeat(32),
+                                    BuildInfo.BuildSource.SAVED,
+                                    true,
+                                    null,
+                                    0);
+                    assertDefaults(List.of(before, preparedRetail, unprepared), before, unprepared);
+                    var otherUnprepared =
+                            new BuildInfo(
+                                    "wowf",
+                                    "Forever",
+                                    "1.60.1.70004",
+                                    "us",
+                                    "f".repeat(32),
+                                    BuildInfo.BuildSource.CURRENT,
+                                    false,
+                                    null,
+                                    0);
+                    assertDefaults(
+                            List.of(unprepared, otherUnprepared), unprepared, otherUnprepared);
+                    assertDefaults(List.of(retail, unprepared), retail, retail);
+                    assertDefaults(List.of(unprepared), unprepared, unprepared);
+                    return null;
+                });
         var view =
                 fx(
                         () ->
@@ -295,6 +350,36 @@ public final class CompareUiTest {
                     });
             Platform.exit();
         }
+    }
+
+    private static void assertDefaults(
+            List<BuildInfo> choices, BuildInfo expectedBefore, BuildInfo expectedAfter) {
+        var view =
+                new CompareView(
+                        () -> choices,
+                        List.of("enUS"),
+                        (request, token) -> {
+                            throw new AssertionError(
+                                    "Choosing defaults must not acquire or assess readiness");
+                        },
+                        () -> {});
+        new Scene(view, 1320, 850);
+        view.applyCss();
+        view.layout();
+        require(
+                builds(view, "Before build, exact product and version").getValue()
+                        == expectedBefore,
+                "Before prefers prepared history hint, else first catalogue choice");
+        require(
+                builds(view, "After build, exact product and version").getValue() == expectedAfter,
+                "After prefers different same-product prepared hint, then same-product alternative, then Before");
+        require(
+                builds(view, "Before build, exact product and version").getItems().equals(choices)
+                        && builds(view, "After build, exact product and version")
+                                .getItems()
+                                .equals(choices),
+                "Default preference preserves every choice and catalogue order");
+        view.close();
     }
 
     private static BuildInfo build(String config) {
