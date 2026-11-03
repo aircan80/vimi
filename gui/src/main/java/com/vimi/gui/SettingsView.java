@@ -129,7 +129,7 @@ final class SettingsView extends BorderPane {
         saving.setBusy(true);
         controls.setDisable(true);
         reset.setDisable(true);
-        status.setText("Saving product preferences…");
+        status.setText("");
         result.whenComplete(
                 (value, failure) ->
                         Platform.runLater(
