@@ -243,7 +243,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                                                             frame.width());
                                             image.setImage(bitmap);
                                             status.setText(
-                                                    "Drag or arrow keys to rotate · scroll or +/− to zoom · static rest surface");
+                                                    "Drag to rotate · scroll or +/− to zoom · arrow keys rotate · static rest surface");
                                         });
                             } catch (java.util.concurrent.CancellationException superseded) {
                                 /* Latest camera request replaces this frame. */
