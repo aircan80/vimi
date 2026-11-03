@@ -21,6 +21,11 @@ class WorldFormatsTest {
         b.putInt(0x4d414944).putInt(4096 * 32);
         int at = b.position() + (2 * 64 + 3) * 32;
         b.putInt(at, -2);
+        b.putInt(at + 4, -1);
+        b.putInt(at + 8, -3);
+        b.putInt(at + 12, 77);
+        b.putInt(at + 16, 88);
+        b.putInt(at + 24, -4);
         b.putInt(at + 20, 55);
         b.putInt(at + 28, 66);
         var world = WorldFormats.wdt(b.array(), () -> false);
@@ -31,6 +36,21 @@ class WorldFormatsTest {
         assertEquals(0xfffffffeL, tile.rootId());
         assertEquals(55, tile.mapTextureId());
         assertEquals(66, tile.minimapId());
+        assertEquals(0xffff_ffffL, tile.obj0Id());
+        assertEquals(0xffff_fffdL, tile.obj1Id());
+        assertEquals(77, tile.tex0Id());
+        assertEquals(88, tile.lodId());
+        assertEquals(0xffff_fffcL, tile.mapTextureNId());
+        var legacy = new WorldFormats.Tile(2, 3, -1, 55, 66);
+        assertEquals(-1, legacy.rootId());
+        assertEquals(0, legacy.obj0Id());
+        assertEquals(0, legacy.obj1Id());
+        assertEquals(0, legacy.tex0Id());
+        assertEquals(0, legacy.lodId());
+        assertEquals(0, legacy.mapTextureNId());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new WorldFormats.Tile(2, 3, 0, 0, 0, -1, 0, 0, 0, 0));
     }
 
     @Test

@@ -14,10 +14,33 @@ public final class WorldFormats {
 
     private WorldFormats() {}
 
-    public record Tile(int x, int y, long rootId, long mapTextureId, long minimapId) {
+    /** Filename coordinates and all eight recorded MAID references; zero means absent. */
+    public record Tile(
+            int x,
+            int y,
+            long rootId,
+            long mapTextureId,
+            long minimapId,
+            long obj0Id,
+            long obj1Id,
+            long tex0Id,
+            long lodId,
+            long mapTextureNId) {
+        /** Existing terrain/minimap callers do not invent unrecorded companion references. */
+        public Tile(int x, int y, long rootId, long mapTextureId, long minimapId) {
+            this(x, y, rootId, mapTextureId, minimapId, 0, 0, 0, 0, 0);
+        }
+
         public Tile {
             if (x < 0 || y < 0 || x >= 64 || y >= 64) {
                 throw new IllegalArgumentException("Invalid tile coordinates");
+            }
+            // Preserve the existing five-argument constructor's ID behavior; newly exposed source
+            // fields are unsigned MAID values, never signed sentinel IDs.
+            for (long id : new long[] {obj0Id, obj1Id, tex0Id, lodId, mapTextureNId}) {
+                if (id < 0 || id > 0xffff_ffffL) {
+                    throw new IllegalArgumentException("Invalid unsigned companion file ID");
+                }
             }
         }
 
@@ -109,11 +132,14 @@ public final class WorldFormats {
                     if (c.size != 4096 * 32 || ids != null) {
                         throw invalid("WDT MAID size");
                     }
-                    ids = new long[4096][3];
+                    ids = new long[4096][8];
                     for (int i = 0; i < 4096; i++) {
-                        ids[i][0] = Integer.toUnsignedLong(input.getInt(c.start + i * 32));
-                        ids[i][1] = Integer.toUnsignedLong(input.getInt(c.start + i * 32 + 20));
-                        ids[i][2] = Integer.toUnsignedLong(input.getInt(c.start + i * 32 + 28));
+                        check(canceled);
+                        for (int field = 0; field < 8; field++) {
+                            ids[i][field] =
+                                    Integer.toUnsignedLong(
+                                            input.getInt(c.start + i * 32 + field * 4));
+                        }
                     }
                 }
                 default -> {}
@@ -131,8 +157,13 @@ public final class WorldFormats {
                                 i / 64,
                                 i % 64,
                                 ids == null ? 0 : ids[i][0],
+                                ids == null ? 0 : ids[i][5],
+                                ids == null ? 0 : ids[i][7],
                                 ids == null ? 0 : ids[i][1],
-                                ids == null ? 0 : ids[i][2]));
+                                ids == null ? 0 : ids[i][2],
+                                ids == null ? 0 : ids[i][3],
+                                ids == null ? 0 : ids[i][4],
+                                ids == null ? 0 : ids[i][6]));
             }
         }
         return new World(tiles, global);
