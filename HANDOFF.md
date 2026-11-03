@@ -10,8 +10,8 @@ legacy/custom UNKNOWN channels, LIMITED overrides, unchanged field admission,
 prepared-local/session-only comparison and uncertified membership. Build
 Comparison #117 has remaining areas; this merge does not complete the epic.
 
-GPU work is on `feature/gpu-model-preview`, through local proof revision
-`93da682` at this documentation checkpoint. The production path is an isolated
+GPU PR #138 is fast-forward merged on main at `c311203`, after all hosted
+unit/integration/compatibility/shader checks passed. The production path is an isolated
 **offscreen bgfx child**, not a separate preview window: bounded render/readback
 slots publish completed BGRA frames through a bounded mapped file; the GUI copies
 validated frames off FX and uploads the latest applicable image into its existing
@@ -41,9 +41,10 @@ and [docs/gui-loading-audit.md](docs/gui-loading-audit.md) for implemented brows
 race activity feedback and the remaining audited UI gaps. No blanket FX-thread
 responsiveness claim is made.
 
-Next: finish independent GUI delivery/lifetime corrections, rerun the affected
-native/GUI proofs and full checks, then required hosted platform checks before
-integration/release decisions. Continue using isolated distributions when an app
+Next: finish alpha.11 packaging and verify the explicit prerelease and all 18
+assets. Alpha.10 was tagged before notes were committed, its run canceled and
+no release published; preserve that tag. The new fixed Linux launcher is
+`.local/apps/gpu-c311203/bin/vimi-gui-prototype`. Continue using isolated distributions when an app
 is running; do not replace its JARs with a development build. The older Mac and
 certificate recovery notes below are historical, not instructions to resume an
 already merged implementation.

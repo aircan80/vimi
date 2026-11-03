@@ -42,3 +42,14 @@ These authored-fixture observations are not a live-build benchmark.
 Hosted platform checks and packaged-runtime proof are separate integration gates.
 The native runtime probe does not initialize a GPU; it verifies JNI linkage,
 compiled backends and all eight packaged shader hashes.
+
+## Integration
+
+PR #138 fast-forward merged at `c311203`. Hosted PR checks passed:
+unit `41671034080`, integration `41671034205`, compatibility `41671034043`
+and shader compilation `41671034114`. The bounded packaged-native probe and its
+failure/timeout/output-limit tests also pass locally. A frozen Linux distribution
+at `.local/apps/gpu-c311203` passes the native/shader smoke test.
+
+Local jpackage was blocked by the system JDK's modified-security-file integrity
+check; no bypass was used. Hosted packaging is the app-image acceptance gate.
