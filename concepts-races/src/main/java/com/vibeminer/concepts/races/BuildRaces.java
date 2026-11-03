@@ -54,6 +54,19 @@ public interface BuildRaces extends AutoCloseable {
                         "Voice playback unavailable"));
     }
 
+    default CompletableFuture<RaceAppearanceTypes.Result> appearance(
+            long raceId, long classId, long modelId, Cancellation token) {
+        return CompletableFuture.completedFuture(
+                new RaceAppearanceTypes.Result(
+                        RaceTypes.State.UNAVAILABLE,
+                        null,
+                        java.util.Set.of(),
+                        java.util.List.of(),
+                        java.util.List.of(),
+                        false,
+                        "Textured sample is unavailable"));
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override

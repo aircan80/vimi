@@ -77,7 +77,7 @@ public final class Blp2Decoder {
     static Encoding profile(int encoding, int depth, int alpha) {
         if (encoding == 1
                 && ((alpha == 0 && (depth == 0 || depth == 1 || depth == 4 || depth == 8))
-                        || alpha == 8 && depth == 0)) {
+                        || alpha == 8 && (depth == 0 || depth == 8))) {
             return Encoding.PALETTED;
         }
         if (encoding == 2) {

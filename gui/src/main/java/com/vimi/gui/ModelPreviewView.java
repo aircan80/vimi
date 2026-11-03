@@ -1,5 +1,6 @@
 package com.vimi.gui;
 
+import com.vibeminer.rendering.models.MeshAppearance;
 import com.vibeminer.rendering.models.PreviewMesh;
 import com.vibeminer.rendering.models.StaticMeshRenderer;
 import java.util.Set;
@@ -22,6 +23,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
     private record Work(
             long generation,
             PreviewMesh mesh,
+            MeshAppearance appearance,
             int width,
             int height,
             StaticMeshRenderer.View view) {}
@@ -32,11 +34,13 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
     private final ImageView image = new ImageView();
     private final StackPane viewport = new StackPane(image);
     private final CheckBox wireframe = new CheckBox("Edges"),
-            all = new CheckBox("All recorded surfaces");
+            all = new CheckBox("All recorded surfaces"),
+            textures = new CheckBox("Textures");
     private final Label status = new Label("Select a model variant");
     private PreviewMesh mesh;
+    private MeshAppearance appearance;
     private Set<Integer> visible = Set.of();
-    private double yaw = -0.3, pitch, zoom = 1.35, mouseX, mouseY;
+    private double yaw = -0.3, pitch, zoom = 1.15, mouseX, mouseY;
     private volatile boolean closed;
     private final javafx.animation.PauseTransition resize =
             new javafx.animation.PauseTransition(javafx.util.Duration.millis(35));
@@ -54,12 +58,15 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                 event -> {
                     yaw = -0.3;
                     pitch = 0;
-                    zoom = 1.35;
+                    zoom = 1.15;
                     request();
                 });
+        textures.setSelected(true);
+        textures.setDisable(true);
+        textures.setOnAction(event -> request());
         wireframe.setOnAction(event -> request());
         all.setOnAction(event -> request());
-        HBox controls = new HBox(12, reset, wireframe, all);
+        HBox controls = new HBox(12, reset, textures, wireframe, all);
         controls.getStyleClass().add("model-preview-controls");
         setTop(controls);
         status.getStyleClass().add("muted");
@@ -90,11 +97,21 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
 
     void setMesh(PreviewMesh value, Set<Integer> visibleParts) {
         mesh = value;
+        appearance = null;
+        textures.setDisable(true);
         visible = Set.copyOf(visibleParts);
         yaw = -0.3;
         pitch = 0;
-        zoom = 1.35;
+        zoom = 1.15;
         all.setSelected(false);
+        request();
+    }
+
+    void setAppearance(MeshAppearance value, Set<Integer> visibleParts) {
+        appearance = value;
+        mesh = value.mesh();
+        visible = Set.copyOf(visibleParts);
+        textures.setDisable(false);
         request();
     }
 
@@ -102,6 +119,8 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
         generation.incrementAndGet();
         latest.set(null);
         mesh = null;
+        appearance = null;
+        textures.setDisable(true);
         image.setImage(null);
         status.setText(message);
     }
@@ -120,6 +139,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                 new Work(
                         request,
                         mesh,
+                        textures.isSelected() ? appearance : null,
                         width,
                         height,
                         new StaticMeshRenderer.View(
@@ -127,7 +147,11 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                                 pitch,
                                 zoom,
                                 wireframe.isSelected(),
-                                all.isSelected() ? Set.of() : visible)));
+                                all.isSelected()
+                                        ? Set.of()
+                                        : visible.isEmpty()
+                                                ? Set.of(Integer.MIN_VALUE)
+                                                : visible)));
         kick();
     }
 
@@ -142,16 +166,26 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                         while (!closed && (work = latest.getAndSet(null)) != null) {
                             final Work current = work;
                             try {
-                                var frame =
-                                        StaticMeshRenderer.render(
-                                                work.mesh(),
-                                                work.width(),
-                                                work.height(),
-                                                work.view(),
+                                var canceled =
+                                        (java.util.function.BooleanSupplier)
                                                 () ->
                                                         closed
                                                                 || generation.get()
-                                                                        != current.generation());
+                                                                        != current.generation();
+                                var frame =
+                                        work.appearance() == null
+                                                ? StaticMeshRenderer.render(
+                                                        work.mesh(),
+                                                        work.width(),
+                                                        work.height(),
+                                                        work.view(),
+                                                        canceled)
+                                                : StaticMeshRenderer.render(
+                                                        work.appearance(),
+                                                        work.width(),
+                                                        work.height(),
+                                                        work.view(),
+                                                        canceled);
                                 Platform.runLater(
                                         () -> {
                                             if (closed
@@ -204,6 +238,8 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
         generation.incrementAndGet();
         latest.set(null);
         mesh = null;
+        appearance = null;
+        textures.setDisable(true);
         image.setImage(null);
     }
 }

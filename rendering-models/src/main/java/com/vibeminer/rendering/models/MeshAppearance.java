@@ -41,15 +41,33 @@ public final class MeshAppearance {
 
     private final PreviewMesh mesh;
     final float[] uv;
+    final float[] normals;
     final Map<Integer, Surface> surfaces;
     final List<Texture> textures;
 
     public MeshAppearance(
             PreviewMesh mesh, float[] uv, List<Surface> surfaces, List<Texture> textures) {
+        this(mesh, uv, new float[0], surfaces, textures);
+    }
+
+    public MeshAppearance(
+            PreviewMesh mesh,
+            float[] uv,
+            float[] normals,
+            List<Surface> surfaces,
+            List<Texture> textures) {
         if (uv.length != mesh.vertexCount() * 2
                 || surfaces.size() > mesh.parts().size()
                 || textures.size() > 16) {
             throw new IllegalArgumentException("Invalid static texture binding bounds");
+        }
+        if (normals.length != 0 && normals.length != mesh.vertexCount() * 3) {
+            throw new IllegalArgumentException("Invalid static normal bounds");
+        }
+        for (float coordinate : normals) {
+            if (!Float.isFinite(coordinate) || Math.abs(coordinate) > 1_000_000) {
+                throw new IllegalArgumentException("Invalid static normal");
+            }
         }
         long pixels = 0;
         for (var texture : textures) {
@@ -75,6 +93,7 @@ public final class MeshAppearance {
         }
         this.mesh = mesh;
         this.uv = uv.clone();
+        this.normals = normals.clone();
         this.surfaces = Map.copyOf(mapped);
         this.textures = List.copyOf(textures);
     }
@@ -85,6 +104,10 @@ public final class MeshAppearance {
 
     public float[] uv() {
         return uv.clone();
+    }
+
+    public float[] normals() {
+        return normals.clone();
     }
 
     public List<Surface> surfaces() {

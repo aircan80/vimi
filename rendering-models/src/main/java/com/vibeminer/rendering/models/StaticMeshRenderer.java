@@ -92,6 +92,10 @@ public final class StaticMeshRenderer {
         double[] px = new double[mesh.vertexCount()],
                 py = new double[px.length],
                 pz = new double[px.length];
+        double[] lighting =
+                appearance != null && appearance.normals.length > 0
+                        ? new double[mesh.vertexCount()]
+                        : null;
         for (int i = 0; i < px.length; i++) {
             if ((i & 2047) == 0) {
                 check(cancel);
@@ -99,6 +103,17 @@ public final class StaticMeshRenderer {
             double x = mesh.positions[i * 3] - cx,
                     y = mesh.positions[i * 3 + 1] - cy,
                     z = mesh.positions[i * 3 + 2] - cz;
+            if (lighting != null) {
+                lighting[i] =
+                        light(
+                                appearance.normals[i * 3],
+                                appearance.normals[i * 3 + 1],
+                                appearance.normals[i * 3 + 2],
+                                cos,
+                                sin,
+                                cp,
+                                sp);
+            }
             double horizontal = y * cos + x * sin,
                     away = x * cos - y * sin,
                     vertical = z * cp - away * sp;
@@ -178,8 +193,16 @@ public final class StaticMeshRenderer {
                             int tx = coordinate(u, texture.width(), surface.wrapU()),
                                     ty = coordinate(v, texture.height(), surface.wrapV());
                             int sampled = texture.pixels[ty * texture.width() + tx];
-                            if (surface.alphaKey() && (sampled >>> 24) < 128) continue;
-                            double light = (color >>> 16 & 255) / 190.0;
+                            if (surface.alphaKey() && (sampled >>> 24) < 128) {
+                                continue;
+                            }
+                            double light =
+                                    lighting == null
+                                            ? (color >>> 16 & 255) / 190.0
+                                            : (wa * lighting[a] / pz[a]
+                                                            + wb * lighting[b] / pz[b]
+                                                            + wc * lighting[c] / pz[c])
+                                                    * z;
                             shaded =
                                     0xff000000
                                             | ((int) ((sampled >>> 16 & 255) * light) << 16)
@@ -216,11 +239,16 @@ public final class StaticMeshRenderer {
         double acx = mesh.positions[c * 3] - mesh.positions[a * 3],
                 acy = mesh.positions[c * 3 + 1] - mesh.positions[a * 3 + 1],
                 acz = mesh.positions[c * 3 + 2] - mesh.positions[a * 3 + 2];
-        double nx = aby * acz - abz * acy,
-                ny = abz * acx - abx * acz,
-                nz = abx * acy - aby * acx,
-                len = Math.sqrt(nx * nx + ny * ny + nz * nz);
-        double light =
+        double nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
+        double intensity = light(nx, ny, nz, cos, sin, cp, sp);
+        int r = (int) (190 * intensity), g = (int) (176 * intensity), bgr = (int) (153 * intensity);
+        return 0xff000000 | (r << 16) | (g << 8) | bgr;
+    }
+
+    private static double light(
+            double nx, double ny, double nz, double cos, double sin, double cp, double sp) {
+        double len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+        double value =
                 len == 0
                         ? 0
                         : Math.abs(
@@ -228,8 +256,6 @@ public final class StaticMeshRenderer {
                                                 + (nz * cp - (nx * cos - ny * sin) * sp) * 0.6
                                                 + (nx * cos - ny * sin) * cp * 0.72)
                                 / len;
-        double intensity = 0.28 + 0.72 * Math.min(1, light);
-        int r = (int) (190 * intensity), g = (int) (176 * intensity), bgr = (int) (153 * intensity);
-        return 0xff000000 | (r << 16) | (g << 8) | bgr;
+        return 0.28 + 0.72 * Math.min(1, value);
     }
 }

@@ -25,15 +25,21 @@ public final class RacesService implements BuildRaces {
     private final BuildTables tables;
     private final RaceMedia media;
     private final RaceVoices voices;
-    private final ThreadPoolExecutor worker =
-            new ThreadPoolExecutor(
-                    1,
-                    1,
-                    0,
-                    TimeUnit.SECONDS,
-                    new ArrayBlockingQueue<>(32),
-                    Thread.ofPlatform().daemon().name("race-projection").factory(),
-                    new ThreadPoolExecutor.AbortPolicy());
+    private final RaceAppearance appearance;
+    private final ThreadPoolExecutor worker = worker("race-projection"),
+            appearanceWorker = worker("race-appearance");
+
+    private static ThreadPoolExecutor worker(String name) {
+        return new ThreadPoolExecutor(
+                1,
+                1,
+                0,
+                TimeUnit.SECONDS,
+                new ArrayBlockingQueue<>(32),
+                Thread.ofPlatform().daemon().name(name).factory(),
+                new ThreadPoolExecutor.AbortPolicy());
+    }
+
     private final Cancellation lifetime = new Cancellation();
     private CompletableFuture<Void> closing;
     private Data races, links, classes, abilities;
@@ -52,6 +58,7 @@ public final class RacesService implements BuildRaces {
         this.tables = Objects.requireNonNull(tables);
         media = new RaceMedia(this, tables, files, generated);
         voices = new RaceVoices(this, media, tables, files, generated);
+        appearance = new RaceAppearance(this, media, tables, files, generated);
     }
 
     @Override
@@ -76,6 +83,20 @@ public final class RacesService implements BuildRaces {
     public CompletableFuture<RaceVoiceTypes.Audio> voice(
             long raceId, long classId, int sex, long entryId, Cancellation token) {
         return submit(token, request -> voices.audio(raceId, classId, sex, entryId, request));
+    }
+
+    @Override
+    public CompletableFuture<RaceAppearanceTypes.Result> appearance(
+            long raceId, long classId, long modelId, Cancellation token) {
+        return submit(token, request -> appearance.prepare(raceId, classId, modelId, request))
+                .thenCompose(
+                        prepared ->
+                                prepared.failure() != null
+                                        ? CompletableFuture.completedFuture(prepared.failure())
+                                        : submit(
+                                                appearanceWorker,
+                                                token,
+                                                request -> appearance.render(prepared, request)));
     }
 
     @Override
@@ -528,6 +549,10 @@ public final class RacesService implements BuildRaces {
         }
 
         TableSchema.SchemaColumn field(String name, boolean integer) {
+            return field(name, integer, 1);
+        }
+
+        TableSchema.SchemaColumn field(String name, boolean integer, int arrayLength) {
             var fields =
                     schema.columns().stream().filter(column -> column.name().equals(name)).toList();
             if (fields.size() != 1) {
@@ -541,8 +566,10 @@ public final class RacesService implements BuildRaces {
                                             hash -> List.of("B6115535", "0FC0F0D5").contains(hash));
             if ((!field.verifiedName()
                             && !reviewedCard
-                            && !RaceMedia.reviewedField(this.name, schema.layoutHashes(), name))
-                    || field.arrayLength() != 1
+                            && !RaceMedia.reviewedField(this.name, schema.layoutHashes(), name)
+                            && !RaceAppearance.reviewedField(
+                                    this.name, schema.layoutHashes(), name))
+                    || field.arrayLength() != arrayLength
                     || integer != (field.kind() == TableSchema.ColumnKind.INT)
                     || integer
                             && (field.bits() == null
@@ -552,12 +579,14 @@ public final class RacesService implements BuildRaces {
                             && field.kind() != TableSchema.ColumnKind.STRING) {
                 throw unsupported("Unsupported field " + name);
             }
-            int at = index(name);
-            var column = columns.get(at);
-            if (!column.kind().equals(integer ? "integer" : "string")
-                    || column.interpretation() != null
-                    || column.isId()) {
-                throw unsupported("Column mismatch " + name);
+            for (int element = 0; element < arrayLength; element++) {
+                int at = index(arrayLength == 1 ? name : name + "[" + element + "]");
+                var column = columns.get(at);
+                if (!column.kind().equals(integer ? "integer" : "string")
+                        || column.interpretation() != null
+                        || column.isId()) {
+                    throw unsupported("Column mismatch " + name);
+                }
             }
             return field;
         }
@@ -631,6 +660,11 @@ public final class RacesService implements BuildRaces {
     }
 
     private <T> CompletableFuture<T> submit(Cancellation token, Function<Cancellation, T> action) {
+        return submit(worker, token, action);
+    }
+
+    private <T> CompletableFuture<T> submit(
+            ThreadPoolExecutor pool, Cancellation token, Function<Cancellation, T> action) {
         Objects.requireNonNull(token);
         var inner = new CompletableFuture<T>();
         synchronized (this) {
@@ -639,7 +673,7 @@ public final class RacesService implements BuildRaces {
                         new IllegalStateException("Race handle closed"));
             }
             try {
-                worker.execute(
+                pool.execute(
                         () -> {
                             var request = new Cancellation();
                             try (var caller = token.onCancel(request::cancel);
@@ -683,10 +717,12 @@ public final class RacesService implements BuildRaces {
             }
             var failure = cancellationFailure;
             worker.shutdown();
+            appearanceWorker.shutdown();
             Thread.startVirtualThread(
                     () -> {
                         try {
-                            while (!worker.awaitTermination(1, TimeUnit.SECONDS)) {}
+                            while (!worker.awaitTermination(1, TimeUnit.SECONDS)
+                                    || !appearanceWorker.awaitTermination(1, TimeUnit.SECONDS)) {}
                             if (failure == null) {
                                 closing.complete(null);
                             } else {

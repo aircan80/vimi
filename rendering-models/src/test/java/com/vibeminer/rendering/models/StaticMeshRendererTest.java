@@ -94,6 +94,17 @@ final class StaticMeshRendererTest {
         int center = frame.argb()[100 * 200 + 100];
         assertTrue((center >>> 16 & 255) > 0);
         assertEquals(0, center & 0xffff);
+        var smooth =
+                new MeshAppearance(
+                        geometry,
+                        uv,
+                        new float[] {0, 0, 1, 0, 0, 1, 0, 0, 1},
+                        List.of(binding),
+                        List.of(new MeshAppearance.Texture(1, 1, new int[] {0xffff0000})));
+        var smoothFrame =
+                StaticMeshRenderer.render(
+                        smooth, 200, 200, StaticMeshRenderer.View.initial(), () -> false);
+        assertTrue(center != smoothFrame.argb()[100 * 200 + 100]);
         var cutout =
                 new MeshAppearance(
                         geometry,
@@ -107,6 +118,26 @@ final class StaticMeshRendererTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new MeshAppearance(geometry, new float[2], List.of(), List.of()));
+    }
+
+    @Test
+    void appearanceDerivativeRoundTripChecksAllGeometryUvTextureLengths() {
+        var geometry = mesh();
+        var original =
+                new MeshAppearance(
+                        geometry,
+                        new float[] {0, 0, 1, 0, 0, 1},
+                        List.of(new MeshAppearance.Surface(0, 0, true, false, true)),
+                        List.of(new MeshAppearance.Texture(1, 1, new int[] {0xff123456})));
+        byte[] bytes = MeshAppearanceCodec.encode(original);
+        var restored = MeshAppearanceCodec.decode(bytes);
+        assertEquals(original.surfaces(), restored.surfaces());
+        assertEquals(0xff123456, restored.textures().getFirst().argb()[0]);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> MeshAppearanceCodec.decode(java.util.Arrays.copyOf(bytes, bytes.length - 1)));
+        bytes[8] = (byte) 0xff;
+        assertThrows(IllegalArgumentException.class, () -> MeshAppearanceCodec.decode(bytes));
     }
 
     @Test

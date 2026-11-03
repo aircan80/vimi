@@ -192,7 +192,7 @@ final class RaceMedia {
                     token,
                     issues);
         }
-        var parts = visibleParts(chrModelId, classId, mesh, token, issues);
+        var parts = visibleParts(raceId, chrModelId, classId, mesh, token, issues);
         issue(
                 issues,
                 "Static native rest positions are shown. Animation, texture compositing and starting equipment are not evaluated.");
@@ -201,6 +201,7 @@ final class RaceMedia {
     }
 
     private Set<Integer> visibleParts(
+            long raceId,
             long chrModelId,
             long classId,
             PreviewMesh mesh,
@@ -223,6 +224,8 @@ final class RaceMedia {
             var choices = data("ChrCustomizationChoice", 40000, token, issues);
             var elements = data("ChrCustomizationElement", 200000, token, issues);
             var geosets = data("ChrCustomizationGeoset", 40000, token, issues);
+            RaceAppearance.requireProfile(elements);
+            RaceAppearance.requireProfile(geosets);
             for (String field : List.of("ChrModelID", "OrderIndex")) {
                 options.field(field, true);
             }
@@ -233,31 +236,10 @@ final class RaceMedia {
             elements.field("RelatedChrCustomizationChoiceID", true);
             geosets.field("GeosetType", true);
             geosets.field("GeosetID", true);
-            var selected = new HashSet<Long>();
-            var allOptionChoices = new HashSet<Long>();
-            for (var option : options.rows) {
-                if (options.number(option, "ChrModelID") != chrModelId) {
-                    continue;
-                }
-                var values =
-                        choices.rows.stream()
-                                .filter(
-                                        choice ->
-                                                choices.number(choice, "ChrCustomizationOptionID")
-                                                        == option.id())
-                                .sorted(
-                                        java.util.Comparator.comparingLong(
-                                                        (com.vibeminer.formats.db2.Db2Types.Row
-                                                                        row) ->
-                                                                choices.number(row, "UiOrderIndex"))
-                                                .thenComparingLong(
-                                                        com.vibeminer.formats.db2.Db2Types.Row::id))
-                                .toList();
-                if (!values.isEmpty()) {
-                    selected.add(values.getFirst().id());
-                }
-                values.forEach(choice -> allOptionChoices.add(choice.id()));
-            }
+            var sample =
+                    new RaceCustomization(this).select(raceId, classId, chrModelId, token, issues);
+            var selected = sample.choices();
+            var allOptionChoices = sample.allChoices();
             var byId = new HashMap<Long, com.vibeminer.formats.db2.Db2Types.Row>();
             geosets.rows.forEach(row -> byId.put(row.id(), row));
             var controlled = new HashSet<Integer>();
@@ -297,7 +279,7 @@ final class RaceMedia {
             visible.addAll(show);
             issue(
                     issues,
-                    "Sample look uses the first recorded customization choice per option; account requirements are not evaluated.");
+                    "Sample look uses the first known eligible recorded customization choice; unknown unlock requirements are omitted.");
         } catch (RacesService.Projection unavailable) {
             issue(issues, "Customization selection unavailable: " + unavailable.getMessage());
         }

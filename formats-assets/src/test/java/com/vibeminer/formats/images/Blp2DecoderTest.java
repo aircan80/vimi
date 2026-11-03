@@ -108,6 +108,16 @@ final class Blp2DecoderTest {
     }
 
     @Test
+    void paletteEightBitAlphaAcceptsRecordedEncodingEightAndKeepsAllBounds() {
+        byte[] bytes = build(1, 8, 8, 2, 1, new byte[] {1, 2, 17, 34});
+        var decoded = Blp2Decoder.decode(AssetSource.bytes(bytes)).join();
+        assertEquals(Encoding.PALETTED, decoded.encoding());
+        assertArrayEquals(new byte[] {1, 2, 3, 17, 2, 3, 4, 34}, decoded.rgba());
+        assertTrue(Blp2Decoder.isSupported(Encoding.PALETTED, 8, 8));
+        code("BLP_INVALID", java.util.Arrays.copyOf(bytes, bytes.length - 1), 0);
+    }
+
+    @Test
     void bc1FloorInterpolationAndEndpointBitReplication() {
         var image =
                 Blp2Decoder.decode(
@@ -287,8 +297,7 @@ final class Blp2DecoderTest {
 
     @Test
     void unsupportedProfilesAndFlagsStayExplicit() {
-        for (int[] p :
-                new int[][] {{1, 1, 8}, {1, 8, 8}, {2, 71, 7}, {2, 72, 1}, {3, 0, 0}, {3, 8, 8}}) {
+        for (int[] p : new int[][] {{1, 1, 8}, {2, 71, 7}, {2, 72, 1}, {3, 0, 0}, {3, 8, 8}}) {
             code("BLP_UNSUPPORTED", build(p[0], p[1], p[2], 1, 1, new byte[16]), 0);
         }
         byte[] b = build(3, 8, 0, 1, 1, new byte[4]);

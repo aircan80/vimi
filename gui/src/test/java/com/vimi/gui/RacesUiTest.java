@@ -78,21 +78,140 @@ public final class RacesUiTest {
                                                         null));
                                     }
 
-                                    public CompletableFuture<com.vibeminer.concepts.races.RaceMediaTypes.Variants> modelVariants(long raceId, Cancellation token) {
-                                        return CompletableFuture.completedFuture(new com.vibeminer.concepts.races.RaceMediaTypes.Variants(RaceTypes.State.READY,
-                                                List.of(new com.vibeminer.concepts.races.RaceMediaTypes.Variant(1, 0, 1, 1, 1)), List.of(), null));
-                                    }
-                                    public CompletableFuture<com.vibeminer.concepts.races.RaceMediaTypes.Preview> preview(long raceId, long classId, long modelId, Cancellation token) {
-                                        // An authored tetrahedron exercises the renderer without shipping game assets.
-                                        var mesh = new com.vibeminer.rendering.models.PreviewMesh(new float[] {0,0,1, -1,-1,-1, 1,-1,-1, 0,1,-1}, new int[] {0,1,2,0,2,3,0,3,1,1,3,2},
-                                                List.of(new com.vibeminer.rendering.models.PreviewMesh.Part(0,0,12)));
-                                        return CompletableFuture.completedFuture(new com.vibeminer.concepts.races.RaceMediaTypes.Preview(RaceTypes.State.PARTIAL,
-                                                new com.vibeminer.concepts.races.RaceMediaTypes.Variant(1,0,1,1,1), mesh, java.util.Set.of(0), List.of("Authored renderer fixture; no game assets."), false, null));
+                                    public CompletableFuture<
+                                                    com.vibeminer.concepts.races.RaceMediaTypes
+                                                            .Variants>
+                                            modelVariants(long raceId, Cancellation token) {
+                                        return CompletableFuture.completedFuture(
+                                                new com.vibeminer.concepts.races.RaceMediaTypes
+                                                        .Variants(
+                                                        RaceTypes.State.READY,
+                                                        List.of(
+                                                                new com.vibeminer.concepts.races
+                                                                        .RaceMediaTypes.Variant(
+                                                                        1, 0, 1, 1, 1)),
+                                                        List.of(),
+                                                        null));
                                     }
 
-                                    public CompletableFuture<com.vibeminer.concepts.races.RaceVoiceTypes.Catalog> voices(long raceId,long classId,int sex,Cancellation token){
-                                        return CompletableFuture.completedFuture(new com.vibeminer.concepts.races.RaceVoiceTypes.Catalog(RaceTypes.State.PARTIAL,"enUS",
-                                                List.of(new com.vibeminer.concepts.races.RaceVoiceTypes.Clip(101,329,"Authored joke",100,200)),List.of("Authored voice metadata; no recording."),null));
+                                    public CompletableFuture<
+                                                    com.vibeminer.concepts.races.RaceMediaTypes
+                                                            .Preview>
+                                            preview(
+                                                    long raceId,
+                                                    long classId,
+                                                    long modelId,
+                                                    Cancellation token) {
+                                        // An authored tetrahedron exercises the renderer without
+                                        // shipping game assets.
+                                        var mesh =
+                                                new com.vibeminer.rendering.models.PreviewMesh(
+                                                        new float[] {
+                                                            0, 0, 1, -1, -1, -1, 1, -1, -1, 0, 1, -1
+                                                        },
+                                                        new int[] {
+                                                            0, 1, 2, 0, 2, 3, 0, 3, 1, 1, 3, 2
+                                                        },
+                                                        List.of(
+                                                                new com.vibeminer.rendering.models
+                                                                        .PreviewMesh.Part(
+                                                                        0, 0, 12)));
+                                        return CompletableFuture.completedFuture(
+                                                new com.vibeminer.concepts.races.RaceMediaTypes
+                                                        .Preview(
+                                                        RaceTypes.State.PARTIAL,
+                                                        new com.vibeminer.concepts.races
+                                                                .RaceMediaTypes.Variant(
+                                                                1, 0, 1, 1, 1),
+                                                        mesh,
+                                                        java.util.Set.of(0),
+                                                        List.of(
+                                                                "Authored renderer fixture; no game assets."),
+                                                        false,
+                                                        null));
+                                    }
+
+                                    public CompletableFuture<
+                                                    com.vibeminer.concepts.races.RaceVoiceTypes
+                                                            .Catalog>
+                                            voices(
+                                                    long raceId,
+                                                    long classId,
+                                                    int sex,
+                                                    Cancellation token) {
+                                        return CompletableFuture.completedFuture(
+                                                new com.vibeminer.concepts.races.RaceVoiceTypes
+                                                        .Catalog(
+                                                        RaceTypes.State.PARTIAL,
+                                                        "enUS",
+                                                        List.of(
+                                                                new com.vibeminer.concepts.races
+                                                                        .RaceVoiceTypes.Clip(
+                                                                        101,
+                                                                        329,
+                                                                        "Authored joke",
+                                                                        100,
+                                                                        200)),
+                                                        List.of(
+                                                                "Authored voice metadata; no recording."),
+                                                        null));
+                                    }
+
+                                    public CompletableFuture<
+                                                    com.vibeminer.concepts.races.RaceAppearanceTypes
+                                                            .Result>
+                                            appearance(
+                                                    long raceId,
+                                                    long classId,
+                                                    long modelId,
+                                                    Cancellation token) {
+                                        var mesh =
+                                                new com.vibeminer.rendering.models.PreviewMesh(
+                                                        new float[] {
+                                                            0, 0, 1, -1, -1, -1, 1, -1, -1, 0, 1, -1
+                                                        },
+                                                        new int[] {
+                                                            0, 1, 2, 0, 2, 3, 0, 3, 1, 1, 3, 2
+                                                        },
+                                                        List.of(
+                                                                new com.vibeminer.rendering.models
+                                                                        .PreviewMesh.Part(
+                                                                        0, 0, 12)));
+                                        var surface =
+                                                new com.vibeminer.rendering.models.MeshAppearance(
+                                                        mesh,
+                                                        new float[] {
+                                                            0.5f, 0, 0, 1, 1, 1, 0.5f, 0.5f
+                                                        },
+                                                        List.of(
+                                                                new com.vibeminer.rendering.models
+                                                                        .MeshAppearance.Surface(
+                                                                        0, 0, false, false, false)),
+                                                        List.of(
+                                                                new com.vibeminer.rendering.models
+                                                                        .MeshAppearance.Texture(
+                                                                        2,
+                                                                        2,
+                                                                        new int[] {
+                                                                            0xffd8ac66,
+                                                                            0xff43968a,
+                                                                            0xff43968a,
+                                                                            0xffd8ac66
+                                                                        })));
+                                        return CompletableFuture.completedFuture(
+                                                new com.vibeminer.concepts.races.RaceAppearanceTypes
+                                                        .Result(
+                                                        RaceTypes.State.PARTIAL,
+                                                        surface,
+                                                        java.util.Set.of(0),
+                                                        List.of(
+                                                                new com.vibeminer.concepts.races
+                                                                        .RaceAppearanceTypes.Item(
+                                                                        1001, 4, 2001)),
+                                                        List.of(
+                                                                "Authored diffuse fixture; no game data."),
+                                                        true,
+                                                        null));
                                     }
 
                                     public CompletableFuture<Void> closeAsync() {
@@ -146,9 +265,25 @@ public final class RacesUiTest {
                         view.ensureLoaded();
                         var pause =
                                 new javafx.animation.PauseTransition(
-                                        javafx.util.Duration.millis(500));
+                                        javafx.util.Duration.millis(25));
+                        long readyDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
                         pause.setOnFinished(
                                 event -> {
+                                    boolean ready =
+                                            labels(view).stream()
+                                                            .anyMatch(
+                                                                    value ->
+                                                                            value.startsWith(
+                                                                                    "Static textured sample"))
+                                                    && labels(view).stream()
+                                                            .anyMatch(
+                                                                    value ->
+                                                                            value.startsWith(
+                                                                                    "Drag to rotate"));
+                                    if (!ready && System.nanoTime() < readyDeadline) {
+                                        pause.playFromStart();
+                                        return;
+                                    }
                                     try {
                                         var list = (ListView<?>) view.lookup(".list-view");
                                         require(
@@ -161,6 +296,14 @@ public final class RacesUiTest {
                                                 !view.lookupAll(".image-view").isEmpty()
                                                         || descendantsImage(view),
                                                 "Racial image rendered");
+                                        require(
+                                                labels(view).stream()
+                                                        .anyMatch(
+                                                                value ->
+                                                                        value.startsWith(
+                                                                                "Static textured sample")),
+                                                "Async textured sample reaches the view: "
+                                                        + labels(view));
                                         var imageSnapshot = scene.snapshot(null);
                                         var out =
                                                 new BufferedImage(

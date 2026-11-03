@@ -253,6 +253,33 @@ final class M2ReadersTest {
     }
 
     @Test
+    void restDrawDeclarationsCheckMaterialsWhileStrictRigAdmissionRemainsSeparate() {
+        byte[] original = golden("model-274.m2");
+        byte[] external = Arrays.copyOf(original, original.length + 12);
+        System.arraycopy(
+                new byte[] {'B', 'F', 'I', 'D', 4, 0, 0, 0, 1, 0, 0, 0},
+                0,
+                external,
+                original.length,
+                12);
+        var model = M2ModelReader.read(AssetSource.bytes(external)).join();
+        assertNotNull(M2GeometrySkinReader.profileRefusal(model));
+        byte[] skin = golden("skin-274.skin");
+        var raw =
+                M2RestDrawSkinReader.read(AssetSource.bytes(skin), model, null, Cancellation.NONE)
+                        .join();
+        assertEquals(1, raw.batches().size());
+        assertEquals(1, raw.surface().sections().size());
+        word(skin, get(skin, 40) + 16, 65535);
+        failure(
+                "MODEL_INVALID",
+                () ->
+                        M2RestDrawSkinReader.read(
+                                        AssetSource.bytes(skin), model, null, Cancellation.NONE)
+                                .join());
+    }
+
+    @Test
     void skinTwoLevelLookupSectionRangesAndRawMaximumChecked() {
         var model = model(274);
         byte[] original = golden("skin-274.skin");

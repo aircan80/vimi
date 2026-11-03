@@ -152,7 +152,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                                 return;
                                             }
                                             state.setText(
-                                                    "Static model preview · sample customization · class starting outfit unavailable");
+                                                    "Static model preview · preparing textures and starting clothing…");
                                             evidence.getChildren()
                                                     .setAll(
                                                             new Label(
@@ -174,6 +174,74 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                                 evidence.getChildren().add(note);
                                             }
                                             viewer.setMesh(result.mesh(), result.visibleParts());
+                                            loadAppearance(model, classId, request);
+                                        }));
+    }
+
+    private void loadAppearance(RaceMediaTypes.Variant model, long classId, long request) {
+        handle.appearance(raceId, classId, model.chrModelId(), token)
+                .whenComplete(
+                        (result, error) ->
+                                Platform.runLater(
+                                        () -> {
+                                            if (stale() || request != generation) {
+                                                return;
+                                            }
+                                            if (error != null
+                                                    || result == null
+                                                    || result.appearance() == null) {
+                                                state.setText(
+                                                        "Static model preview · "
+                                                                + (result != null
+                                                                                && result.message()
+                                                                                        != null
+                                                                        ? result.message()
+                                                                        : "Textured appearance is unavailable."));
+                                                return;
+                                            }
+                                            viewer.setAppearance(
+                                                    result.appearance(), result.visibleParts());
+                                            state.setText(
+                                                    result.items().isEmpty()
+                                                            ? "Static textured sample · starting clothing unavailable"
+                                                            : "Static textured sample · available starting clothing · held equipment not shown");
+                                            evidence.getChildren()
+                                                    .setAll(
+                                                            new Label(
+                                                                    "ChrModel "
+                                                                            + model.chrModelId()
+                                                                            + " · Display "
+                                                                            + model.displayId()
+                                                                            + " · M2 FileDataID "
+                                                                            + model
+                                                                                    .modelFileDataId()),
+                                                            new Label(
+                                                                    result.restored()
+                                                                            ? "Restored composed appearance"
+                                                                            : "Composed from recorded character and item texture sources"));
+                                            if (!result.items().isEmpty()) {
+                                                var items =
+                                                        new Label(
+                                                                "Starting clothing: "
+                                                                        + result.items().stream()
+                                                                                .map(
+                                                                                        item ->
+                                                                                                "item #"
+                                                                                                        + item
+                                                                                                                .itemId()
+                                                                                                        + " / display #"
+                                                                                                        + item
+                                                                                                                .displayId())
+                                                                                .toList());
+                                                items.setWrapText(true);
+                                                evidence.getChildren().add(items);
+                                            }
+                                            for (String issue : result.issues()) {
+                                                var note = new Label(issue);
+                                                note.setWrapText(true);
+                                                note.getStyleClass().add("muted");
+                                                evidence.getChildren().add(note);
+                                            }
                                         }));
     }
 
