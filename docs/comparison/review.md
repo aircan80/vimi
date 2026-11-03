@@ -166,3 +166,24 @@ row shapes, preserves typed limited tails and valid siblings, distinguishes text
 issues and checks localized field scope. Null issue channels remain UNKNOWN.
 This approval covers only pure projection; captured staging, joins, core paging
 and native/UI composition require separate integration validation and review.
+
+
+## Bounded Items prerequisites
+
+Root independently reviewed reader revision
+`49a97614c4f1eb8de768473f4261f29aff0d4b68`: same-budget sealed file adoption,
+structural preflight, rewind without pending DTO retention, masked-identity
+filtering and private delivery cleanup satisfy the prerequisite contract. This
+approval is conditional on the concrete pure projector enforcing its declared
+3 MiB allocation plan; it is not full Items integration approval.
+
+An independent architecture reviewer approved root's stream union and coordinator
+final-scope changes at `d6d81529b449ba7b0fcc1b6071e80fff27172d31`, excluding their
+own reader. Heads remain charged through actual read delivery, successors seal
+before dependency deletion and paired scopes are rechecked before core admission.
+The reviewer ran comparison checks. A redundant unsigned-domain guard was added
+after review; sorted projector inputs already enforce unsigned32 identities.
+
+The actual authored sort/join/candidate/core/all-pages fixture retains the 1 MiB
+metadata allowance through scanning and paging. Concrete compact metadata/codecs,
+captured adapters and native/UI composition remain separately gated.
