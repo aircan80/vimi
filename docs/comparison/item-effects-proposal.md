@@ -67,6 +67,111 @@ and
 The existing `StreamingItemJoin` is a one-to-one ordered union; it must **not** be
 used unchanged for the many-links-to-one-effect join described below.
 
+## Pure API checkpoint proposed for implementation review
+
+Add `PreparedItemEffectProjection` and `PreparedItemEffectTypes` in
+`com.vibeminer.concepts.effects`. These types depend on access/build/format DTOs,
+not `concepts-items`, comparison, GUI, BuildTables, BuildFiles or an executor.
+The public entry points are synchronous, deterministic and perform no I/O:
+
+```java
+public static Compilation compile(SourceSchema input);
+public static SourceFacts projectSource(SourceProfile profile, SourceRow input);
+public static PairPlan pair(SourceProfile left, SourceProfile right);
+public static RelationFacts relate(
+        SourceFacts link, TargetObservation target, RelationMode mode);
+```
+
+`pair` performs per-source, per-binding admission only. The comparison snapshot
+combines source-pair plans; this helper must not pair endpoint graphs, open sources
+or discover a relation mode. `relate` combines at most one qualified link with one
+explicit target observation. It never searches for the target or collects a
+parent's effects. For direct mode, the single projected row supplies link and
+effect facts; the helper verifies that the target is that exact row/source.
+
+Concrete immutable DTO shape (nested in `PreparedItemEffectTypes`):
+
+```java
+enum SourceKind { BRIDGE, RETAIL_EFFECT, DIRECT_EFFECT }
+enum RelationMode { BRIDGE, DIRECT }
+record SourceSchema(SourceStamp stamp, Db2Types.Header header,
+        TableSchema schema, List<Db2Types.Column> columns, SourceState state) {}
+record Compilation(IdentityAdmission identity, FieldAdmission fields,
+        SourceProfile profile, List<Omission> omissions) {}
+record SourceRow(long rowId, RowState state, Db2Types.Row row,
+        IssueChannel issueChannel, List<IssueOverride> overrides,
+        PresenceEvidence presence) {}
+record SourceFacts(SourceStamp stamp, long rowId, RowState state,
+        IdentityAdmission identity, CopyMetadata copy,
+        List<Cell> cells, List<Omission> omissions) {}
+record PairPlan(SourceKind kind, IdentityAdmission identity,
+        List<BindingPair> assessed, List<Omission> omissions) {}
+record TargetObservation(long requestedId, TargetState state,
+        SourceFacts facts, PresenceEvidence presence) {}
+record LinkIdentity(RelationMode mode, long parentItemId, long ownLinkRowId) {}
+record RelationFacts(LinkIdentity identity, SourceFacts link,
+        TargetObservation target, List<Omission> omissions) {}
+```
+
+`TargetState` distinguishes OBSERVED, UNKNOWN, PROTECTED, INVALID, LIMITED and
+UNRESOLVABLE_REFERENCE; it has no ABSENT state in this increment. Facts may be null
+only when the state is not OBSERVED. OBSERVED requires admitted matching row ID,
+expected effect source kind, endpoint build/locale and sealed-source stamp. Bridge
+and target source stamps legitimately have different file/content/graph identities;
+do not require those to be identical, and do not accept a target from the other
+endpoint. An unresolvable zero/negative reference has no lookup ID: the coordinator
+uses an explicit unresolvable observation rather than converting it to unsigned.
+`requestedId` is signed32 for recorded references and unsigned32 for direct own-ID
+identity; `relate` validates the domain according to mode.
+
+`SourceStamp` carries source kind, BuildRef, locale, table file/name, CKey/layout,
+definition SHA/resolved block, graph, reader/options/row encoding, effective-key
+fingerprint and compact issue-evidence state/policy/producer/binding digest. Mirror
+the existing prepared Items limits (stamp strings512 characters, policy128), but
+keep this an effects-owned DTO. The comparison snapshot additionally binds each
+stamp to its endpoint side and immutable session identity; a pure stamp is not a
+certificate or permission to open a source.
+
+`SourceProfile` is a compact immutable compiler product: stamp/state, versioned
+identity fingerprint, per-binding fingerprint, column count, ID-column descriptor,
+known relation mode/source kind, bindings and omissions. It retains no original
+schema/header/receipt/column arrays. Limit to11 columns,11 bindings,32 omissions
+and64KiB canonical encoded profile. Failed structural admission has no profile;
+partial field admission retains the useful profile with typed omitted bindings.
+A binding records source kind/file/field/index, integer width/signedness, verified
+status, relation semantics and evidence class. `BindingPair` retains both source
+bindings and assessed semantic key. Raw/candidate bindings cannot enter its
+assessed list; excluding one must not exclude unrelated admitted strict fields.
+
+`Cell` contains its source-qualified binding, CellState, nullable canonical numeric
+value, bounded raw evidence, interpretation evidence and at most8 issue codes.
+Only VALUE carries a semantic value. Raw/candidate cells use UNSUPPORTED with raw
+evidence; evidence strings are bounded before copying to8192 characters. Other
+states preserve UNKNOWN/PROTECTED/INVALID/LIMITED separately. `SourceFacts` has at
+most11 cells and32 omissions; it does not retain Db2Types.Row or profile backlinks.
+Copy metadata records own/source IDs without substituting the source ID for key.
+`IssueOverride` is `(columnIndex, CellState, code)`, with -1 meaning limited row
+channel, at most1024 overrides; row text issues are capped4096 before projection.
+Explicit malformed shapes/override indices produce invalid facts, not unchecked
+index exceptions. If a required parent/ID cell is unassessed, `relate` returns
+no qualified identity and a counted omission; unrelated source facts survive.
+
+All constructors copy collections; immutable strings/format scalars may be shared.
+SourceSchema is caller-owned temporary compilation input. `compile` may read it
+only during the call; the caller releases its heavy4MiB reservation afterward.
+The returned compact profile belongs to the charged comparison snapshot. A row
+input belongs to its current captured-page allowance; the returned SourceFacts
+contains only bounded detached cells and is charged to projection/staging memory.
+The helpers own no AutoCloseable resource and retain no state across calls. They
+must not perform deep full-row cloning to preserve an unneeded input object.
+The same compiled/profile/source pair and row input must yield identical facts.
+
+Implement these signatures/DTO invariants as the first production checkpoint only
+after independent API review. An integration coordinator must validate endpoint
+side/session association before calling `relate`; the pure projector cannot infer
+external ownership from matching build strings. Existing public ItemEffects APIs
+retain their signatures and behavior.
+
 ## Source profiles and paired admission
 
 | Relation mode | Captured sources per endpoint | Exact reviewed profile |
