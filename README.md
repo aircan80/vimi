@@ -225,6 +225,7 @@ consumed with `testImplementation testFixtures(project(':object-store'))`.
 - `concepts-quests/`: merged quest identities, titles, levels and provider evidence.
 - `concepts-races/`: layer 6 race metadata, recorded class combinations, racial cards and static model projections.
 - `concepts-professions/`: layer 6 build-local profession abilities, recipe results, reagent/tool slots and raw skill facts; see [Professions](docs/professions.md).
+- `concepts-dungeons/`: layer 6 dungeon/raid maps, per-difficulty capacities, associated areas and recorded encounters; see [Dungeons](docs/dungeons.md).
 - `formats-audio/`: bounded isolated Vorbis-to-PCM voice decoding and persisted PCM codec.
 - `formats-world/`: bounded WDT18 terrain inventory and split-root ADT18 height/holes parsing.
 - `concepts-world/`: lazy build map/area metadata and terrain access through owned files.
