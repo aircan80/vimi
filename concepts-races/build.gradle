@@ -35,6 +35,8 @@ tasks.withType(JavaCompile).configureEach {
 
 dependencies {
     api project(':formats-tables')
+    api project(':formats-assets')
+    api project(':rendering-models')
     testImplementation testFixtures(project(':formats-tables'))
     testImplementation platform('org.junit:junit-bom:5.13.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'

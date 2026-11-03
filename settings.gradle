@@ -20,3 +20,4 @@ include 'concepts-races'
 
 include 'eg-link'
 include 'polestar'
+include 'rendering-models'

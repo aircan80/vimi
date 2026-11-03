@@ -167,6 +167,16 @@ public final class M2SkinReader {
 
     static Core core(
             AssetSource source, Model model, Limits limits, boolean material, Cancellation token) {
+        return core(source, model, limits, material, true, token);
+    }
+
+    static Core core(
+            AssetSource source,
+            Model model,
+            Limits limits,
+            boolean material,
+            boolean validateRig,
+            Cancellation token) {
         M2Input input = new M2Input(source, limits, token);
         Budget budget = new Budget(limits.maxOutputBytes(), model.retainedBytes());
         budget.add(0, 1);
@@ -295,10 +305,12 @@ public final class M2SkinReader {
                     if (rawZero && boneCount > 256) {
                         throw error("LIMIT", "SKIN section bone palette exceeds256 bones.");
                     }
-                    if (influences > 4
-                            || !rawZero && boneCount > maxBones
-                            || boneCount > 0
-                                    && (long) boneStart + boneCount > model.boneLookup().size()) {
+                    if (validateRig
+                            && (influences > 4
+                                    || !rawZero && boneCount > maxBones
+                                    || boneCount > 0
+                                            && (long) boneStart + boneCount
+                                                    > model.boneLookup().size())) {
                         throw error("INVALID", "A SKIN section has invalid bone-palette geometry.");
                     }
                     float radius = f(row, 44);

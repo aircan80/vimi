@@ -23,6 +23,7 @@ public final class RacesService implements BuildRaces {
             MAX_LINKS = 16384,
             MAX_ABILITIES = 8192;
     private final BuildTables tables;
+    private final RaceMedia media;
     private final ThreadPoolExecutor worker =
             new ThreadPoolExecutor(
                     1,
@@ -40,7 +41,27 @@ public final class RacesService implements BuildRaces {
     private List<RaceTypes.Race> catalog;
 
     public RacesService(BuildTables tables) {
+        this(tables, null, null);
+    }
+
+    public RacesService(
+            BuildTables tables,
+            com.vibeminer.files.BuildFiles files,
+            com.vibeminer.generated.GeneratedStore generated) {
         this.tables = Objects.requireNonNull(tables);
+        media = new RaceMedia(this, tables, files, generated);
+    }
+
+    @Override
+    public CompletableFuture<RaceMediaTypes.Variants> modelVariants(
+            long raceId, Cancellation token) {
+        return submit(token, request -> media.variants(raceId, request));
+    }
+
+    @Override
+    public CompletableFuture<RaceMediaTypes.Preview> preview(
+            long raceId, long classId, long chrModelId, Cancellation token) {
+        return submit(token, request -> media.preview(raceId, classId, chrModelId, request));
     }
 
     @Override
@@ -409,7 +430,7 @@ public final class RacesService implements BuildRaces {
         }
     }
 
-    private Data schema(String name, Cancellation token, List<String> issues) {
+    Data schema(String name, Cancellation token, List<String> issues) {
         token.check();
         var result =
                 tables.schema(TableTypes.Ref.forName(name), TableTypes.Priority.INTERACTIVE, token)
@@ -426,7 +447,7 @@ public final class RacesService implements BuildRaces {
         return new Data(name, result.columns(), result.schema(), List.of());
     }
 
-    private Data read(String name, int bound, Cancellation token, List<String> issues) {
+    Data read(String name, int bound, Cancellation token, List<String> issues) {
         Data data = schema(name, token, issues);
         var rows = new ArrayList<Db2Types.Row>();
         long after = -1;
@@ -471,7 +492,7 @@ public final class RacesService implements BuildRaces {
         return new Data(name, data.columns, data.schema, List.copyOf(rows));
     }
 
-    private static final class Data {
+    static final class Data {
         final String name;
         final List<Db2Types.Column> columns;
         final TableSchema schema;
@@ -504,7 +525,9 @@ public final class RacesService implements BuildRaces {
                             && schema.layoutHashes().stream()
                                     .anyMatch(
                                             hash -> List.of("B6115535", "0FC0F0D5").contains(hash));
-            if ((!field.verifiedName() && !reviewedCard)
+            if ((!field.verifiedName()
+                            && !reviewedCard
+                            && !RaceMedia.reviewedField(this.name, schema.layoutHashes(), name))
                     || field.arrayLength() != 1
                     || integer != (field.kind() == TableSchema.ColumnKind.INT)
                     || integer
@@ -583,7 +606,7 @@ public final class RacesService implements BuildRaces {
         }
     }
 
-    private static final class Projection extends RuntimeException {
+    static final class Projection extends RuntimeException {
         private static final long serialVersionUID = 1L;
         final RaceTypes.State state;
 

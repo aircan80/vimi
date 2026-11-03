@@ -484,7 +484,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             synchronized (handlesGate) {
                 token.check();
                 if (closed.get()) throw new java.util.concurrent.CancellationException();
-                pending = new Workspace(next, localService, null, null, null, new com.vibeminer.concepts.talents.TalentsService(next,info.version()), new com.vibeminer.concepts.races.RacesService(next), 0);
+                pending = new Workspace(next, localService, null, null, null, new com.vibeminer.concepts.talents.TalentsService(next,info.version()), new com.vibeminer.concepts.races.RacesService(next, fileHandle, generated), 0);
                 pendingWarmed = false;
                 staged = true;
             }

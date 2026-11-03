@@ -26,12 +26,53 @@ late image results. Readable PARTIAL rows remain usable.
 All names and relationships come from the selected pinned WoWDBDefs schema. The
 reviewed racial-card layouts are `B6115535` and `0FC0F0D5`; unsupported optional
 shapes do not discard race/class facts. Older layouts without lore or racial-card
-tables keep the available metadata. No 3D preview is provided.
+tables keep the available metadata.
+
+## Static model preview
+
+Races keeps the recorded race menu on the left and compact racial cards on the right.
+The center shows a rotatable, zoomable static surface for a recorded model variant.
+The exact build-local chain is `ChrRaceXChrModel → ChrModel → CreatureDisplayInfo →
+CreatureModelData → FileDataID`. No models are chosen by name or guessed path.
+
+The separate `M2RestSkinReader` validates SKIN topology against native M2 positions
+without claiming that external bones, animations or draw materials were evaluated.
+Existing strict static-geometry and appearance APIs retain their external-rig refusals.
+A versioned, content-bound compact derivative is persisted through `GeneratedStore`;
+restores verify both M2 and SKIN content keys against the current build root.
+
+`:rendering-models` renders bounded positions/triangles on the CPU. This also works
+on Linux ARM systems where the installed JavaFX pipeline reports no SCENE3D support.
+Frame size, vertices, indices, surface count and raster work are capped. Cancellation
+and latest-camera replacement keep stale frames out of the UI.
+
+Sample customization uses the first recorded choice for each recorded model option,
+with related-choice gates and recorded geoset relationships. It follows the reviewed
+[WoW Model Viewer character geoset convention](https://github.com/wowmodelviewer/wowmodelviewer/blob/develop/Source/games/wow/CharDetails.cpp).
+The first reviewed current layouts are option `DCC2A86E`, choice `9559C358`, element
+`6483C37E` and geoset `BF55F2FB`. This is a sample, not a claim about account eligibility
+or the client's default choice. Texture compositing, equipment and animation are
+not evaluated. All recorded surfaces can be inspected explicitly, including mutually
+exclusive alternatives.
+
+Class selection currently retains the recorded combination but does not invent an
+outfit. The UI explicitly reports that the starting outfit is unavailable. Current
+Forever has no `CharStartOutfit` or `CharSections` table; `CharStartKit` is visual-kit
+data, not equipment, and its original external ID list contains duplicate zero IDs.
+It is not used to fabricate identities or starting gear. Class appearance and voice
+playback remain follow-up work tracked by #104.
+
+Read-only current Forever 1.60.1.70707 proof follows Human models 1/2 through displays
+57899/56658 and model records 7661/7599 to M2 files 1011653/1000764 and SKIN files
+1012983/1000778. Both produce complete-body sample surfaces from recorded geosets.
+No live library changes or installation are needed for this validation. Client model
+assets are not checked into the repository; the screenshot below uses an authored
+geometric fixture.
 
 ## Validation
 
 ```sh
-./gradlew :concepts-races:check :gui:check
+./gradlew :rendering-models:check :formats-assets:check :concepts-races:check :gui:check
 # Requires a graphical display; authored data only:
 ./gradlew :gui:racesUiTest
 python3 -m unittest discover -s scripts/ci -p '*_test.py'

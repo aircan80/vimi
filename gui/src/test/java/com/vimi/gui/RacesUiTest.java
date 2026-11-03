@@ -78,6 +78,18 @@ public final class RacesUiTest {
                                                         null));
                                     }
 
+                                    public CompletableFuture<com.vibeminer.concepts.races.RaceMediaTypes.Variants> modelVariants(long raceId, Cancellation token) {
+                                        return CompletableFuture.completedFuture(new com.vibeminer.concepts.races.RaceMediaTypes.Variants(RaceTypes.State.READY,
+                                                List.of(new com.vibeminer.concepts.races.RaceMediaTypes.Variant(1, 0, 1, 1, 1)), List.of(), null));
+                                    }
+                                    public CompletableFuture<com.vibeminer.concepts.races.RaceMediaTypes.Preview> preview(long raceId, long classId, long modelId, Cancellation token) {
+                                        // An authored tetrahedron exercises the renderer without shipping game assets.
+                                        var mesh = new com.vibeminer.rendering.models.PreviewMesh(new float[] {0,0,1, -1,-1,-1, 1,-1,-1, 0,1,-1}, new int[] {0,1,2,0,2,3,0,3,1,1,3,2},
+                                                List.of(new com.vibeminer.rendering.models.PreviewMesh.Part(0,0,12)));
+                                        return CompletableFuture.completedFuture(new com.vibeminer.concepts.races.RaceMediaTypes.Preview(RaceTypes.State.PARTIAL,
+                                                new com.vibeminer.concepts.races.RaceMediaTypes.Variant(1,0,1,1,1), mesh, java.util.Set.of(0), List.of("Authored renderer fixture; no game assets."), false, null));
+                                    }
+
                                     public CompletableFuture<Void> closeAsync() {
                                         closes.incrementAndGet();
                                         return CompletableFuture.completedFuture(null);

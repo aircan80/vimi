@@ -23,7 +23,6 @@ import javafx.scene.image.ImageView;
 import javafx.scene.image.PixelFormat;
 import javafx.scene.image.WritableImage;
 import javafx.scene.layout.BorderPane;
-import javafx.scene.layout.FlowPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
@@ -37,7 +36,8 @@ final class RacesView extends BorderPane implements AutoCloseable {
     private final AsyncIconRequests icons;
     private final ListView<RaceTypes.Race> races = new ListView<>();
     private final CheckBox otherRecords = new CheckBox("Include other race records");
-    private final VBox details = new VBox(22);
+    private final VBox details = new VBox(18), racialRail = new VBox(14);
+    private RaceModelPanel modelPanel;
     private final Label status = text("Loading race records…", "muted");
     private BuildRaces bound;
     private List<RaceTypes.Race> catalog = List.of();
@@ -124,6 +124,15 @@ final class RacesView extends BorderPane implements AutoCloseable {
         main.setTop(header);
         main.setMinWidth(0);
         setCenter(main);
+        racialRail.setPadding(new Insets(24, 16, 24, 16));
+        racialRail.getStyleClass().add("race-racial-rail");
+        var railScroll = new ScrollPane(racialRail);
+        railScroll.setFitToWidth(true);
+        railScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        railScroll.setMinWidth(290);
+        railScroll.setPrefWidth(310);
+        railScroll.setMaxWidth(310);
+        setRight(railScroll);
         clear();
     }
 
@@ -203,6 +212,11 @@ final class RacesView extends BorderPane implements AutoCloseable {
     }
 
     private void select(RaceTypes.Race race) {
+        if (modelPanel != null) {
+            modelPanel.close();
+            modelPanel = null;
+        }
+        racialRail.getChildren().setAll(text("Loading racial abilities…", "muted"));
         selected = race.id();
         token.cancel();
         token = new Cancellation();
@@ -239,9 +253,10 @@ final class RacesView extends BorderPane implements AutoCloseable {
 
     private void show(RaceTypes.Overview result, long request) {
         var race = result.race();
-        status.setText(result.state() == RaceTypes.State.PARTIAL
-                ? "Partial client data · readable records are shown"
-                : "Recorded client data · choose a race");
+        status.setText(
+                result.state() == RaceTypes.State.PARTIAL
+                        ? "Partial client data · readable records are shown"
+                        : "Recorded client data · choose a race");
         Label initial =
                 text(race.name().isBlank() ? "?" : race.name().substring(0, 1), "race-initial");
         StackPane badge = new StackPane(initial);
@@ -263,25 +278,6 @@ final class RacesView extends BorderPane implements AutoCloseable {
                                 ? "Lore is unavailable in the readable client data."
                                 : result.lore(),
                         "race-lore");
-        VBox intro = new VBox(18, title, lore);
-        intro.getStyleClass().add("card");
-        FlowPane classes = new FlowPane(10, 10);
-        classes.setAccessibleText("Recorded race and class combinations");
-        for (var entry : result.classes()) {
-            var chip = text(entry.name(), "badge");
-            classes.getChildren().add(chip);
-        }
-        if (result.classes().isEmpty())
-            classes.getChildren()
-                    .add(text("No class combinations are readable for this race.", "muted"));
-        VBox classSection =
-                new VBox(
-                        12,
-                        text("Recorded classes", "h2"),
-                        classes,
-                        text(
-                                "Client combinations do not establish account unlocks or current realm availability.",
-                                "muted"));
         VBox abilities = new VBox(12, text("Racial abilities", "h2"));
         if (result.abilities().isEmpty())
             abilities
@@ -293,14 +289,14 @@ final class RacesView extends BorderPane implements AutoCloseable {
         var wanted = new java.util.HashSet<Long>();
         for (var ability : result.abilities()) {
             StackPane art = new StackPane(text("?", "talent-placeholder"));
-            art.setMinSize(44, 44);
-            art.setPrefSize(44, 44);
-            art.setMaxSize(44, 44);
+            art.setMinSize(30, 30);
+            art.setPrefSize(30, 30);
+            art.setMaxSize(30, 30);
             art.getStyleClass().add("race-ability-icon");
             VBox words =
                     new VBox(
                             7,
-                            text(ability.name(), "h2"),
+                            text(ability.name(), "race-racial-name"),
                             text(
                                     ability.description() == null || ability.description().isBlank()
                                             ? "Description unavailable."
@@ -308,9 +304,9 @@ final class RacesView extends BorderPane implements AutoCloseable {
                                     "race-description"));
             words.setMinWidth(0);
             HBox.setHgrow(words, Priority.ALWAYS);
-            HBox card = new HBox(15, art, words);
+            HBox card = new HBox(9, art, words);
             card.setAlignment(Pos.TOP_LEFT);
-            card.getStyleClass().add("card");
+            card.getStyleClass().add("race-racial-card");
             abilities.getChildren().add(card);
             if (ability.iconFileDataId() != null) {
                 wanted.add(ability.iconFileDataId());
@@ -329,7 +325,14 @@ final class RacesView extends BorderPane implements AutoCloseable {
         for (var issue : result.issues()) evidence.getChildren().add(text(issue, "muted"));
         TitledPane source = new TitledPane("Source details", evidence);
         source.setExpanded(false);
-        details.getChildren().setAll(intro, classSection, abilities, source);
+        if (modelPanel != null) modelPanel.close();
+        modelPanel =
+                new RaceModelPanel(
+                        bound, handles, revisions, revision, race.id(), result.classes());
+        TitledPane lorePanel = new TitledPane("Lore", lore);
+        lorePanel.setExpanded(false);
+        details.getChildren().setAll(title, modelPanel, lorePanel, source);
+        racialRail.getChildren().setAll(abilities);
     }
 
     private void loadIcon(long id, StackPane target, long request) {
@@ -364,8 +367,8 @@ final class RacesView extends BorderPane implements AutoCloseable {
                                                             0,
                                                             pixels.width() * 4);
                                             ImageView image = new ImageView(bitmap);
-                                            image.setFitWidth(44);
-                                            image.setFitHeight(44);
+                                            image.setFitWidth(30);
+                                            image.setFitHeight(30);
                                             image.setPreserveRatio(true);
                                             target.getChildren().setAll(image);
                                         }));
@@ -379,6 +382,15 @@ final class RacesView extends BorderPane implements AutoCloseable {
     }
 
     private void clear() {
+        if (modelPanel != null) {
+            modelPanel.close();
+            modelPanel = null;
+        }
+        racialRail
+                .getChildren()
+                .setAll(
+                        text("Racial abilities", "h2"),
+                        text("Choose a race to inspect its racial abilities.", "muted"));
         details.getChildren()
                 .setAll(
                         text("Choose a race", "h2"),
@@ -393,6 +405,7 @@ final class RacesView extends BorderPane implements AutoCloseable {
         generation++;
         token.cancel();
         icons.close();
+        if (modelPanel != null) modelPanel.close();
     }
 
     private static Label text(String value, String style) {

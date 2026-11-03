@@ -225,6 +225,34 @@ final class M2ReadersTest {
     }
 
     @Test
+    void restSurfaceAdmitsExternalRigWithoutClaimingRigEvaluationAndChecksTopology() {
+        byte[] original = golden("model-274.m2");
+        byte[] external = Arrays.copyOf(original, original.length + 12);
+        System.arraycopy(
+                new byte[] {'B', 'F', 'I', 'D', 4, 0, 0, 0, 1, 0, 0, 0},
+                0,
+                external,
+                original.length,
+                12);
+        var model = M2ModelReader.read(AssetSource.bytes(external)).join();
+        assertNotNull(M2GeometrySkinReader.profileRefusal(model));
+        byte[] skin = golden("skin-274.skin");
+        var rest =
+                M2RestSkinReader.read(AssetSource.bytes(skin), model, null, Cancellation.NONE)
+                        .join();
+        assertEquals(List.of(0, 1, 2), rest.triangleLookup());
+        assertEquals(List.of(2, 0, 1, 3), rest.vertexLookup());
+        assertEquals(1, rest.sections().size());
+        word(skin, get(skin, 16), 4);
+        failure(
+                "MODEL_INVALID",
+                () ->
+                        M2RestSkinReader.read(
+                                        AssetSource.bytes(skin), model, null, Cancellation.NONE)
+                                .join());
+    }
+
+    @Test
     void skinTwoLevelLookupSectionRangesAndRawMaximumChecked() {
         var model = model(274);
         byte[] original = golden("skin-274.skin");

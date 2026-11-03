@@ -261,6 +261,22 @@ public final class M2Types {
         }
     }
 
+    /**
+     * Position/topology proof only; bone palettes, materials, visibility and pose are not
+     * evaluated.
+     */
+    public record RestSkin(
+            Model model,
+            List<Integer> vertexLookup,
+            List<Integer> triangleLookup,
+            List<Section> sections) {
+        public RestSkin {
+            vertexLookup = List.copyOf(vertexLookup);
+            triangleLookup = List.copyOf(triangleLookup);
+            sections = List.copyOf(sections);
+        }
+    }
+
     public record Section(
             int id,
             int level,

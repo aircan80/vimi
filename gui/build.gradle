@@ -24,6 +24,7 @@ dependencies {
     implementation project(':concepts-creatures')
     implementation project(':concepts-talents')
     implementation project(':concepts-races')
+    implementation project(':rendering-models')
     implementation project(':concepts-effects')
     testImplementation testFixtures(project(':builds'))
     testImplementation testFixtures(project(':polestar'))

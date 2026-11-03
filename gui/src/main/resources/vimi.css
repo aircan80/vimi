@@ -185,3 +185,8 @@
 
 .source-refresh-row { -fx-padding: 12; -fx-background-color: #f8faf7; -fx-border-color: #d4dfd9; -fx-border-radius: 5; -fx-background-radius: 5; }
 .source-refresh-name { -fx-font-size: 14px; -fx-font-weight: bold; -fx-text-fill: #213c37; }
+.race-racial-rail { -fx-background-color: #f0f2ec; }
+.race-racial-name { -fx-font-size: 14px; -fx-font-weight: bold; -fx-text-fill: #284a40; }
+.race-racial-card { -fx-background-color: #ffffff; -fx-padding: 12; -fx-background-radius: 6; -fx-border-color: #d5dfd7; -fx-border-radius: 6; }
+.model-preview-viewport { -fx-background-color: #141d1f; -fx-background-radius: 8; }
+.model-preview-controls { -fx-padding: 5 0 10 0; -fx-alignment: center-left; }

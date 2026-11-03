@@ -149,6 +149,19 @@ public final class BuildModels {
                 token);
     }
 
+    /**
+     * Static native positions only; this does not admit rig, pose, visibility or material
+     * semantics.
+     */
+    public CompletableFuture<SkinRead<M2Types.RestSkin>> readRestSkin(
+            ModelRead model, int profile, Cancellation token) {
+        return readSkinCore(
+                model,
+                profile,
+                (source, parsed) -> M2RestSkinReader.read(source, parsed, limits, token).join(),
+                token);
+    }
+
     private <T> CompletableFuture<SkinRead<T>> readSkinCore(
             ModelRead read,
             int profile,

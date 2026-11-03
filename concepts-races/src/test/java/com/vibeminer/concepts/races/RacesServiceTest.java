@@ -90,6 +90,56 @@ final class RacesServiceTest {
                 true);
     }
 
+    @Test
+    void mediaVariantsFollowRecordedForeignKeysAndKeepReadablePartialJoins() {
+        var media =
+                List.of(
+                        table(
+                                101,
+                                "ChrRaceXChrModel",
+                                List.of(
+                                        reference("ChrRacesID", "ChrRaces"),
+                                        reference("ChrModelID", "ChrModel")),
+                                List.of(row(1, "1", "10"), row(2, "1", "11"), row(3, "2", "12"))),
+                        table(
+                                102,
+                                "ChrModel",
+                                List.of(
+                                        reference("DisplayID", "CreatureDisplayInfo"),
+                                        number("Sex")),
+                                List.of(row(10, "20", "1"))),
+                        table(
+                                103,
+                                "CreatureDisplayInfo",
+                                List.of(reference("ModelID", "CreatureModelData")),
+                                List.of(row(20, "30"))),
+                        table(
+                                104,
+                                "CreatureModelData",
+                                List.of(number("FileDataID")),
+                                List.of(row(30, "1234"))));
+        var tables =
+                new MemoryTables()
+                        .add(BUILD, "enUS", media)
+                        .forBuild(BUILD, "enUS", Cancellation.NONE)
+                        .join()
+                        .tables();
+        var service = new RacesService(tables);
+        try {
+            var variants = service.modelVariants(1, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.PARTIAL, variants.state());
+            assertEquals(
+                    List.of(new RaceMediaTypes.Variant(10, 1, 20, 30, 1234)), variants.variants());
+            assertFalse(variants.issues().isEmpty());
+            var unavailable = service.preview(1, 1, 10, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.UNAVAILABLE, unavailable.state());
+            assertTrue(unavailable.message().contains("Build files"));
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
+
     private static List<MemoryTables.FakeTable> fixture() {
         return List.of(
                 table(
