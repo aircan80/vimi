@@ -60,6 +60,7 @@ application {
 
 dependencies {
     api project(':rendering-models')
+    api project(':rendering-world')
     ['lwjgl', 'lwjgl-bgfx'].each {
         implementation "org.lwjgl:${it}:${lwjglVersion}"
         runtimeOnly "org.lwjgl:${it}:${lwjglVersion}:${supportedPlatforms[targetPlatform]}"
