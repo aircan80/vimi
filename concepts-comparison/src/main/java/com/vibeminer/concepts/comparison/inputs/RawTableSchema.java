@@ -87,6 +87,20 @@ public final class RawTableSchema {
             return assessed.size();
         }
 
+        /** Conservative bound used before projecting one row into a reserved source-output page. */
+        public long maximumRetainedBytes(int identityLength) {
+            if (identityLength < 1 || identityLength > 4096) {
+                throw new IllegalArgumentException("Invalid evidence identity length");
+            }
+            long bytes = 8192L + 4L * MAX_ROW_TEXT;
+            for (var cell : assessed) {
+                bytes += 256L + 4L * (5L + cell.name().length() + cell.semantics().length());
+                bytes +=
+                        32L + 4L * (SOURCE.length() + identityLength + cell.name().length() + 512L);
+            }
+            return bytes;
+        }
+
         /**
          * Source identity is explanatory, never part of compared semantics. Overrides preserve
          * native oversized-cell limitations without fabricating an empty text-issue channel.
