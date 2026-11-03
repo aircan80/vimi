@@ -96,7 +96,7 @@ final class RaceAppearance {
                             .append('\n')
                             .append(Blp2Decoder.REVISION)
                             .append(
-                                    "\nstraight-alpha-source-over-nearest-v1\nhuman-orc-tauren-clothing-geosets-v4\n")
+                                    "\nstraight-alpha-source-over-nearest-v1\nhuman-orc-dwarf-tauren-clothing-geosets-v5\n")
                             .append(files.build())
                             .append('\n')
                             .append(files.locale())
@@ -282,9 +282,23 @@ final class RaceAppearance {
             }
             var bindings = new ArrayList<MeshAppearance.Surface>();
             var seen = new java.util.HashSet<Integer>();
+            var sectionBatches = new HashMap<Integer, Integer>();
             for (var batch : skin.skin().batches()) {
+                sectionBatches.merge(batch.sectionIndex(), 1, Integer::sum);
+            }
+            for (var batch : skin.skin().batches()) {
+                boolean dwarf = plan.profile() != RaceAppearanceProfiles.Profile.LEGACY;
+                if (dwarf
+                        && !RaceAppearanceProfiles.dwarfDraw(
+                                plan.profile(),
+                                model.model(),
+                                batch,
+                                facts,
+                                sectionBatches.get(batch.sectionIndex()))) {
+                    continue;
+                }
                 if (batch.textureCount() != 1
-                        || batch.shaderId() != 0
+                        || !dwarf && batch.shaderId() != 0
                         || batch.colorIndex() != -1) {
                     continue;
                 }

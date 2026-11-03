@@ -31,7 +31,11 @@ final class RaceAppearancePlan {
         }
     }
 
-    record Plan(List<Canvas> canvases, List<Layer> layers, List<Item> items) {
+    record Plan(
+            List<Canvas> canvases,
+            List<Layer> layers,
+            List<Item> items,
+            RaceAppearanceProfiles.Profile profile) {
         Plan {
             canvases = List.copyOf(canvases);
             layers = List.copyOf(layers);
@@ -58,10 +62,11 @@ final class RaceAppearancePlan {
             List<String> issues) {
         if (!(raceId == 1 && variant.chrModelId() >= 1 && variant.chrModelId() <= 2)
                 && !(raceId == 2 && variant.chrModelId() >= 3 && variant.chrModelId() <= 4)
+                && !(raceId == 3 && variant.chrModelId() >= 5 && variant.chrModelId() <= 6)
                 && !(raceId == 6 && variant.chrModelId() >= 11 && variant.chrModelId() <= 12)) {
             throw new RacesService.Projection(
                     RaceTypes.State.UNSUPPORTED,
-                    "Static character textures support the narrow Human, Orc and Tauren model pairs.");
+                    "Static character textures support the narrow Human, Orc, Dwarf and Tauren model pairs.");
         }
         var models = schema("ChrModel", token, issues, "CharComponentTextureLayoutID");
         var model = get(models, variant.chrModelId(), token);
@@ -83,8 +88,24 @@ final class RaceAppearancePlan {
                 throw models.unsupported(
                         "Tauren model/layout/sex/fallback differs from the isolated profile");
             }
-            requireTaurenZero(models, model, "ModelFallbackChrModelID", 12);
-            requireTaurenZero(models, model, "TextureFallbackChrModelID", 13);
+            requireCompatibilityZero(models, model, "ModelFallbackChrModelID", 12);
+            requireCompatibilityZero(models, model, "TextureFallbackChrModelID", 13);
+        }
+        var profile = RaceAppearanceProfiles.Profile.LEGACY;
+        if (raceId == 3) {
+            models.field("Sex", true);
+            if (layout != variant.chrModelId() + 102
+                    || variant.sex() != variant.chrModelId() - 5
+                    || models.number(model, "Sex") != variant.sex()) {
+                throw models.unsupported(
+                        "Dwarf model/layout/sex differs from the reviewed profile");
+            }
+            requireCompatibilityZero(models, model, "ModelFallbackChrModelID", 12);
+            requireCompatibilityZero(models, model, "TextureFallbackChrModelID", 13);
+            profile =
+                    variant.sex() == 0
+                            ? RaceAppearanceProfiles.Profile.DWARF_MALE
+                            : RaceAppearanceProfiles.Profile.DWARF_FEMALE;
         }
         var materials = media.data("ChrModelMaterial", 2048, token, issues);
         fields(
@@ -268,7 +289,7 @@ final class RaceAppearancePlan {
             throw new RacesService.Projection(
                     RaceTypes.State.UNSUPPORTED, "Texture recipe exceeds preview bounds.");
         }
-        return new Plan(canvases, recipe, items);
+        return new Plan(canvases, recipe, items, profile);
     }
 
     private void clothing(
@@ -430,9 +451,10 @@ final class RaceAppearancePlan {
         }
     }
 
-    // This is a compatibility-zero gate for this exact Tauren profile, not general name admission.
+    // This is a compatibility-zero gate for these exact Tauren/Dwarf profiles, not general name
+    // admission.
     // The selected Classic layout declares these two logical signed32 slots at flattened12/13.
-    private static void requireTaurenZero(
+    private static void requireCompatibilityZero(
             RacesService.Data models, Db2Types.Row model, String name, int ordinal) {
         var fields =
                 models.schema.columns().stream()
@@ -442,7 +464,8 @@ final class RaceAppearancePlan {
                 || !models.schema.layoutHashes().equals(List.of("03FAB755"))
                 || fields.size() != 1
                 || models.index(name) != ordinal) {
-            throw models.unsupported("Tauren compatibility slot differs from the reviewed layout");
+            throw models.unsupported(
+                    "Character compatibility slot differs from the reviewed layout");
         }
         var field = fields.getFirst();
         var column = models.columns.get(ordinal);
@@ -458,7 +481,7 @@ final class RaceAppearancePlan {
                 || column.narrowing() != null
                 || !models.text(model, name).equals("0")) {
             throw models.unsupported(
-                    "Tauren compatibility slot must retain its exact recorded zero");
+                    "Character compatibility slot must retain its exact recorded zero");
         }
     }
 
