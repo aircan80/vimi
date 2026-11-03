@@ -10,13 +10,13 @@ from publish_prerelease import PLATFORMS, SUFFIXES, validate
 
 class VersionTest(unittest.TestCase):
     def test_channel_versions_are_ordered_and_numeric(self):
-        self.assertEqual('0.1.1', version('v0.1.0-alpha.1'))
-        self.assertEqual('0.1.301', version('v0.1.0-beta.1'))
-        self.assertEqual('0.1.601', version('v0.1.0-rc.1'))
-        self.assertEqual('0.1.1001', version('v0.1.1-alpha.1'))
+        self.assertEqual('1.1.1', version('v0.1.0-alpha.1'))
+        self.assertEqual('1.1.301', version('v0.1.0-beta.1'))
+        self.assertEqual('1.1.601', version('v0.1.0-rc.1'))
+        self.assertEqual('1.1.1001', version('v0.1.1-alpha.1'))
 
     def test_stable_and_invalid_installer_versions_are_rejected(self):
-        for tag in ['v1.0.0', 'v01.0.0-alpha.1', 'v0.1.0-alpha.0', 'v0.1.0-alpha.300', 'v256.0.0-alpha.1', 'v0.0.66-rc.1']:
+        for tag in ['v1.0.0', 'v01.0.0-alpha.1', 'v0.1.0-alpha.0', 'v0.1.0-alpha.300', 'v255.0.0-alpha.1', 'v0.0.66-rc.1']:
             with self.subTest(tag=tag), self.assertRaises(ValueError):
                 version(tag)
 

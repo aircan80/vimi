@@ -26,9 +26,10 @@ def version(tag):
     major, minor, patch, channel, serial = match.groups()
     # Native installers need numeric components; retain exact semantic tag in app metadata.
     build = int(patch) * 1000 + {"alpha": 0, "beta": 300, "rc": 600}[channel] + int(serial)
-    if int(major) > 255 or int(minor) > 255 or int(serial) >= 300 or build > 65535:
+    if int(major) >= 255 or int(minor) > 255 or int(serial) >= 300 or build > 65535:
         raise ValueError("Version exceeds native installer limits")
-    return f"{int(major)}.{int(minor)}.{build}"
+    # macOS rejects a zero first component; offset it consistently on every OS.
+    return f"{int(major) + 1}.{int(minor)}.{build}"
 
 
 def target():

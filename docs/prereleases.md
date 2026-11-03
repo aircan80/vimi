@@ -3,9 +3,10 @@
 Every published desktop version is a **GitHub prerelease**, not a stable release.
 The cadence starts after the World explorer and continues after each major feature.
 Tags use `v0.1.0-alpha.1` (or a later alpha/beta/rc sequence). Native installers use
-numeric versions: patch×1000 + channel offset + sequence, where alpha=0, beta=300,
+numeric versions: the first component is semantic major+1 (macOS requires a
+positive first component), the second is semantic minor, and the third is patch×1000 + channel offset + sequence, where alpha=0, beta=300,
 rc=600 and sequence is1–299. The exact semantic tag appears in the app title and
-package manifest. For example alpha.1 installs as0.1.1.
+package manifest. For example v0.1.0-alpha.1 installs as1.1.1.
 
 Artifacts include Java25, JavaFX, SQLite, the application/dependencies and license
 notices. Windows has a per-user MSI installer and portable ZIP; macOS has DMG and
