@@ -190,12 +190,14 @@ public final class PreparedEffectRowsSource implements SortedComparisonInput.Sou
                     "unknown-key-status-count",
                     Long.toString(keys.values().stream().filter(Objects::isNull).count()));
             token.check();
-            var dependencies = new TreeMap<>(endpoint.dependencies());
+            var dependencies = new TreeMap<String, String>();
             dependencies.putAll(provenance);
             dependencies.put("effects.endpointSession", endpoint.sessionId());
             dependencies.put("effects.side", side.name());
             dependencies.put("effects.graph", graphIdentity);
-            dependencies.put("effects.source", receipt.sourceIdentity());
+            dependencies.put(
+                    "effects.sourceHash",
+                    sha256(receipt.sourceIdentity().getBytes(StandardCharsets.UTF_8)));
             dependencies.put("effects.content", stamp.contentKey());
             descriptor =
                     new ComparisonTypes.Descriptor(
