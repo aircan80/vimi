@@ -454,6 +454,8 @@ public final class EffectsStageCodec {
             throw new IllegalArgumentException("Unqualified link has no route key");
         }
         Long ref = reference(facts);
+        // Partition0 is private ordering only. The join always reads the original signed
+        // reference from source facts; a biased token must never become an effect lookup ID.
         return (ref == null || ref <= 0 ? "0" : "1")
                 + ownKey(ref == null ? 0 : ref <= 0 ? ref - Integer.MIN_VALUE : ref)
                 + linkKey(identity);

@@ -312,14 +312,39 @@ per endpoint per source. Limits produce typed incomplete scope. Native parser,
 prepared bootstrap and decompressor allocations remain separately documented; this
 is not a32MiB whole-process promise.
 
-For each bridge endpoint, stage links sorted by `(effectReference, linkKey)` and
-stage effect rows by own EffectID. Merge with one current effect and one current
+For each endpoint, first stage every captured dependency by unsigned own row ID,
+so duplicate own link IDs are rejected even when their parents/references differ.
+For each bridge endpoint, stream that sorted link source into a charged routing
+spool, then externally sort links by `(effectReference, linkKey)` and keep effect
+rows sorted by own EffectID. Merge with one current effect and one current
 link, streaming all links for an effect; do not collect a fan-out group. Negative
 or zero references bypass lookup with explicit unresolved state. Preserve each
 link's parent/key and separately sourced target facts. Then externally sort
 candidates by the final relation key. Direct mode projects each ItemEffect row
 once without a self-join. No in-memory whole-table map, per-parent nested array,
 SQL relation index or per-link normal get call is allowed.
+
+The routing pass holds a borrowed14MiB source reader,8MiB codec,3MiB projector
+and1MiB snapshot (26MiB); close its reader/leases before sorting the successor.
+The typed spool sorter source uses its caller's existing4MiB combined frame,
+preflight/decode and returned-record allowance. It must not call a standalone or
+borrowed14MiB input reader inside the24MiB sorter. Preflight frame structure and
+classified allocation size before constructing decoded records. Candidate output
+is similarly sorted by final link key only after join heads/leases close, then
+streamed into the sealed final input. All passes remain sequential and charged.
+
+An explicit `SortedComparisonInput.KeyPolicy` overload admits only UNSIGNED_ID
+(the unchanged default), EFFECT_ROUTE or EFFECT_LINK. Effects policies require a
+matching `comparison.keyPolicy` dependency and effects-private-route-v1 or
+effects-private-link-v1 namespace; no generic comparator or key-derived mode.
+Route keys have62 ASCII characters: partition0/1,20-digit routing token, B,
+20-digit positive signed32 parent and20-digit unsigned32 own ID. Partition1 uses
+a positive signed32 reference. Partition0 uses a private token0..2147483648 for
+unknown/nonpositive references; a biased negative token is **not an ID**, never
+becomes a lookup key, and never replaces the original signed reference/state in
+source facts. Final keys have41 characters: B/D, parent20, own20. Every ingress,
+merge/write and sorted read validates the immutable selected policy, component
+ranges and strict lexical order. Default callers retain unsigned32 key validation.
 
 Retain unreferenced effect rows only in their charged dependency spool until the
 join drains; do not turn them into invented item links. A missing/unavailable
