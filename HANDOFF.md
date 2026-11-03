@@ -1,5 +1,38 @@
 # vimi development handoff
 
+## Current World reliability and parallel work — 2026-11-03
+
+Alpha.15 is verified published at8616b49 (run41723765100, explicit prerelease,
+18 assets). The current immutable launcher is
+`.local/apps/terrain-8616b49/bin/vimi-gui-prototype`; never overwrite running JARs.
+
+Urgent user report: terrain disappears after moving, remains missing when stopped,
+and returns when moving back. Five actual neighboring ADTs establish filename X
+tracks native X and filename Y tracks native Y. WorldView had these camera lookup
+axes swapped, loading/retaining the wrong neighborhood. The 2D continent grid
+remains correctly transposed: filename Y horizontally, X vertically.
+Production fix73ba6c6 in `/tmp/vimi-world-streaming-navigation` also adds Space as
+an ascent alias for E (Q descends; E+Space does not double speed). Independent
+asymmetric traversal/key-input tests are in progress. Empty/unavailable map
+feedback8980e5b is reviewed and integrated as6cc2b10; no parser profile widening.
+Integrated `:gui:check` passes. Review/FX/hosted checks still gate release.
+
+Parallel agents: `/tmp/vimi-world-minimap` design7b6d66a provides a top-right
+north-up player-centered minimap from recorded minimap IDs, bounded asynchronous
+3×3 artwork and visible loading/fallback; implementation is underway. Larger
+view-distance work is at bounded distance-LOD design/spike, not implemented.
+Terrain textures remain a separate future feature; height shading is current.
+
+Dwarf appearance implementation f2690da+119a1f8 and proofs fab6b18 are ready in
+`/tmp/vimi-race-dwarf-implementation`, pending integration and own prerelease.
+Item-effects comparison through6acaa98 is implemented and independently reviewed
+in `/tmp/vimi-item-effects-design`, pending final integration/release checks.
+Packaged GPU qualification parent91502d3 is preserved in
+`/tmp/vimi-gpu-qualification`; provenance384e5eb is separately approved in
+`/tmp/vimi-gpu-qualification-app`. Exact fixture catalog/native runtime are not
+approved or implemented; parent fails closed without them. Actual Metal/D3D
+hardware qualification remains outstanding. Keep every roadmap release separate.
+
 ## Continuous parallel delivery instruction
 
 The user explicitly says keep going without stopping, develop independent items
