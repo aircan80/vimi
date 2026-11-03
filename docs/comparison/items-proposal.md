@@ -414,27 +414,115 @@ one TempBudget, whose authoritative cap may shorten/refuse work):
 
 | Phase | Heavy metadata / canonical work | Required release |
 | --- | --- | --- |
-| Capture A Item | At most one captured schema/profile metadata reservation4MiB; compact compile output≤64KiB; sorter chunks/reservations within remaining budget (up to24MiB only if raw row/codec/index reservations also fit32MiB). | Seal sorted source; close/drain capture; drop whole receipt/schema/raw profile before opening another dependency. |
+| Capture A Item | Hold the1MiB compact snapshot owner; at most one heavy schema/profile reservation4MiB; compact compile output≤64KiB within that owner; sorter chunks/reservations within remaining budget (up to22MiB only if raw row/projection/codec/index reservations also fit32MiB). | Seal sorted source; close/drain capture; drop whole receipt/schema/raw profile before opening another dependency. |
 | Capture A Sparse | Same single-heavy-profile rule, plus only compact A Item metadata. | Seal source; close/drop its heavy metadata. |
-| Join A | No live source schema profiles; two bounded reader heads/pages plus output/codec/index under shared32MiB. Compact A profiles only. | Seal candidate joined A; delete consumed A Item/Sparse source runs only after successor seal. |
+| Join A | No live heavy source schema profiles; two bounded reader heads/pages plus output/codec/index under shared32MiB. Compact A profiles stay inside the held1MiB owner. | Seal candidate joined A; delete consumed A Item/Sparse source runs only after successor seal. |
 | Capture B Item, then B Sparse | Repeat single-heavy-profile capture; retained A candidate and all old/new files consume disk, not unbounded memory. Retain at most four compact64KiB profiles total. | Drop each heavy capture before the next; independently admit each compact source pair when B counterpart is available. |
-| Join B | Same bounded merge; A candidate remains on disk. | Seal B; delete consumed B source runs after seal. Finalize the paired field mask; no rows are called semantic changes before this gate. |
-| Compare candidates | Core/adapter source-page, normalization, codec and sparse-index reservations share32MiB; compact profiles/dictionaries count too. Both candidate streams and findings count toward512MiB. | Release exhausted pages before replacements; drain inputs/core and delete all scratch on close/failure. |
+| Join B | Same bounded merge with held1MiB metadata owner; A candidate remains on disk. | Seal B; delete consumed B source runs after seal. Finalize the paired field mask; no rows are called semantic changes before this gate. |
+| Compare candidates | Use the Items core memory plan below: two12MiB input leases,3.5MiB codec,0.5MiB index plus the held1MiB source-snapshot metadata reservation =29MiB. Both candidates/findings share512MiB disk. | Release exhausted pages before replacements; retain metadata through paging; drain core/inputs before releasing metadata on close. |
 
 This schedule **never retains four4MiB profiles beside a24MiB sorter**. Compiled
 SourceProfile must not retain an indirect reference back to a receipt/schema/
-CapturedRows handle. Do not open both heavy source receipts before a24MiB capture
+CapturedRows handle. Do not open both heavy source receipts before the Items22MiB capture
 sort, or retain all four receipts until final pair admission. A paired-source
 alternative is allowed only with smaller reserved sort buffers and the same total
 cap; it is not permission to assume free metadata.
 
 Before source-sort startup, reserve and validate the heavy comparison metadata
 profile within4MiB. If it cannot fit, publish a typed LIMITED source capability
-and close/drop that capture; do not start a24MiB sorter beside uncapped retained
+and close/drop that capture; do not start the Items sorter beside uncapped retained
 metadata. Native parser/reader metadata allocations retain their separately
 stated limits; this reservation is not a whole-source/whole-process heap claim.
 Compact profiles expose a conservative retained-size estimate for caller budget
 charging, and family/source shape admission is complete before candidate projection.
+
+### Retained metadata and the Items core memory plan
+
+The current core's default scan plan consumes32MiB (two14MiB input leases,
+3.5MiB codec and0.5MiB index); its result reader reserves31.5MiB alongside the
+0.5MiB index. **That default is not admissible with retained Items metadata.**
+The implementation prerequisite is an explicitly validated Items memory-plan
+overload, not an assumption that small profiles are free or TempBudget will
+somehow accommodate both. Existing no-metadata inventory/raw callers retain the
+default behavior; Items composition must select the plan below.
+
+One `SourceSnapshotCompactMetadata` owner reserves a fixed **1MiB** from the
+pair's existing TempBudget before creating compact source profiles/dictionaries.
+It owns all four≤64KiB profiles (≤256KiB combined), the at-most-four stamp entries,
+the≤256selected binding dictionary entries, paired masks/omissions/descriptors
+and their conservative container/string overhead. These share the same1MiB pool;
+they are not extra uncharged allocations or a fresh pool per endpoint. The compact
+metadata estimate must fit before admission/growth; excess is typed LIMITED,
+not silently reduced provenance. Heavy source schemas/receipts are separately
+charged during capture and dropped after sealing.
+
+The snapshot metadata reservation stays live through both comparison **and every
+result-page read**, including after input adapters have exhausted. The comparison
+coordinator owns it; neither an adapter close nor core input-drain may release it
+while the report/details can still use it. On session close, cancel/drain core,
+close inputs and release their references, clear result-view references, then
+release snapshot metadata and the pair budget. No ownership transfers to a new
+persistent store. Already returned immutable pages are caller-owned under the
+existing one-displayed-page UI policy; this remains a component buffer policy,
+not a whole-JVM memory claim.
+
+Proposed `ComparisonService.MemoryPlan.itemsWithSnapshotMetadata()` has fixed,
+validated bounds (a future implementation may expose a carefully validated value
+object rather than this exact factory spelling):
+
+| Reservation / validation | Items policy |
+| --- | --- |
+| Input A and B leases, including adapter read/projection ownership |12MiB each; page canonical-size checks and aggregate retained-input checks use this same plan, never the default14/28MiB constants. Source pages may shorten and LIMIT rather than overrun a lease. |
+| Scan codec workspace |3.5MiB, as current reviewed framing policy. |
+| Sparse result index |0.5MiB, retained through result paging. |
+| Retained source-snapshot metadata |1MiB, owned externally by the coordinator but charged to this exact shared TempBudget. |
+| Scan reservation total |12+12+3.5+0.5+1 = **29MiB**; remaining3MiB is headroom, not permission for untracked buffers. |
+| Result-page workspace |30MiB, replacing the default31.5MiB reservation for this plan. Input/scan codec leases have drained before paging. |
+| Result-page retained-result estimate limit |12MiB, replacing default16MiB for this plan; continuation may shorten a requested100-row page. |
+| Paging reservation total |30+0.5+1 = **31.5MiB**, leaving0.5MiB headroom. Metadata remains charged; no release/reacquire gap to evade accounting. |
+
+Within the30MiB result workspace, plan at most12MiB retained result/delta estimates,
+up to12MiB for the next decoded/classified candidate,≤1MiB framed bytes and5MiB
+for decoder/container/normalization scratch. These are subdivisions of the same
+reservation, not additional reservations. Before implementation approval, retain
+the existing≤1MiB frame/field-count validation and prove its conservative decoded
+candidate+delta bound fits12MiB; reject a candidate with typed LIMIT if the bound
+cannot be met. Incremental decode/estimation must not allocate an unbounded pair
+then discover the limit afterward. Result accounting includes FieldDelta/list/map
+wrappers, not only serialized cell strings. First-row acceptance cannot bypass
+this bound. Paging must use plan-derived limits throughout; merely changing the
+reservation amount while leaving old decoded/retained limits is insufficient.
+
+Composition passes the same TempBudget to source staging, snapshot metadata and
+the core's explicit Items MemoryPlan overload. Validate plan arithmetic with
+checked/subtractive operations; require the active1MiB metadata reservation to
+belong to that budget and be owned by the composed session. A naked claimed
+“external allowance” without the actual reservation is insufficient. Failed
+admission transfers no inputs/metadata ownership. Existing core APIs need not
+gain item DTOs; metadata lifetime remains the coordinator's responsibility.
+
+Capture is adjusted consistently: the Items-only sorter chunk ceiling is22MiB,
+not the raw default24MiB. One4MiB heavy profile +1MiB metadata +22MiB sort chunk
+leaves5MiB for incoming raw row, projected source row, codec and indexes. Suggested
+sub-reservations are≤1MiB each for the first three and≤0.5MiB index/bookkeeping
+(30.5MiB planned total); every actual allocation still obtains its reservation,
+and the sorter reduces its chunk or returns LIMITED if a source needs more.
+There is never a four-profile16MiB hold alongside that sorter. Source parsing/
+RecordFile decompression retain their separately documented source limits.
+
+Mandatory integrated acceptance fixture: construct four compact profiles plus
+stamp/binding/mask/descriptor dictionaries and hold the charged1MiB metadata owner;
+run the real ItemUnionJoin over authored Item/Sparse source spools for both endpoints,
+then the real ComparisonService with the Items plan and shared32MiB TempBudget.
+Verify complete scanning of admitted identities, a sparse known change and partial
+joined facts, and successful result paging **while metadata remains reserved**.
+Exercise enough/larger findings for byte-shortened paging and multiple pages,
+assert metadata is still1MiB after input close, and assert budget peaks≤32MiB
+through scan and paging. Include quota/oversized-candidate refusal, exhausted-page
+turnover, canceled delivery and final reservations/files returning to zero. A
+standalone core test without metadata, a reservation-arithmetic-only test, or a
+fixture that frees metadata before paging does not satisfy this gate. Existing
+no-metadata core fixtures must still pass under the default plan.
 
 A-before-B candidate sealing is safe only because it stores typed source facts
 under a candidate selection, not an asserted final comparable schema. Compact B
@@ -474,9 +562,10 @@ phase/budget ownership, then code must prove:
   field scope versus a particular missing joined row; no-assessable-fields capability.
 - Unknown/limited issue channels, exact row protection only when evidenced, known
   empty names versus unknown placeholders and cell-level LIMITED overrides.
-- Sequential metadata turnover proving one4MiB heavy profile at a time, compact
-  profile retention limits, shared source-sort/join/core reservations, all old/new
-  file bytes charged, and quota failure without an unlimited fallback map/index.
+- Sequential metadata turnover proving one4MiB heavy profile at a time, the held
+ 1MiB compact snapshot reservation and explicit Items core memory plan through
+ scan AND real paging, shared source-sort/join/core reservations, all old/new file
+ bytes charged, and quota failure without an unlimited fallback map/index.
 - Forbidden ordinary item/table APIs and persistent publications; private cleanup
   after canceled capture/join/delivery; stable captured-source identity and honest
   UNKNOWN union membership. A readonly native paired proof follows authored tests.
