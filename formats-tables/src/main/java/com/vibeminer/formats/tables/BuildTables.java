@@ -56,6 +56,14 @@ public interface BuildTables extends AutoCloseable {
                 new UnsupportedOperationException("Saved artifact inventory unavailable"));
     }
 
+    /**
+     * Existing local generated graph only; never repairs, decodes missing tables or acquires data.
+     */
+    default CompletableFuture<CapturedRowsTypes.Capture> capturePreparedLocal(
+            TableTypes.Ref table, Cancellation token) {
+        return CompletableFuture.completedFuture(CapturedRowsTypes.Capture.unsupported());
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override

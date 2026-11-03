@@ -10,7 +10,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
 
-/** Lazy portable record-file rows. Corruption discards the derived node and manifest. */
+/** Lazy portable rows. Ordinary readers repair corruption; prepared-local readers never discard. */
 public final class GeneratedTable {
     public static final int MAX_PAGE_ROWS = RecordFile.MAX_PAGE_RECORDS;
     private final GeneratedTableSource source;
@@ -178,7 +178,8 @@ public final class GeneratedTable {
                                 && cause.getCause() != null) {
                             cause = cause.getCause();
                         }
-                        if (cause instanceof GeneratedStoreException e
+                        if (discard != null
+                                && cause instanceof GeneratedStoreException e
                                 && e.code().equals(GeneratedTypes.CORRUPT)) {
                             try {
                                 discard.apply(token).join();

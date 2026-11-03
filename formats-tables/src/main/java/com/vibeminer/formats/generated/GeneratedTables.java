@@ -155,19 +155,31 @@ public final class GeneratedTables implements GeneratedTableStore {
     @Override
     public CompletableFuture<GeneratedTable> open(
             GeneratedTableSource source, KeyStatus keys, Cancellation token) {
+        return open(source, keys, token, true);
+    }
+
+    @Override
+    public CompletableFuture<GeneratedTable> openPreparedLocal(
+            GeneratedTableSource source, KeyStatus keys, Cancellation token) {
+        return open(source, keys, token, false);
+    }
+
+    private CompletableFuture<GeneratedTable> open(
+            GeneratedTableSource source, KeyStatus keys, Cancellation token, boolean repair) {
         return async(
                 () ->
                         withToken(
                                 token,
                                 t -> {
                                     var lookup = new Lookup(source, keys, false);
-                                    var result = openChain(lookup, t);
+                                    var result = openChain(lookup, t, repair);
                                     return result != null || source.encodingScope() == null
                                             ? result
                                             : openChain(
                                                     new Lookup(
                                                             source, keys, true, lookup.statuses()),
-                                                    t);
+                                                    t,
+                                                    repair);
                                 }));
     }
 
@@ -247,23 +259,30 @@ public final class GeneratedTables implements GeneratedTableStore {
         throw new IllegalStateException("Saved node chain exceeds bound");
     }
 
-    private GeneratedTable openChain(Lookup lookup, com.vibeminer.generated.Cancellation token) {
+    private GeneratedTable openChain(
+            Lookup lookup, com.vibeminer.generated.Cancellation token, boolean repair) {
         List<String> set = List.of();
         for (int step = 0; step < MAX_CHAIN_STEPS; step++) {
             var key = lookup.node(set);
-            var node = readNode(key, lookup, token);
+            var node = readNode(key, lookup, token, repair);
             if (node == null) {
                 return null;
             }
             if (node.keys().equals(set)) {
-                return openFile(lookup, key, set, token);
+                return openFile(lookup, key, set, token, repair);
             }
             if (node.keys().size() > set.size() && node.keys().containsAll(set)) {
                 set = node.keys();
                 continue;
             }
+            if (!repair) {
+                throw corruptCapture("Invalid saved node chain");
+            }
             store.delete(List.of(key), token).join();
             return null;
+        }
+        if (!repair) {
+            throw corruptCapture("Saved node chain exceeds bound");
         }
         store.delete(List.of(lookup.node(List.of())), token).join();
         return null;
@@ -271,6 +290,14 @@ public final class GeneratedTables implements GeneratedTableStore {
 
     private Node readNode(
             GeneratedKey key, Lookup lookup, com.vibeminer.generated.Cancellation token) {
+        return readNode(key, lookup, token, true);
+    }
+
+    private Node readNode(
+            GeneratedKey key,
+            Lookup lookup,
+            com.vibeminer.generated.Cancellation token,
+            boolean repair) {
         var read = store.read(key, token).join();
         if (read.state() == GeneratedTypes.ReadState.ABSENT) {
             return null;
@@ -287,6 +314,9 @@ public final class GeneratedTables implements GeneratedTableStore {
             }
             return node;
         } catch (IllegalArgumentException | NullPointerException e) {
+            if (!repair) {
+                throw corruptCapture("Invalid saved node");
+            }
             store.delete(List.of(key), token).join();
             return null;
         }
@@ -297,12 +327,27 @@ public final class GeneratedTables implements GeneratedTableStore {
             GeneratedKey node,
             List<String> keys,
             com.vibeminer.generated.Cancellation token) {
+        return openFile(lookup, node, keys, token, true);
+    }
+
+    private GeneratedTable openFile(
+            Lookup lookup,
+            GeneratedKey node,
+            List<String> keys,
+            com.vibeminer.generated.Cancellation token,
+            boolean repair) {
         var manifest = manifest(node);
         var open = RecordFile.open(store, manifest, token).join();
         if (open.state() == GeneratedTypes.ReadState.ABSENT) {
+            if (!repair) {
+                throw corruptCapture("Saved graph manifest missing");
+            }
             return null;
         }
         if (open.file() == null) {
+            if (!repair) {
+                throw corruptCapture("Saved graph manifest corrupt");
+            }
             store.delete(List.of(node, manifest), token).join();
             return null;
         }
@@ -319,12 +364,18 @@ public final class GeneratedTables implements GeneratedTableStore {
                 throw new IllegalArgumentException();
             }
         } catch (IllegalArgumentException | NullPointerException e) {
+            if (!repair) {
+                throw corruptCapture("Invalid saved graph metadata");
+            }
             store.delete(List.of(node, manifest), token).join();
             return null;
         }
         for (var segment : file.keys().subList(1, file.keys().size())) {
             if (store.readRange(segment, 0, 1, token).join().state()
                     != GeneratedTypes.ReadState.PRESENT) {
+                if (!repair) {
+                    throw corruptCapture("Saved graph segment unavailable");
+                }
                 discard(node, file, token);
                 return null;
             }
@@ -334,15 +385,21 @@ public final class GeneratedTables implements GeneratedTableStore {
                 node,
                 metadata,
                 file,
-                cancel ->
-                        async(
-                                () ->
-                                        withToken(
-                                                cancel,
-                                                t -> {
-                                                    discard(node, file, t);
-                                                    return null;
-                                                })));
+                !repair
+                        ? null
+                        : cancel ->
+                                async(
+                                        () ->
+                                                withToken(
+                                                        cancel,
+                                                        t -> {
+                                                            discard(node, file, t);
+                                                            return null;
+                                                        })));
+    }
+
+    private static com.vibeminer.generated.GeneratedStoreException corruptCapture(String message) {
+        return new com.vibeminer.generated.GeneratedStoreException(GeneratedTypes.CORRUPT, message);
     }
 
     private void discard(

@@ -46,6 +46,8 @@ final class ClientBuildTables implements BuildTables {
     private final java.util.Set<Cancellation> preloads = new java.util.HashSet<>();
     private boolean closed;
     private int active;
+    private final java.util.Set<CapturedRowsHandle> captures = new java.util.HashSet<>();
+    private final java.util.Set<Cancellation> captureRequests = new java.util.HashSet<>();
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
 
     ClientBuildTables(
@@ -799,6 +801,236 @@ final class ClientBuildTables implements BuildTables {
     }
 
     @Override
+    public CompletableFuture<CapturedRowsTypes.Capture> capturePreparedLocal(
+            TableTypes.Ref ref, Cancellation token) {
+        java.util.Objects.requireNonNull(ref);
+        return captureOperation(
+                token,
+                t -> {
+                    try {
+                        if (!options.localDefinitionsOnly()) {
+                            return captureFailure(
+                                    CapturedRowsTypes.CaptureState.UNSUPPORTED,
+                                    "CAPTURE_LOCAL_DEFINITIONS_REQUIRED");
+                        }
+                        long tableId = id(ref);
+                        if (tableId == 0 || !manifest.containsKey(tableId)) {
+                            return captureFailure(
+                                    CapturedRowsTypes.CaptureState.SCHEMA_UNSUPPORTED,
+                                    "CAPTURE_UNKNOWN_TABLE");
+                        }
+                        String content;
+                        try (var inventory =
+                                files.listContentInventory(
+                                        new FileTypes.FileIdRange(tableId, tableId), t)) {
+                            var candidates = inventory.next(2, t).join();
+                            if (candidates.isEmpty()) {
+                                return captureFailure(
+                                        CapturedRowsTypes.CaptureState.SOURCE_UNAVAILABLE,
+                                        "CAPTURE_NO_LOCAL_SOURCE");
+                            }
+                            if (candidates.size() != 1
+                                    || candidates.getFirst().fileDataId() != tableId) {
+                                return captureFailure(
+                                        CapturedRowsTypes.CaptureState.CORRUPT,
+                                        "CAPTURE_CONTENT_IDENTITY_MISMATCH");
+                            }
+                            content = candidates.getFirst().contentKey();
+                            if (content == null) {
+                                return captureFailure(
+                                        CapturedRowsTypes.CaptureState.SOURCE_UNAVAILABLE,
+                                        "CAPTURE_NO_CONTENT_KEY");
+                            }
+                        }
+                        String layout = generated.savedLayoutOf(content, t).join();
+                        if (layout == null) {
+                            return captureFailure(
+                                    CapturedRowsTypes.CaptureState.NOT_PREPARED,
+                                    "CAPTURE_NO_SAVED_LAYOUT");
+                        }
+                        var definition = resolve(tableId, layout, false, t);
+                        if (definition.state() != TableDefinitions.State.RESOLVED) {
+                            return captureFailure(
+                                    CapturedRowsTypes.CaptureState.SCHEMA_UNSUPPORTED,
+                                    "CAPTURE_NO_LOCAL_DEFINITION");
+                        }
+                        var selection =
+                                definition.definition().document().selectFile(version, layout, t);
+                        if (selection.blocks().size() != 1) {
+                            return captureFailure(
+                                    CapturedRowsTypes.CaptureState.SCHEMA_UNSUPPORTED,
+                                    "CAPTURE_AMBIGUOUS_BLOCK");
+                        }
+                        var block = selection.blocks().getFirst();
+                        var source =
+                                GeneratedTableSource.forBlock(
+                                        block, locale(), content, limits, encodingScope());
+                        var answers = new java.util.LinkedHashMap<String, String>();
+                        var supplied = options.keys().apply(build());
+                        KeyStatus fixed =
+                                name -> {
+                                    if (!answers.containsKey(name)) {
+                                        answers.put(name, supplied.fingerprintOf(name));
+                                    }
+                                    return answers.get(name);
+                                };
+                        var table = generated.openPreparedLocal(source, fixed, t).join();
+                        if (table == null) {
+                            return captureFailure(
+                                    CapturedRowsTypes.CaptureState.NOT_PREPARED,
+                                    "CAPTURE_NO_SAVED_GRAPH");
+                        }
+                        if (!layout.equalsIgnoreCase(table.header().layoutHash())
+                                || !source.equals(table.source())) {
+                            return captureFailure(
+                                    CapturedRowsTypes.CaptureState.CORRUPT,
+                                    "CAPTURE_GRAPH_IDENTITY_MISMATCH");
+                        }
+                        var prepared =
+                                checked(
+                                        tableId,
+                                        content,
+                                        definition,
+                                        table,
+                                        null,
+                                        null,
+                                        table.identity());
+                        var keys =
+                                table.keysUsed().stream()
+                                        .sorted()
+                                        .map(
+                                                name ->
+                                                        new CapturedRowsTypes.KeyFingerprint(
+                                                                name, fixed.fingerprintOf(name)))
+                                        .toList();
+                        var schema =
+                                com.vibeminer.formats.definitions.TableSchema.fromBlock(
+                                        block, definition.match(), WowLocale.parse(locale()));
+                        var receipt =
+                                new CapturedRowsTypes.Receipt(
+                                        build(),
+                                        locale(),
+                                        prepared.entry(),
+                                        schema,
+                                        table.header().columns(),
+                                        definition.definition().sha256(),
+                                        com.vibeminer.formats.generated.ResolvedDefinition.hash(
+                                                block),
+                                        table.identity(),
+                                        source.identityText(),
+                                        source.readerOptions(),
+                                        GeneratedTableSource.READER_REVISION,
+                                        GeneratedTableSource.ROW_ENCODING,
+                                        source.encodingScope(),
+                                        table.rowCount(),
+                                        table.header(),
+                                        table.completion(),
+                                        table.sections(),
+                                        table.holeKeys(),
+                                        keys,
+                                        CapturedRowsTypes.Retention.BEST_EFFORT_INVALIDATING,
+                                        CapturedRowsTypes.Membership.NOT_CERTIFIED);
+                        t.check();
+                        synchronized (gate) {
+                            if (closed) {
+                                return captureFailure(
+                                        CapturedRowsTypes.CaptureState.CANCELED,
+                                        "CAPTURE_PARENT_CLOSED");
+                            }
+                            if (captures.size() >= 8) {
+                                return captureFailure(
+                                        CapturedRowsTypes.CaptureState.SOURCE_UNAVAILABLE,
+                                        "CAPTURE_HANDLE_LIMIT");
+                            }
+                            var handle =
+                                    new CapturedRowsHandle(receipt, table, this::releaseCapture);
+                            captures.add(handle);
+                            active++;
+                            return new CapturedRowsTypes.Capture(
+                                    CapturedRowsTypes.CaptureState.CAPTURED,
+                                    handle,
+                                    null,
+                                    "Prepared local graph; membership is not certified");
+                        }
+                    } catch (Throwable failure) {
+                        Throwable cause = unwrap(failure);
+                        if (cause instanceof java.util.concurrent.CancellationException
+                                || t.isCanceled()) {
+                            return captureFailure(
+                                    CapturedRowsTypes.CaptureState.CANCELED, "CAPTURE_CANCELED");
+                        }
+                        if (cause instanceof UnsupportedOperationException) {
+                            return captureFailure(
+                                    CapturedRowsTypes.CaptureState.UNSUPPORTED,
+                                    "CAPTURE_CAPABILITY_UNSUPPORTED");
+                        }
+                        if (cause
+                                        instanceof
+                                        com.vibeminer.generated.GeneratedStoreException
+                                                generatedFailure
+                                && generatedFailure
+                                        .code()
+                                        .equals(com.vibeminer.generated.GeneratedTypes.CORRUPT)) {
+                            return captureFailure(
+                                    CapturedRowsTypes.CaptureState.CORRUPT,
+                                    "CAPTURE_GRAPH_CORRUPT");
+                        }
+                        return captureFailure(
+                                CapturedRowsTypes.CaptureState.SOURCE_UNAVAILABLE,
+                                "CAPTURE_LOCAL_SOURCE_FAILED");
+                    }
+                });
+    }
+
+    private CompletableFuture<CapturedRowsTypes.Capture> captureOperation(
+            Cancellation caller, Function<Cancellation, CapturedRowsTypes.Capture> action) {
+        java.util.Objects.requireNonNull(caller);
+        var request = new Cancellation();
+        CompletableFuture<CapturedRowsTypes.Capture> future;
+        Cancellation.Registration registration;
+        synchronized (gate) {
+            if (closed) {
+                throw new IllegalStateException("Table handle closed");
+            }
+            registration = caller.onCancel(request::cancel);
+            captureRequests.add(request);
+            future = operation(request, action);
+        }
+        return future.exceptionally(
+                        error ->
+                                captureFailure(
+                                        request.isCanceled()
+                                                ? CapturedRowsTypes.CaptureState.CANCELED
+                                                : CapturedRowsTypes.CaptureState.SOURCE_UNAVAILABLE,
+                                        request.isCanceled()
+                                                ? "CAPTURE_CANCELED"
+                                                : "CAPTURE_LOCAL_SOURCE_FAILED"))
+                .whenComplete(
+                        (value, error) -> {
+                            synchronized (gate) {
+                                captureRequests.remove(request);
+                            }
+                            registration.close();
+                        });
+    }
+
+    private static CapturedRowsTypes.Capture captureFailure(
+            CapturedRowsTypes.CaptureState state, String code) {
+        return new CapturedRowsTypes.Capture(
+                state,
+                null,
+                code,
+                "Prepared-local capture unavailable; no fallback or membership claim");
+    }
+
+    private void releaseCapture(CapturedRowsHandle handle) {
+        synchronized (gate) {
+            captures.remove(handle);
+        }
+        finish();
+    }
+
+    @Override
     public CompletableFuture<List<com.vibeminer.generated.GeneratedKey>> savedArtifacts(
             TableTypes.Ref table, Cancellation token) {
         return operation(
@@ -1102,13 +1334,20 @@ final class ClientBuildTables implements BuildTables {
     public CompletableFuture<Void> closeAsync() {
         boolean close;
         List<Cancellation> stopping;
+        List<CapturedRowsHandle> stoppingCaptures;
         synchronized (gate) {
             closed = true;
-            stopping = List.copyOf(preloads);
+            var stoppingAll = new ArrayList<>(preloads);
+            stoppingAll.addAll(captureRequests);
+            stopping = List.copyOf(stoppingAll);
+            stoppingCaptures = List.copyOf(captures);
             close = active == 0;
         }
         for (var cancellation : stopping) {
             cancellation.cancel();
+        }
+        for (var capture : stoppingCaptures) {
+            capture.closeAsync();
         }
         if (close) {
             files.close();

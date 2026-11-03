@@ -9,6 +9,13 @@ public interface GeneratedTableStore {
     CompletableFuture<GeneratedTable> open(
             GeneratedTableSource source, KeyStatus keys, Cancellation token);
 
+    /** Existing graph only; corrupt cache data must not trigger deletion or rebuilding. */
+    default CompletableFuture<GeneratedTable> openPreparedLocal(
+            GeneratedTableSource source, KeyStatus keys, Cancellation token) {
+        return CompletableFuture.failedFuture(
+                new UnsupportedOperationException("Nonrepair generated graph opening unsupported"));
+    }
+
     CompletableFuture<GeneratedTable> store(
             GeneratedTableSource source,
             KeyStatus keys,

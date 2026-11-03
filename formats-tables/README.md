@@ -157,3 +157,53 @@ it cannot publish a false ready state or remove the underlying table rows.
 Inventory restoration emits `PreloadStage.RESTORING`, separately from downloading
 and preparing. “Tables ready” records completion of the matching preparation pass;
 it does not promise that every stored byte has been rechecked during this open.
+
+## Prepared-local captured rows
+
+`BuildTables.capturePreparedLocal(ref, token)` is an optional capability; other
+implementations default to UNSUPPORTED. Native capture requires
+`TablesOptions.withLocalDefinitionsOnly()` and an already saved generated graph.
+It resolves content identity through the exact-ID `listContentInventory` (never
+`stat`, which can sniff payloads), local definitions and `savedLayoutOf`, then uses the new
+nonrepair `GeneratedTableStore.openPreparedLocal` path. It never calls ordinary
+preparation, direct DB2 decoding, getOrBuild, acquisition or cache repair. Missing
+inputs return typed unavailable/not-prepared results; they are not empty tables.
+Ordinary `GeneratedTables.open` retains its existing repair behavior.
+
+A successful `CapturedRows` holds one exact reader and immutable receipt: build,
+locale, table/content/layout, selected schema/columns and document/block identity,
+graph/source/reader policy, effective key fingerprints, counts and section/hole
+evidence. Key fingerprints can explicitly be unknown; key bytes are not exposed.
+Ownership bookkeeping from an existing build-owned store read is allowed. Capture
+publishes no new comparison reports or two-build catalog ownership.
+
+Use `readOrdinalPage(firstOrdinal, maxRows, token)` starting at zero and follow
+`nextOrdinal`. Requested rows are1–256, but the initial implementation returns at
+most **one raw row** per call to avoid materializing256potentially large rows.
+Row source order is ordinal, not sorted ID order. A returned row is conservatively
+bounded to1MiB with64KiB cells. Oversized cells become empty placeholders with
+explicit `Page.cellIssues` LIMITED annotations; callers must inspect those before
+interpreting cells. Other cells and copy identity survive. A cell issue with
+columnIndex `-1` means the row's original issue channel was limited. Original
+`Row.textIssues == null` remains distinct from an empty issue list, including when
+new byte limits are present. These limits do not bound allocations inside the
+borrowed RecordFile decoder/decompressor, which retains its own source limits;
+they are not a32MiB whole-process memory guarantee.
+
+A held reader is **BEST_EFFORT_INVALIDATING**, never a graph/object retention lease.
+READY and exhaustion leave membership **NOT_CERTIFIED**. Segment disappearance or
+corruption invalidates the handle; subsequent reads report invalidation and never
+reopen/reprepare another graph. Closed/failed pages carry no rows or EOF claim.
+Consumers must inspect page state, not treat any null continuation as success.
+
+Close rejects new work, cancels/drains accepted reads, and releases reader/block
+references. Parent table close also cancels pending capture opens and closes live
+captured handles before closing borrowed files. The shared application library
+remains application-owned. There are at most8live captures per native table handle
+and2pending reads per capture. Cancellation of an individual read does not certify
+absence or discard useful source data. No sorter, semantic comparison adapter,
+persistence, resume or report-publication protocol is supplied by this capability.
+
+Focused offline validation is in `CapturedRowsTest`; the normal
+`./gradlew :formats-tables:check` also verifies existing repair/read behavior and
+Java integration tests.
