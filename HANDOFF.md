@@ -1,5 +1,38 @@
 # vimi development handoff
 
+## Verified alpha.17 publication and terrain-texture continuation
+
+Alpha.17 is verified published atc70e88d (run41739279648), explicit prerelease,
+not draft,18 assets; all five package jobs passed. PR151 is FF-merged. Includes
+persistent race texture/composition activity through accepted frame presentation
+and coalesced terrain neighborhood loading with outgoing-only eviction. Frozen
+local launcher `.local/apps/preview-c70e88d/bin/vimi-gui-prototype` passes UI/native
+24-shader startup smoke. Keep all published tags and frozen JARs immutable.
+
+Independent actual Vulkan boundary comparison uses12 translated copies of one
+private real ADT. Old code had four replacement pauses (658–773ms); new code has
+one (~745ms) and accepts camera-updated frames throughout three held source reads.
+No concurrent children; all exit0. This is one sequential comparison, not a
+universal FPS or zero-gap claim. Private provenance/logs are under
+`/tmp/vimi-world-smooth-native-proof`.
+
+Next visible priority is terrain textures. Draft PR150 / worktree
+`/tmp/vimi-world-appearance-integration` contains approved source foundations,
+validated grids/masks and pure512² BASIC atlas composition. Three real sources
+support768/768chunks and12,288 independent RGBA samples match. Atlases are NOT yet
+attached to the viewport. Shared18-slot source/pool6c95750+ae49e6b implementation
+and native texture annex/rendering design are active separate agent checkpoints.
+No client height-sharpening/PBR claim; no game imagery is committed.
+
+View-distance work stays active: exact native-XY test reference3f8add3 and a
+conservative all-fan-plane interval oracle are the next checked math/API stages.
+Heading-only M2 placement design/tests b23176c+f38ca7b have source evidence;
+full Euler,0x240flags, combined texture/object memory and visible drawing remain
+unapproved. Water source design1789221+96d0969 is approved for a bounded raw owner
+and explicit layout parser only; no water renderer. Packaged diagnostics remain
+preserved/deprioritized. Continue agents in parallel without product permission
+prompts; group ready work into prereleases.
+
 ## Active preview and streaming follow-up
 
 Focused integration `/tmp/vimi-preview-loading-release`, branch
