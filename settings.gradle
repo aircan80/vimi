@@ -37,3 +37,5 @@ include 'concepts-professions'
 include 'concepts-dungeons'
 
 include 'concepts-locations'
+
+include 'concepts-comparison'
