@@ -12,8 +12,11 @@ public final class PackageSmokeTest {
     private PackageSmokeTest() {}
 
     public static void main(String[] args) throws Exception {
-        String ready = "Native runtime: bgfx API156; 8 packaged shader hashes verified";
+        String ready = "Native runtime: bgfx API156; "
+                + com.vibeminer.rendering.bgfx.GpuRuntimeProbe.PACKAGED_SHADER_BLOBS
+                + " packaged shader hashes verified";
         PackageSmoke.checkNativeProbe(new Probe(ready, 0, true), Duration.ofMillis(1));
+        reject(new Probe("Native runtime: bgfx API156; 8 packaged shader hashes verified", 0, true), "unavailable");
         reject(new Probe(ready, 1, true), "unavailable");
         reject(new Probe("Unrelated successful child", 0, true), "unavailable");
         reject(new Probe("x".repeat(65_537), 0, true), "output limit");

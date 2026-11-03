@@ -65,7 +65,9 @@ public final class GpuRuntimeProbe {
                         + Version.getVersion()
                         + ", bgfx API156; compiled backends="
                         + names
-                        + "; 24 packaged shader hashes verified; GPU initialization was not requested");
+                        + "; "
+                        + PACKAGED_SHADER_BLOBS
+                        + " packaged shader hashes verified; GPU initialization was not requested");
     }
 
     static void verifyBackends(String osName, List<Integer> backends) {

@@ -135,7 +135,8 @@ final class PackageSmoke {
                 throw new IllegalStateException("Packaged GPU runtime probe exceeded its output limit");
             String diagnostic = new String(bytes, StandardCharsets.UTF_8);
             if (child.exitValue() != 0 || !diagnostic.contains("bgfx API156")
-                    || !diagnostic.contains("8 packaged shader hashes verified"))
+                    || !diagnostic.contains(com.vibeminer.rendering.bgfx.GpuRuntimeProbe.PACKAGED_SHADER_BLOBS
+                            + " packaged shader hashes verified"))
                 throw new IllegalStateException("Packaged GPU runtime is unavailable: " + diagnostic);
         } finally {
             if (child.isAlive()) {
