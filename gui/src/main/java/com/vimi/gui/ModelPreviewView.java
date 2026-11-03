@@ -43,7 +43,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
 
     ModelPreviewView() {
         viewport.setMinHeight(320);
-        viewport.setPrefHeight(520);
+        viewport.setPrefHeight(420);
         viewport.getStyleClass().add("model-preview-viewport");
         image.setPreserveRatio(true);
         image.fitWidthProperty().bind(viewport.widthProperty());

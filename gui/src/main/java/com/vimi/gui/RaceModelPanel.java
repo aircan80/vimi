@@ -26,6 +26,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
     private final Label state = new Label("Loading model variants…");
     private final ModelPreviewView viewer = new ModelPreviewView();
     private final VBox evidence = new VBox(7);
+    private final RaceVoicePanel voices;
     private Cancellation token = new Cancellation();
     private long generation;
     private boolean closed, initializing = true;
@@ -43,6 +44,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
         this.revisions = revisions;
         this.revision = revision;
         this.raceId = raceId;
+        voices = new RaceVoicePanel(handle, this::stale);
         classes.getItems().setAll(recorded);
         classes.setConverter(
                 new javafx.util.StringConverter<>() {
@@ -92,7 +94,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
         state.setWrapText(true);
         TitledPane source = new TitledPane("Model source details", evidence);
         source.setExpanded(false);
-        getChildren().addAll(choices, state, viewer, source);
+        getChildren().addAll(choices, state, viewer, voices, source);
         handle.modelVariants(raceId, token)
                 .whenComplete(
                         (result, error) ->
@@ -130,6 +132,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
         viewer.clear("Loading static model…");
         var selected = classes.getValue();
         long classId = selected == null ? 0 : selected.id();
+        voices.selection(raceId, classId, model.sex());
         handle.preview(raceId, classId, model.chrModelId(), token)
                 .whenComplete(
                         (result, error) ->
@@ -184,5 +187,6 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
         generation++;
         token.cancel();
         viewer.close();
+        voices.close();
     }
 }

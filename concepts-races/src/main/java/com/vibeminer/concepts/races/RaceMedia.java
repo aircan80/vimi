@@ -322,12 +322,19 @@ final class RaceMedia {
             case "ChrCustomizationGeoset" ->
                     layouts.contains("BF55F2FB")
                             && Set.of("GeosetType", "GeosetID").contains(field);
+            case "EmotesTextSound" ->
+                    layouts.contains("3ECA1BE0")
+                            && Set.of("EmotesTextID", "RaceID", "ClassID", "SexID", "SoundID")
+                                    .contains(field);
+            case "EmotesText" -> layouts.contains("CCDBFBAF") && field.equals("Name");
+            case "SoundKitEntry" ->
+                    layouts.contains("8F82FF7D")
+                            && Set.of("SoundKitID", "FileDataID").contains(field);
             default -> false;
         };
     }
 
-    private RacesService.Data data(
-            String name, int bound, Cancellation token, List<String> issues) {
+    RacesService.Data data(String name, int bound, Cancellation token, List<String> issues) {
         var found = cached.get(name);
         if (found != null) {
             found.issues().forEach(note -> issue(issues, note));

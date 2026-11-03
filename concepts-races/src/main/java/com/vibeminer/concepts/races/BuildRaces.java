@@ -32,6 +32,28 @@ public interface BuildRaces extends AutoCloseable {
                         "Model preview unavailable"));
     }
 
+    default CompletableFuture<RaceVoiceTypes.Catalog> voices(
+            long raceId, long classId, int sex, Cancellation token) {
+        return CompletableFuture.completedFuture(
+                new RaceVoiceTypes.Catalog(
+                        RaceTypes.State.UNAVAILABLE,
+                        "",
+                        java.util.List.of(),
+                        java.util.List.of(),
+                        "Voice data unavailable"));
+    }
+
+    default CompletableFuture<RaceVoiceTypes.Audio> voice(
+            long raceId, long classId, int sex, long entryId, Cancellation token) {
+        return CompletableFuture.completedFuture(
+                new RaceVoiceTypes.Audio(
+                        RaceTypes.State.UNAVAILABLE,
+                        null,
+                        false,
+                        java.util.List.of(),
+                        "Voice playback unavailable"));
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override

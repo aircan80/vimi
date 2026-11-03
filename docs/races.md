@@ -59,8 +59,7 @@ Class selection currently retains the recorded combination but does not invent a
 outfit. The UI explicitly reports that the starting outfit is unavailable. Current
 Forever has no `CharStartOutfit` or `CharSections` table; `CharStartKit` is visual-kit
 data, not equipment, and its original external ID list contains duplicate zero IDs.
-It is not used to fabricate identities or starting gear. Class appearance and voice
-playback remain follow-up work tracked by #104.
+It is not used to fabricate identities or starting gear. Class appearance remains follow-up work tracked by #104.
 
 Read-only current Forever 1.60.1.70707 proof follows Human models 1/2 through displays
 57899/56658 and model records 7661/7599 to M2 files 1011653/1000764 and SKIN files
@@ -69,10 +68,42 @@ No live library changes or installation are needed for this validation. Client m
 assets are not checked into the repository; the screenshot below uses an authored
 geometric fixture.
 
+## Recorded voice previews
+
+The voice selector uses the recorded model sex and class plus the workspace locale.
+`EmotesText.Name` explicitly identifies `JOKE`, `FLIRT`, `CHARGE` and `HEALME`;
+`EmotesTextSound` selects the exact race/sex and generic-or-selected-class rows.
+The reviewed modern `3ECA1BE0` adapter joins `SoundID` to `SoundKitEntry.SoundKitID`
+(the definition retains the historical `SoundEntries` label). This adapter is not
+silently applied to older layouts. Entry reads are filtered by kit and bounded;
+readable PARTIAL rows are accepted. Runtime player conditions, mixing and randomized
+selection are not simulated: each recorded clip can be inspected independently.
+
+Play is explicit; changing selection or closing the workspace stops playback.
+Original voice assets use the normal build-local file/CDN pipeline. Derived signed
+16-bit big-endian PCM is cached by build, locale, source content key and decoder
+revision. Bounds are 2 MiB encoded, mono/stereo, 8–48 kHz and 30 seconds per preview.
+
+`:formats-audio` uses the standalone pure-Java J-Ogg Vorbis decoder. Since its
+internal codebook allocations are not heap bounded by the encoded size, decoding
+runs in a short-lived Java worker with a 64 MiB heap, bounded output and an eight
+second deadline; cancellation terminates that worker. The worker uses the installed
+Java runtime, without FFmpeg or a separately installed codec. Repeated previews
+restore PCM without decoding again. JavaSound releases the output line on stop;
+a machine without supported audio output reports that state in the view.
+
+This software is based on or using the J-Ogg library available from http://www.j-ogg.de and copyrighted by Tor-Einar Jarnbjo.
+
+License and dependency notices ship under `formats-audio/src/main/resources/META-INF`.
+Tests use an authored tone, not game audio. Separate read-only validation against
+current Forever source rows found 16 Human male and 14 female clips across these
+four actions. Actual Joke/Charge assets decoded at 22,050 Hz mono; no live library
+was modified and no sound automatically played during the probe.
+
 ## Validation
 
 ```sh
-./gradlew :rendering-models:check :formats-assets:check :concepts-races:check :gui:check
+./gradlew :formats-audio:check :rendering-models:check :formats-assets:check :concepts-races:check :gui:check
 # Requires a graphical display; authored data only:
 ./gradlew :gui:racesUiTest
 python3 -m unittest discover -s scripts/ci -p '*_test.py'

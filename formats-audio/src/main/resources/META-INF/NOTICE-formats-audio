@@ -1,0 +1,4 @@
+This software is based on or using the J-Ogg library available from http://www.j-ogg.de and copyrighted by Tor-Einar Jarnbjo.
+
+Dependency: com.github.stephengold:j-ogg-vorbis:1.0.6
+Source and license: https://github.com/stephengold/j-ogg-all

@@ -24,6 +24,7 @@ public final class RacesService implements BuildRaces {
             MAX_ABILITIES = 8192;
     private final BuildTables tables;
     private final RaceMedia media;
+    private final RaceVoices voices;
     private final ThreadPoolExecutor worker =
             new ThreadPoolExecutor(
                     1,
@@ -50,6 +51,7 @@ public final class RacesService implements BuildRaces {
             com.vibeminer.generated.GeneratedStore generated) {
         this.tables = Objects.requireNonNull(tables);
         media = new RaceMedia(this, tables, files, generated);
+        voices = new RaceVoices(this, media, tables, files, generated);
     }
 
     @Override
@@ -62,6 +64,18 @@ public final class RacesService implements BuildRaces {
     public CompletableFuture<RaceMediaTypes.Preview> preview(
             long raceId, long classId, long chrModelId, Cancellation token) {
         return submit(token, request -> media.preview(raceId, classId, chrModelId, request));
+    }
+
+    @Override
+    public CompletableFuture<RaceVoiceTypes.Catalog> voices(
+            long raceId, long classId, int sex, Cancellation token) {
+        return submit(token, request -> voices.catalog(raceId, classId, sex, request));
+    }
+
+    @Override
+    public CompletableFuture<RaceVoiceTypes.Audio> voice(
+            long raceId, long classId, int sex, long entryId, Cancellation token) {
+        return submit(token, request -> voices.audio(raceId, classId, sex, entryId, request));
     }
 
     @Override

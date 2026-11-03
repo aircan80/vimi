@@ -90,6 +90,11 @@ public final class RacesUiTest {
                                                 new com.vibeminer.concepts.races.RaceMediaTypes.Variant(1,0,1,1,1), mesh, java.util.Set.of(0), List.of("Authored renderer fixture; no game assets."), false, null));
                                     }
 
+                                    public CompletableFuture<com.vibeminer.concepts.races.RaceVoiceTypes.Catalog> voices(long raceId,long classId,int sex,Cancellation token){
+                                        return CompletableFuture.completedFuture(new com.vibeminer.concepts.races.RaceVoiceTypes.Catalog(RaceTypes.State.PARTIAL,"enUS",
+                                                List.of(new com.vibeminer.concepts.races.RaceVoiceTypes.Clip(101,329,"Authored joke",100,200)),List.of("Authored voice metadata; no recording."),null));
+                                    }
+
                                     public CompletableFuture<Void> closeAsync() {
                                         closes.incrementAndGet();
                                         return CompletableFuture.completedFuture(null);

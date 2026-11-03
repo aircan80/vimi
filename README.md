@@ -222,6 +222,7 @@ consumed with `testImplementation testFixtures(project(':object-store'))`.
 - `concepts-creatures/`: layer 6 creatures, display chains and static appearance evidence.
 - `concepts-talents/`: layer 6 read-only Classic talent trees and prerequisite facts.
 - `concepts-races/`: layer 6 race metadata, recorded class combinations, racial cards and static model projections.
+- `formats-audio/`: bounded isolated Vorbis-to-PCM voice decoding and persisted PCM codec.
 - `rendering-models/`: bounded CPU static-mesh rendering and versioned geometry derivatives, independent of JavaFX/GPU support.
 - `concepts-effects/`: layer 6 item effects, reviewed rules, spell names and definition provenance.
 - `concepts-core/`: shared layer 6 query/cursor rules and bounded reverse relation indexes.

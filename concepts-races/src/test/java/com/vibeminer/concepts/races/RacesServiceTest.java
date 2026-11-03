@@ -41,6 +41,11 @@ final class RacesServiceTest {
 
     private static MemoryTables.FakeTable table(
             long id, String name, List<Field> fields, List<Db2Types.Row> rows) {
+        return table(id, name, fields, rows, "0FC0F0D5");
+    }
+
+    private static MemoryTables.FakeTable table(
+            long id, String name, List<Field> fields, List<Db2Types.Row> rows, String layout) {
         var columns = new ArrayList<Db2Types.Column>();
         var schema = new ArrayList<TableSchema.SchemaColumn>();
         for (var field : fields) {
@@ -73,8 +78,7 @@ final class RacesServiceTest {
                         TableTypes.State.READY,
                         true,
                         null,
-                        new TableTypes.Counts(
-                                rows.size(), rows.size(), 0, 0, "fixture", "0FC0F0D5"),
+                        new TableTypes.Counts(rows.size(), rows.size(), 0, 0, "fixture", layout),
                         "c".repeat(32));
         return new MemoryTables.FakeTable(
                 entry,
@@ -82,7 +86,7 @@ final class RacesServiceTest {
                 rows,
                 new TableSchema(
                         schema,
-                        List.of("0FC0F0D5"),
+                        List.of(layout),
                         TableSchema.SchemaMatch.BUILD,
                         WowLocale.parse("enUS"),
                         null),
@@ -136,6 +140,129 @@ final class RacesServiceTest {
             assertTrue(unavailable.message().contains("Build files"));
         } finally {
             service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
+
+    private static List<MemoryTables.FakeTable> voiceFixture() {
+        return List.of(
+                table(
+                        201,
+                        "EmotesText",
+                        List.of(text("Name")),
+                        List.of(row(329, "JOKE"), row(305, "CHARGE")),
+                        "CCDBFBAF"),
+                table(
+                        202,
+                        "EmotesTextSound",
+                        List.of(
+                                reference("EmotesTextID", "EmotesText"),
+                                reference("RaceID", "ChrRaces"),
+                                reference("ClassID", "ChrClasses"),
+                                number("SexID"),
+                                reference("SoundID", "SoundEntries")),
+                        List.of(
+                                row(1, "329", "1", "0", "0", "100"),
+                                row(2, "305", "1", "2", "0", "101"),
+                                row(3, "329", "1", "0", "1", "102"),
+                                row(4, "329", "2", "0", "0", "103")),
+                        "3ECA1BE0"),
+                table(
+                        203,
+                        "SoundKitEntry",
+                        List.of(reference("SoundKitID", "SoundKit"), number("FileDataID")),
+                        List.of(
+                                row(10, "100", "200"),
+                                row(11, "101", "201"),
+                                row(12, "102", "202"),
+                                row(13, "103", "203")),
+                        "8F82FF7D"));
+    }
+
+    @Test
+    void voicesUseExactRaceSexAndClassWithGenericFallbackAndModernSoundAdapter() {
+        var tables = open(voiceFixture());
+        var service = new RacesService(tables);
+        try {
+            var generic = service.voices(1, 1, 0, Cancellation.NONE).join();
+            assertEquals(
+                    List.of(new RaceVoiceTypes.Clip(10, 329, "Joke", 100, 200)), generic.clips());
+            var specialized = service.voices(1, 2, 0, Cancellation.NONE).join();
+            assertEquals(
+                    List.of("Charge", "Joke"),
+                    specialized.clips().stream().map(RaceVoiceTypes.Clip::action).toList());
+            assertEquals(
+                    202,
+                    service.voices(1, 1, 1, Cancellation.NONE)
+                            .join()
+                            .clips()
+                            .getFirst()
+                            .fileDataId());
+            assertEquals(
+                    RaceTypes.State.UNAVAILABLE,
+                    service.voice(1, 1, 0, 12, Cancellation.NONE).join().state());
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
+
+    @Test
+    void voicePcmRestoreUsesBuildLocaleAndContentBindingWithoutOpeningOriginal() {
+        var tables = open(voiceFixture());
+        var file =
+                new com.vibeminer.files.FileTypes.BuildFile(
+                        200,
+                        null,
+                        com.vibeminer.files.FileTypes.FilePathSource.NONE,
+                        32L,
+                        "d".repeat(32),
+                        com.vibeminer.files.FileTypes.FileFormat.UNKNOWN,
+                        com.vibeminer.files.FileTypes.FileFormatSource.NONE,
+                        com.vibeminer.files.FileTypes.FileStorage.STORED,
+                        false);
+        var files =
+                new com.vibeminer.files.MemoryFiles()
+                        .add(BUILD, "enUS", file, new byte[32], List.of())
+                        .forBuild(BUILD, "enUS", Cancellation.NONE)
+                        .join()
+                        .files();
+        var generated = new com.vibeminer.generated.MemoryGeneratedStore();
+        var key =
+                com.vibeminer.generated.GeneratedKey.hash(
+                        (com.vibeminer.formats.audio.VoiceDecoder.REVISION
+                                        + "\n"
+                                        + BUILD
+                                        + "\nenUS\n"
+                                        + "d".repeat(32))
+                                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        byte[] pcm =
+                com.vibeminer.formats.audio.VoiceDecoder.encodePcm(
+                        new com.vibeminer.formats.audio.PcmClip(22050, 1, new byte[20]));
+        generated
+                .put(
+                        List.of(new com.vibeminer.generated.GeneratedTypes.Put(key, pcm)),
+                        com.vibeminer.generated.Cancellation.NONE)
+                .join();
+        var service = new RacesService(tables, files, generated);
+        try {
+            var result = service.voice(1, 1, 0, 10, Cancellation.NONE).join();
+            assertTrue(result.restored());
+            assertEquals(20, result.clip().bytes().length);
+            generated.delete(List.of(key), com.vibeminer.generated.Cancellation.NONE).join();
+            generated
+                    .put(
+                            List.of(
+                                    new com.vibeminer.generated.GeneratedTypes.Put(
+                                            key, new byte[17])),
+                            com.vibeminer.generated.Cancellation.NONE)
+                    .join();
+            var broken = service.voice(1, 1, 0, 10, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.UNAVAILABLE, broken.state());
+            assertTrue(broken.issues().stream().anyMatch(issue -> issue.contains("repair")));
+        } finally {
+            service.closeAsync().join();
+            files.close();
             tables.closeAsync().join();
         }
     }
