@@ -48,6 +48,12 @@ provenance, cancellation and dependency-ordered cleanup. They do not close #117.
 
 ## Final revision confirmation
 
-Pending final confirmation of the clarification-only revision. No comparison
-implementation has started. Approval of the initial slice does not authorize
-claims about the later adapters or durable functionality.
+Both independent reviewers confirmed **APPROVED** at exact design revision
+`64196bf7d4621a4988177f59e2e0e95fbaaec941` after the clarifications above.
+No blocking findings remain. Foundation/inventory implementation may begin under
+the consolidated contract. This approval does not authorize persistent comparison
+publication, unreviewed semantic adapters, durable resume or closing #117.
+
+This follow-up commit records those confirmations and does not alter the approved
+five design documents or authored SVG. Approval was obtained before comparison
+implementation began.
