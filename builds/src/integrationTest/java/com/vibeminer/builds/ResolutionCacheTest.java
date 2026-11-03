@@ -102,4 +102,72 @@ final class ResolutionCacheTest {
             library.closeAsync().join();
         }
     }
+
+    @Test
+    void projectionSpanningChunksRestoresAndMissingChunkFallsBack() throws Exception {
+        var source = new SyntheticBuild();
+        var options = new BuildOpener.Options();
+        var archive = MetadataFixtures.key(1);
+        var rows = new java.util.ArrayList<com.vibeminer.builds.formats.ArchiveIndex.Entry>();
+        for (int i = 0; i < 300_000; i++) {
+            byte[] key = new byte[16];
+            java.nio.ByteBuffer.wrap(key).putInt(i);
+            rows.add(
+                    new com.vibeminer.builds.formats.ArchiveIndex.Entry(
+                            new com.vibeminer.network.CdnKey(key), 100, i));
+        }
+        var archives = java.util.List.of(archive);
+        var locations =
+                com.vibeminer.builds.formats.ArchiveLocations.build(
+                        java.util.List.of(
+                                new com.vibeminer.builds.formats.ArchiveLocations.Indexed(
+                                        archive, rows)),
+                        java.util.List.of(),
+                        new com.vibeminer.builds.formats.ArchiveLocations.Limits(),
+                        () -> {});
+        var library = ObjectStore.openLibrary(directory.toAbsolutePath()).join();
+        try (var catalog = LibraryCatalog.open(library.databasePath()).join();
+                var cache = new BuildResolutionCache()) {
+            var owner =
+                    library.forOwner(
+                            "test-build",
+                            LibraryCatalog.Scope.BUILD,
+                            "build-indexes",
+                            LibraryCatalog.Role.DERIVED);
+            var storage = new BuildResolutionCache.Storage(owner, owner);
+            cache.save(source.ref, options, archives, locations, storage);
+            cache.drain().join();
+            var restored =
+                    cache.restore(
+                            source.ref,
+                            options,
+                            archives,
+                            storage,
+                            com.vibeminer.access.Cancellation.NONE);
+            assertEquals(300_000, restored.entryCount());
+            assertEquals(
+                    locations.locate(rows.getLast().key()), restored.locate(rows.getLast().key()));
+            var root =
+                    new com.vibeminer.store.ObjectKey(
+                            com.vibeminer.store.ObjectKey.GENERATED,
+                            java.util.Arrays.copyOf(
+                                    BuildResolutionCache.identity(source.ref, options), 16));
+            byte[] manifest = owner.read(root).join().bytes();
+            assertEquals(84, manifest.length);
+            var firstChunk =
+                    new com.vibeminer.store.ObjectKey(
+                            com.vibeminer.store.ObjectKey.GENERATED,
+                            java.util.Arrays.copyOfRange(manifest, 12, 28));
+            owner.delete(java.util.List.of(firstChunk)).join();
+            org.junit.jupiter.api.Assertions.assertNull(
+                    cache.restore(
+                            source.ref,
+                            options,
+                            archives,
+                            storage,
+                            com.vibeminer.access.Cancellation.NONE));
+        } finally {
+            library.closeAsync().join();
+        }
+    }
 }
