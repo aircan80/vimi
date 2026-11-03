@@ -21,6 +21,8 @@ public interface BuildService {
 
     default String historicalPreparation(BuildInfo build) { return null; }
 
+    default BuildDownloads downloads() { return null; }
+
     default BuildPreparation preparation() { return null; }
 
     default BuildOpening opening() { return null; }

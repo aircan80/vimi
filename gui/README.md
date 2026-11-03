@@ -314,3 +314,11 @@ from fresh preparation and include elapsed times.
 `./gradlew :gui:preparationHistoryTest` verifies history across reload, build/locale
 isolation and restoration presentation. The native pipeline integration also
 checks the historical assessment survives reopening the generated store.
+
+## Background Download all
+
+The live Overview now persists **Download all** independently of the selected
+build. One build downloads at a time; others queue. Pause/resume, retry and
+switching back to On demand retain stored content. Active policies resume when
+the application restarts. See [Download all](../docs/download-all.md) for scope,
+lifecycle and focused validation commands.

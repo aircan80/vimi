@@ -24,7 +24,7 @@ import java.util.concurrent.TimeUnit;
 
 import javax.imageio.ImageIO;
 
-/** Display-only authored data review; never opens real stores or user builds. */
+/** Display-only authored data review; optional download fixture uses a temporary store only. */
 public final class OverviewAccountingUiTest {
     private OverviewAccountingUiTest() {}
 
@@ -131,6 +131,49 @@ public final class OverviewAccountingUiTest {
         var ready = job.completion().get(5, TimeUnit.SECONDS);
         if (ready.ready() != BuildPreparation.Ready.TABLES_READY)
             throw new AssertionError(ready.problem());
+        boolean downloadFixture = java.util.Arrays.asList(args).contains("--download-fixture");
+        var temporary =
+                downloadFixture
+                        ? java.nio.file.Files.createTempDirectory("vimi-download-ui-")
+                        : null;
+        var library =
+                downloadFixture
+                        ? com.vibeminer.store.ObjectStore.openLibrary(temporary).join()
+                        : null;
+        var downloads =
+                downloadFixture
+                        ? BuildDownloads.open(
+                                library.databasePath(),
+                                (entry, token, progress) -> {
+                                    progress.accept(
+                                            new com.vibeminer.builds.DownloadAllJobs.Progress(
+                                                    entry.build(),
+                                                    com.vibeminer.builds.DownloadAllJobs.Stage
+                                                            .FETCHING,
+                                                    25000,
+                                                    100000,
+                                                    1L << 30,
+                                                    4L << 30,
+                                                    0,
+                                                    1L << 30));
+                                    var canceled = new CompletableFuture<Void>();
+                                    var registration =
+                                            token.onCancel(() -> canceled.complete(null));
+                                    try {
+                                        canceled.join();
+                                        token.check();
+                                        throw new AssertionError();
+                                    } finally {
+                                        registration.close();
+                                    }
+                                })
+                        : null;
+        if (downloads != null) {
+            downloads.enable(info, route).get(5, TimeUnit.SECONDS);
+            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (downloads.snapshot(info.identity()).state() != BuildDownloads.State.DOWNLOADING
+                    && System.nanoTime() < until) Thread.sleep(10);
+        }
         var started = new CompletableFuture<Void>();
         Platform.startup(() -> started.complete(null));
         started.get(10, TimeUnit.SECONDS);
@@ -143,7 +186,8 @@ public final class OverviewAccountingUiTest {
                                 BuildOverviewView.live(
                                         job,
                                         ignored -> {},
-                                        new Label("Authored accounting fixture"));
+                                        new Label("Authored accounting fixture"),
+                                        downloads);
                         var scroll = new ScrollPane(live.node());
                         scroll.setFitToWidth(true);
                         var scene = new Scene(scroll, 1320, 1100);
@@ -179,7 +223,9 @@ public final class OverviewAccountingUiTest {
                                 "png",
                                 Path.of(
                                                 System.getProperty("java.io.tmpdir"),
-                                                "vimi-accounting-overview.png")
+                                                downloadFixture
+                                                        ? "vimi-download-overview.png"
+                                                        : "vimi-accounting-overview.png")
                                         .toFile());
                         rendered.complete(null);
                     } catch (Throwable failure) {
@@ -193,6 +239,13 @@ public final class OverviewAccountingUiTest {
             System.out.println("Overview accounting authored scene rendered");
         } finally {
             engine.closeAsync().join();
+            if (downloads != null) downloads.closeAsync().get(5, TimeUnit.SECONDS);
+            if (library != null) library.closeAsync().join();
+            if (temporary != null)
+                try (var paths = java.nio.file.Files.walk(temporary)) {
+                    for (var path : paths.sorted(java.util.Comparator.reverseOrder()).toList())
+                        java.nio.file.Files.delete(path);
+                }
             Platform.exit();
         }
     }

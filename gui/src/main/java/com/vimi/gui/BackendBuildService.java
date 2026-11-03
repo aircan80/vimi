@@ -23,6 +23,9 @@ public final class BackendBuildService implements BuildService {
     @Override public CompletableFuture<BuildLoadSnapshot> refreshLoadSnapshot(BuildInfo build) {
         return loadState == null ? CompletableFuture.completedFuture(null) : loadState.refresh(build);
     }
+    private BuildDownloads downloads;
+    BackendBuildService withDownloads(BuildDownloads value) { downloads=value; return this; }
+    @Override public BuildDownloads downloads() { return downloads; }
     private BuildOpening opening;
     private PreparationHistory history;
     BackendBuildService withHistory(PreparationHistory value) {history=value;return this;}

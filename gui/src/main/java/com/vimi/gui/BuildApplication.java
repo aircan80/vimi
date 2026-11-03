@@ -181,6 +181,16 @@ public final class BuildApplication {
                                     indexToken.cancel();
                                     return CompletableFuture.completedFuture(null);
                                 });
+                        var downloads =
+                                BuildDownloads.open(
+                                        library.databasePath(),
+                                        new NativeDownloadRunner(
+                                                library,
+                                                network,
+                                                migration.legacyObjects(),
+                                                accounting,
+                                                directory));
+                        cleanup.addFirst(downloads::closeAsync);
                         var opening = new BuildOpening(contexts::open, state);
                         cleanup.addFirst(opening::closeAsync);
                         token.check();
@@ -192,6 +202,7 @@ public final class BuildApplication {
                                                 () -> closeAll(cleanup))
                                         .withOpening(opening)
                                         .withPreparation(preparation)
+                                        .withDownloads(downloads)
                                         .withLoadState(state)
                                         .withHistory(saved);
                         if (!result.complete(service)) service.closeAsync().join();

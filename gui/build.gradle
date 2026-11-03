@@ -204,3 +204,17 @@ tasks.register('unifiedAccountingRevisionTest', JavaExec) {
     mainClass = 'com.vimi.gui.UnifiedAccountingRevisionTest'
 }
 check.dependsOn unifiedAccountingRevisionTest
+
+tasks.register('downloadPolicyTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.BuildDownloadsTest'
+}
+check.dependsOn downloadPolicyTest
+
+tasks.register('nativeDownloadTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.NativeDownloadIntegrationTest'
+}
+check.dependsOn nativeDownloadTest

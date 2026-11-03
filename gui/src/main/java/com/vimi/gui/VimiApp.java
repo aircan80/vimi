@@ -558,7 +558,7 @@ public final class VimiApp extends Application {
                 var enriched = service.preparation().enrich(job.build(),job.source(),job.locale());
                 preparationFocus = enriched; showPreparedWorkspace(enriched);
             } catch (RuntimeException error) { status.setText(problem(error)); }
-        });
+        }, service.downloads());
         viewedPreparation = job;
         root.setTop(preparedOverviewHeader(job)); root.setCenter(preparationPane);
         status.setText("Prepared data is scoped to this build and locale. Unknown and protected data remain explicit.");

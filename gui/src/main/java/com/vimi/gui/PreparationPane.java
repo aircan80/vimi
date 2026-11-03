@@ -27,6 +27,10 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
 
     public PreparationPane(
             BuildPreparation.Job job, Runnable choose, Runnable release, Runnable enrich) {
+        this(job,choose,release,enrich,null);
+    }
+
+    public PreparationPane(BuildPreparation.Job job, Runnable choose, Runnable release, Runnable enrich, BuildDownloads downloads) {
         this.job = job;
         var navigation = new HBox(4);
         navigation.getStyleClass().add("area-navigation");
@@ -45,7 +49,7 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         var closeButton = new Button("Close build");
         closeButton.setOnAction(event -> release.run());
         liveOverview =
-                BuildOverviewView.live(job, this::show, new HBox(10, cancel, retry, closeButton));
+                BuildOverviewView.live(job, this::show, new HBox(10, cancel, retry, closeButton), downloads);
         overview = liveOverview.node();
         show("Overview");
         clock = new Timeline(new KeyFrame(Duration.millis(250), event -> update()));

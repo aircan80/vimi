@@ -103,11 +103,16 @@ public final class BuildOverviewView {
 
     /** Real Overview using the approved card/grid layout and measured workspace facts only. */
     public static Live live(BuildPreparation.Job job, Consumer<String> navigate, Node preparationControls) {
-        return new Live(job,navigate,preparationControls);
+        return new Live(job,navigate,preparationControls,null);
+    }
+
+    public static Live live(BuildPreparation.Job job, Consumer<String> navigate, Node preparationControls, BuildDownloads downloads) {
+        return new Live(job,navigate,preparationControls,downloads);
     }
 
     public static final class Live {
         private final VBox page=new VBox(18);
+        private final DownloadControls downloadControls;
         private final Label filesValue=text("Not measured","landing-metric"),filesScope=text("","muted"),
                 tablesValue=text("Not measured","landing-metric"),tablesScope=text("","muted"),
                 namesValue=text("Not measured","landing-metric"),namesScope=text("","muted"),
@@ -127,7 +132,8 @@ public final class BuildOverviewView {
         private final Label derivedValue=text("Not measured","value"),derivedScope=text("","muted"),
                 libraryValue=text("Not measured","value"),libraryScope=text("","muted"),
                 retainedStored=text("Not measured","value");
-        private Live(BuildPreparation.Job job,Consumer<String> navigate,Node controls) {
+        private Live(BuildPreparation.Job job,Consumer<String> navigate,Node controls,BuildDownloads downloads) {
+            downloadControls=downloads==null?null:new DownloadControls(downloads,job);
             this.job=java.util.Objects.requireNonNull(job);
             page.setPadding(new Insets(24));
             HBox title=new HBox(16,text("Build overview","h1"),space(),text("LIVE BUILD DATA","badge"));
@@ -155,8 +161,8 @@ public final class BuildOverviewView {
             RadioButton demand=new RadioButton("On demand"),all=new RadioButton("Download all");
             ToggleGroup policy=new ToggleGroup();demand.setToggleGroup(policy);all.setToggleGroup(policy);demand.setSelected(true);all.setDisable(true);
             HBox choices=new HBox(16,demand,all);choices.getStyleClass().add("download-choice");
-            VBox retention=new VBox(14,text("Download & storage","h2"),text("Content downloads on demand. Bulk download is unavailable.","muted"),
-                    choices,text("On demand · media loads as you explore","value"),
+            VBox retention=new VBox(14,text("Download & storage","h2"),text(downloadControls==null?"Content downloads on demand. Bulk download is unavailable.":"Choose background retention of all published encoded variants.","muted"),
+                    downloadControls==null?choices:downloadControls,text(downloadControls==null?"On demand · media loads as you explore":"Bulk downloads continue while you browse other builds and resume after restart.","muted"),
                     liveFact("Stored / published encoded payloads",retainedStored),
                     liveFact("Derived payloads · measured portion",derivedValue),derivedScope,
                     liveFact("Whole library · file lengths",libraryValue),libraryScope,
@@ -177,6 +183,7 @@ public final class BuildOverviewView {
         }
         public Node node(){return page;}
         public void update(BuildPreparation.Snapshot snapshot,boolean namesRunning,String namesProblem) {
+            if(downloadControls!=null) downloadControls.refresh();
             var model=OverviewPresentation.from(snapshot,namesRunning,namesProblem,job.work()==null?null:job.work().accounting());
             apply(filesValue,filesScope,model.files());apply(tablesValue,tablesScope,model.tables());
             apply(namesValue,namesScope,model.names());apply(storedValue,storedScope,model.stored());
