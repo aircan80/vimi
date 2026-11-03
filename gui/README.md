@@ -381,3 +381,15 @@ opt-in UI fixture also uses a fake renderer and needs a display:
 ./gradlew :gui:gpuPreviewServiceTest
 ./gradlew :gui:gpuPreviewUiTest
 ```
+
+The real inline GPU/JavaFX proof uses only authored geometry and private temporary
+files. It requires a working display and Vulkan hardware; it is opt-in:
+
+```sh
+./gradlew :gui:gpuInlineUiProof
+./gradlew :rendering-bgfx:nativeGpuInlineProof
+```
+
+The sidecar proof runs without a display. The JavaFX proof also checks hidden-view
+cleanup, restart and software fallback. These checks do not qualify Metal or
+Direct3D hardware rendering.
