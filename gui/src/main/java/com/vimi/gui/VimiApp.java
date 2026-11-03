@@ -448,7 +448,7 @@ public final class VimiApp extends Application {
                 .filter(b -> !scope.getValue().equals("Community") || b.source() == BuildInfo.BuildSource.COMMUNITY).toList();
         updating = true;
         table.setItems(FXCollections.observableArrayList(visible));
-        if (selected == null && !visible.isEmpty()) selected = visible.getFirst();
+        selected = BuildInfo.visibleSelection(visible, selected);
         table.getSelectionModel().select(selected);
         String code = product.getSelectionModel().getSelectedItem();
         buildsHeading.setText(code == null ? "Choose a product" : productName(code));

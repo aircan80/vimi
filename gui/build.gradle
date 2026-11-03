@@ -347,3 +347,10 @@ tasks.register('locationMapUiTest', JavaExec) {
     mainClass = 'com.vimi.gui.LocationMapUiTest'
     systemProperty 'vimi.uiReviewDirectory', layout.buildDirectory.dir('ui-review').get().asFile.absolutePath
 }
+
+tasks.register('buildSelectionTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.BuildSelectionTest'
+}
+check.dependsOn buildSelectionTest

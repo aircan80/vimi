@@ -40,6 +40,17 @@ public record BuildInfo(
         }
     }
 
+    /** Keep actions bound to a visible row and refresh its latest presentation facts. */
+    static BuildInfo visibleSelection(java.util.List<BuildInfo> visible, BuildInfo previous) {
+        if (visible.isEmpty()) return null;
+        if (previous != null) {
+            for (var candidate : visible) {
+                if (java.util.Objects.equals(candidate.identity(), previous.identity())) return candidate;
+            }
+        }
+        return visible.getFirst();
+    }
+
     public boolean current() {
         return source == BuildSource.CURRENT;
     }
