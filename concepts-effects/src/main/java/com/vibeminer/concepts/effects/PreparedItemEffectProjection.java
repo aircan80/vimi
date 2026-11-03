@@ -308,7 +308,12 @@ public final class PreparedItemEffectProjection {
         if (state == null && raw == null) {
             state = CellState.UNKNOWN;
         }
-        if (state == null && (index == 0 || binding.relation()) && channel != IssueChannel.KNOWN) {
+        if (state == null
+                && (index == 0
+                        || binding.relation()
+                        || binding.source() == SourceKind.BRIDGE && (index == 1 || index == 2)
+                        || binding.source() == SourceKind.DIRECT_EFFECT && index == 10)
+                && channel != IssueChannel.KNOWN) {
             state = channel == IssueChannel.LIMITED ? CellState.LIMITED : CellState.UNKNOWN;
             note(issues, "EFFECT_ISSUE_CHANNEL_UNKNOWN");
         }

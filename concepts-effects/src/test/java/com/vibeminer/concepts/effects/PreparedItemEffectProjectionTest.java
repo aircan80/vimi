@@ -459,6 +459,7 @@ class PreparedItemEffectProjectionTest {
         var legacy = facts(legacyProfile, row(1, "77", "123"));
         assertEquals(IdentityAdmission.UNKNOWN, legacy.identity());
         assertEquals(CellState.UNKNOWN, legacy.cells().get(2).state());
+        assertEquals(CellState.UNKNOWN, legacy.cells().get(1).state());
         var nativeProfile = PreparedItemEffectProjection.compile(s).profile();
         assertEquals(
                 IdentityAdmission.ADMITTED, facts(nativeProfile, row(1, "77", "123")).identity());
@@ -585,5 +586,42 @@ class PreparedItemEffectProjectionTest {
                 PreparedItemEffectProjection.relate(
                         facts(p, row(1, "77", "124")), a.target(), RelationMode.BRIDGE);
         assertFalse(a.identity().equals(b.identity()));
+    }
+
+    @Test
+    void everyActualJoinCellRequiresKnownIssueChannelIncludingInlineEffectReference() {
+        for (var channel : List.of(IssueChannel.UNKNOWN, IssueChannel.LIMITED)) {
+            var bridge = profile(SourceKind.BRIDGE, List.of());
+            var f =
+                    PreparedItemEffectProjection.projectSource(
+                            bridge,
+                            new SourceRow(
+                                    1,
+                                    RowState.PRESENT,
+                                    row(1, "77", "123"),
+                                    channel,
+                                    List.of(),
+                                    PresenceEvidence.unknown()));
+            var expected = channel == IssueChannel.LIMITED ? CellState.LIMITED : CellState.UNKNOWN;
+            for (var cell : f.cells()) {
+                assertEquals(expected, cell.state());
+                assertNull(cell.value());
+            }
+            var direct = profile(SourceKind.DIRECT_EFFECT, List.of());
+            var values = new ArrayList<>(effect(77).values());
+            values.add("123");
+            var d =
+                    PreparedItemEffectProjection.projectSource(
+                            direct,
+                            new SourceRow(
+                                    77,
+                                    RowState.PRESENT,
+                                    new Db2Types.Row(77, false, null, values, List.of()),
+                                    channel,
+                                    List.of(),
+                                    PresenceEvidence.unknown()));
+            assertEquals(expected, d.cells().get(10).state());
+            assertEquals("-42", d.cells().get(7).value());
+        }
     }
 }
