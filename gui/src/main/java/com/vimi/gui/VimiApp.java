@@ -550,7 +550,7 @@ public final class VimiApp extends Application {
         var page = new BorderPane(comparisonView);
         page.setTop(applicationNavigation("Compare"));
         root.setCenter(page);
-        status.setText("Local comparison · Inventory and selected raw table rows. Semantic areas remain pending.");
+        status.setText("Local comparison · Files, table inventory, selected raw rows and recorded Items facts.");
     }
 
     private void leaveComparison(Runnable afterClose) {

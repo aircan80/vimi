@@ -67,3 +67,35 @@ ChrRaces rows from its existing prepared graph. The run completed with uncertifi
 membership and retained uncertainty rather than claiming gameplay changes. Fields
 without a supplied issue channel remain unknown; bounded observed cell evidence
 is available for inspection. No actual game rows or screenshots are committed.
+
+
+## Recorded Items increment A
+
+The assembled comparison module passes 154 unit/adapter tests. Checks include the
+pure metadata plan, actual sort → two-source union → sealed reader → core → every
+byte-shortened findings page while retaining the 1 MiB snapshot allowance. The
+working-buffer policy remains 32 MiB with shared 512 MiB temporary-file accounting.
+Pure projector checks, full GUI checks and authored JavaFX comparison checks pass.
+
+The real SQLite/pack fixture now also rejects an Items run with no assessable
+prepared dependencies, then compares authored Item rows with ItemSparse missing.
+All three qualified IDs, including 4294967295, remain observed; readable counts and
+typed capture outcomes remain inspectable. There is no acquisition, graph repair,
+object write or registry readiness change. Source-qualified conflicts, nullable
+copy/protection certificates, text issues, signed sentinels, partial rows, malformed
+framing, strict IDs and cancellation are covered separately by component fixtures.
+
+An authored empty-findings UI fixture verifies that globally omitted names and
+partial source scope remain available through Coverage details without selecting
+a finding. The committed screenshot contains invented values only.
+
+
+Live Forever 1.60.1.70707 enUS self-comparison completed with 31,982 observed
+IDs from existing partial prepared graphs: Item had 31,982 readable rows and
+ItemSparse had 19,267. The adapter retained readable partial data, source-qualified
+fields and unknown missing-half/text-channel states. It did not infer removals
+from encrypted/excluded sections. Completed candidate/result files totaled about
+383.2 MiB, within the shared 512 MiB policy. This is one Classic build observation,
+not a promise that larger comparisons fit the policy. Actual rows and screenshots
+remain outside the public repository. Closing the live comparison reclaimed all
+candidate/result scratch files and directories.

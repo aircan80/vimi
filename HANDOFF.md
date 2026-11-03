@@ -40,6 +40,12 @@ with18 verified assets and successful release workflow41642730844. Initial ARM
 packaging exposed a test-only inline-callback race; retry passed. Deterministic
 fixture gate fix PR #135 is FF-merged at32fd560 after all platform CI and500 fresh
 fixture stress runs; production code is unchanged. Preserve tag immutability.
+Items increment A has independent full integration approval through0323833,
+154 comparison tests, pure projector/full GUI/authored FX checks and a native
+SQLite/pack proof. Live Forever70707 selfcomparison completed31982 IDs from
+partial Item(31982 readable)/Sparse(19267 readable), with unknown channels/halves
+retained; scratch ~383.2MiB, all reclaimed onclose. Finish Items PR native CI,
+FF merge andalpha.9 prerelease. Do notclaim complete membership/effects/persistence.
 Items integration worktree: /tmp/vimi-items-integration, branch feature/items-comparison.
 Source adapter, compact snapshot/codec and final 12 MiB candidate reader are delegated
 in isolated worktrees; root owns streaming joins and app integration. Metadata must

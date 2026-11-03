@@ -19,20 +19,44 @@ gated; inventory delivery does not complete #117.
 ## Delivered foundation
 
 Open **Compare**, select two locally prepared builds of the same product/locale,
-choose **Files** or **Tables**, and select **Compare local data**. Merely selecting
+choose **Files**, **Tables** or **Items**, and select **Compare local data**. Merely selecting
 endpoints or browsing results starts no acquisition. Missing local inputs explain
 what needs preparation through the ordinary build workflow.
 
 Files assesses content keys and decoded sizes; names and current storage presence
 are unassessed, and membership coverage remains unknown. Tables restores an exact
 cached known-definition preparation inventory with full schemas unassessed. It
-does not compare table rows. Other areas remain explicitly Not implemented.
+does not compare table rows in inventory mode. Explicit raw-table controls compare
+one compatible prepared table. Items compares recorded source-qualified Item and
+ItemSparse facts under the [increment-A contract](items-proposal.md). Other areas
+remain explicitly Not implemented.
 
 Findings are session-only, paged and bounded. Search/status filters apply to the
 current page. Known-equal records are omitted; scanned identities and findings
 are distinct. Coverage reasons and captured dependency evidence are shown.
 Leaving Compare cancels/drains both dedicated sessions before navigation proceeds.
 There is no persistent comparison report or resume capability.
+
+## Recorded Items increment A
+
+Items compares names, quality IDs, classification/inventory type, recorded levels
+and ordered flag words. It preserves qualified Item/ItemSparse conflicts and
+uncertain cells instead of selecting a winner. Membership is uncertified; effects,
+use/equip text, assets and full gameplay semantics remain unassessed. Unsupported
+families appear once in captured scope, including when there are no findings.
+
+Each dependency is captured and externally sorted in sequence. Streaming joins
+retain independent halves, compact metadata remains charged through core scanning
+and every findings page, and final readers use their own 12 MiB plan. No prepared
+cache is repaired and no ordinary per-item service or download path is used.
+Old/custom graphs with null text issue channels remain UNKNOWN. The separate
+[native certificate research](native-issue-certificates-research.md) does not infer
+valid text from old graph labels or aggregate counts.
+
+![Authored Items comparison](../images/comparison-items-authored.png)
+
+The screenshot uses invented data. See [validation](validation.md) and
+[review records](review.md); this increment does not close #117.
 
 ## Product decisions
 

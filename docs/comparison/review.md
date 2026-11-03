@@ -187,3 +187,28 @@ after review; sorted projector inputs already enforce unsigned32 identities.
 The actual authored sort/join/candidate/core/all-pages fixture retains the 1 MiB
 metadata allowance through scanning and paging. Concrete compact metadata/codecs,
 captured adapters and native/UI composition remain separately gated.
+
+
+## Items increment-A integration review
+
+Both reviewers approved compact metadata/codec revision
+`572947cf75f422658d3ea685af8cc20878c799f5` after fixing transactional registration,
+preallocation bounds, full certificates and Unicode boundaries. Architecture
+independently ran comparison checks; domain reviewed the authored fixtures.
+
+Architecture approved assembled integration through
+`03238333a6a56a69427d7705d0f83ce14018cc87`, including the captured source adapter,
+sequential heavy captures, shared quotas, successor-before-input deletion, final
+paired admission and metadata retention through paging/close. Its own reader was
+excluded, with root's separate prerequisite review recorded above. Independent
+comparison, coordinator and native raw/Items checks passed.
+
+Domain independently approved the same integration revision after Coverage details
+were made available without a result selection. It independently reran the native
+SQLite/pack proof. Its authored source adapter was excluded from its approval and
+covered by architecture's independent review. No remaining review blocker is open.
+
+Approval covers recorded increment A, prepared-local inputs and session-only
+findings. Effects, complete membership, persistent reports and native text-issue
+certification remain separate capabilities. Live-data observations and native CI
+are recorded separately; they must not expand this semantic scope.
