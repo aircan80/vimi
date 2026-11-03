@@ -110,10 +110,12 @@ public final class ComparisonTypes {
             Objects.requireNonNull(state);
             Objects.requireNonNull(aspect);
             evidence = List.copyOf(evidence);
-            if (state == ValueState.VALUE && value == null)
+            if (state == ValueState.VALUE && value == null) {
                 throw new IllegalArgumentException("Known value required");
-            if (state != ValueState.VALUE && value != null)
+            }
+            if (state != ValueState.VALUE && value != null) {
                 throw new IllegalArgumentException("Unknown/empty state carries no value");
+            }
         }
     }
 
@@ -162,7 +164,8 @@ public final class ComparisonTypes {
     }
 
     static void require(String value) {
-        if (value == null || value.isBlank())
+        if (value == null || value.isBlank()) {
             throw new IllegalArgumentException("Nonblank identity required");
+        }
     }
 }
