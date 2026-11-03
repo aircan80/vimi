@@ -12,7 +12,7 @@ void main()
     float nearDepth = min(-a.z, min(-b.z, -c.z));
     if (farDepth < 0.5 || nearDepth > 2200.0) {
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-        v_color = vec4(0.0);
+        v_color = vec4_splat(0.0);
         return;
     }
     vec4 selected = a_position.x < 0.5 ? a : (a_position.x < 1.5 ? b : c);
