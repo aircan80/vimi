@@ -130,6 +130,7 @@ public final class WorldService implements BuildWorld {
     private final TerrainAtlasPool atlasPool;
     private WorldTerrainTextureSource terrainTextures;
     private WorldPreparedTerrain preparedTerrain;
+    private WorldTerrainStreaming streamingFacade;
 
     public WorldService(BuildTables tables, BuildFiles files) {
         this(tables, files, null);
@@ -140,6 +141,20 @@ public final class WorldService implements BuildWorld {
         this.tables = java.util.Objects.requireNonNull(tables);
         this.files = files;
         this.minimaps = new WorldMinimaps(files);
+    }
+
+    @Override
+    public synchronized java.util.Optional<WorldTerrainStreaming> terrainStreaming() {
+        if (closing != null) {
+            throw new IllegalStateException("World workspace closed");
+        }
+        if (atlasPool == null || files == null) {
+            return java.util.Optional.empty();
+        }
+        if (streamingFacade == null) {
+            streamingFacade = WorldTerrainStreaming.owned(preparedTerrain());
+        }
+        return java.util.Optional.of(streamingFacade);
     }
 
     /** Internal source-worker factory; the public closed packet bridge is a separate checkpoint. */
@@ -610,6 +625,9 @@ public final class WorldService implements BuildWorld {
             preparedSource = preparedTerrain;
             if (preparedSource != null) {
                 preparedSource.invalidate();
+            }
+            if (streamingFacade != null) {
+                streamingFacade.invalidate();
             }
         }
         Thread.startVirtualThread(

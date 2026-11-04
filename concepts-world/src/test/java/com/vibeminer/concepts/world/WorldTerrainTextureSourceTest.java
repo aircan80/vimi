@@ -178,6 +178,26 @@ class WorldTerrainTextureSourceTest {
         return data.array();
     }
 
+    static void useSixtyFourDiffuseSources(Files files) {
+        var out = new ByteArrayOutputStream();
+        out.writeBytes(part("MVER", ints(18)));
+        out.writeBytes(part("MAMP", ints(0)));
+        int[] ids = new int[64];
+        for (int i = 0; i < ids.length; i++) {
+            ids[i] = 10 + i;
+            files.sources.put((long) ids[i], blp(i % 2 == 0 ? 0xf800 : 0x001f));
+        }
+        out.writeBytes(part("MDID", ints(ids)));
+        out.writeBytes(part("MHID", new byte[64 * 4]));
+        for (int i = 0; i < 256; i++) {
+            var chunk = new ByteArrayOutputStream();
+            chunk.writeBytes(part("MCLY", ints(i % 64, 0, 0, 0)));
+            chunk.writeBytes(part("MCAL", new byte[0]));
+            out.writeBytes(part("MCNK", chunk.toByteArray()));
+        }
+        files.sources.put(3L, out.toByteArray());
+    }
+
     static class Files {
         final Map<Long, byte[]> sources = new ConcurrentHashMap<>();
         final Map<Long, AtomicInteger> stats = new ConcurrentHashMap<>(),

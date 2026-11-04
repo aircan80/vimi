@@ -34,6 +34,353 @@ final class WorldStreamScopesTest {
     private static final WorldFormats.Tile TILE =
             new WorldFormats.Tile(7, 19, 2, 0, 0, 0, 0, 3, 0, 0);
 
+    private static final class MovingTestFile implements AutoCloseable {
+        private java.nio.file.Path owned;
+
+        private MovingTestFile(java.nio.file.Path owned) {
+            this.owned = owned;
+        }
+
+        static MovingTestFile writeNew(java.nio.file.Path path) {
+            boolean created = false;
+            try (var channel =
+                    java.nio.channels.FileChannel.open(
+                            path,
+                            java.nio.file.StandardOpenOption.CREATE_NEW,
+                            java.nio.file.StandardOpenOption.WRITE)) {
+                created = true;
+                var bytes = java.nio.ByteBuffer.wrap(new byte[] {1, 2, 3});
+                while (bytes.hasRemaining()) {
+                    if (channel.write(bytes) <= 0) {
+                        throw new java.io.IOException("No progress");
+                    }
+                }
+                return new MovingTestFile(path);
+            } catch (java.io.IOException | RuntimeException | Error failure) {
+                if (created) {
+                    try {
+                        java.nio.file.Files.deleteIfExists(path);
+                    } catch (java.io.IOException cleanup) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+                if (failure instanceof java.io.IOException io) {
+                    throw new java.io.UncheckedIOException(io);
+                }
+                if (failure instanceof RuntimeException runtime) {
+                    throw runtime;
+                }
+                throw (Error) failure;
+            }
+        }
+
+        synchronized MovingTestFile move() {
+            if (owned == null) {
+                throw new IllegalStateException("File already moved or closed");
+            }
+            var moved = new MovingTestFile(owned);
+            owned = null;
+            return moved;
+        }
+
+        @Override
+        public void close() {
+            java.nio.file.Path path;
+            synchronized (this) {
+                path = owned;
+                owned = null;
+            }
+            if (path != null) {
+                try {
+                    java.nio.file.Files.deleteIfExists(path);
+                } catch (java.io.IOException failure) {
+                    throw new java.io.UncheckedIOException(failure);
+                }
+            }
+        }
+    }
+
+    @Test
+    void publicResourceBorrowPinsSourceCloseWhileMovedFileBecomesIndependentlyOwned(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path scratch) throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var pool = new TerrainAtlasPool();
+        var world = new WorldService(tables.handle(), files.files(), pool);
+        var entered = new CompletableFuture<Void>();
+        var release = new CompletableFuture<Void>();
+        var moved = new java.util.concurrent.atomic.AtomicReference<MovingTestFile>();
+        var path = scratch.resolve("unadvertised.test");
+        try {
+            var source = world.terrainStreaming().orElseThrow();
+            var scope = source.createScope(REQUEST, Cancellation.NONE);
+            var written =
+                    source.prepareAndWrite(
+                            scope,
+                            TILE,
+                            Cancellation.NONE,
+                            (borrow, cancel) -> MovingTestFile.writeNew(path));
+            var callback =
+                    CompletableFuture.runAsync(
+                            () ->
+                                    written.withWrittenResource(
+                                            resource -> {
+                                                entered.complete(null);
+                                                release.join();
+                                                moved.set(resource.move());
+                                            }));
+            entered.get(5, TimeUnit.SECONDS);
+            var closing = world.closeAsync();
+            assertFalse(closing.isDone());
+            assertFalse(written.isOpen());
+            assertTrue(java.nio.file.Files.exists(path));
+            release.complete(null);
+            callback.get(5, TimeUnit.SECONDS);
+            closing.get(5, TimeUnit.SECONDS);
+            assertTrue(java.nio.file.Files.exists(path), "Source R is inert after its file moves");
+            assertEquals(0, pool.stats().leaseClaims());
+            assertThrows(
+                    IllegalStateException.class, () -> written.withWrittenResource(resource -> {}));
+            assertThrows(IllegalStateException.class, () -> written.withPayload(borrow -> {}));
+            moved.get().close();
+            assertFalse(java.nio.file.Files.exists(path));
+            written.close();
+        } finally {
+            release.complete(null);
+            if (moved.get() != null) {
+                moved.get().close();
+            }
+            world.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+            tables.close();
+        }
+    }
+
+    @Test
+    void publicPartialMaterialKeepsNullableCompositionCacheAndExplicitCoverage() throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        files.sources.remove(11L);
+        var tables = new Tables(files);
+        var pool = new TerrainAtlasPool();
+        var world = new WorldService(tables.handle(), files.files(), pool);
+        try {
+            var source = world.terrainStreaming().orElseThrow();
+            var scope = source.createScope(REQUEST, Cancellation.NONE);
+            try (var written =
+                    source.prepareAndWrite(
+                            scope,
+                            TILE,
+                            Cancellation.NONE,
+                            (borrow, cancel) -> {
+                                assertEquals(
+                                        WorldTerrainStreaming.Outcome.TEXTURED,
+                                        borrow.facts().outcome());
+                                assertEquals(
+                                        WorldTerrainTextureSource.State.PARTIAL,
+                                        borrow.facts().materialState());
+                                assertEquals(128, borrow.facts().supportedChunks());
+                                assertTrue(borrow.material().compositionCacheSha256() == null);
+                                assertEquals(1, borrow.material().diffuseCount());
+                                return (AutoCloseable) () -> {};
+                            })) {
+                assertTrue(written.isOpen());
+            }
+        } finally {
+            world.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+            tables.close();
+        }
+    }
+
+    @Test
+    void publicTerrainFacadeExposesActualBoundedFactsAndExpiresAllPayloadAndMaterialViews()
+            throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        WorldTerrainTextureSourceTest.useSixtyFourDiffuseSources(files);
+        var tables = new Tables(files);
+        var pool = new TerrainAtlasPool();
+        var world = new WorldService(tables.handle(), files.files(), pool);
+        var views =
+                new java.util.concurrent.atomic.AtomicReference<
+                        WorldTerrainStreaming.CheckedBorrow>();
+        var materials =
+                new java.util.concurrent.atomic.AtomicReference<WorldTerrainStreaming.Material>();
+        var owners = new ArrayList<WorldTerrainStreaming.WrittenTile<AutoCloseable>>();
+        var retired = new AtomicInteger();
+        try {
+            int captures = tables.captures.get();
+            var source = world.terrainStreaming().orElseThrow();
+            assertTrue(source == world.terrainStreaming().orElseThrow());
+            assertEquals(captures, tables.captures.get());
+            assertEquals(0, files.totalOpens());
+            var scope = source.createScope(REQUEST, Cancellation.NONE);
+            source.activate(scope);
+            for (int i = 0; i < 12; i++) {
+                owners.add(
+                        source.prepareAndWrite(
+                                scope,
+                                TILE,
+                                Cancellation.NONE,
+                                (borrow, cancel) -> {
+                                    views.set(borrow);
+                                    materials.set(borrow.material());
+                                    var facts = borrow.facts();
+                                    assertEquals(7, facts.mapId());
+                                    assertEquals(scope.scopeSha256(), facts.scopeSha256());
+                                    assertEquals(
+                                            1,
+                                            facts.wdt().fileDataId(),
+                                            "Caller MapInfo WDT is not authority");
+                                    assertEquals(2, facts.root().fileDataId());
+                                    assertEquals(
+                                            WorldTerrainStreaming.Outcome.TEXTURED,
+                                            facts.outcome());
+                                    assertEquals(
+                                            WorldTerrainStreaming.Fallback.NONE, facts.fallback());
+                                    assertEquals(
+                                            WorldTerrainStreaming.MapAuthority.COMPLETE_READY,
+                                            facts.mapAuthority());
+                                    assertEquals(256, facts.supportedChunks());
+                                    assertTrue(facts.bounds().minX() <= facts.bounds().maxX());
+                                    assertEquals(
+                                            com.vibeminer.rendering.world.TerrainGeometryFingerprint
+                                                    .sha256(borrow.geometry()),
+                                            facts.geometrySha256());
+                                    assertTrue(borrow.geometry().vertices().isReadOnly());
+                                    assertTrue(borrow.texture().pixels().isReadOnly());
+                                    var material = borrow.material();
+                                    assertEquals(64, material.diffuseCount());
+                                    assertEquals(64, material.compositionCacheSha256().length());
+                                    for (int index = 0; index < 64; index++) {
+                                        var mip = material.diffuse(index);
+                                        assertEquals(10 + index, mip.source().fileDataId());
+                                        assertEquals(32, mip.source().contentKey().length());
+                                        assertEquals(
+                                                WorldTerrainStreaming.DiffuseEncoding.BC2,
+                                                mip.encoding());
+                                    }
+                                    return (AutoCloseable) retired::incrementAndGet;
+                                }));
+                assertThrows(IllegalStateException.class, () -> views.get().geometry());
+                assertThrows(IllegalStateException.class, () -> views.get().facts());
+                assertThrows(IllegalStateException.class, () -> materials.get().diffuseCount());
+            }
+            assertEquals(12L * 34_816, world.preparedTerrain().retainedReceiptBytes());
+            assertEquals(
+                    WorldPreparedTerrain.MAX_OUTPUT_RECEIPT_BYTES,
+                    world.preparedTerrain().retainedReceiptBytes());
+            assertEquals(
+                    34_816,
+                    pool.stats().receiptMetadataBytes(),
+                    "Shared pool receipt is conservatively charged again per output");
+            assertEquals(12, pool.stats().leaseClaims());
+            for (var owner : owners) {
+                owner.close();
+            }
+            assertEquals(12, retired.get());
+            assertEquals(0, world.preparedTerrain().retainedReceiptBytes());
+            for (var type :
+                    List.of(
+                            WorldTerrainStreaming.class,
+                            WorldTerrainStreaming.Scope.class,
+                            WorldTerrainStreaming.WrittenTile.class,
+                            WorldTerrainStreaming.CheckedBorrow.class,
+                            WorldTerrainStreaming.Material.class,
+                            WorldTerrainStreaming.Facts.class)) {
+                for (var constructor : type.getDeclaredConstructors()) {
+                    assertTrue(Modifier.isPrivate(constructor.getModifiers()));
+                }
+            }
+            for (var field : WorldTerrainStreaming.Facts.class.getDeclaredFields()) {
+                assertFalse(
+                        field.getType() == WorldTerrainTextureSource.Receipt.class
+                                || java.util.Collection.class.isAssignableFrom(field.getType())
+                                || field.getType() == WorldFormats.AreaMetadata.class);
+            }
+        } finally {
+            for (var owner : owners) {
+                owner.close();
+            }
+            world.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+            tables.close();
+        }
+    }
+
+    @Test
+    void publicFacadeKeepsCustomProvidersUnsupportedAndRejectsMalformedSelectorsBeforeIo()
+            throws Exception {
+        BuildWorld custom =
+                new BuildWorld() {
+                    public CompletableFuture<WorldService.Catalog> catalog(Cancellation cancel) {
+                        throw new AssertionError("No fallback IO");
+                    }
+
+                    public CompletableFuture<WorldService.Inventory> inventory(
+                            WorldService.MapInfo map, Cancellation cancel) {
+                        throw new AssertionError("No fallback IO");
+                    }
+
+                    public CompletableFuture<WorldService.LoadedTile> tile(
+                            WorldService.MapInfo map, WorldFormats.Tile tile, Cancellation cancel) {
+                        throw new AssertionError("No fallback IO");
+                    }
+
+                    public CompletableFuture<Void> closeAsync() {
+                        return CompletableFuture.completedFuture(null);
+                    }
+                };
+        assertTrue(custom.terrainStreaming().isEmpty());
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var pool = new TerrainAtlasPool();
+        var world = new WorldService(tables.handle(), files.files(), pool);
+        var noMaterials = new WorldService(tables.handle(), files.files());
+        try {
+            assertTrue(noMaterials.terrainStreaming().isEmpty());
+            var source = world.terrainStreaming().orElseThrow();
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            source.createScope(
+                                    new WorldService.MapInfo(-1, null, null, null, null),
+                                    Cancellation.NONE));
+            assertEquals(0, files.totalOpens());
+            assertEquals(0, tables.captures.get());
+            var scope = source.createScope(REQUEST, Cancellation.NONE);
+            int opens = files.totalOpens(), captures = tables.captures.get();
+            for (var xy :
+                    List.of(
+                            new int[] {-1, 1},
+                            new int[] {64, 0},
+                            new int[] {1, -1},
+                            new int[] {0, 64})) {
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () -> {
+                            var forged =
+                                    new WorldFormats.Tile(xy[0], xy[1], 2, 0, 0, 0, 0, 3, 0, 0);
+                            source.prepareAndWrite(
+                                    scope,
+                                    forged,
+                                    Cancellation.NONE,
+                                    (borrow, cancel) -> (AutoCloseable) () -> {});
+                        });
+            }
+            assertEquals(opens, files.totalOpens());
+            assertEquals(captures, tables.captures.get());
+            world.closeAsync().get(5, TimeUnit.SECONDS);
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> source.createScope(REQUEST, Cancellation.NONE));
+        } finally {
+            noMaterials.closeAsync().get(5, TimeUnit.SECONDS);
+            world.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+            tables.close();
+        }
+    }
+
     @Test
     @SuppressWarnings("try")
     void closeRequestsActiveAdmissionCancellationBeforeBlockedOlderOutputCleanup()
