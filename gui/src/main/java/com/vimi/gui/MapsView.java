@@ -39,7 +39,7 @@ final class MapsView extends BorderPane implements AutoCloseable {
                     + " · " + node.id().value();
         }
     }
-    private record Picture(int width, int height, int[] pixels, String details) {}
+    private record Picture(int width, int height, int[] pixels, String details, List<String> diagnostics) {}
     private record Selection(MapNavigationGraph.Regions regions, Picture picture) {}
     private static final class Request {
         final Cancellation token = new Cancellation();
@@ -91,7 +91,7 @@ final class MapsView extends BorderPane implements AutoCloseable {
         this.revision = revision;
         setId("maps-browser");
         back.setId("maps-back"); up.setId("maps-up");
-        status.setId("maps-status"); canvas.setId("maps-canvas");
+        status.setId("maps-status"); details.setId("maps-source-details"); canvas.setId("maps-canvas");
         overlapChoices.setId("maps-overlaps");
         heading.getStyleClass().add("eyebrow");
         picker.setId("maps-picker"); picker.setMaxWidth(500);
@@ -275,7 +275,7 @@ final class MapsView extends BorderPane implements AutoCloseable {
             var token = token();
             try {
                 var area = selectedGraph.regions(id, MapNavigationGraph.MAX_PAIR_TESTS, token::isCanceled);
-                var picture = source == null ? new Picture(0, 0, null, "Map artwork source unavailable.")
+                var picture = source == null ? new Picture(0, 0, null, "Map artwork source unavailable.", List.of("MAP_ARTWORK_SOURCE_UNAVAILABLE"))
                         : picture(source, selectedGraph.scope(), id.value(), token, request, version);
                 token.check();
                 var result = new Selection(area, picture);
@@ -294,7 +294,8 @@ final class MapsView extends BorderPane implements AutoCloseable {
                     details.setText(details.getText().split("\nSelected map:", 2)[0]
                             + "\nSelected map: " + id.value() + " · " + area.children().size()
                             + " child maps · " + area.regions().size() + " assignment rectangles"
-                            + " · " + area.issues().stream().map(i -> i.reason().name()).distinct().limit(8).toList());
+                            + " · " + area.issues().stream().map(i -> i.reason().name()).distinct().limit(8).toList()
+                            + (data.diagnostics().isEmpty() ? "" : "\nArtwork: " + String.join(" · ", data.diagnostics())));
                     draw();
                 });
             } catch (RuntimeException failure) { failure(request, version, source, "Map artwork could not be loaded.", failure); }
@@ -307,24 +308,32 @@ final class MapsView extends BorderPane implements AutoCloseable {
                 || !scope.build().equals(art.build()) || !scope.locale().equals(art.locale()))
             throw new IllegalArgumentException("Map artwork source binding differs");
         if (art.layer() == null || art.tiles().isEmpty()) return new Picture(0, 0, null,
-                art.state() + " · " + art.message());
+                art.state() + " · " + art.message(), art.issues().stream().limit(8).map(MapsView::bounded).toList());
         int width = art.layer().width(), height = art.layer().height();
         if (width < 1 || height < 1 || width > 2048 || height > 2048 || (long) width * height > MAX_PIXELS)
-            return new Picture(0, 0, null, "Map artwork exceeds this browser's image limit.");
+            return new Picture(0, 0, null, "Map artwork exceeds this browser's image limit.", List.of("MAP_IMAGE_LIMIT"));
         int[] pixels = new int[width * height]; java.util.Arrays.fill(pixels, 0xff152332);
         int readable = 0, count = Math.min(MAX_TILES, art.tiles().size());
+        var unavailable = new java.util.LinkedHashSet<String>();
         for (int i = 0; i < count; i++) {
             token.check(); var tile = art.tiles().get(i);
             int completed = i;
             publish(request, version, source, () -> status.setText("Loading map artwork " + completed + "/" + count + "…"));
             MapTypes.TileImage result;
             try { result = source.tile(id, tile.rowId(), token).join(); }
-            catch (java.util.concurrent.CompletionException unavailable) { token.check(); continue; }
+            catch (java.util.concurrent.CompletionException failure) {
+                token.check(); issue(unavailable, "A map tile source request failed."); continue;
+            }
             token.check();
             if (result == null || result.state() != MapTypes.State.READY || !tile.equals(result.tile())
                     || result.image() == null
                     || result.image().state() != com.vibeminer.formats.images.BlpImageTypes.State.READY
-                    || result.image().image() == null) continue;
+                    || result.image().image() == null) {
+                issue(unavailable, result == null ? "Map tile returned no image result."
+                        : !tile.equals(result.tile()) ? "Map tile descriptor differs from its requested source."
+                        : result.message() == null ? "Map tile " + result.state() : result.message());
+                continue;
+            }
             var data = result.image().image();
             if (data.width() < 1 || data.height() < 1 || data.width() > 2048 || data.height() > 2048
                     || (long) data.width() * data.height() > MAX_PIXELS || data.rowStride() != data.width() * 4)
@@ -348,7 +357,14 @@ final class MapsView extends BorderPane implements AutoCloseable {
         return new Picture(width, height, pixels, art.state() + " · " + readable + "/"
                 + art.tiles().size() + " readable artwork tiles"
                 + (art.tiles().size() > MAX_TILES ? " · tile limit reached" : "")
-                + " · " + art.message());
+                + " · " + art.message(), List.copyOf(unavailable));
+    }
+
+    private static String bounded(String text) {
+        return text == null ? "Unavailable source detail" : text.length() <= 160 ? text : text.substring(0, 160) + "…";
+    }
+    private static void issue(java.util.Set<String> issues, String message) {
+        if (issues.size() < 8) issues.add(bounded(message));
     }
 
     private void controls() {

@@ -12,7 +12,7 @@ The user authorized all items below and autonomous continued work, including ove
 | Terrain load allocation | Released alpha.19 | Primitive parser preserves exact geometry/area; cold neighborhood renderer handoff remains |
 | Terrain visual quality | Planned | Higher-resolution GPU material sampling, filtering/mips and qualified blending; no claim of client parity |
 | Cities/buildings/doodads | Active source/design; real WMO root/group/texture proof | Qualified transforms/materials, culling, same-world depth/camera and combined GPU ledger |
-| Dungeons/raids | Active team investigation | Explicit terrain/global-WMO/mixed source modes; first actual instance, interior navigation and safe camera framing |
+| Dungeons/raids | Raw WDT scene facts merged; actual global instance source proofs | Qualified global transforms/materials and scene mode integration; first actual instance, interior navigation and safe camera framing |
 | Water | Source/design preserved | Qualified source/layout and bounded visible rendering |
 | NPC/monster placement | Authorized | Verified spawn coordinate domains, model/display mapping, height/floor/phase provenance, bounded instances; static placement first |
 | Area music | Authorized | Actual area/subzone music relationships, supported playback, transition fades, mute/volume and missing-source state |
@@ -24,7 +24,7 @@ The user authorized all items below and autonomous continued work, including ove
 | Quest/vendor/trainer/flight overlays | Authorized | Source-specific spatial provenance, filters and completeness; no guessed map conversion |
 | Idle animations | Authorized | Qualified animation/skinning and bounded many-model GPU performance; no AI required |
 | Dungeon floor/group/entrance navigation | Authorized | Actual floor/group/entrance evidence; no inferred floors from height alone |
-| Hierarchical Maps browser | Pure model approved; strict navigation facade implemented, review pending | Fresh-source review, artwork alignment, then breadcrumbs/Back/Up/direct picker and activity states |
+| Hierarchical Maps browser | Alpha20 candidate PR158: hierarchy/artwork UI, strict source and actual3-map proof approved | Current-head hosted/package gates and publication; floor/marker overlays remain future |
 | Remaining character models + character-creator screen | Queued after current world milestones; audit started | Complete remaining race/sex rendering profiles, actual customization option catalog/choice vector, WoW-inspired clean creation-style layout |
 
 Character controls should expose supported skin, face, hair style/color, facial hair and other recorded appearance choices, with clear loading/failure states and reset/randomize over valid choices. Do not add inert options or invent HD/SD pairings. This is an asset preview/customizer, not game-account character creation. Independent immersive extras must not indefinitely postpone this character milestone.

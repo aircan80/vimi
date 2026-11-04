@@ -13,6 +13,35 @@ remains the latest verified published prerelease until publication is checked.
 No city/instance/NPC/music/hotstreaming/characterUI feature is claimed delivered.
 
 
+## Overnight continuation — Maps alpha20 candidate
+
+Latest VERIFIED published release is alpha19 source39a42bb, run41775202595,
+all5platform packages/18assets, explicit prerelease. Main additionally FF-merges
+PR156 native selected-table preparation90149dd and PR157 raw WDT scene facts
+ce10829 after independent review and hosted gates. No alpha20 tag exists yet.
+
+PR158/worktree `/tmp/vimi-maps-browser-ui` is the Maps candidate. Source/model,
+strict native bindings/EOF, close and GUI all independently approved through
+source47fb1ba and UI554a574+10f48a2; actualGUIproof passes on06a3b89 with947→1415→1429,
+12/12recordedarttiles each, Back/Up/direct and activity/close. Original library
+read-only, missingartacquiredtoscratch, generatedoverlayonly; seeprivate
+`/tmp/vimi-maps-live-ui-proof/proof-final.log`, noassetsGit. Source-details reasons
+follow-up passes125GUI+authoredUI tasks. Full check/assemble/MapsUI+VulkanWorld proof
+passes468tasks `/tmp/vimi-alpha20-combined-check.log`. Release notes alpha20 ready;
+run current-head hosted gates and five-platform packaging dry run, then FF/main,
+unusedtag and publication verification. Never move tags or overwrite launchers.
+
+Future PR153 streaming integration includes reviewed framev2, controlcodec,
+mailbox, tilepacketf59fd26 and statusdeadline99b87e7+liveclockwrappersf83571d;
+sharedscopeadmission7ba3334 and existing12-cache replacement34cf891 approved,
+combined147tasks pass. WorldService offcallerclose1b7fc64 review pending.
+Puredeadline is NOT a running watchdog. Production persistentnativeowner/renderer
+is being implemented by architect in isolatedworktree; noGUIhotwireyet. Source
+worker continues final scopedgeometry/materialfactory; WMOauthor nowimplements
+private BASIC_WMO factory using approvedsourceprofile/rawparser5dbc64c. Current
+World stillcoldhands off perneighborhood. Character milestone remains queued after
+current World milestones; expanded roadmap remains authoritative below.
+
 ## Current authorization and expanded roadmap
 
 The user explicitly authorized continued autonomous/overnight work and all additions

@@ -153,6 +153,8 @@ public final class MapsBrowserUiTest {
             await(() -> !view.lookup("#maps-activity").isVisible(), "wrong tile terminates activity");
             fx(() -> require(((Label) view.lookup("#maps-status")).getText().contains("0/1 readable"),
                     "wrong tile identity not painted"));
+            fx(() -> require(((Label) view.lookup("#maps-source-details")).getText().contains("descriptor differs"),
+                    "missing tile source reason retained"));
             var retired = new Source(); handle.set(retired);
             fx(view::ensureLoaded);
             await(() -> retired.calls.get() == 1, "held retired source");
