@@ -273,7 +273,9 @@ final class CapturedRowsHandle implements CapturedRows {
                 List.of(),
                 null,
                 code,
-                "Captured source unavailable; membership remains uncertified");
+                state == CapturedRowsTypes.ReadState.LIMIT_EXCEEDED
+                        ? "Requested row read limit exceeded; graph remains available; membership remains uncertified"
+                        : "Captured source unavailable; membership remains uncertified");
     }
 
     private void finish() {
