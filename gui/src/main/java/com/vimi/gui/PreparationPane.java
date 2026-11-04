@@ -49,9 +49,16 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
     private ProfessionsView professions;
     private DungeonsView dungeons;
     private final DataSourcesService sources;
+    private WorldBookmarkStore worldBookmarks;
     private boolean closed;
     private long workspaceRevision;
     private String currentArea = "Overview";
+
+    /** Application-owned World bookmarks; null keeps session-only bookmarks. */
+    void worldBookmarks(WorldBookmarkStore store) {
+        worldBookmarks = store;
+        if (world != null) world.bookmarks(store);
+    }
 
     public PreparationPane(
             BuildPreparation.Job job, Runnable choose, Runnable release, Runnable enrich) {
@@ -244,6 +251,7 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         if (area.equals("World")) {
             if (world == null) {
                 world = new WorldView(job);
+                world.bookmarks(worldBookmarks);
                 if (sources != null && job.work() instanceof NativePreparationWork work)
                     world.attachSpawns(new WorldSpawnOverlay(token -> sources.worldSpawns(job.build(), token),
                             () -> java.util.List.of(sources.worldSpawnsKey(job.build()), work.revision())));

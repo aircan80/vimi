@@ -473,6 +473,9 @@ final class MountsView extends BorderPane implements AutoCloseable {
                                             mounts.refresh();
                                             model.setAppearance(
                                                     result.appearance(), result.visibleParts(), true);
+                                            requestIdle(
+                                                    handle, mountId, variant, request,
+                                                    catalogRequest);
                                             previewStatus.setText(
                                                     materialCoverage(result.appearance())
                                                             + " · " + (result.restored()
@@ -485,6 +488,41 @@ final class MountsView extends BorderPane implements AutoCloseable {
                                                     current.variants(),
                                                     current.issues(),
                                                     result);
+                                        }));
+    }
+
+    private void requestIdle(
+            BuildMounts handle,
+            long mountId,
+            MountTypes.Variant variant,
+            long request,
+            long catalogRequest) {
+        var token = previewToken;
+        request(() -> handle.idle(mountId, variant.recordId(), token))
+                .whenComplete(
+                        (idle, failure) ->
+                                Platform.runLater(
+                                        () -> {
+                                            if (request != previewGeneration
+                                                    || !Objects.equals(selected, mountId)
+                                                    || stale(catalogRequest, handle)) {
+                                                return;
+                                            }
+                                            if (failure != null || idle == null) {
+                                                model.animationUnavailable(null);
+                                                return;
+                                            }
+                                            switch (idle.state()) {
+                                                case AVAILABLE ->
+                                                        model.setAnimation(
+                                                                idle.animation(), idle.message());
+                                                case UNSUPPORTED ->
+                                                        model.animationUnavailable(
+                                                                "Idle animation unavailable: "
+                                                                        + idle.message());
+                                                case UNAVAILABLE ->
+                                                        model.animationUnavailable(null);
+                                            }
                                         }));
     }
 

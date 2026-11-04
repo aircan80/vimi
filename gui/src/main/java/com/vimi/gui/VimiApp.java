@@ -1034,6 +1034,7 @@ public final class VimiApp extends Application {
                     @Override public void stopWatching() { stopWatchingClientHotfix(job); }
                     @Override public void reopen() { reopenForClientHotfix(job, false); }
                 });
+        preparationPane.worldBookmarks(service.worldBookmarks());
         viewedPreparation = job;
         root.setTop(preparedOverviewHeader(job)); root.setCenter(preparationPane);
         status.setText("Prepared data is scoped to this build and locale. Unknown and protected data remain explicit.");
