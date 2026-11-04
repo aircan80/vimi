@@ -8,11 +8,17 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Parent/control loss is observed even while native initialization or presentation is blocked. */
 final class GpuParentWatchdog implements AutoCloseable {
+    @FunctionalInterface
+    interface GraceWait {
+        void await(long millis) throws InterruptedException;
+    }
+
     private final AtomicBoolean stopping = new AtomicBoolean();
     private final AtomicBoolean finished = new AtomicBoolean();
     private final CompletableFuture<Void> deadlineDrained = new CompletableFuture<>();
     private final long graceMillis;
     private final Runnable forcedExit;
+    private final GraceWait graceWait;
     private final java.util.function.Consumer<String> commands;
 
     GpuParentWatchdog(
@@ -36,6 +42,17 @@ final class GpuParentWatchdog implements AutoCloseable {
             Duration grace,
             Runnable forcedExit,
             java.util.function.Consumer<String> commands) {
+        this(parentExit, control, grace, forcedExit, commands, Thread::sleep);
+    }
+
+    GpuParentWatchdog(
+            CompletableFuture<?> parentExit,
+            InputStream control,
+            Duration grace,
+            Runnable forcedExit,
+            java.util.function.Consumer<String> commands,
+            GraceWait graceWait) {
+        this.graceWait = java.util.Objects.requireNonNull(graceWait);
         this.commands = java.util.Objects.requireNonNull(commands);
         java.util.Objects.requireNonNull(control);
         graceMillis = grace.toMillis();
@@ -60,7 +77,7 @@ final class GpuParentWatchdog implements AutoCloseable {
                 .start(
                         () -> {
                             try {
-                                Thread.sleep(graceMillis);
+                                graceWait.await(graceMillis);
                                 if (!finished.get()) {
                                     forcedExit.run();
                                 }
