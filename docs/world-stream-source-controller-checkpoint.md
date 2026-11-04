@@ -210,3 +210,11 @@ metadata updates and no IO/callback. A causal test holds the real parent's metad
 initial revision1 enters; a simulated FX revision2 must remain behind the controller gate, then the
 actual accepted first frame belongs to revision2. An old initial camera can never follow a newer FX
 camera and trigger the parent's monotonicity failure.
+
+Failure-cancellation follow-up requests the private qualification cancellation outside all metadata
+locks when an FX observer/dispatch failure marks the route closing. A later public close cannot
+skip actual initial-source cancellation simply because closing was already set. The causal held
+real WDT-proof fixture injects a throwing FX wake and proves the actual child-token listener fires,
+close stays pending through source drain, and the original failure remains fatal. An explicit
+Optional.empty custom streaming capability is separately UNAVAILABLE with successful no-owner
+retirement and no source IO, never fabricated as a typed refusal or child receipt.

@@ -383,7 +383,15 @@ final class WorldStreamSourceController {
     private void failLater(Throwable failure) {
         synchronized (lock) {
             if (terminal == null) terminal = failure;
+            else if(terminal!=failure) terminal.addSuppressed(failure);
             closing = true;
+        }
+        try { qualificationCancellation.cancel(); }
+        catch(RuntimeException|Error cancelFailure) {
+            synchronized(lock) {
+                if(terminal==null) terminal=cancelFailure;
+                else if(terminal!=cancelFailure) terminal.addSuppressed(cancelFailure);
+            }
         }
         kick();
     }
@@ -391,14 +399,17 @@ final class WorldStreamSourceController {
     private void step() {
         if (!initialized) {
             if (initialBlocked && clock.getAsLong() - initialRetryAt < RETRY_NANOS) return;
-            if (source == null)
-                source =
-                        request.world()
-                                .terrainStreaming()
-                                .orElseThrow(
-                                        () ->
-                                                new IllegalStateException(
-                                                        "Qualified streaming unavailable"));
+            if(source==null) {
+                var capability=request.world().terrainStreaming();
+                if(capability.isEmpty()) {
+                    unavailableDetail="Qualified source streaming is unavailable";
+                    closing=true;
+                    publish(Phase.UNAVAILABLE,unavailableDetail);
+                    wake.set(true);
+                    return;
+                }
+                source=capability.orElseThrow();
+            }
             try {
                 if (scope == null)
                     scope = source.createScope(request.map(), qualificationCancellation);
