@@ -467,13 +467,65 @@ scope. The digest encoding is versioned and length-prefixed before it is pinned
 in source tests; no concatenated ambiguous strings. Source changes invalidate the
 scope/session rather than silently changing its WDT CK.
 
+A caller's MapInfo is a requested map ID, never authority for its WDT or directory.
+Unlike the legacy inventory API, streamingScope must rederive that ID from the
+service-owned current qualified Map table row/source receipt. Reject unknown or
+duplicate IDs, missing/unqualified numeric WDT field and ambiguous rows. Compare
+or ignore all other caller fields; never independently open its supplied WDT ID
+or path. Bind the exact qualified Map-row identity (table/schema/source revision,
+row identity and consumed WDT field) into the scope evidence/digest. A changed
+Map-row receipt invalidates the scope even if caller MapInfo or WDT bytes appear
+unchanged. The verified numeric binding then authorizes the fresh bounded WDT
+CK/read/MAID check above. Retain only the selected qualified Map tuple after a
+bounded page scan, never a new whole-Map index. A catalog DTO alone cannot mint
+this relationship.
+
+Bound one scope to at most4096 filename coordinates (64×64), each with exactly
+its recorded fixed source-reference tuple; reject duplicates/out-of-range MAID
+entries before retaining the proof. Retain one fixed32-byte tuple per coordinate
+plus a4096-bit presence bitmap (131,584 bytes), never parsed WDT arrays/bytes or
+duplicate object lists behind it. Charge at most2KiB scalar scope/Map-row metadata,
+so each retained scope has a133,632-byte named logical allowance. The canonical
+Map-row receipt is detached/bounded metadata inside that allowance, not a retained
+schema/table/page object. At most one current scope and one replacement scope
+under construction may be live; charge267,264 bytes total scope metadata in the
+parent ledger (separate from geometry/texture payloads), with no map→scope cache.
+The next replacement is a latest metadata descriptor only, at most one request
+ID/map ID/owner generation/cancellation tuple with≤256-byte allowance; it retains
+no scope, row/WDT bytes or source buffers. The267,264-byte scope allowance plus
+256-byte latest descriptor are **new** metadata charges, not silently assigned to
+the old3MiB receipt metadata reserve. Combined with the accepted43,328,576-byte
+texture-component named total this is43,596,096 bytes, still below48MiB
+(50,331,648 bytes), leaving6,735,552 bytes. Geometry source/cache/file/frame owners
+remain separate; this is not an application/JVM/RSS cap. Source work still has one active job
+and one latest descriptor globally, not per scope/map. Issuing a newer replacement
+cancels the outgoing replacement and waits for its source worker/mailbox owners
+to drain before constructing another proof. Current scope survives only while
+its selected visible session remains current; hide/map replacement/service close
+invalidates that owner generation and retires the scope according to coordinator
+ownership, without adding a background proof cache.
+
+Scope values retain only immutable detached evidence and an opaque owner identity
+plus generation value. They hold no BuildFiles, BuildWorld, service, executor or
+closure reference. The service's separate bounded current/replacement registry
+checks that identity/generation, active lifecycle and fresh source revision on
+every prepare operation; service close invalidates it before releasing workers.
+An externally retained old scope cannot keep source handles alive or authorize
+new work. No global registry of stale scopes is required.
+
 An internal private-constructed `WorldPreparedGeometry` binds that same scope,
 recorded tile/root reference, checked root CK/consumed source identity, immutable
 native tile and existing geometry fingerprint. Produce it during the existing
 bounded source read/cache path; never accept a caller's `LoadedTile` as proof or
 add an independent cache. Raw and immutable cache worst-distinct owners remain
 separately charged as already approved; the evidence adds metadata, not geometry
-copies. Its static/private constructors remain inside source code. It permits
+copies. Its static/private constructors remain inside source code. Before reading geometry, prepareStreamingTile looks up the supplied filename XY
+in that scope's proven MAID table and compares **all** recorded references (root,
+obj0/obj1/LOD/texture and every remaining tuple field) against the caller's tile.
+Reject absent coordinates or any mismatch; never treat a caller-selected root ID
+at an otherwise valid XY as independently authorized. The factory reads only the
+scope-derived exact tuple, and binds the resulting root CK/fingerprint to it.
+It permits
 terminal height fallback to bind real geometry even when no material receipt was
 available, without inventing a positive material receipt.
 
@@ -500,12 +552,21 @@ remains available.
 
 Prepared output owns its immutable geometry reference and optional single lease.
 It exposes detached immutable metadata and a synchronous scoped payload callback
-for packet writing; no pixel/texture binding escapes that callback. Parent may
+for packet writing; no pixel/texture binding escapes that callback. Before that
+callback begins, atomically capture the immutable geometry reference and acquire
+an independent retained lease/borrow pin. Concurrent close invalidates admission
+and retires the object's base owner, but cannot release the callback's pin or
+clear its local geometry reference. Callback finally releases both even on error;
+no waiting runs on FX/native owner threads. Retained alias references do not copy
+geometry/atlas payload and are explicitly retired rather than relying on GC. Parent may
 retain a separately charged current-display lease through an explicit retain
 operation, subject to CPU/GPU retirement barriers. `close` retires ownership even
 if callback/write fails. The GUI packet adapter consumes an offered tile on every
 outcome, checks session scope/generation before writing, borrows the atlas during
-streaming write, and closes prepared ownership after atomic publication. The
+streaming write, and closes prepared ownership after atomic publication. Writer
+credit stays occupied until scoped payload callbacks and the file channel have
+both drained; concurrent prepared close cannot grant CANCEL_UNUSED/new credit
+early or free callback memory. The
 packet file then owns disk bytes until INPUT_CONSUMED/confirmed child death; it
 does not retain source arrays/leases or reserve a second incoming payload.
 
@@ -518,7 +579,10 @@ construct descriptive wire bytes, but positive source-factory tests must run the
 real factory over authored WDT/root/tex0/BLP BuildFiles, matching the existing
 source-proof fixtures; no reflection or fake-positive factory.
 
-Before any source/packet integration, test wrong-scope and changed CK, mismatched
+Before any source/packet integration, test forged known map ID with another WDT,
+unknown/duplicate/missing Map rows/fields, changed qualified Map-row identity,
+sameXY with wrong root/tex0/obj/LOD/other references, scope cap/cancel-drain and
+service-close/stale-generation invalidation, wrong-scope and changed CK, mismatched
 geometry, unavailable WDT, unsupported/partial material, POOL_BUSY versus terminal
 failure, held/canceled source work, callback/write failure, rejected offer and
 complete lease drain. Source work stays one active plus latest metadata and does
