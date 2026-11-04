@@ -101,6 +101,13 @@ public final class AuthoredWorldControllerChild {
                         Files.writeString(directory.getParent().resolve("authored-held-commit"), Long.toString(commit.next()));
                         while (Files.exists(heldCommit)) Thread.sleep(2);
                     }
+                    // Record the commit before acknowledging it, so any parent state derived from
+                    // COMMITTED (and any test reading this log after observing that state) sees it.
+                    Files.writeString(
+                            directory.getParent().resolve("authored-commits.log"),
+                            commit.next() + " " + commit.members().size() + "\n",
+                            java.nio.file.StandardOpenOption.CREATE,
+                            java.nio.file.StandardOpenOption.APPEND);
                     state.send("INPUT_CONSUMED " + next.transaction() + " COMMIT");
                     state.send(
                             "COMMITTED "
@@ -109,11 +116,6 @@ public final class AuthoredWorldControllerChild {
                                     + commit.expected()
                                     + " "
                                     + commit.next());
-                    Files.writeString(
-                            directory.getParent().resolve("authored-commits.log"),
-                            commit.next() + " " + commit.members().size() + "\n",
-                            java.nio.file.StandardOpenOption.CREATE,
-                            java.nio.file.StandardOpenOption.APPEND);
                     content = commit.next();
                     if(!state.available) state.grant();
                 } else if (command instanceof WorldStreamControl.CancelUnused cancel) {

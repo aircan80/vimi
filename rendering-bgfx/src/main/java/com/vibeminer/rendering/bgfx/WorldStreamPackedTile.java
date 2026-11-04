@@ -10,21 +10,29 @@ import org.lwjgl.system.MemoryUtil;
 
 /** Single-credit worker preparation. Consumes decoded heap ownership; performs no bgfx calls. */
 final class WorldStreamPackedTile implements AutoCloseable {
-    static final int INSTANCE_BYTES = 48, MAX_GEOMETRY_BYTES = 3 << 20;
+    static final int INSTANCE_BYTES = 48, MAX_WATER_TRIANGLES = 16384;
+    static final int MAX_GEOMETRY_BYTES = (65536 + MAX_WATER_TRIANGLES) * INSTANCE_BYTES;
+    // Untextured diagnostic teal (sRGB 20,115,148); not a claim of client liquid appearance.
+    static final float WATER_R = 20, WATER_G = 115, WATER_B = 148;
 
     /** Transferred native input owner. Never freed before all make_ref_release credits drain. */
     static final class Source implements AutoCloseable {
         final WorldStreamTileFile.Header header;
-        final int triangles;
+
+        /** Terrain instances first, then waterTriangles water instances in the same buffer. */
+        final int triangles, waterTriangles;
+
         ByteBuffer geometry, atlas;
 
         private Source(
                 WorldStreamTileFile.Header header,
                 int triangles,
+                int waterTriangles,
                 ByteBuffer geometry,
                 ByteBuffer atlas) {
             this.header = header;
             this.triangles = triangles;
+            this.waterTriangles = waterTriangles;
             this.geometry = geometry;
             this.atlas = atlas;
         }
@@ -61,7 +69,12 @@ final class WorldStreamPackedTile implements AutoCloseable {
         try (input) {
             check(canceled);
             var tile = input.tile();
-            int bytes = Math.multiplyExact(tile.triangleCount(), INSTANCE_BYTES);
+            var water = input.water();
+            int waterTriangles = water == null ? 0 : water.indices().length / 3;
+            if (waterTriangles > MAX_WATER_TRIANGLES) {
+                throw new IllegalArgumentException("Packed water exceeds one-credit limit");
+            }
+            int bytes = Math.multiplyExact(tile.triangleCount() + waterTriangles, INSTANCE_BYTES);
             if (bytes > MAX_GEOMETRY_BYTES) {
                 throw new IllegalArgumentException("Packed tile exceeds one-credit geometry limit");
             }
@@ -99,6 +112,19 @@ final class WorldStreamPackedTile implements AutoCloseable {
                     corner(out, bx, by, bz, (116 + rock * 10) * light);
                     corner(out, cx, cy, cz, (68 + rock * 57) * light);
                 }
+                if (water != null) {
+                    // The stream shader takes the three corner w values as the triangle's RGB.
+                    var positions = water.positions();
+                    var cells = water.indices();
+                    for (int at = 0; at < cells.length; at += 3) {
+                        if ((at & 4095) == 0) {
+                            check(canceled);
+                        }
+                        waterCorner(out, positions, cells[at], WATER_R);
+                        waterCorner(out, positions, cells[at + 1], WATER_G);
+                        waterCorner(out, positions, cells[at + 2], WATER_B);
+                    }
+                }
             }
             var pixels = input.atlas();
             if (pixels != null) {
@@ -113,7 +139,12 @@ final class WorldStreamPackedTile implements AutoCloseable {
             check(canceled);
             var result =
                     new WorldStreamPackedTile(
-                            new Source(input.header(), tile.triangleCount(), geometry, atlas));
+                            new Source(
+                                    input.header(),
+                                    tile.triangleCount(),
+                                    waterTriangles,
+                                    geometry,
+                                    atlas));
             geometry = null;
             atlas = null;
             return result;
@@ -142,6 +173,13 @@ final class WorldStreamPackedTile implements AutoCloseable {
             owned.close();
             owned = null;
         }
+    }
+
+    private static void waterCorner(FloatBuffer out, float[] positions, int vertex, float color) {
+        out.put(positions[vertex * 3])
+                .put(positions[vertex * 3 + 1])
+                .put(positions[vertex * 3 + 2])
+                .put(color);
     }
 
     private static void corner(FloatBuffer out, float x, float y, float z, double color) {

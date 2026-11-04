@@ -442,7 +442,9 @@ final class WorldMapProofs {
         }
     }
 
-    private static void validateNative(CapturedRowsTypes.Receipt r) {
+    // Shared bounded native issue linkage only; callers must independently qualify their
+    // table/profile.
+    static void validateNative(CapturedRowsTypes.Receipt r) {
         profileMetadata(r);
         var e = r.issueChannelEvidence();
         if (e.state() != CapturedRowsTypes.IssueChannelState.VERIFIED_NATIVE) {

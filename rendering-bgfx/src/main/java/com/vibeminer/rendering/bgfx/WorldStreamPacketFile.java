@@ -124,6 +124,53 @@ final class WorldStreamPacketFile implements AutoCloseable {
         return owner.move();
     }
 
+    /**
+     * MOVE after the owner itself rewrote its still-unadvertised file in place; the replacement
+     * expectation describes the same exact path, which this owner continues to hold until MOVE.
+     */
+    Moved moveReplacing(WorldStreamTileFile.Expected replacement) throws IOException {
+        Objects.requireNonNull(replacement);
+        Data current;
+        synchronized (owner) {
+            current = owner.data;
+            if (current == null || owner.completion != null) {
+                throw new IllegalStateException("Packet file already moved or closing");
+            }
+            if (replacement.transaction() != current.expected().transaction()
+                    || !replacement.nonce().equals(current.expected().nonce())
+                    || !replacement.lease().equals(current.expected().lease())
+                    || !replacement.scope().equals(current.expected().scope())) {
+                throw new IllegalArgumentException("Replacement packet identity differs");
+            }
+            var attributes =
+                    Files.readAttributes(
+                            current.path(), BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (!attributes.isRegularFile() || attributes.size() != replacement.length()) {
+                throw new IOException("Replacement packet metadata differs");
+            }
+            owner.data = new Data(replacement, current.path(), current.destinationIdentity());
+        }
+        return owner.move();
+    }
+
+    Path path() {
+        synchronized (owner) {
+            if (owner.data == null) {
+                throw new IllegalStateException("Packet file already moved or closing");
+            }
+            return owner.data.path();
+        }
+    }
+
+    WorldStreamTileFile.Expected expected() {
+        synchronized (owner) {
+            if (owner.data == null) {
+                throw new IllegalStateException("Packet file already moved or closing");
+            }
+            return owner.data.expected();
+        }
+    }
+
     /** Queues deletion on the existing bounded file lane; creates no thread or watcher. */
     CompletableFuture<Void> closeAsync(Executor existingFileLane) {
         Objects.requireNonNull(existingFileLane);
