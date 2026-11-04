@@ -112,22 +112,17 @@ final class WorldStreamSourceBridge {
                                 () -> stopping.getAsBoolean() || token.isCanceled()));
                 local = new Prepared(written);
                 check(stopping, cancellation);
-                if (!local.isOpen()) {
-                    throw destination.refusal(WorldStreamTransport.Refusal.SOURCE_INVALIDATED,
-                            "Source resident retired before packet move");
-                }
                 written.withWrittenResource(file -> moved[0] = file.move());
                 check(stopping, cancellation);
+                // The actual source gate distinguishes known retirement from sticky cleanup faults.
+                // R is inert after MOVE; this callback only checks/pins the source lifetime.
+                written.withWrittenResource(ignored -> {});
                 registration.close();
                 registration = null;
                 check(stopping, cancellation);
                 synchronized (this) {
                     if (closed) {
                         throw new CancellationException();
-                    }
-                    if (!local.isOpen()) {
-                        throw destination.refusal(WorldStreamTransport.Refusal.SOURCE_INVALIDATED,
-                                "Source resident retired before packet handoff");
                     }
                     prepared = local;
                     local = null;
@@ -162,6 +157,7 @@ final class WorldStreamSourceBridge {
                     cleanup = WorldStreamSourceBridge.close(local, cleanup);
                 }
                 if (cleanup != null) {
+                    sourceRefusal = null;
                     if (failure != null) {
                         cleanup.addSuppressed(failure);
                     }
