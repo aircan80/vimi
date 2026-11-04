@@ -3,3 +3,6 @@
 *.sh text eol=lf
 gradlew text eol=lf
 *.jar binary
+
+# Preserve the separately pinned upstream definition bytes on every checkout.
+formats-tables/src/main/resources/com/vibeminer/formats/definitions/supplemental/SpellDuration.dbd -text
