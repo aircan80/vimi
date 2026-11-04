@@ -186,6 +186,79 @@ class WorldScopeCancellationFailureTest {
         }
     }
 
+    @Test
+    void scopeCloseAfterCancellationSealRetiresReturnedResourceBeforeHandoff() throws Exception {
+        lastGateRejects(true);
+    }
+
+    @Test
+    void externalCancelAfterRegistrationRemovalRetiresReturnedResourceBeforeHandoff()
+            throws Exception {
+        lastGateRejects(false);
+    }
+
+    private static void lastGateRejects(boolean closeScope) throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new WorldStreamScopesTest.Tables(files);
+        var scopes = new WorldStreamScopes(tables.handle(), files.files());
+        var external = new Cancellation();
+        var sealed = new CompletableFuture<Void>();
+        var release = new CompletableFuture<Void>();
+        var closes = new AtomicInteger();
+        try {
+            var scope = scopes.create(MAP, Cancellation.NONE);
+            var work =
+                    CompletableFuture.supplyAsync(
+                            () ->
+                                    scopes.withRecordedTile(
+                                            scope,
+                                            TILE,
+                                            WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                                            external,
+                                            admission -> {
+                                                holdSeal(scopes, sealed, release);
+                                                return (AutoCloseable) closes::incrementAndGet;
+                                            }));
+            sealed.get(5, TimeUnit.SECONDS);
+            assertTrue(working(scopes));
+            if (closeScope) {
+                assertFalse(scopes.closeAsync().isDone());
+            } else {
+                external.cancel();
+            }
+            release.complete(null);
+            assertThrows(ExecutionException.class, () -> work.get(5, TimeUnit.SECONDS));
+            assertEquals(1, closes.get());
+            assertFalse(working(scopes));
+        } finally {
+            release.complete(null);
+            scopes.closeAsync().get(5, TimeUnit.SECONDS);
+            tables.close();
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void holdSeal(
+            WorldStreamScopes scopes,
+            CompletableFuture<Void> entered,
+            CompletableFuture<Void> release) {
+        try {
+            var lane = WorldStreamScopes.class.getDeclaredField("cancelLane");
+            lane.setAccessible(true);
+            var value = lane.get(scopes);
+            var done = value.getClass().getDeclaredField("done");
+            done.setAccessible(true);
+            ((CompletableFuture<Void>) done.get(value))
+                    .thenRun(
+                            () -> {
+                                entered.complete(null);
+                                release.join();
+                            });
+        } catch (ReflectiveOperationException error) {
+            throw new AssertionError(error);
+        }
+    }
+
     private static WorldStreamScopes engine(WorldPreparedTerrain source) {
         try {
             var field = WorldPreparedTerrain.class.getDeclaredField("scopes");
