@@ -61,7 +61,34 @@ used by the fixed writer, not an arbitrary second description. Source scope/geom
 qualification and final read-set checks remain in the separate closed source bridge.
 
 Not yet promoted by this checkpoint: COMMIT/accepted-frame publication, source-backed producer
-adapter, GUI integration, nine-tile performance, and optional malformed-packet rejection racing an
-already-queued established CANCEL. That cancellation/rejection ordering must get a causal fixture
-before the broader protocol facade is approved; the valid STAGED cancellation path and unused
-refusal path are exercised against the actual child here.
+adapter, GUI integration, nine-tile performance, and full native malformed-packet rejection/cancellation interleaving qualification. The narrower
+parent state/pipe correction below is independently reviewable; the valid STAGED cancellation
+path and unused refusal path are exercised against the actual child here.
+
+## Optional rejection versus established cancellation
+
+The child can reject INVALID_PACKET and grant new credit before reading an already-issued CANCEL;
+its now-retired incoming descriptor then causes STALE_TRANSACTION for that exact old cancellation.
+The parent retains its single old ticket while cancelSent&&!cancelResolved, even after CREDIT and
+file deletion, rather than allocating tombstones or losing correlation. Only exact old tx plus
+prior INVALID_PACKET plus an outstanding cancellation can resolve one STALE_TRANSACTION as
+CANCEL_REJECTED. That fails the cancellation future rather than manufacturing CANCELED. Wrong
+nonce stays ignored without resolution; wrong tx, missing prerequisites and duplicates stay fatal.
+Only actual input deletion plus producer/callback drain and resolved cancellation allow reuse.
+
+OFFER and CANCEL reliable credits are tracked separately; INVALID_PACKET retires only OFFER,
+CANCELED retires whichever actual commands remain, and CANCEL_REJECTED retires only CANCEL.
+Release underflow is fatal. Resolving this last cancellation bumps the capacity revision because
+it can unblock an already-received credit. Current committed table/content remain unchanged.
+
+Three pure-state cases preserve a previously committed table, test prerequisite/identity/replay
+negatives and retain the actual-file-retirement barrier. The old implementation fails the first
+causal case by admitting a new construction before its cancellation response is correlated.
+An actual Java subprocess with authored deterministic status timing holds OFFER processing until
+CANCEL is queued, then emits INPUT/INVALID_PACKET/CREDIT before STALE_TRANSACTION. It proves
+both futures fail exceptionally while the session accepts a successor reservation/unused cancel,
+then CLOSED/EOF/exit-zero drains. This is real pipe/parent ownership evidence, not a GPU or source
+qualification oracle; existing native parser fixtures establish malformed-packet rejection.
+The pipe fixture also fails causally when INVALID_PACKET is changed back to clearing all
+reliable credits: the later cancel retirement underflows and no genuine successor credit can be
+used. Restoring independent OFFER/CANCEL accounting makes the unchanged fixture pass.
