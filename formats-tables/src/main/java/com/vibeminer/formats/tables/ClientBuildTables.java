@@ -277,6 +277,17 @@ final class ClientBuildTables implements BuildTables {
             boolean direct,
             boolean shallow,
             Cancellation token) {
+        return prepare(ref, priority, direct, shallow, false, token);
+    }
+
+    @SuppressWarnings("try")
+    private Prepared prepare(
+            TableTypes.Ref ref,
+            TableTypes.Priority priority,
+            boolean direct,
+            boolean shallow,
+            boolean nativeOnly,
+            Cancellation token) {
         long id = id(ref);
         var stat = id == 0 ? null : files.stat(FileRef.id(id), token).join();
         String content = stat == null || stat.file() == null ? null : stat.file().contentKey();
@@ -334,7 +345,7 @@ final class ClientBuildTables implements BuildTables {
                         || !definitions
                                 .refreshDue(manifest.get(id).tableId(), version, layout, token)
                                 .join()) {
-                    var hit = openPreferred(source, keys, token, false);
+                    var hit = openPreferred(source, keys, token, false, nativeOnly);
                     if (hit != null) {
                         backgroundBuilds.stored(source);
                         return checked(id, content, definition, hit, null, null, hit.identity());
@@ -436,7 +447,7 @@ final class ClientBuildTables implements BuildTables {
                                 content,
                                 limits,
                                 encodingScope());
-                var saved = openPreferred(source, keys, token, false);
+                var saved = openPreferred(source, keys, token, false, nativeOnly);
                 if (saved != null) {
                     backgroundBuilds.stored(source);
                     return checked(id, content, definition, saved, null, null, saved.identity());
@@ -542,12 +553,21 @@ final class ClientBuildTables implements BuildTables {
 
     private GeneratedTable openPreferred(
             GeneratedTableSource source, KeyStatus keys, Cancellation token, boolean local) {
+        return openPreferred(source, keys, token, local, false);
+    }
+
+    private GeneratedTable openPreferred(
+            GeneratedTableSource source,
+            KeyStatus keys,
+            Cancellation token,
+            boolean local,
+            boolean nativeOnly) {
         var hit =
                 (local
                                 ? generated.openPreparedLocal(source, keys, token)
                                 : generated.open(source, keys, token))
                         .join();
-        if (hit == null) {
+        if (hit == null && !nativeOnly) {
             hit =
                     (local
                                     ? generated.openPreparedLocal(source.legacy(), keys, token)
@@ -799,6 +819,133 @@ final class ClientBuildTables implements BuildTables {
                 }
             }
         };
+    }
+
+    @Override
+    public CompletableFuture<NativePreparationTypes.Result> prepareNativeEvidence(
+            TableTypes.Ref ref,
+            TableTypes.Priority priority,
+            NativePreparationTypes.SourceAccess access,
+            java.util.function.Consumer<NativePreparationTypes.Progress> progress,
+            Cancellation token) {
+        java.util.Objects.requireNonNull(ref);
+        java.util.Objects.requireNonNull(priority);
+        java.util.Objects.requireNonNull(access);
+        java.util.Objects.requireNonNull(progress);
+        return operation(
+                token,
+                t -> {
+                    progress.accept(
+                            new NativePreparationTypes.Progress(
+                                    NativePreparationTypes.Phase.PREPARING));
+                    try (var prepared = prepare(ref, priority, false, false, true, t)) {
+                        t.check();
+                        var table = prepared.stored();
+                        if (table == null) {
+                            return new NativePreparationTypes.Result(
+                                    NativePreparationTypes.State.UNAVAILABLE,
+                                    access,
+                                    prepared.entry(),
+                                    null);
+                        }
+                        progress.accept(
+                                new NativePreparationTypes.Progress(
+                                        NativePreparationTypes.Phase.VALIDATING));
+                        var source = table.source();
+                        var evidence = issueEvidence(table);
+                        if (source.issuePolicy() != GeneratedTableSource.IssuePolicy.NATIVE_V1
+                                || evidence.state()
+                                        != CapturedRowsTypes.IssueChannelState.VERIFIED_NATIVE) {
+                            throw new IllegalStateException(
+                                    "Native preparation lacks producer evidence");
+                        }
+                        var stat = files.stat(FileRef.id(prepared.entry().fileDataId()), t).join();
+                        if (stat.file() == null
+                                || !source.contentKey().equals(stat.file().contentKey())) {
+                            return new NativePreparationTypes.Result(
+                                    NativePreparationTypes.State.SOURCE_CHANGED,
+                                    access,
+                                    prepared.entry(),
+                                    null);
+                        }
+                        var definition =
+                                resolve(
+                                        prepared.entry().fileDataId(),
+                                        table.header().layoutHash(),
+                                        false,
+                                        t);
+                        if (definition.state() != TableDefinitions.State.RESOLVED) {
+                            return new NativePreparationTypes.Result(
+                                    NativePreparationTypes.State.SOURCE_CHANGED,
+                                    access,
+                                    prepared.entry(),
+                                    null);
+                        }
+                        var selected =
+                                definition
+                                        .definition()
+                                        .document()
+                                        .selectFile(version, table.header().layoutHash(), t);
+                        if (selected.blocks().size() != 1
+                                || !source.equals(
+                                        GeneratedTableSource.forNativeBlock(
+                                                selected.blocks().getFirst(),
+                                                locale(),
+                                                source.contentKey(),
+                                                limits,
+                                                encodingScope()))) {
+                            return new NativePreparationTypes.Result(
+                                    NativePreparationTypes.State.SOURCE_CHANGED,
+                                    access,
+                                    prepared.entry(),
+                                    null);
+                        }
+                        var current =
+                                generated
+                                        .openPreparedLocal(source, options.keys().apply(build()), t)
+                                        .join();
+                        if (current == null
+                                || !current.identity().equals(table.identity())
+                                || !source.equals(current.source())
+                                || !evidence.equals(issueEvidence(current))
+                                || current.rowCount() != table.rowCount()
+                                || !current.completion().equals(table.completion())
+                                || !current.header().equals(table.header())
+                                || !current.sections().equals(table.sections())
+                                || !current.keysUsed().equals(table.keysUsed())
+                                || !current.holeKeys().equals(table.holeKeys())) {
+                            return new NativePreparationTypes.Result(
+                                    NativePreparationTypes.State.SOURCE_CHANGED,
+                                    access,
+                                    prepared.entry(),
+                                    null);
+                        }
+                        var finalStat =
+                                files.stat(FileRef.id(prepared.entry().fileDataId()), t).join();
+                        if (finalStat.state() != FileTypes.FileLookupState.FOUND
+                                || finalStat.file() == null
+                                || finalStat.file().fileDataId() != prepared.entry().fileDataId()
+                                || !source.contentKey().equals(finalStat.file().contentKey())) {
+                            return new NativePreparationTypes.Result(
+                                    NativePreparationTypes.State.SOURCE_CHANGED,
+                                    access,
+                                    prepared.entry(),
+                                    null);
+                        }
+                        t.check();
+                        return new NativePreparationTypes.Result(
+                                NativePreparationTypes.State.READY,
+                                access,
+                                prepared.entry(),
+                                new NativePreparationTypes.Stamp(
+                                        table.identity(),
+                                        source.contentKey(),
+                                        table.header().layoutHash(),
+                                        evidence,
+                                        table.rowCount(),
+                                        table.completion()));
+                    }
+                });
     }
 
     @Override
