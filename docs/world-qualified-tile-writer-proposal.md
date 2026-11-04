@@ -141,3 +141,18 @@ later closed GUI bridge will own one WrittenTile holder per opaque resident and
 share metadata aliases across pending/current/presented tables; it cannot create
 additional base retains. That bridge's late-cancellation handoff remains a
 separate implementation/review checkpoint.
+
+
+## One-shot packet file ownership transfer
+
+R closes only its currently owned unadvertised file capability. After successful
+final source validation, the closed transport bridge atomically MOVES that
+capability into TransportOwnedPacket before advertising it; R becomes an inert
+no-delete shell. Transport alone then owns the file until INPUT_CONSUMED or
+confirmed child exit. WrittenTile/source closure may retire its base geometry and
+atlas independently and cannot delete an advertised child input. Shared idempotent
+close alone does not satisfy this contract: closing the source while the child
+reads must not delete the child's moved file. A failure/cancellation before the
+move still retires the unadvertised file through source-owned R. The generic
+source factory does not know transport; the fixed bridge owns the one-shot move
+implementation and causal late-cancel/source-close tests at its later review.
