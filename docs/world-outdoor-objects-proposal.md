@@ -10,7 +10,9 @@ single-group ADT-placed WMO (`WorldBasicWmo`, at most 512 vertices and six image
 structural annex codec (`GpuWorldWmoAnnex`), a native pass (`BgfxWorldWmoPass`) and an
 optional `--wmo-annex` flag on the **cold** immutable terrain child. The GUI World Explorer
 uses the **hot** streaming child (`WorldStreamMain`/`BgfxWorldStreamRenderer`) whenever GPU
-rendering is enabled, so none of that work is reachable from the application. In addition,
+rendering is enabled for a `WorldService` handle with terrain streaming (`WorldView`
+`streamingMode`); no GUI path passes `--wmo-annex`, so none of that work is reachable from
+the application. In addition,
 real buildings exceed the one-group/512-vertex preview profile by orders of magnitude.
 
 ## First visible slice: BASIC_EXTERIOR_V1
@@ -21,21 +23,28 @@ counts of what was not drawn.
 
 Admitted (everything else is counted as unsupported, never guessed):
 
-- Placements: obj0 MODF records with the direct-FileDataID flag `0x8`, optional scale flag
-  `0x4`, no other flags, finite position, heading-only rotation (pitch/roll zero), positive
-  scale. Transform is the reviewed ADT heading rule already pinned in
-  `WorldBasicWmo.Transform`. Identical duplicate unique IDs across neighboring tiles share
-  one placement; conflicting duplicates are omitted.
-- Roots: `WmoFormats.Limits.standard()` facts, GFID inventory with a nonzero LOD0 entry per
-  group. Legacy MOTX name-only roots are unsupported.
+- Placements: obj0 MODF records with the direct-FileDataID flag `0x8` required, and only
+  the scale-enable `0x4` and LOD-capable `0x2` flags besides it (LOD0 groups are always
+  drawn). Any other flag (for example `0x1`) is an unsupported placement. Finite position,
+  heading-only rotation (pitch/roll zero). With `0x4` the recorded scale/1024 applies and
+  must be positive; without it the raw field is not interpreted and scale is 1.0. The
+  transform is the reviewed ADT heading rule pinned in `WorldBasicWmo.Transform`.
+  Identical duplicate unique IDs within one obj0 share one placement; conflicting
+  duplicates are all omitted.
+- Roots: `WmoFormats` facts. GFID is flat with LOD0 in the first groupCount entries (pinned
+  wow.export WMOLoader 4474fa4 and TrinityCore vmap4 ec72c19); the GFID count must be a
+  positive multiple of groupCount. Zero entries are unsupported groups. Roots with a MOTX
+  name block are unsupported, because their texture words are name offsets.
 - Groups: only groups whose MOGP flags carry exterior `0x8` and not interior `0x2000`.
   Interior-only groups, portals and BSP are not evaluated; walking inside is not a claim.
-- Batches: the material's blend mode 0 (opaque) with a nonzero texture1 FileDataID. Other
-  blend modes (alpha key, blended glass, additive) are counted as unsupported batches.
-  Material shader IDs other than diffuse are approximated by their texture1 stage only;
-  this is disclosed as BASIC lighting, not client parity.
+- Batches: plain material-byte batches (MOBA flags 0) whose material has blend mode 0
+  (opaque) and a nonzero texture1 FileDataID. Other blend modes (alpha key, blended glass,
+  additive) are unsupported batches. Unlike `WorldBasicWmo`, material shader IDs other than
+  0 are admitted and approximated by their texture1 stage only; this is disclosed as BASIC
+  lighting, not client parity, and pinned by tests.
 - Images: existing strict BLP2 decoder; the largest mip with both sides at most 256 is
-  selected. Missing, protected or undecodable images omit only their batches.
+  selected, falling to 128 or 64 when the tile pixel budget is nearly spent. Missing,
+  protected, oversized or undecodable images omit only their batches.
 - Shading: existing world-wmo shaders unchanged (fixed light, terrain-matching fog, discard
   beyond 2200). No vertex colors, local lights, doodad sets, liquids or animated materials.
 
@@ -44,12 +53,41 @@ materials, global WMO-only maps (dungeon lane, #170), larger view distance (#173
 
 ## Bounds
 
-Per neighborhood: at most 9 obj0 sources (existing 8 MiB each), 192 placements, 64 distinct
-roots, 1,024 admitted groups, 262,144 vertices, 393,216 triangles, 2,048 draw batches,
-128 images of at most 256x256 (8 MiB RGBA). Root and group sources at most 1 MiB each, image
-sources at most 1 MiB. One raw source input is live at a time, as in the existing scope
-engine. Exceeding a cap omits the farthest placements (stable distance then unique-ID
-order) and is reported, never silently truncated inside a building.
+Caps are **per tile**, because each tile's object set is an immutable output of one
+serialized source operation and travels with that tile's slot. Selection must not depend
+on the camera or on which neighbors are loaded, so omission order is obj0 source order.
+
+| Per tile | Cap |
+| --- | ---: |
+| Placements drawn | 64 |
+| Distinct roots read | 24 |
+| Group sources read | 256 |
+| Image sources read | 64 |
+| Vertices / indices | 98,304 / 294,912 |
+| Draw ranges / meshes | 1,024 / 256 |
+| Decoded pixels | 1,048,576 (4 MiB RGBA) |
+| Root, group, image source | 1 MiB each |
+
+One raw source input is live at a time, as in the existing scope engine. A root whose LOD0
+groups would exceed the remaining group read budget, or whose geometry exceeds the
+remaining vertex/index/draw budget, is omitted whole: caps never split a building.
+Every omission is counted by reason: unsupported placement, capped placement, failed root,
+interior group, unsupported group, unsupported batch, missing image and unavailable source
+(missing, protected or larger than the 1 MiB source cap, reported separately rather than
+silently dropped).
+
+Worst case per tile file: 3 MiB vertices (32 bytes each), 576 KiB indices, 4 MiB pixels
+and small tables, so about 7.6 MiB. The child holds at most 10 slots (9 active plus one
+staged), so the worst-case object GPU payload is about 76 MiB in addition to the existing
+terrain preallocation. The objects file needs its own length and SHA in the tile header
+under the new profile, its own size ceiling (8 MiB), and the child must charge it in its
+stats. Real tiles are expected to be far below this; the slice should measure them.
+
+Cross-tile duplicates: a large WMO recorded in several neighboring obj0 files is drawn
+once per carrying tile. Identical geometry at identical depth fails the strict GREATER test,
+so the extra draws are invisible but cost memory; sharing assets across slots is a later
+optimization. Many serialized reads (up to about 350 per tile) mean object preparation
+lags terrain. It runs after terrain on the same lane and stays cancelable between reads.
 
 ## Delivery
 
