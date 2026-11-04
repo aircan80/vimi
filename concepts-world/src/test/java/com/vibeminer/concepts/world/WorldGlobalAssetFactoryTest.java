@@ -710,4 +710,78 @@ class WorldGlobalAssetFactoryTest {
             }
         }
     }
+
+    @Test
+    void changingProviderLengthCannotWidenAnyValidatedRawAllocation() throws Exception {
+        for (long selected : new long[] {1, 123, 201, 301}) {
+            int cap = selected == 1 || selected == 201 ? 1 << 20 : 64 << 10;
+            try (var f =
+                    new Fixture(
+                            new Files() {
+                                @Override
+                                FileTypes.FileStat stat(long id, Cancellation token) {
+                                    var original = super.stat(id, token);
+                                    if (id != selected) {
+                                        return original;
+                                    }
+                                    var v = original.file();
+                                    return new FileTypes.FileStat(
+                                            original.state(),
+                                            new FileTypes.BuildFile(
+                                                    v.fileDataId(),
+                                                    v.path(),
+                                                    v.pathSource(),
+                                                    null,
+                                                    v.contentKey(),
+                                                    v.format(),
+                                                    v.formatSource(),
+                                                    v.storage(),
+                                                    v.encrypted()));
+                                }
+
+                                @Override
+                                FileReadStream open(long id, Cancellation token) {
+                                    var original = super.open(id, token);
+                                    if (id != selected) {
+                                        return original;
+                                    }
+                                    var calls = new AtomicInteger();
+                                    return new FileReadStream() {
+                                        public long length() {
+                                            return calls.incrementAndGet() <= 2
+                                                    ? sources.get(id).length
+                                                    : cap + 1;
+                                        }
+
+                                        public long position() {
+                                            return original.position();
+                                        }
+
+                                        public void seek(long p) {
+                                            original.seek(p);
+                                        }
+
+                                        public List<FileTypes.FileHole> holes() {
+                                            return original.holes();
+                                        }
+
+                                        public CompletableFuture<Integer> read(
+                                                ByteBuffer target, Cancellation c) {
+                                            org.junit.jupiter.api.Assertions.assertTrue(
+                                                    target.capacity() <= cap,
+                                                    "Changing provider getter widened validated allocation");
+                                            return original.read(target, c);
+                                        }
+
+                                        public void close() {
+                                            original.close();
+                                        }
+                                    };
+                                }
+                            })) {
+                assertEquals(4, f.inspect().consumedBindings());
+                assertEquals(f.files.totalOpens(), f.files.closed.get());
+            }
+        }
+    }
 }
