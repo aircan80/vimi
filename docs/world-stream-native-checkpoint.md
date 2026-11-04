@@ -29,3 +29,12 @@ The actual proof uses authored canonical terrain/constant atlases, off-owner sou
 ```sh
 ./gradlew :rendering-bgfx:check :rendering-bgfx:nativeGpuWorldStreamOwnerProof
 ```
+
+Follow-up readback/update ordering guards: ready-frame checks use bounded modular uint32
+subtraction, including shutdown, so a wrapped future DMA fence is never freed or read early.
+The owner defers upload steps after a draw has been queued until `advance()` submits that
+frame. This also covers COMMIT dropping a slot and reusing its buffer before the old queued
+draw executes. The actual Vulkan proof now queues the old draw, drops/reuses that slot,
+asserts zero update/reference issuance in that frame, checks the old captured pixels, and
+then proves the deferred upload and new content succeed. Upload scheduling performs its
+slice before drawing; no post-draw mutation is required for camera continuity.

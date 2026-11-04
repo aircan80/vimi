@@ -193,7 +193,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
 
     int step(BgfxWorldStreamRenderer.Upload upload) {
         requireOpen();
-        return renderer.step(upload);
+        return renderedThisFrame ? 0 : renderer.step(upload);
     }
 
     void cancel(BgfxWorldStreamRenderer.Upload upload) {
@@ -270,7 +270,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         for (var slot : readbacks) {
             var ticket = slot.ticket;
             if (ticket != null
-                    && Integer.compareUnsigned(currentFrame, slot.ready) >= 0
+                    && readbackReady(currentFrame, slot.ready)
                     && ticket.policy() == policy
                     && ticket.width() == width
                     && ticket.height() == height
@@ -313,11 +313,17 @@ final class WorldStreamNativeOwner implements AutoCloseable {
             published = true;
         }
         for (var slot : readbacks) {
-            if (slot.ticket != null && Integer.compareUnsigned(currentFrame, slot.ready) >= 0) {
+            if (slot.ticket != null && readbackReady(currentFrame, slot.ready)) {
                 slot.ticket = null;
             }
         }
         return published;
+    }
+
+    // A readback is scheduled less than 2^31 frames ahead. Modular subtraction remains
+    // correct across bgfx's uint32 frame wrap; unsigned absolute ordering does not.
+    static boolean readbackReady(int current, int ready) {
+        return current - ready >= 0;
     }
 
     Stats stats() {
@@ -383,7 +389,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
                         for (var slot : readbacks) {
                             if (slot != null
                                     && slot.ticket != null
-                                    && Integer.compareUnsigned(currentFrame, slot.ready) >= 0) {
+                                    && readbackReady(currentFrame, slot.ready)) {
                                 slot.ticket = null;
                             }
                         }

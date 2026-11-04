@@ -179,8 +179,8 @@ public final class WorldStreamNativeProof {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
         int steps = 0;
         while (!upload.finished()) {
-            owner.submit(command(++camera, WIDTH, HEIGHT, 1));
             int bytes = owner.step(upload);
+            owner.submit(command(++camera, WIDTH, HEIGHT, 1));
             require(bytes <= 262144, "Upload step bytes");
             owner.advance();
             var frame = read(reader, content, 0);
@@ -259,7 +259,38 @@ public final class WorldStreamNativeProof {
                 frame.pixels().get(pixels);
                 image.setRGB(0, 0, WIDTH, HEIGHT, pixels, 0, WIDTH);
                 ImageIO.write(image, "png", directory.resolve("world-stream-native.png").toFile());
-                long content = 1, tx = 2;
+                var reusedLease = new WorldStreamState.Lease(0, 2, 2);
+                var reused =
+                        prepare(worker, directory, 2, reusedLease, 7, 19, 60, true)
+                                .get(20, TimeUnit.SECONDS);
+                long oldCamera = ++camera;
+                require(owner.submit(command(oldCamera, WIDTH, HEIGHT, 1)), "Old draw queued");
+                owner.commit(1, 2, List.of());
+                var reusedUpload = owner.begin(reused);
+                require(owner.step(reusedUpload) == 0, "GPU mutation after queued draw");
+                require(reusedUpload.issuedReferences() == 0, "Deferred step issued a reference");
+                owner.advance();
+                WorldFrameFileV2.Frame oldFrame = read(reader, 1, 1);
+                long reuseDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+                while (!reusedUpload.finished() || oldFrame == null) {
+                    if (!reusedUpload.finished()) {
+                        owner.step(reusedUpload);
+                    }
+                    owner.advance();
+                    var candidate = read(reader, 1, 1);
+                    if (candidate != null && candidate.metadata().camera() == oldCamera) {
+                        oldFrame = candidate;
+                    }
+                    require(
+                            System.nanoTime() < reuseDeadline,
+                            "Reused slot/readback did not drain");
+                }
+                require(oldFrame.metadata().camera() == oldCamera, "Old ticket provenance");
+                color(oldFrame, 180);
+                require(reusedUpload.issuedReferences() > 0, "Deferred upload never resumed");
+                owner.commit(2, 3, List.of(reusedLease));
+                color(accepted(owner, reader, 3), 60);
+                long content = 3, tx = 3;
                 int incoming = 1;
                 for (int cycle = 0; cycle < 104; cycle++) {
                     var lease = new WorldStreamState.Lease(incoming, cycle + 2, cycle + 2);
