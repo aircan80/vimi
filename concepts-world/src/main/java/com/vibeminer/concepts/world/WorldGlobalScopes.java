@@ -192,6 +192,15 @@ final class WorldGlobalScopes {
 
     <R extends AutoCloseable> R withRecordedDeclaration(
             GlobalScope scope, Selection comparison, Cancellation external, DeclarationUse<R> use) {
+        return withDeclaration(scope, comparison, external, use, token -> {});
+    }
+
+    private <R extends AutoCloseable> R withDeclaration(
+            GlobalScope scope,
+            Selection comparison,
+            Cancellation external,
+            DeclarationUse<R> use,
+            java.util.function.Consumer<Cancellation> finalSources) {
         Objects.requireNonNull(comparison);
         Objects.requireNonNull(use);
         return execute(
@@ -231,6 +240,7 @@ final class WorldGlobalScopes {
                     }
                     try {
                         validate(proof.map(), expected, token);
+                        finalSources.accept(token);
                         return result;
                     } catch (RuntimeException | Error failure) {
                         invalidateFailed(scope, failure);
@@ -239,6 +249,297 @@ final class WorldGlobalScopes {
                     }
                 },
                 result -> resolve(scope));
+    }
+
+    enum AssetKind {
+        ROOT,
+        GROUP,
+        IMAGE
+    }
+
+    /** Descriptive actual consumption; constructing a tuple never grants ancestry. */
+    record AssetReceipt(
+            AssetKind kind,
+            long id,
+            String key,
+            long length,
+            Long declared,
+            int limit,
+            String sha256) {}
+
+    @FunctionalInterface
+    interface AssetUse<R extends AutoCloseable> {
+        R use(AssetAdmission admission);
+    }
+
+    @FunctionalInterface
+    interface RawUse {
+        void use(AssetInput input);
+    }
+
+    static final class AssetInput {
+        private byte[] raw;
+        private final AssetReceipt receipt;
+        private final long thread = Thread.currentThread().threadId();
+
+        private AssetInput(byte[] raw, AssetReceipt receipt) {
+            this.raw = raw;
+            this.receipt = receipt;
+        }
+
+        private void check() {
+            if (raw == null || Thread.currentThread().threadId() != thread) {
+                throw new IllegalStateException("Expired asset input");
+            }
+        }
+
+        // Internal fixed factory only. Its lexical parser must not retain/mutate these owned bytes.
+        byte[] bytes() {
+            check();
+            return raw;
+        }
+
+        AssetReceipt receipt() {
+            check();
+            return receipt;
+        }
+
+        private void expire() {
+            raw = null;
+        }
+    }
+
+    /** Candidate bytes only. The fixed factory alone proves actual parsed root ancestry. */
+    static final class AssetAdmission {
+        private WorldGlobalScopes engine;
+        private Cancellation token;
+        private Facts facts;
+        private final long thread = Thread.currentThread().threadId();
+        private final java.util.ArrayList<AssetReceipt> consumed = new java.util.ArrayList<>();
+        private int roots, groups, images;
+
+        private AssetAdmission(WorldGlobalScopes engine, Facts facts, Cancellation token) {
+            this.engine = engine;
+            this.facts = facts;
+            this.token = token;
+        }
+
+        private void check() {
+            if (engine == null || Thread.currentThread().threadId() != thread) {
+                throw new IllegalStateException("Expired global asset admission");
+            }
+            token.check();
+        }
+
+        Facts facts() {
+            check();
+            return facts;
+        }
+
+        Cancellation cancellation() {
+            check();
+            return token;
+        }
+
+        List<AssetReceipt> receipts() {
+            check();
+            return List.copyOf(consumed);
+        }
+
+        void root(RawUse use) {
+            check();
+            candidate(facts.declaration().reference(), AssetKind.ROOT, use);
+        }
+
+        void groupCandidate(long id, RawUse use) {
+            candidate(id, AssetKind.GROUP, use);
+        }
+
+        void imageCandidate(long id, RawUse use) {
+            candidate(id, AssetKind.IMAGE, use);
+        }
+
+        private void candidate(long id, AssetKind kind, RawUse use) {
+            check();
+            Objects.requireNonNull(use);
+            if (id <= 0
+                    || id > 0xffff_ffffL
+                    || id == facts.wdtId()
+                    || consumed.size() >= 27
+                    || consumed.stream().anyMatch(value -> value.id() == id)) {
+                throw new IllegalArgumentException("Global candidate identity/count");
+            }
+            if (kind == AssetKind.ROOT && ++roots > 1
+                    || kind == AssetKind.GROUP && ++groups > 8
+                    || kind == AssetKind.IMAGE && ++images > 18) {
+                throw new IllegalStateException("Global role credit exhausted");
+            }
+            if (kind != AssetKind.ROOT && roots != 1) {
+                throw new IllegalStateException("Root candidate must precede derived reads");
+            }
+            engine.readAsset(id, kind, token, use, consumed);
+        }
+
+        private void expire() {
+            engine = null;
+            token = null;
+            facts = null;
+            consumed.clear();
+        }
+    }
+
+    /** Fixed G1 source operation; no mesh/image ownership or public facade is admitted here. */
+    <R extends AutoCloseable> R withAssetInputs(
+            GlobalScope scope, Selection comparison, Cancellation external, AssetUse<R> use) {
+        Objects.requireNonNull(use);
+        var finalBindings = new java.util.ArrayList<AssetReceipt>(27);
+        return withDeclaration(
+                scope,
+                comparison,
+                external,
+                borrow -> {
+                    Cancellation token;
+                    synchronized (this) {
+                        resolve(scope);
+                        token = active.child;
+                    }
+                    var admission = new AssetAdmission(this, borrow.facts(), token);
+                    R result = null;
+                    try {
+                        result = Objects.requireNonNull(use.use(admission));
+                        finalBindings.addAll(admission.consumed);
+                        return result;
+                    } catch (RuntimeException | Error failure) {
+                        if (failure instanceof WorldTerrainStreaming.Refusal refused
+                                && refused.reason()
+                                        == WorldTerrainStreaming.Refusal.Reason
+                                                .SOURCE_INVALIDATED) {
+                            invalidateFailed(scope, failure);
+                        }
+                        if (result != null) {
+                            throw closeFailure(result, failure);
+                        }
+                        throw failure;
+                    } finally {
+                        admission.expire();
+                    }
+                },
+                token -> {
+                    try {
+                        for (var binding : finalBindings) {
+                            var actual =
+                                    stat(
+                                            binding.id(),
+                                            token,
+                                            WorldSourceRefusals.Site.GLOBAL_ASSET_BINDING);
+                            if (!binding.key().equals(actual.contentKey())
+                                    || actual.size() != null && actual.size() != binding.length()) {
+                                throw assetChanged();
+                            }
+                        }
+                    } catch (RuntimeException | Error failure) {
+                        invalidateFailed(scope, failure);
+                        throw failure;
+                    } finally {
+                        finalBindings.clear();
+                    }
+                });
+    }
+
+    private void readAsset(
+            long id, AssetKind kind, Cancellation token, RawUse use, List<AssetReceipt> consumed) {
+        int limit = kind == AssetKind.GROUP ? INPUT_LIMIT : 64 << 10;
+        synchronized (this) {
+            if (inputReserved) {
+                throw new IllegalStateException("Global input owner already live");
+            }
+            inputReserved = true;
+        }
+        FileReadStream stream = null;
+        AssetInput borrowed = null;
+        Throwable primary = null;
+        try {
+            var before = stat(id, token, WorldSourceRefusals.Site.SOURCE_INPUT);
+            if (before.size() != null && (before.size() < 12 || before.size() > limit)) {
+                throw unavailable();
+            }
+            var opened = files.openRead(FileTypes.FileRef.id(id), token).join();
+            stream = opened.stream();
+            if (stream == null) {
+                if (opened.state() == FileTypes.FileReadState.COMPLETE) {
+                    throw new IllegalStateException("Complete asset has no stream");
+                }
+                throw unavailable();
+            }
+            if (opened.state() != FileTypes.FileReadState.COMPLETE
+                    || !stream.holes().isEmpty()
+                    || stream.length() < 12
+                    || stream.length() > limit) {
+                throw unavailable();
+            }
+            if (before.size() != null && before.size() != stream.length()) {
+                throw assetChanged();
+            }
+            var data = ByteBuffer.allocate((int) stream.length());
+            while (data.hasRemaining()) {
+                token.check();
+                if (stream.read(data, token).join() <= 0) {
+                    throw unavailable();
+                }
+            }
+            token.check();
+            if (stream.read(ByteBuffer.allocate(1), token).join() != -1) {
+                throw new IllegalStateException("Asset source EOF differs");
+            }
+            var receipt =
+                    new AssetReceipt(
+                            kind,
+                            id,
+                            before.contentKey(),
+                            data.capacity(),
+                            before.size(),
+                            limit,
+                            sha(data.array(), 0, data.capacity()));
+            borrowed = new AssetInput(data.array(), receipt);
+            use.use(borrowed);
+            token.check();
+            var after = stat(id, token, WorldSourceRefusals.Site.GLOBAL_ASSET_BINDING);
+            if (!before.contentKey().equals(after.contentKey())
+                    || after.size() != null && after.size() != data.capacity()) {
+                throw assetChanged();
+            }
+            consumed.add(receipt);
+        } catch (RuntimeException | Error failure) {
+            primary = failure;
+            throw failure;
+        } finally {
+            if (borrowed != null) {
+                borrowed.expire();
+            }
+            try {
+                if (stream != null) {
+                    try {
+                        stream.close();
+                    } catch (RuntimeException | Error failure) {
+                        var fatal = cleanup(primary, failure);
+                        synchronized (this) {
+                            cleanupFault = fatal;
+                            current = null;
+                            replacement = null;
+                        }
+                        throw fatal;
+                    }
+                }
+            } finally {
+                synchronized (this) {
+                    inputReserved = false;
+                }
+            }
+        }
+    }
+
+    private static WorldTerrainStreaming.Refusal assetChanged() {
+        return WorldSourceRefusals.at(WorldSourceRefusals.Site.GLOBAL_ASSET_BINDING);
     }
 
     synchronized boolean isKnown(GlobalScope scope) {
