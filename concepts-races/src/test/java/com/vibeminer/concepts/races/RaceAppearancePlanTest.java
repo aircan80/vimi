@@ -1086,7 +1086,10 @@ final class RaceAppearancePlanTest {
                         "ChrCustomizationChoice",
                         "9559C358",
                         "ChrCustomizationOptionID->ChrCustomizationOption,UiOrderIndex,ChrCustomizationReqID,ChrCustomizationVisReqID",
-                        row(20, "10", "0", "0", "0")));
+                        row(20, "10", "0", "0", "0"),
+                        row(21, "10", "0", "0", "0"),
+                        row(22, "10", "0", "1", "0"),
+                        row(23, "10", "0", "0", "1")));
         var tables =
                 new MemoryTables()
                         .add(BUILD, "enUS", seed)
@@ -1100,7 +1103,58 @@ final class RaceAppearancePlanTest {
                     new RaceCustomization(media)
                             .select(1, 1, 1, Cancellation.NONE, new ArrayList<>());
             assertEquals(selection.choices(), java.util.Set.copyOf(selection.byOption().values()));
-            assertTrue(!selection.byOption().isEmpty());
+            assertEquals(Map.of(10L, 20L), selection.byOption());
+            var alternate =
+                    new RaceCustomization(media)
+                            .select(
+                                    1,
+                                    1,
+                                    1,
+                                    Cancellation.NONE,
+                                    new ArrayList<>(),
+                                    Map.of(10L, 21L));
+            assertEquals(Map.of(10L, 21L), alternate.byOption());
+            for (var invalid :
+                    List.of(
+                            Map.of(10L, 22L),
+                            Map.of(10L, 23L),
+                            Map.of(10L, 99L),
+                            Map.of(11L, 20L))) {
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        RacesService.Projection.class,
+                        () ->
+                                new RaceCustomization(media)
+                                        .select(
+                                                1,
+                                                1,
+                                                1,
+                                                Cancellation.NONE,
+                                                new ArrayList<>(),
+                                                invalid));
+            }
+            var oversized =
+                    new java.util.AbstractMap<Long, Long>() {
+                        @Override
+                        public int size() {
+                            return 4097;
+                        }
+
+                        @Override
+                        public java.util.Set<java.util.Map.Entry<Long, Long>> entrySet() {
+                            throw new AssertionError("No copy before count admission");
+                        }
+                    };
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            new RaceCustomization(media)
+                                    .select(
+                                            1,
+                                            1,
+                                            1,
+                                            Cancellation.NONE,
+                                            new ArrayList<>(),
+                                            oversized));
             org.junit.jupiter.api.Assertions.assertThrows(
                     UnsupportedOperationException.class, () -> selection.byOption().clear());
             selection.requireContext(media, 1, 1, 1);

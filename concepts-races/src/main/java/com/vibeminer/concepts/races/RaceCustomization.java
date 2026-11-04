@@ -101,6 +101,28 @@ final class RaceCustomization {
 
     Selection select(
             long raceId, long classId, long modelId, Cancellation token, List<String> issues) {
+        return select(raceId, classId, modelId, token, issues, Map.of());
+    }
+
+    Selection select(
+            long raceId,
+            long classId,
+            long modelId,
+            Cancellation token,
+            List<String> issues,
+            Map<Long, Long> requested) {
+        if (requested.size() > 4096) {
+            throw new IllegalArgumentException("Too many customization overrides");
+        }
+        var overrides = Map.copyOf(requested);
+        for (var entry : overrides.entrySet()) {
+            if (entry.getKey() < 1
+                    || entry.getKey() > 0xffffffffL
+                    || entry.getValue() < 1
+                    || entry.getValue() > 0xffffffffL) {
+                throw new IllegalArgumentException("Invalid customization IDs");
+            }
+        }
         var options = media.data("ChrCustomizationOption", 4096, token, issues);
         var choices = media.data("ChrCustomizationChoice", 40000, token, issues);
         var requirements = media.data("ChrCustomizationReq", 4096, token, issues);
@@ -176,7 +198,14 @@ final class RaceCustomization {
                                                             requirements,
                                                             prerequisites,
                                                             issues))
+                            .filter(
+                                    row ->
+                                            !overrides.containsKey(option.id())
+                                                    || row.id() == overrides.get(option.id()))
                             .findFirst();
+            if (overrides.containsKey(option.id()) && match.isEmpty()) {
+                throw options.unsupported("Requested choice is not a known eligible option member");
+            }
             if (match.isPresent()) {
                 selected.put(option.id(), match.get().id());
             } else {
@@ -184,6 +213,9 @@ final class RaceCustomization {
                         issues,
                         "Some customization options have no known eligible readable sample choice.");
             }
+        }
+        if (!selected.keySet().containsAll(overrides.keySet())) {
+            throw options.unsupported("Requested option is not eligible for this model");
         }
         return new Selection(media, raceId, classId, modelId, selected, all);
     }
