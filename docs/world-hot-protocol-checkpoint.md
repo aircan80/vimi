@@ -388,3 +388,16 @@ complete terminal cleanup. Frame fixtures cover ACK/frame reordering, old readba
 completion after commit, continuous moving-camera acceptance, stationary commit,
 policy/resize barriers, closed delivery and no v1 compatibility changes. Authored
 native feasibility and actual continuous-PID boundary traces remain later gates.
+
+## Implementation checkpoint: pure metadata models
+
+`WorldStreamState` is a package-private owner-thread model, not a running session.
+It models ten slot generations, one issued credit/incoming pair, ordered commits,
+source-reference credits, established and unused cancellation, optional rejection
+and close drain. `WorldStreamFrameGate` models the independent presentation
+revision/policy barriers without allocating pixels. Seven authored JUnit fixtures
+exercise240 commits/reuse, held decoder/reference ownership, replay/ABA, unoffered
+writer cancellation, same-tile replacement, moving and stationary presentation,
+ACK/frame reordering and close. File codecs, actual mapped-memory fences, bounded
+pipe queues/watchdog, worker integration and native renderer remain later work;
+passing these models does not establish their implementation or performance.
