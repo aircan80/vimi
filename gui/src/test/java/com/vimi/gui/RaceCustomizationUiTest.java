@@ -120,13 +120,15 @@ public final class RaceCustomizationUiTest {
             require(fx(() -> activity(panel)),"Held cancellation does not block FX or end activity");
             require(source.defaults.get()==2,"No replacement before original work/cancel retirement");
             stale.complete(result(0xff0044ff));
+            require(fx(() -> pixels(panel))==original,"Retired blue result cannot replace accepted pixels while cancellation is held");
             source.cancelRelease.countDown();
             await(() -> source.defaults.get()==3 && !activity(panel) && pixels(panel)==original);
             source.next=new CompletableFuture<>();source.cancelEntered=null;
             fx(() -> { picker(panel).getSelectionModel().select(1);return null; });
             await(() -> source.overrides.get()==3);
             revision.incrementAndGet();source.next.complete(result(0xff00ff00));
-            await(() -> !activity(panel));
+            await(() -> !activity(panel) && ((javafx.scene.control.Label)panel.lookup("#race-model-state")).getText().contains("Build changed"));
+            require(fx(() -> picker(panel).isDisabled() && pixels(panel)==0),"Workspace-stale choice cannot publish pixels and controls retire");
             require(source.closes.get()==0,"Panel never closes borrowed race source");
             System.out.println("RACE_CUSTOMIZATION_UI_PASS actualChoicePixels reset staleSelection heldCancellationFxResponsive borrowedSourceOpen");
         } finally {
