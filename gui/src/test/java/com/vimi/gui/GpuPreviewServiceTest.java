@@ -47,6 +47,7 @@ public final class GpuPreviewServiceTest {
             inlineFramesAndCoalescedControls(root);
             terrainAndModelsShareOwnerAndKeepControlsTyped(root);
             streamingUsesTheSameOwnerAndWaitsHeldStarterDrain(root);
+            streamingAdapterSeparatesPendingSessionFromActualDrain(root);
             statusListenerErrorCannotReleaseStreamingOwnership(root);
             emptyTexturesKeepNativeHeightFallbackAndRejectedBatchesClose(root);
             terrainTextureAcknowledgementsStayBoundToQualifiedSourceAndDrainClaims(root);
@@ -189,6 +190,46 @@ public final class GpuPreviewServiceTest {
                     "Protocol initialization alone never claims a displayed World frame");
             world.handle((value, error) -> null).get(2, TimeUnit.SECONDS);
             service.closeOwner(modelOwner).get(2, TimeUnit.SECONDS);
+        } finally {
+            release.countDown();
+            service.closeAsync().get(3, TimeUnit.SECONDS);
+        }
+    }
+
+    private static void streamingAdapterSeparatesPendingSessionFromActualDrain(Path root)
+            throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var directory = new AtomicReference<Path>();
+        var service = new GpuPreviewService(root, GpuPreviewServiceTest::write,
+                (scene, frames) -> { throw new AssertionError("No model launch requested"); },
+                path -> new GpuPreviewService.Frames() {
+                    public GpuPreviewService.Frame readLatest(long after) { return null; }
+                    public void close() {}
+                }, Duration.ofSeconds(2), Duration.ofMillis(200), arguments -> {
+                    directory.set(Path.of(arguments.get(1)));
+                    entered.countDown();
+                    release.await();
+                    throw new IOException("Authored held start without a child");
+                });
+        try {
+            var first = new WorldStreamGpuOwner(service, "ab".repeat(32));
+            await(entered);
+            var second = new WorldStreamGpuOwner(service, "cd".repeat(32));
+            var queuedSession = second.session();
+            second.closeAsync().get(1, TimeUnit.SECONDS);
+            require(queuedSession.isCompletedExceptionally(),
+                    "Canceled queued owner cannot leave its Session future pending");
+            var actualDrain = first.closeAsync();
+            require(first.session().isCompletedExceptionally(),
+                    "Controller can observe stop before a held starter returns");
+            require(!actualDrain.isDone() && Files.exists(directory.get()),
+                    "Session failure does not forge held startup resource drain");
+            release.countDown();
+            expectFailure(actualDrain, "Actual close retains the late startup failure");
+            require(!Files.exists(directory.get()),
+                    "Actual adapter close waits for owned mapping retirement");
+            first.closeAsync().get(1, TimeUnit.SECONDS);
         } finally {
             release.countDown();
             service.closeAsync().get(3, TimeUnit.SECONDS);
