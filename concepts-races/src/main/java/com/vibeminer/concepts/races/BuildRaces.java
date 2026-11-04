@@ -67,6 +67,32 @@ public interface BuildRaces extends AutoCloseable {
                         "Textured sample is unavailable"));
     }
 
+    default CompletableFuture<RaceCustomizationTypes.Catalog> customizations(
+            long raceId, long classId, long modelId, Cancellation token) {
+        return CompletableFuture.completedFuture(
+                new RaceCustomizationTypes.Catalog(
+                        RaceTypes.State.UNAVAILABLE,
+                        raceId,
+                        classId,
+                        modelId,
+                        java.util.List.of(),
+                        java.util.List.of(),
+                        "Customization controls unavailable"));
+    }
+
+    default CompletableFuture<RaceAppearanceTypes.Result> appearance(
+            RaceCustomizationTypes.Request request, Cancellation token) {
+        return CompletableFuture.completedFuture(
+                new RaceAppearanceTypes.Result(
+                        RaceTypes.State.UNAVAILABLE,
+                        null,
+                        java.util.Set.of(),
+                        java.util.List.of(),
+                        java.util.List.of(),
+                        false,
+                        "Requested customization is unavailable"));
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override
