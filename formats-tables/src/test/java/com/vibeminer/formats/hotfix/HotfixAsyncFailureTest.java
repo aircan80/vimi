@@ -18,22 +18,34 @@ class HotfixAsyncFailureTest {
     @Test
     void publicInspectionTerminatesWithoutCallingForeignFailureAccessors() throws Exception {
         var getters = new AtomicInteger();
-        var original = new AssertionError() {
-            private static final long serialVersionUID = 1L;
-            @Override
-            public String getMessage() {
-                getters.incrementAndGet();
-                throw new AssertionError("Foreign message accessor invoked");
-            }
-        };
-        var source = new Db2ByteSource() {
-            public long length() { return 44; }
-            public List<Db2Types.Hole> holes() { return List.of(); }
-            public CompletableFuture<Void> readRange(long offset, ByteBuffer bytes, Cancellation token) {
-                return CompletableFuture.failedFuture(original);
-            }
-        };
-        var result = HotfixCacheReader.inspect(source, 70707, new HotfixCacheReader.Limits(), Cancellation.NONE);
+        var original =
+                new AssertionError() {
+                    private static final long serialVersionUID = 1L;
+
+                    @Override
+                    public String getMessage() {
+                        getters.incrementAndGet();
+                        throw new AssertionError("Foreign message accessor invoked");
+                    }
+                };
+        var source =
+                new Db2ByteSource() {
+                    public long length() {
+                        return 44;
+                    }
+
+                    public List<Db2Types.Hole> holes() {
+                        return List.of();
+                    }
+
+                    public CompletableFuture<Void> readRange(
+                            long offset, ByteBuffer bytes, Cancellation token) {
+                        return CompletableFuture.failedFuture(original);
+                    }
+                };
+        var result =
+                HotfixCacheReader.inspect(
+                        source, 70707, new HotfixCacheReader.Limits(), Cancellation.NONE);
         try {
             Throwable failure = result.handle((value, error) -> error).get(3, TimeUnit.SECONDS);
             if (failure != null && failure.getClass() == CompletionException.class) {
