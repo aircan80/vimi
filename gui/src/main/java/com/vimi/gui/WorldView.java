@@ -1256,6 +1256,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void showInventory() {
+        if (spawns != null) spawns.suspend();
         resumeCamera = null;
         minimap.hide();
         retireGpu();

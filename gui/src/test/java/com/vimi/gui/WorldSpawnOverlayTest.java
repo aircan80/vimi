@@ -93,7 +93,7 @@ public final class WorldSpawnOverlayTest {
         var unavailable = WorldSpawns.unavailable(LocationTypes.State.UNSUPPORTED, "Polestar is disabled.");
         require(WorldSpawnOverlay.summary(unavailable, null, 0, 0).contains("unavailable: Polestar is disabled."),
                 "Unavailable reason is shown");
-        require(WorldSpawnOverlay.summary(index, nearby, 1, 3).contains("3 beyond the marker cap"), "Cap is disclosed");
+        require(WorldSpawnOverlay.summary(index, nearby, 1, 3).contains("3 beyond the 256-marker cap"), "Cap is disclosed");
         require(WorldSpawnOverlay.rankColor(3) != WorldSpawnOverlay.rankColor(0), "Rank colors differ");
     }
 

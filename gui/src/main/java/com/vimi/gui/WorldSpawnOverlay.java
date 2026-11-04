@@ -162,7 +162,7 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
     }
 
     void refresh() {
-        if (closed || !enabled.isSelected()) return;
+        if (closed || suspended || !enabled.isSelected()) return;
         var view = views.get();
         if (view == null) {
             if (drawn != null) clearCanvas();
@@ -222,9 +222,9 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
             index = failure == null ? result : WorldSpawns.unavailable(LocationTypes.State.UNKNOWN,
                     "Spawn source could not be read: " + rootMessage(failure));
             drawn = null;
-            if (!enabled.isSelected()) return;
+            if (!enabled.isSelected() || suspended) return;
             refresh();
-            if (drawn == null) status.setText(summary(index, null, 0, 0));
+            if (drawn == null && index != null) status.setText(summary(index, null, 0, 0));
         }));
     }
 
@@ -248,7 +248,7 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
         int capped = Math.max(0, visible.size() - LIMIT);
         markers = visible.subList(capped, visible.size());
         paint(g, markers);
-        status.setText(summary(index, nearby, markers.size(), capped + nearby.omitted()));
+        status.setText(summary(index, nearby, markers.size(), capped));
     }
 
     /**
@@ -335,7 +335,10 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
             if (nearby.heightless() > 0)
                 text.append(" · ").append(nearby.heightless()).append(" without recorded height not placed");
             if (capped > 0)
-                text.append(" · ").append(capped).append(" beyond the marker cap");
+                text.append(" · ").append(capped).append(" beyond the ").append(LIMIT).append("-marker cap");
+            if (nearby.omitted() > 0)
+                text.append(" · ").append(nearby.omitted()).append(" farther points beyond the ")
+                        .append(WorldSpawns.MAX_NEARBY).append("-point query bound");
             if (nearby.placed().isEmpty() && nearby.heightless() == 0 && index.count(nearby.mapId()) == 0)
                 text.append(" · no declared points on this map");
         } else {
