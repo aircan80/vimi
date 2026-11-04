@@ -239,8 +239,8 @@ final class WorldGlobalScopes {
                         borrow.expire();
                     }
                     try {
-                        validate(proof.map(), expected, token);
                         finalSources.accept(token);
+                        validate(proof.map(), expected, token);
                         return result;
                     } catch (RuntimeException | Error failure) {
                         invalidateFailed(scope, failure);
