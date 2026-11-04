@@ -152,6 +152,8 @@ final class GpuPreviewService {
     private final SceneWriter writer;
     private final InlineStarter starter;
     private final WorldStreamTransport.Starter streamingStarter;
+    private volatile com.vibeminer.rendering.bgfx.WorldGlobalTransport.Starter globalStarter =
+            GpuPreviewService::startGlobalChild;
     private final FrameFactory frameFactory;
     private final boolean nativeDefaults;
     private final Path temporaryParent;
@@ -160,7 +162,20 @@ final class GpuPreviewService {
     private Request desired, active;
     private boolean running, closed;
 
-    private enum RequestKind { MODEL, COLD_TERRAIN, STREAMING }
+    private enum RequestKind { MODEL, COLD_TERRAIN, STREAMING, GLOBAL }
+
+    /** Runs on the existing lifecycle lane, off FX, inside actual Source authority. */
+    @FunctionalInterface
+    interface GlobalPreparer {
+        WorldGlobalSourceBridge.Prepared prepare(Path requestParent,
+                com.vibeminer.access.Cancellation cancellation) throws IOException;
+    }
+
+    /** Small metadata handed to the view: the live session and its inspection camera. */
+    record GlobalOpened(com.vibeminer.rendering.bgfx.WorldGlobalTransport.Session session,
+            com.vibeminer.rendering.bgfx.WorldGlobalTransport.Camera initial) {}
+
+    private record Global(GlobalPreparer preparer, Consumer<GlobalOpened> opened) {}
 
     private record Streaming(WorldStreamTransport.Spec spec,
             Consumer<WorldStreamTransport.Session> opened) {}
@@ -168,6 +183,7 @@ final class GpuPreviewService {
     private static final class Request {
         final RequestKind kind;
         final Streaming streaming;
+        final Global global;
         final Object owner;
         final PreviewMesh mesh;
         final TerrainScene terrain;
@@ -198,6 +214,7 @@ final class GpuPreviewService {
                 Consumer<Frame> frames) {
             this.kind = RequestKind.MODEL;
             this.streaming = null;
+            this.global = null;
             this.frames = frames;
             this.owner = owner;
             this.mesh = mesh;
@@ -212,6 +229,7 @@ final class GpuPreviewService {
                 Consumer<Status> listener, Consumer<Frame> frames) {
             this.kind = RequestKind.COLD_TERRAIN;
             this.streaming = null;
+            this.global = null;
             this.owner = owner;
             this.terrain = terrain;
             this.textures = textures == null ? null : textures.retain();
@@ -225,6 +243,21 @@ final class GpuPreviewService {
         Request(Object owner, Streaming streaming, Consumer<Status> listener) {
             this.kind = RequestKind.STREAMING;
             this.streaming = streaming;
+            this.global = null;
+            this.owner = owner;
+            this.listener = listener;
+            this.frames = ignored -> {};
+            this.mesh = null;
+            this.terrain = null;
+            this.textures = null;
+            this.appearance = null;
+            this.parts = Set.of();
+        }
+
+        Request(Object owner, Global global, Consumer<Status> listener) {
+            this.kind = RequestKind.GLOBAL;
+            this.streaming = null;
+            this.global = global;
             this.owner = owner;
             this.listener = listener;
             this.frames = ignored -> {};
@@ -373,6 +406,21 @@ final class GpuPreviewService {
         Objects.requireNonNull(opened);
         Objects.requireNonNull(listener);
         return enqueue(new Request(owner, new Streaming(spec, opened), listener));
+    }
+
+    /** Same application GPU owner and gate; metadata enqueue only, no IO on the caller. */
+    CompletableFuture<Void> openGlobal(Object owner, GlobalPreparer preparer,
+            Consumer<GlobalOpened> opened, Consumer<Status> listener) {
+        Objects.requireNonNull(owner);
+        Objects.requireNonNull(preparer);
+        Objects.requireNonNull(opened);
+        Objects.requireNonNull(listener);
+        return enqueue(new Request(owner, new Global(preparer, opened), listener));
+    }
+
+    /** Test seam for the child launcher; production uses the application java command. */
+    void globalStarter(com.vibeminer.rendering.bgfx.WorldGlobalTransport.Starter starter) {
+        globalStarter = Objects.requireNonNull(starter);
     }
 
     private CompletableFuture<Void> enqueue(Request request) {
@@ -626,6 +674,159 @@ final class GpuPreviewService {
         }
     }
 
+    private void performGlobal(Request request) {
+        if (request.stopping) {
+            request.publish(State.CLOSED, "Interior renderer canceled");
+            request.finish(null);
+            return;
+        }
+        var cancellation = new com.vibeminer.access.Cancellation();
+        var preparing = new java.util.concurrent.atomic.AtomicBoolean(true);
+        Thread.ofVirtual().name("gpu-global-cancel").start(() -> {
+            while (preparing.get()) {
+                if (request.stopping) {
+                    cancellation.cancel();
+                    return;
+                }
+                try {
+                    Thread.sleep(20);
+                } catch (InterruptedException interrupted) {
+                    return;
+                }
+            }
+        });
+        WorldGlobalSourceBridge.Prepared prepared = null;
+        WorldGlobalSourceBridge.OwnedInput owned = null;
+        com.vibeminer.rendering.bgfx.WorldGlobalTransport.Session session = null;
+        Throwable failure = null;
+        boolean ownedClosed = false;
+        String message = "Interior renderer unavailable";
+        try {
+            var parent = temporaryParent == null
+                    ? Path.of(System.getProperty("java.io.tmpdir")) : temporaryParent;
+            request.publish(State.PREPARING, "Reading the instance interior from client data…");
+            prepared = request.global.preparer().prepare(parent, cancellation);
+            preparing.set(false);
+            if (request.stopping) return;
+            var initial = com.vibeminer.rendering.bgfx.WorldGlobalTransport.Camera.inspecting(
+                    prepared.bounds());
+            owned = prepared.move();
+            // MOVE transferred the file; Source payload/credit retires independently.
+            var source = prepared;
+            prepared = null;
+            source.close();
+            if (request.stopping) return;
+            request.publish(State.STARTING, "Starting GPU interior renderer…");
+            session = com.vibeminer.rendering.bgfx.WorldGlobalTransport.launch(
+                    parent, owned.input(), null, globalStarter);
+            request.global.opened().accept(new GlobalOpened(session, initial));
+            var terminated = session.terminated();
+            boolean closeSent = false, readyShown = false;
+            while (!terminated.isDone()) {
+                if (request.stopping && !closeSent) {
+                    closeSent = true;
+                    request.publish(State.STOPPING, "Stopping GPU interior renderer…");
+                    session.closeAsync();
+                }
+                var consumed = session.inputConsumed();
+                if (!ownedClosed && consumed.isDone() && !consumed.isCompletedExceptionally()) {
+                    ownedClosed = true;
+                    owned.close();
+                }
+                var ready = session.ready();
+                if (!readyShown && ready.isDone()) {
+                    readyShown = true;
+                    if (ready.isCompletedExceptionally()) {
+                        request.publish(State.FAILED,
+                                "GPU interior renderer failed; waiting for cleanup…");
+                        request.stopping = true;
+                    } else {
+                        request.ready = true;
+                        request.publish(State.READY, "GPU interior");
+                    }
+                }
+                Thread.sleep(10);
+            }
+            terminated.join();
+        } catch (Throwable error) {
+            failure = error;
+            message = globalMessage(error);
+        } finally {
+            preparing.set(false);
+            boolean drained = true;
+            if (session != null) {
+                if (!session.terminated().isDone()) {
+                    session.closeAsync();
+                }
+                try {
+                    session.terminated().join();
+                } catch (Throwable ended) {
+                    if (failure == null) failure = ended;
+                }
+                // Input/mapping deletion requires actual process exit, never kill intent.
+                drained = session.exited();
+            }
+            if (prepared != null) {
+                try {
+                    prepared.close();
+                } catch (Throwable cleanup) {
+                    if (failure == null) failure = cleanup;
+                    drained = false;
+                }
+            }
+            if (owned != null && !ownedClosed && drained) {
+                try {
+                    owned.close();
+                } catch (Throwable cleanup) {
+                    if (failure == null) failure = cleanup;
+                    drained = false;
+                }
+            }
+            if (owned != null && !ownedClosed && !drained) failClosed(request);
+            else if (!drained) failClosed(request);
+            if (failure == null || request.stopping && failure instanceof java.util.concurrent.CancellationException) {
+                request.publish(State.CLOSED, "GPU interior renderer stopped");
+                request.finish(null);
+            } else {
+                request.publish(State.FAILED, message);
+                request.finish(failure);
+            }
+        }
+    }
+
+    /** Bounded user text; never raw paths, provider messages or arbitrary causes. */
+    static String globalMessage(Throwable error) {
+        for (Throwable at = error; at != null; at = at.getCause()) {
+            if (at instanceof com.vibeminer.concepts.world.WorldTerrainStreaming.Refusal refusal) {
+                return switch (refusal.reason()) {
+                    case CAPABILITY_UNAVAILABLE ->
+                            "This instance is outside the supported interior profile ("
+                                    + refusal.site() + ")";
+                    case RETRY_LATER -> "Interior source is busy; retry shortly";
+                    case SOURCE_INVALIDATED -> "Interior source changed; retry";
+                };
+            }
+            if (at instanceof java.util.concurrent.CancellationException) {
+                return "Interior preparation canceled";
+            }
+            if (at instanceof GlobalUnavailable unavailable) {
+                return unavailable.getMessage();
+            }
+        }
+        String type = error.getClass().getSimpleName();
+        return "Interior renderer unavailable (" + type.substring(0, Math.min(64, type.length()))
+                + ")";
+    }
+
+    /** Explicit user-safe unavailability created by application code only. */
+    static final class GlobalUnavailable extends IOException {
+        private static final long serialVersionUID = 1L;
+
+        GlobalUnavailable(String message) {
+            super(message);
+        }
+    }
+
     private void failClosed(Request request) {
         Request pending;
         synchronized (gate) {
@@ -644,6 +845,10 @@ final class GpuPreviewService {
     private void perform(Request request) {
         if (request.kind == RequestKind.STREAMING) {
             performStreaming(request);
+            return;
+        }
+        if (request.kind == RequestKind.GLOBAL) {
+            performGlobal(request);
             return;
         }
         Path directory = null, scene = null, framePath = null, texturePath = null;
@@ -941,6 +1146,12 @@ final class GpuPreviewService {
         command.add(frames.toAbsolutePath().toString());
         command.add("--parent-pid");
         command.add(Long.toString(ProcessHandle.current().pid()));
+        return new ProcessBuilder(command).start();
+    }
+
+    private static Process startGlobalChild(List<String> arguments) throws IOException {
+        var command = nativeCommand();
+        command.addAll(arguments);
         return new ProcessBuilder(command).start();
     }
 

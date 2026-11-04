@@ -162,6 +162,11 @@ public final class WorldGlobalTransport {
             }
         }
 
+        /** True only once the actual child process has exited; kill intent is never exit. */
+        public boolean exited() {
+            return !process.isAlive();
+        }
+
         public CompletableFuture<Void> inputConsumed() {
             return consumed.copy();
         }

@@ -1,0 +1,298 @@
+package com.vimi.gui;
+
+import com.vibeminer.concepts.world.BuildWorld;
+import com.vibeminer.rendering.bgfx.WorldGlobalTransport;
+
+import javafx.animation.AnimationTimer;
+import javafx.application.Platform;
+import javafx.geometry.Insets;
+import javafx.scene.Scene;
+import javafx.scene.control.Label;
+import javafx.scene.image.ImageView;
+import javafx.scene.image.PixelFormat;
+import javafx.scene.image.WritableImage;
+import javafx.scene.input.KeyCode;
+import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.StackPane;
+import javafx.scene.layout.VBox;
+import javafx.stage.Stage;
+
+import java.util.HashSet;
+import java.util.Objects;
+import java.util.Set;
+import java.util.function.Supplier;
+
+/**
+ * Inspection view of one qualified global WMO-only instance map through the application GPU owner.
+ * The initial camera frames the native bounds; it is not a client entrance, spawn or floor.
+ */
+final class GlobalInteriorView extends BorderPane implements AutoCloseable {
+    private record Delivery(long generation, WorldGlobalTransport.Frame frame) {}
+
+    private final Object owner = new Object();
+    private final GpuPreviewService service;
+    private final ImageView image = new ImageView();
+    private final StackPane viewport = new StackPane(image);
+    private final Label status = new Label("Preparing interior…");
+    private final Label help =
+            new Label("W/A/S/D move · Q/E down/up · arrows or drag to look · Shift faster");
+    private final Set<KeyCode> keys = new HashSet<>();
+    private final ModelPreviewView.LatestDelivery<Delivery> frames =
+            new ModelPreviewView.LatestDelivery<>(Platform::runLater, this::present);
+    private final AnimationTimer timer;
+    private WorldGlobalTransport.Session session;
+    private WorldGlobalTransport.Camera camera;
+    private volatile long generation, floor, latestSent;
+    private volatile int width, height;
+    private volatile boolean polling;
+    private long presentedSequence, lastTick;
+    private double dragX, dragY;
+    private boolean dirty, closed;
+
+    GlobalInteriorView(
+            GpuPreviewService service, Supplier<BuildWorld> worlds, long mapId, String name) {
+        this.service = Objects.requireNonNull(service);
+        Objects.requireNonNull(worlds);
+        setId("global-interior");
+        status.setId("global-interior-status");
+        status.setWrapText(true);
+        help.getStyleClass().add("muted");
+        var heading = new Label(name + " · Map #" + mapId);
+        heading.getStyleClass().add("h2");
+        var top = new VBox(4, heading, status, help);
+        top.setPadding(new Insets(12));
+        setTop(top);
+        viewport.setMinSize(160, 100);
+        viewport.setStyle("-fx-background-color: #112233;");
+        viewport.setFocusTraversable(true);
+        image.fitWidthProperty().bind(viewport.widthProperty());
+        image.fitHeightProperty().bind(viewport.heightProperty());
+        image.setPreserveRatio(false);
+        image.setSmooth(true);
+        setCenter(viewport);
+        viewport.setOnKeyPressed(e -> keys.add(e.getCode()));
+        viewport.setOnKeyReleased(e -> keys.remove(e.getCode()));
+        viewport.setOnMouseClicked(e -> viewport.requestFocus());
+        viewport.setOnMousePressed(
+                e -> {
+                    dragX = e.getX();
+                    dragY = e.getY();
+                    viewport.requestFocus();
+                });
+        viewport.setOnMouseDragged(
+                e -> {
+                    look(-(e.getX() - dragX) * .005, -(e.getY() - dragY) * .005);
+                    dragX = e.getX();
+                    dragY = e.getY();
+                });
+        viewport.widthProperty().addListener((o, a, b) -> dirty = true);
+        viewport.heightProperty().addListener((o, a, b) -> dirty = true);
+        timer =
+                new AnimationTimer() {
+                    @Override
+                    public void handle(long now) {
+                        tick(now);
+                    }
+                };
+        service.openGlobal(
+                        owner,
+                        (parent, cancel) -> {
+                            var world = worlds.get();
+                            if (world == null) {
+                                throw new GpuPreviewService.GlobalUnavailable(
+                                        "World data is not ready for this build");
+                            }
+                            var scenes =
+                                    world.globalScenes()
+                                            .orElseThrow(
+                                                    () ->
+                                                            new GpuPreviewService.GlobalUnavailable(
+                                                                    "Interior rendering needs local"
+                                                                            + " client files"));
+                            var catalog = world.catalog(cancel).join();
+                            var map =
+                                    catalog.maps().stream()
+                                            .filter(m -> m.id() == mapId)
+                                            .findFirst()
+                                            .orElseThrow(
+                                                    () ->
+                                                            new GpuPreviewService.GlobalUnavailable(
+                                                                    "Map #"
+                                                                            + mapId
+                                                                            + " is not in the"
+                                                                            + " readable World"
+                                                                            + " catalog"));
+                            var scope = scenes.createScope(map, cancel);
+                            scenes.activate(scope);
+                            return WorldGlobalSourceBridge.prepare(scenes, scope, parent, cancel);
+                        },
+                        opened -> Platform.runLater(() -> opened(opened)),
+                        update -> Platform.runLater(() -> state(update)))
+                .exceptionally(ignored -> null);
+    }
+
+    static Stage open(Supplier<BuildWorld> worlds, long mapId, String name) {
+        var view = new GlobalInteriorView(GpuPreviewService.application(), worlds, mapId, name);
+        var stage = new Stage();
+        stage.setTitle(name + " · interior");
+        stage.setScene(new Scene(view, 960, 640));
+        stage.setOnHidden(e -> view.close());
+        stage.show();
+        view.viewport.requestFocus();
+        return stage;
+    }
+
+    private void state(GpuPreviewService.Status update) {
+        if (closed) {
+            return;
+        }
+        switch (update.state()) {
+            case READY -> status.setText("GPU interior · inspection camera, not a client entrance");
+            case FAILED, CLOSED -> {
+                stopPolling();
+                status.setText(update.message());
+            }
+            default -> status.setText(update.message());
+        }
+    }
+
+    private void opened(GpuPreviewService.GlobalOpened opened) {
+        if (closed) {
+            return;
+        }
+        session = opened.session();
+        camera = opened.initial();
+        dirty = true;
+        polling = true;
+        long token = ++generation;
+        var current = session;
+        Thread.ofVirtual().name("global-interior-frames").start(() -> poll(current, token));
+        timer.start();
+    }
+
+    private void poll(WorldGlobalTransport.Session current, long token) {
+        while (polling && generation == token) {
+            try {
+                int w = width, h = height;
+                if (w > 0 && h > 0 && latestSent >= floor && floor > 0) {
+                    var frame = current.poll(floor, w, h);
+                    if (frame != null) {
+                        frames.submit(new Delivery(token, frame));
+                    }
+                }
+                Thread.sleep(8);
+            } catch (InterruptedException interrupted) {
+                return;
+            } catch (java.io.IOException | RuntimeException failed) {
+                Platform.runLater(() -> status.setText("Interior frames unavailable"));
+                return;
+            }
+        }
+    }
+
+    private void tick(long now) {
+        if (closed || session == null || camera == null) {
+            return;
+        }
+        double dt = lastTick == 0 ? 0 : Math.min(.1, (now - lastTick) / 1e9);
+        lastTick = now;
+        double speed = 40 * dt * (keys.contains(KeyCode.SHIFT) ? 4 : 1);
+        double forward = axis(KeyCode.W, KeyCode.S), right = axis(KeyCode.D, KeyCode.A);
+        double up = axis(KeyCode.E, KeyCode.Q);
+        if (forward != 0 || right != 0 || up != 0) {
+            try {
+                camera = camera.move(forward * speed, right * speed, up * speed);
+                dirty = true;
+            } catch (IllegalArgumentException outside) {
+                // Global camera bounds reached; keep the last valid camera.
+            }
+        }
+        double turn = axis(KeyCode.LEFT, KeyCode.RIGHT), tilt = axis(KeyCode.UP, KeyCode.DOWN);
+        if (turn != 0 || tilt != 0) {
+            look(turn * 1.6 * dt, tilt * 1.2 * dt);
+        }
+        if (!dirty) {
+            return;
+        }
+        dirty = false;
+        double paneW = Math.max(1, viewport.getWidth()), paneH = Math.max(1, viewport.getHeight());
+        double scale = Math.min(1, Math.min(800 / paneW, 500 / paneH));
+        int w = Math.clamp(Math.round(paneW * scale), 1, 800);
+        int h = Math.clamp(Math.round(paneH * scale), 1, 500);
+        boolean resized = w != width || h != height;
+        long revision = session.camera(w, h, camera);
+        if (resized) {
+            // Resize floor: never present an older size or a pre-resize revision.
+            floor = revision;
+            width = w;
+            height = h;
+        }
+        latestSent = revision;
+    }
+
+    private double axis(KeyCode positive, KeyCode negative) {
+        return (keys.contains(positive) ? 1 : 0) - (keys.contains(negative) ? 1 : 0);
+    }
+
+    private void look(double turn, double tilt) {
+        if (camera == null) {
+            return;
+        }
+        try {
+            camera = camera.look(turn, tilt);
+            dirty = true;
+        } catch (IllegalArgumentException outside) {
+            // Pitch/yaw bound reached.
+        }
+    }
+
+    private void present(Delivery delivery) {
+        var frame = delivery.frame();
+        if (closed
+                || delivery.generation() != generation
+                || frame.sequence() <= presentedSequence
+                || frame.revision() < floor
+                || frame.width() != width
+                || frame.height() != height) {
+            return;
+        }
+        var bitmap =
+                image.getImage() instanceof WritableImage existing
+                                && (int) existing.getWidth() == frame.width()
+                                && (int) existing.getHeight() == frame.height()
+                        ? existing
+                        : new WritableImage(frame.width(), frame.height());
+        bitmap.getPixelWriter()
+                .setPixels(
+                        0,
+                        0,
+                        frame.width(),
+                        frame.height(),
+                        PixelFormat.getIntArgbPreInstance(),
+                        frame.pixels(),
+                        frame.width());
+        image.setImage(bitmap);
+        presentedSequence = frame.sequence();
+    }
+
+    boolean presented() {
+        return presentedSequence > 0;
+    }
+
+    private void stopPolling() {
+        polling = false;
+        ++generation;
+        frames.clear();
+        timer.stop();
+    }
+
+    @Override
+    public void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        stopPolling();
+        service.closeOwner(owner);
+    }
+}

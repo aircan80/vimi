@@ -609,3 +609,11 @@ tasks.register('worldGlobalSourceBridgeTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldGlobalSourceBridgeTest'
 }
 check.dependsOn worldGlobalSourceBridgeTest
+
+// Deterministic GLOBAL request lifecycle on the shared GPU owner; no child process or display.
+tasks.register('gpuPreviewGlobalTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.GpuPreviewGlobalTest'
+}
+check.dependsOn gpuPreviewGlobalTest

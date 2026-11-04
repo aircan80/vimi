@@ -406,3 +406,13 @@ tasks.register('nativeGpuGlobalChildProof', JavaExec) {
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args layout.buildDirectory.dir('native-global-child').get().asFile.absolutePath
 }
+
+// The eight verified global candidate blobs (glsl/spirv/metal/dx11) ship with the application so
+// the explicit GLOBAL child can render. Sources stay in their reviewed test-resource location;
+// the runtime still checks each blob against its canonical digest sidecar before use.
+tasks.named('processResources', ProcessResources) {
+    dependsOn tasks.named('verifyGlobalCandidateShaders')
+    from('src/test/resources/com/vibeminer/rendering/bgfx/shaders/global-candidate') {
+        into 'com/vibeminer/rendering/bgfx/shaders/global-candidate'
+    }
+}
