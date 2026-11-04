@@ -127,32 +127,27 @@ public final class PreparedFileCatalog {
                         long count = 0, unknown = 0;
                         long locale = FileLocales.bitOf(identity.locale());
                         var batch = new Batch(writer, generated.value);
-                        for (long id : build.fileDataIds(identity.locale())) {
-                            token.check();
-                            byte[] record;
-                            BuildTypes.FileVariant variant;
-                            try {
-                                variant =
+                        try {
+                            for (long id : build.fileDataIds(identity.locale())) {
+                                token.check();
+                                var variant =
                                         BuildFilesHandle.pick(build.resolve(id).variants(), locale);
                                 if (variant == null) {
                                     throw new IllegalStateException(
                                             "Locale catalog contains an unresolved ID");
                                 }
-                                record = encode(variant);
-                            } catch (RuntimeException failure) {
-                                // Earlier records reach the writer first, so its failures win as
-                                // they did when each record was written before the next resolved.
-                                batch.flush();
-                                throw failure;
+                                batch.add(id, encode(variant));
+                                count++;
+                                if (variant.decodedSize() == null) {
+                                    unknown++;
+                                }
+                                if (count % 1000 == 0) {
+                                    progress.accept(count, Math.max(total, count));
+                                }
                             }
-                            batch.add(id, record);
-                            count++;
-                            if (variant.decodedSize() == null) {
-                                unknown++;
-                            }
-                            if (count % 1000 == 0) {
-                                progress.accept(count, Math.max(total, count));
-                            }
+                        } catch (Throwable failure) {
+                            batch.surfaceEarlierFailure();
+                            throw failure;
                         }
                         batch.flush();
                         token.check();
@@ -198,6 +193,20 @@ public final class PreparedFileCatalog {
                 size = 0;
                 writer.addAll(ids, records, n, cancellation).join();
                 Arrays.fill(records, 0, n, null);
+            }
+        }
+
+        /**
+         * Called when the listing fails or is canceled with records still pending. Each record used
+         * to reach the writer before the next was resolved, so a writer failure for one of them
+         * (such as a duplicate ID) was the failure reported; append them regardless of cancellation
+         * so that failure still wins. At most one batch of work remains.
+         */
+        void surfaceEarlierFailure() {
+            if (size > 0) {
+                int n = size;
+                size = 0;
+                writer.addAll(ids, records, n, com.vibeminer.generated.Cancellation.NONE).join();
             }
         }
     }

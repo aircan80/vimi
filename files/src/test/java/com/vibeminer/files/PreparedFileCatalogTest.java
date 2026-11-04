@@ -211,6 +211,41 @@ class PreparedFileCatalogTest {
         assertNull(cache.restore(fixture.identity(), Cancellation.NONE).join());
     }
 
+    @Test
+    void pendingDuplicateIdStillWinsOverALaterCancellation() {
+        var fixture = new PreparedCatalogFixture(6000);
+        var token = new Cancellation();
+        var build =
+                new Ids(
+                        fixture,
+                        LongStream.concat(
+                                        LongStream.rangeClosed(1, 4200),
+                                        LongStream.of(4100, 4201, 4202, 4203))
+                                .toArray(),
+                        id -> {
+                            if (id == 4202) {
+                                token.cancel();
+                            }
+                            return fixture.resolve(id);
+                        });
+        var store = new MemoryGeneratedStore();
+        var cache = new PreparedFileCatalog(store);
+        var failure =
+                assertThrows(
+                        CompletionException.class,
+                        () ->
+                                cache.prepare(
+                                                build,
+                                                fixture.identity(),
+                                                6000,
+                                                (done, total) -> {},
+                                                token)
+                                        .join());
+        assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+        assertEquals("Duplicate record id", failure.getCause().getMessage());
+        assertNull(cache.restore(fixture.identity(), Cancellation.NONE).join());
+    }
+
     private static BuildTypes.FileResolution unresolved(long id) {
         return new BuildTypes.FileResolution(
                 BuildTypes.FileResolutionState.UNKNOWN_FILE, id, List.of());

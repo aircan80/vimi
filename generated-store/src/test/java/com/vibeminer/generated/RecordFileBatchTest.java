@@ -187,4 +187,75 @@ final class RecordFileBatchTest {
         }
         assertEquals(individually(new long[] {1, 2}, new byte[][] {{1}, {2}}), objects(store));
     }
+
+    @Test
+    void cancellationBetweenRecordsOfABatchKeepsEarlierRecordsAndTheWriterUsable() {
+        Cancellation canceled = new Cancellation();
+        MemoryGeneratedStore memory = new MemoryGeneratedStore();
+        // Cancels as soon as the writer commits its first segment, partway through the batch.
+        GeneratedStore store =
+                new GeneratedStore() {
+                    public java.util.concurrent.CompletableFuture<Boolean> has(
+                            GeneratedKey key, Cancellation cancellation) {
+                        return memory.has(key, cancellation);
+                    }
+
+                    public java.util.concurrent.CompletableFuture<GeneratedTypes.Read> read(
+                            GeneratedKey key, Cancellation cancellation) {
+                        return memory.read(key, cancellation);
+                    }
+
+                    public java.util.concurrent.CompletableFuture<GeneratedTypes.Read> readRange(
+                            GeneratedKey key, long offset, int length, Cancellation cancellation) {
+                        return memory.readRange(key, offset, length, cancellation);
+                    }
+
+                    public java.util.concurrent.CompletableFuture<
+                                    java.util.List<GeneratedTypes.PutOutcome>>
+                            put(
+                                    java.util.List<GeneratedTypes.Put> batch,
+                                    Cancellation cancellation) {
+                        var result = memory.put(batch, cancellation);
+                        result.join();
+                        canceled.cancel();
+                        return result;
+                    }
+
+                    public java.util.concurrent.CompletableFuture<Void> delete(
+                            java.util.List<GeneratedKey> keys, Cancellation cancellation) {
+                        return memory.delete(keys, cancellation);
+                    }
+
+                    public java.util.concurrent.CompletableFuture<GeneratedTypes.CompactReport>
+                            compact(
+                                    double minDeadFraction,
+                                    int maxPacks,
+                                    Cancellation cancellation) {
+                        return memory.compact(minDeadFraction, maxPacks, cancellation);
+                    }
+                };
+        int n = 40;
+        long[] ids = ids(n, true);
+        byte[][] records = new byte[n][];
+        Random random = new Random(3);
+        for (int i = 0; i < n; i++) {
+            records[i] = new byte[600];
+            random.nextBytes(records[i]);
+        }
+        long written;
+        try (RecordFileWriter writer = new RecordFileWriter(store, small())) {
+            var failure =
+                    assertThrows(
+                            CompletionException.class,
+                            () -> writer.addAll(ids, records, n, canceled).join());
+            assertInstanceOf(java.util.concurrent.CancellationException.class, failure.getCause());
+            written = writer.complete(KEY, META).join().count();
+        }
+        assertEquals(true, written > 0 && written < n, () -> "written " + written);
+        assertEquals(
+                individually(
+                        java.util.Arrays.copyOf(ids, (int) written),
+                        java.util.Arrays.copyOf(records, (int) written)),
+                objects(memory));
+    }
 }

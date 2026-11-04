@@ -107,6 +107,12 @@ public final class RecordFileWriter implements AutoCloseable {
                         append(ownedIds[i], owned[i], cancellation);
                     }
                     if (rejected[0] != null) {
+                        try {
+                            // The rejected record's own add would have checked admission first.
+                            cancellation.check();
+                        } catch (RuntimeException e) {
+                            throw new Rejected(e);
+                        }
                         throw new Rejected(rejected[0]);
                     }
                     return null;
