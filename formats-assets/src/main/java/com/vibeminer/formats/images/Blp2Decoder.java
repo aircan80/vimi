@@ -445,7 +445,10 @@ public final class Blp2Decoder {
         for (int depth = 0; depth < 8; depth++) {
             if (failure == null
                     || failure.getClass() != java.util.concurrent.CompletionException.class) {
-                return failure instanceof java.io.EOFException;
+                return failure != null
+                        && failure.getClass() == java.io.EOFException.class
+                        && failure.getSuppressed().length == 0
+                        && failure.getCause() == null;
             }
             if (failure.getSuppressed().length != 0) {
                 return false;

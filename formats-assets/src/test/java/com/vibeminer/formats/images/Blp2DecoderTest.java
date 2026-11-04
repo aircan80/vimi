@@ -255,6 +255,49 @@ final class Blp2DecoderTest {
                 failed, 0, new Limits(), Cancellation.NONE, Blp2Types.MipProfile.STRICT);
     }
 
+    @Test
+    void dirtyAndForeignEofRemainOriginalFatalFailures() {
+        var auxiliary = new IllegalStateException("cleanup failure");
+        var suppressed = new java.io.EOFException("truncated");
+        suppressed.addSuppressed(auxiliary);
+        var caused = new java.io.EOFException("truncated");
+        caused.initCause(auxiliary);
+        for (var eof : new java.io.EOFException[] {suppressed, caused}) {
+            var failure =
+                    assertThrows(
+                            java.util.concurrent.CompletionException.class,
+                            () -> decodeFailedRead(eof));
+            org.junit.jupiter.api.Assertions.assertSame(eof, failure.getCause());
+        }
+        var accesses = new AtomicInteger();
+        var foreign =
+                new java.io.EOFException("foreign") {
+                    @Override
+                    public synchronized Throwable getCause() {
+                        accesses.incrementAndGet();
+                        throw new AssertionError("Foreign cause must not be inspected");
+                    }
+
+                    @Override
+                    public String getMessage() {
+                        accesses.incrementAndGet();
+                        throw new AssertionError("Foreign message must not be inspected");
+                    }
+                };
+        var failure =
+                assertThrows(
+                        java.util.concurrent.CompletionException.class,
+                        () -> decodeFailedRead(foreign));
+        org.junit.jupiter.api.Assertions.assertSame(foreign, failure.getCause());
+        assertEquals(0, accesses.get());
+        var wrapped = new java.util.concurrent.CompletionException("Existing", suppressed);
+        org.junit.jupiter.api.Assertions.assertSame(
+                wrapped,
+                assertThrows(
+                        java.util.concurrent.CompletionException.class,
+                        () -> decodeFailedRead(wrapped)));
+    }
+
     static byte[] build(int encoding, int depth, int alpha, int width, int height, byte[]... mips) {
         int start = 148 + (encoding == 1 ? 1024 : 0), length = start;
         for (byte[] mip : mips) {
