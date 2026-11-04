@@ -92,8 +92,8 @@ index domains and batch bounds, flags0 material8 batches and total declared batc
 count matching the physical list. Preserve every raw index and draw ONLY exact,
 disjoint recorded MOBA spans; unbatched triangles stay counted/undrawn. Initially
 restrict group raw flags to the observed set0x0a09/0x3805/0x2a05/0x2005/0x2805,
-with actual stream consistency, zero unknown tail/padding operands and bounded
-omitted chunks. This is a narrow raw shape, not interpretation of all group flags.
+with actual stream consistency, rawBatchPadding/tail0/tail1 zero, rawUnused
+limited to0/1 and preserved/ignored, and bounded omitted chunks. This is a narrow raw shape, not interpretation of all group flags.
 Closed optional kinds are MOCV/MLIQ/MOLR/MODR/MOBN/MOBR plus the required mesh
 chunks. Unknown/extra UV streams refuse. Validate/digest MOCV count/raw bytes and
 MONR operands without retaining/uploading normal or color arrays. MLIQ/BSP/light/
