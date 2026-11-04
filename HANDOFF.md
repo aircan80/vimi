@@ -25,21 +25,41 @@ placement, area music, sky/lighting/fog/time-of-day, ambient audio, walk/fly,
 inspection, search/travel/bookmarks, quest/vendor/trainer/flight overlays, idle
 animations and dungeon floor/group/entrance navigation are all authorized.
 
-Main through718ef40 includes mergedPR154 optional preallocation-bounded row reads
-(independent approval,75combinedchecks); alpha.18 tag remainsc9cd4f3. Future draft
-PR153/worktree `/tmp/vimi-world-streaming-integration` combines reviewed hot
-protocol/spike and reader,157combinedchecks plus actual root cadence proof pass.
-Framev2 codec is uncommitted root work in `/tmp/vimi-world-frame-v2`, seven tests
-andfullrendering-bgfxcheckpass; not wired into a renderer.
+Main is39a42bb after PR155 fast-forward merge. Alpha.19 is tagged at that
+immutable commit; publication run41775202595 is IN PROGRESS, not yet verified.
+All PR gates and five-platform packaging dry run41773635784 passed. Root full
+check/assemble/World UI/native evidence is recorded in the alpha19 checkpoint.
+The release reduces ADT parser allocation from about13.3MB to5.3–6.1MB on the
+three private real inputs with identical geometry/area fingerprints; it does
+not deliver persistent streaming or cities. Never move an existing tag.
 
-World source engine corrected throughce55dba independentlyapproved; source cache/
-PreparedTile design pending boxed-parser budget and fresh-area-metadata corrections.
-Maps source3230c45+6da76c6 works onfreshnativecaptures; oldUNKNOWN issue receipts
-honestlyunsupported. WMO city design/sourceproof5d79dca+81143c8 preserved separately.
-Instance team found StockadeMap34/WDT791060 globalWMO-only108631, while some other
-instances have ADTs; classify source mode separately from Map.InstanceType.
-Character audit currentlyprofilesHuman/Orc/Dwarf/Tauren only; no user choice-vector
-API yet, remainingrace/sex support andcustomizationare futureimplementation.
+Future draft PR153/worktree `/tmp/vimi-world-streaming-integration` now merges
+alpha19. Combined concepts/formats/rendering/GUI check passes153tasks; actual
+World GPU/navigation proof is running separately. Framev2 codec05e1e1c is
+committed, independently approved and integrated; eight tests include mapping
+lifetime, CRC and presentation barriers. It is not wired into a hot renderer.
+
+World scope source engine througha9e17fe is independently approved and integrated.
+Cache/admission proposalsab05565/941833b/e2e171b and WMO factoryc2ec2ca need two
+explicit ownership fixes: enforce aggregate live input reservations before read,
+and factory cleanup of outputs when a callback throws before returning ownership.
+Primitive parser makes the cache construction ledger plausible; actual ownership
+implementation still needs checks. Raw WMO parser5dbc64c is root approved for
+facts only. Actual small exterior and all eight Onyxia groups parse, without any
+claim that buildings/instances are visible yet. Private assets remain outside Git.
+
+Native selected-table preparatione181fa2 proves actual legacy UiMap/Assignment
+overlay upgrade with original stores read-only and old artifacts/captures unchanged;
+independent review and direct definition/key-mutation fixtures remain pending.
+Maps strict source facade3230c45+6da76c6 is under independent review. Packed planner
+acceptance7a2ef0b has independent approval ONLY for authored test/emitter scope:
+1344 boundary MCNK segments across84 adjacent whole-tile edges, not1344 tile pairs.
+Multi-source geometry/material representation and native integration remain open.
+
+Character profiles currently Human/Orc/Dwarf/Tauren only; appearance catalog and
+choice vector plus remaining race/sex support remain queued after current World
+milestones. Expanded user requests stay in docs/world-experience-roadmap.md.
+
 
 
 ## Verified alpha.18 publication
