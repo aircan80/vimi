@@ -33,6 +33,7 @@ import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
@@ -46,11 +47,18 @@ final class ClientHotfixStore implements AutoCloseable {
     private static final Set<PosixFilePermission> FILE_MODE =
             PosixFilePermissions.fromString("rw-------");
     private final Object gate = new Object();
-    private final Path directory;
+    private Path directory;
+    private boolean canonicalized;
     private final Probe probe;
 
     interface Probe {
         default void beforeRead() {}
+
+        default void beforeDispatch() {}
+
+        default void afterRegistrationClose() {}
+
+        default void afterOwnedChannelClose() {}
 
         default void beforeCopy(long copied, Cancellation token) {}
 
@@ -73,6 +81,7 @@ final class ClientHotfixStore implements AutoCloseable {
     private boolean closed, finishing;
     private int cleanupJobs;
     private Throwable cleanupFailure;
+    private final List<FileChannel> quarantinedChannels = new java.util.ArrayList<>();
 
     record Scope(BuildRef build, String locale, String version) {
         Scope {
@@ -186,6 +195,7 @@ final class ClientHotfixStore implements AutoCloseable {
             return CompletableFuture.failedFuture(failure);
         }
         try {
+            probe.beforeDispatch();
             worker.execute(
                     () -> {
                         T value = null;
@@ -196,26 +206,55 @@ final class ClientHotfixStore implements AutoCloseable {
                             value = action.apply(token);
                         } catch (RuntimeException | Error error) {
                             failure = error;
-                        } finally {
+                        }
+                        try {
+                            registration.close();
+                            probe.afterRegistrationClose();
+                        } catch (RuntimeException | Error error) {
+                            recordCleanup(error);
+                            failure = append(failure, error);
+                        }
+                        if (failure != null && value instanceof Snapshot snapshot) {
                             try {
-                                registration.close();
+                                snapshot.closeActual();
                             } catch (RuntimeException | Error error) {
                                 failure = append(failure, error);
                             }
+                            value = null;
                         }
-                        try {
-                            if (failure == null) result.complete(value);
-                            else result.completeExceptionally(failure);
-                        } finally {
-                            operationFinished(token);
-                        }
+                        operationFinished(token);
+                        completeOffWorker(result, value, failure);
                     });
-        } catch (RuntimeException | Error failure) {
-            registration.close();
-            operationFinished(token);
-            result.completeExceptionally(failure);
+        } catch (RuntimeException | Error original) {
+            Throwable failure = original;
+            try {
+                registration.close();
+                probe.afterRegistrationClose();
+            } catch (RuntimeException | Error error) {
+                recordCleanup(error);
+                failure = append(failure, error);
+            } finally {
+                operationFinished(token);
+            }
+            completeOffWorker(result, null, failure);
         }
         return result.copy();
+    }
+
+    private static <T> void completeOffWorker(
+            CompletableFuture<T> result, T value, Throwable failure) {
+        ForkJoinPool.commonPool()
+                .execute(
+                        () -> {
+                            if (failure == null) result.complete(value);
+                            else result.completeExceptionally(failure);
+                        });
+    }
+
+    private void recordCleanup(Throwable failure) {
+        synchronized (gate) {
+            cleanupFailure = append(cleanupFailure, failure);
+        }
     }
 
     private void requireHealthy() {
@@ -247,8 +286,11 @@ final class ClientHotfixStore implements AutoCloseable {
         try {
             String digest;
             try (var source =
-                            FileChannel.open(
-                                    input, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS);
+                            owned(
+                                    FileChannel.open(
+                                            input,
+                                            StandardOpenOption.READ,
+                                            LinkOption.NOFOLLOW_LINKS));
                     var target = create(temporary)) {
                 if (source.size() != before.size())
                     throw new IOException("Client cache changed before import");
@@ -278,6 +320,7 @@ final class ClientHotfixStore implements AutoCloseable {
             }
             var staged = openSnapshot(temporary, scope, null, token);
             Summary summary;
+            Throwable stagedFailure = null;
             try {
                 if (!digest.equals(staged.index().sha256()))
                     throw new IOException("Imported cache bytes changed");
@@ -290,8 +333,16 @@ final class ClientHotfixStore implements AutoCloseable {
                                 staged.index().length(),
                                 staged.index().entries().size(),
                                 Instant.now());
+            } catch (IOException | RuntimeException | Error error) {
+                stagedFailure = error;
+                throw error;
             } finally {
-                staged.closeActual();
+                try {
+                    staged.closeActual();
+                } catch (RuntimeException | Error cleanup) {
+                    if (stagedFailure != null) append(stagedFailure, cleanup);
+                    else throw cleanup;
+                }
             }
             var after = regular(input);
             if (after.size() != before.size()
@@ -313,6 +364,7 @@ final class ClientHotfixStore implements AutoCloseable {
             try {
                 Files.deleteIfExists(temporary);
             } catch (IOException | RuntimeException | Error error) {
+                recordCleanup(error);
                 if (failure != null) append(failure, error);
                 else throw error;
             }
@@ -389,6 +441,7 @@ final class ClientHotfixStore implements AutoCloseable {
                             long at, ByteBuffer out, Cancellation token) {
                         FileChannel actual;
                         try {
+                            token.check();
                             requireHealthy();
                         } catch (RuntimeException | Error failure) {
                             return CompletableFuture.failedFuture(failure);
@@ -502,6 +555,9 @@ final class ClientHotfixStore implements AutoCloseable {
                 if (actual != null) actual.close();
             } catch (IOException | RuntimeException | Error caught) {
                 error = caught;
+                synchronized (gate) {
+                    if (actual != null) quarantinedChannels.add(actual);
+                }
             }
             try {
                 probe.afterSnapshotClose();
@@ -517,8 +573,7 @@ final class ClientHotfixStore implements AutoCloseable {
                 snapshots.remove(this);
                 cleanupFailure = append(cleanupFailure, error);
             }
-            if (error == null) finished.complete(null);
-            else finished.completeExceptionally(error);
+            completeOffWorker(finished, null, error);
             finishIfDrained();
             rethrow(error);
         }
@@ -589,7 +644,17 @@ final class ClientHotfixStore implements AutoCloseable {
     }
 
     private void ensureStorage() throws IOException {
-        if (lock != null) return;
+        if (lock != null) {
+            ownedDirectory(directory);
+            ownedDirectory(directory.resolve("objects"));
+            ownedDirectory(directory.resolve("bindings"));
+            return;
+        }
+        if (!canonicalized) {
+            privateDirectory(directory);
+            directory = directory.toRealPath();
+            canonicalized = true;
+        }
         privateDirectory(directory);
         privateDirectory(directory.resolve("objects"));
         privateDirectory(directory.resolve("bindings"));
@@ -605,15 +670,14 @@ final class ClientHotfixStore implements AutoCloseable {
                         attributes(path, false));
         try {
             lock = lockChannel.tryLock();
-        } catch (RuntimeException | IOException failure) {
-            lockChannel.close();
-            lockChannel = null;
+        } catch (RuntimeException | IOException | Error failure) {
+            closeFailedLock(failure);
             throw failure;
         }
         if (lock == null) {
-            lockChannel.close();
-            lockChannel = null;
-            throw new IOException("Client-cache store is already open");
+            var failure = new IOException("Client-cache store is already open");
+            closeFailedLock(failure);
+            throw failure;
         }
     }
 
@@ -633,7 +697,7 @@ final class ClientHotfixStore implements AutoCloseable {
             throw new IOException("Client-cache binding exceeds bounds");
         byte[] bytes;
         try (var input =
-                FileChannel.open(path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS)) {
+                owned(FileChannel.open(path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
             if (input.size() != attributes.size())
                 throw new IOException("Client-cache binding changed");
             var data = ByteBuffer.allocate((int) attributes.size());
@@ -712,6 +776,7 @@ final class ClientHotfixStore implements AutoCloseable {
             try {
                 Files.deleteIfExists(temporary);
             } catch (IOException | RuntimeException | Error cleanup) {
+                recordCleanup(cleanup);
                 if (failure != null) append(failure, cleanup);
                 else throw cleanup;
             }
@@ -719,7 +784,6 @@ final class ClientHotfixStore implements AutoCloseable {
     }
 
     private static BasicFileAttributes regular(Path path) throws IOException {
-        noSymlinkComponents(path);
         var attributes =
                 Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
         if (!attributes.isRegularFile())
@@ -728,7 +792,8 @@ final class ClientHotfixStore implements AutoCloseable {
     }
 
     private static void privateDirectory(Path path) throws IOException {
-        noSymlinkComponents(path);
+        if (Files.isSymbolicLink(path))
+            throw new IOException("Client-cache directory must not be a symbolic link");
         Files.createDirectories(path, attributes(path, true));
         if (!Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(path))
             throw new IOException("Client-cache directory must not be a symbolic link");
@@ -736,10 +801,19 @@ final class ClientHotfixStore implements AutoCloseable {
             Files.setPosixFilePermissions(path, DIRECTORY_MODE);
     }
 
-    private static void noSymlinkComponents(Path path) throws IOException {
-        for (Path current = path; current != null; current = current.getParent())
-            if (Files.isSymbolicLink(current))
-                throw new IOException("Client-cache paths must not contain symbolic links");
+    private static void ownedDirectory(Path path) throws IOException {
+        if (!Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(path))
+            throw new IOException("Private client-cache directory is unavailable");
+    }
+
+    private void closeFailedLock(Throwable failure) {
+        var actual = lockChannel;
+        lockChannel = null;
+        try {
+            if (actual != null) owned(actual).close();
+        } catch (IOException | RuntimeException | Error cleanup) {
+            append(failure, cleanup);
+        }
     }
 
     private static FileAttribute<?>[] attributes(Path path, boolean directory) throws IOException {
@@ -753,15 +827,58 @@ final class ClientHotfixStore implements AutoCloseable {
         return new FileAttribute<?>[0];
     }
 
-    private static FileChannel create(Path path) throws IOException {
-        return FileChannel.open(
-                path,
-                Set.of(
-                        StandardOpenOption.CREATE_NEW,
-                        StandardOpenOption.READ,
-                        StandardOpenOption.WRITE,
-                        LinkOption.NOFOLLOW_LINKS),
-                attributes(path, false));
+    private OwnedChannel create(Path path) throws IOException {
+        return owned(
+                FileChannel.open(
+                        path,
+                        Set.of(
+                                StandardOpenOption.CREATE_NEW,
+                                StandardOpenOption.READ,
+                                StandardOpenOption.WRITE,
+                                LinkOption.NOFOLLOW_LINKS),
+                        attributes(path, false)));
+    }
+
+    private OwnedChannel owned(FileChannel channel) {
+        return new OwnedChannel(channel);
+    }
+
+    private final class OwnedChannel implements AutoCloseable {
+        private final FileChannel channel;
+
+        private OwnedChannel(FileChannel channel) {
+            this.channel = channel;
+        }
+
+        long size() throws IOException {
+            return channel.size();
+        }
+
+        int read(ByteBuffer buffer) throws IOException {
+            return channel.read(buffer);
+        }
+
+        int write(ByteBuffer buffer) throws IOException {
+            return channel.write(buffer);
+        }
+
+        void force(boolean metadata) throws IOException {
+            channel.force(metadata);
+        }
+
+        @Override
+        public void close() throws IOException {
+            try {
+                channel.close();
+                probe.afterOwnedChannelClose();
+            } catch (IOException | RuntimeException | Error failure) {
+                synchronized (gate) {
+                    quarantinedChannels.add(channel);
+                }
+                recordCleanup(failure);
+                throw failure;
+            }
+        }
     }
 
     @FunctionalInterface

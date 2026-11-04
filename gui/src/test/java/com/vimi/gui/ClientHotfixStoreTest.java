@@ -37,8 +37,9 @@ public final class ClientHotfixStoreTest {
         actualHeldReadKeepsSnapshotAndStoreDrainPending();
         concurrentOriginalMutationAndBoundedQueuedCloseDoNotPublish();
         symbolicLinksAreRefusedAndCleanupErrorsRemainSticky();
+        metadataCallbacksAndCleanupFailuresDoNotLeakAcceptedOwners();
         System.out.println(
-                "CLIENT_HOTFIX_STORE_PASS authoredScenarios=5 noNetwork=true noGameAssets=true");
+                "CLIENT_HOTFIX_STORE_PASS authoredScenarios=6 noNetwork=true noGameAssets=true");
     }
 
     private static byte[] cache(int build, int value) {
@@ -280,6 +281,148 @@ public final class ClientHotfixStoreTest {
         }
     }
 
+    private static void metadataCallbacksAndCleanupFailuresDoNotLeakAcceptedOwners()
+            throws Exception {
+        Path root = Files.createTempDirectory("client-hotfix-callback-").toRealPath();
+        Path original = root.resolve("DBCache.bin");
+        Files.write(original, cache(70707, 1));
+        try {
+            try (var store = new ClientHotfixStore(root.resolve("callback"))) {
+                store.importCache(SCOPE, original, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+                store.open(SCOPE, Cancellation.NONE)
+                        .thenAccept(ClientHotfixStore.Snapshot::close)
+                        .get(3, TimeUnit.SECONDS);
+                store.open(SCOPE, Cancellation.NONE)
+                        .thenCompose(snapshot -> snapshot.closeAsync())
+                        .thenRun(() -> store.closeAsync().join())
+                        .get(3, TimeUnit.SECONDS);
+            }
+            var dispatch = new AssertionError("synthetic dispatch failure");
+            var registration = new AssertionError("synthetic registration cleanup");
+            var failedDispatch =
+                    new ClientHotfixStore(
+                            root.resolve("dispatch"),
+                            new ClientHotfixStore.Probe() {
+                                @Override
+                                public void beforeDispatch() {
+                                    throw dispatch;
+                                }
+
+                                @Override
+                                public void afterRegistrationClose() {
+                                    throw registration;
+                                }
+                            });
+            check(
+                    root(fails(failedDispatch.open(SCOPE, Cancellation.NONE))) == dispatch,
+                    "dispatch original preserved");
+            check(
+                    Arrays.asList(dispatch.getSuppressed()).contains(registration),
+                    "registration cleanup suppressed");
+            check(
+                    root(fails(failedDispatch.closeAsync())) == registration,
+                    "failed dispatch retires accepted operation");
+            var armed = new AtomicBoolean();
+            var closed = new AtomicInteger();
+            var unreturned =
+                    new ClientHotfixStore(
+                            root.resolve("unreturned"),
+                            new ClientHotfixStore.Probe() {
+                                @Override
+                                public void afterRegistrationClose() {
+                                    if (armed.get()) throw registration;
+                                }
+
+                                @Override
+                                public void afterSnapshotClose() {
+                                    if (armed.get()) closed.incrementAndGet();
+                                }
+                            });
+            unreturned.importCache(SCOPE, original, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            armed.set(true);
+            check(
+                    root(fails(unreturned.open(SCOPE, Cancellation.NONE))) == registration,
+                    "unreturned snapshot reports original cleanup failure");
+            check(closed.get() == 1, "unreturned file owner closed before failed publication");
+            check(
+                    root(fails(unreturned.closeAsync())) == registration,
+                    "unreturned cleanup remains sticky");
+            var channelArmed = new AtomicBoolean();
+            var channelFailure = new AssertionError("synthetic owned-channel cleanup");
+            var owned =
+                    new ClientHotfixStore(
+                            root.resolve("channels"),
+                            new ClientHotfixStore.Probe() {
+                                @Override
+                                public void afterOwnedChannelClose() {
+                                    if (channelArmed.compareAndSet(true, false))
+                                        throw channelFailure;
+                                }
+                            });
+            owned.importCache(SCOPE, original, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            channelArmed.set(true);
+            check(
+                    root(fails(owned.importCache(SCOPE, original, Cancellation.NONE)))
+                            == channelFailure,
+                    "owned channel close failure survives");
+            check(
+                    root(fails(owned.open(SCOPE, Cancellation.NONE))) == channelFailure,
+                    "owned channel cleanup poisons subsequent opens");
+            check(
+                    root(fails(owned.closeAsync())) == channelFailure,
+                    "owned channel cleanup reaches store drain");
+            Path stagedDirectory = root.resolve("staged-cleanup");
+            var mutated = new AtomicBoolean();
+            var stagedCloseFailure = new AssertionError("synthetic staged close failure");
+            var stagedStore =
+                    new ClientHotfixStore(
+                            stagedDirectory,
+                            new ClientHotfixStore.Probe() {
+                                @Override
+                                public void beforeRead() {
+                                    if (!mutated.compareAndSet(false, true)) return;
+                                    try (var files =
+                                            Files.list(stagedDirectory.resolve("objects"))) {
+                                        Path file =
+                                                files.filter(
+                                                                p ->
+                                                                        p.getFileName()
+                                                                                .toString()
+                                                                                .startsWith(
+                                                                                        "import-"))
+                                                        .findFirst()
+                                                        .orElseThrow();
+                                        byte[] bytes = Files.readAllBytes(file);
+                                        bytes[76] = 7;
+                                        Files.write(file, bytes);
+                                    } catch (Exception failure) {
+                                        throw new RuntimeException(failure);
+                                    }
+                                }
+
+                                @Override
+                                public void afterSnapshotClose() {
+                                    throw stagedCloseFailure;
+                                }
+                            });
+            Throwable stagedFailure =
+                    root(fails(stagedStore.importCache(SCOPE, original, Cancellation.NONE)));
+            check(
+                    stagedFailure instanceof java.io.UncheckedIOException,
+                    "primary cache-byte failure survives staged cleanup");
+            check(
+                    Arrays.asList(stagedFailure.getCause().getSuppressed())
+                            .contains(stagedCloseFailure),
+                    "staged cleanup is suppressed on original validation failure");
+            check(
+                    root(fails(stagedStore.closeAsync())) == stagedCloseFailure,
+                    "staged cleanup poison survives store drain");
+
+        } finally {
+            remove(root);
+        }
+    }
+
     private static void symbolicLinksAreRefusedAndCleanupErrorsRemainSticky() throws Exception {
         Path root = Files.createTempDirectory("client-hotfix-errors-").toRealPath();
         Path original = root.resolve("DBCache.bin");
@@ -290,6 +433,22 @@ public final class ClientHotfixStoreTest {
                 Files.createSymbolicLink(link, original);
                 try (var store = new ClientHotfixStore(root.resolve("symlink-store"))) {
                     fails(store.importCache(SCOPE, link, Cancellation.NONE));
+                }
+                Path sourceDirectory = root.resolve("source-directory");
+                Files.createDirectory(sourceDirectory);
+                Path actual = sourceDirectory.resolve("DBCache.bin");
+                Files.write(actual, cache(70707, 1));
+                Path parentAlias = root.resolve("source-alias");
+                Files.createSymbolicLink(parentAlias, sourceDirectory);
+                Path storageAlias = root.resolve("storage-alias");
+                Files.createSymbolicLink(storageAlias, root);
+                try (var store = new ClientHotfixStore(storageAlias.resolve("canonical-store"))) {
+                    store.importCache(SCOPE, parentAlias.resolve("DBCache.bin"), Cancellation.NONE)
+                            .get(3, TimeUnit.SECONDS);
+                    try (var snapshot =
+                            store.open(SCOPE, Cancellation.NONE).get(3, TimeUnit.SECONDS)) {
+                        check(payload(snapshot)[0] == 1, "trusted parent aliases are accepted");
+                    }
                 }
             }
             var armed = new AtomicBoolean();

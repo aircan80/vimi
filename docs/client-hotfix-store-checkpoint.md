@@ -12,8 +12,9 @@ uses64KiB scratch and a64MiB ceiling, with original file identity/length/mtime
 rechecks. A complete private copy is parsed and whole SHA verified before any
 binding publication. Source path is never persisted. Immutable content-addressed
 imports use private owner-only POSIX0700 directories/0600 files where available;
-Windows inherits the private application storage ACL. Symbolic link components
-are refused. A lifetime store file lock prevents cooperating writers racing.
+Windows inherits the private application storage ACL. Final input symlinks and
+symlinks in private store-owned directories are refused; trusted parent aliases
+(such as macOS /var) are canonicalized/accepted. A lifetime store file lock prevents cooperating writers racing.
 
 Each scope has an atomically replaced binding capped16KiB. Parsing, build
 mismatch, original mutation, cancellation before the atomic commit and malformed
@@ -48,5 +49,16 @@ The cleanup Error fixture runs after a real channel close; it is not a claim of
 injected OS close failure. Symlink creation is skipped on Windows hosts lacking
 that ordinary-user privilege.
 
-Initial full GUI checks pass135 tasks (46 executed); final five-scenario focused
-checks pass95 tasks. No JavaFX/GPU/network or game installation is required.
+Initial full GUI checks pass135 tasks (46 executed); hardening full GUI checks
+pass135 tasks (47 executed), and final six-scenario focused checks pass95 tasks. No JavaFX/GPU/network or game installation is required.
+
+Followup hardening: dispatch/registration cleanup always retires accepted metadata;
+an unreturned snapshot is physically closed before failed publication. Mutation
+results and snapshot-close notifications complete off the serial worker after
+actual resource work, so ordinary callbacks may close snapshots or the store.
+Owned import/manifest channel-close and temp-delete failures also poison health;
+unknown descriptors remain quarantined and drain failures stay explicit. These
+are resource cleanup distinctions, not blanket conversion of bad user input into
+permanent failure. Six authored scenarios include callback-close, failed dispatch
+plus registration cleanup, unreturned snapshot retirement, owned-channel failure,
+and permitted parent aliases alongside symlink refusal.
