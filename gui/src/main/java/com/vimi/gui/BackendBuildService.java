@@ -29,6 +29,11 @@ public final class BackendBuildService implements BuildService {
     private DataSourcesService dataSources;
     BackendBuildService withDataSources(DataSourcesService value) { dataSources=value; return this; }
     @Override public DataSourcesService dataSources() { return dataSources; }
+    private ClientHotfixStore hotfixImports;
+    BackendBuildService withHotfixImports(ClientHotfixStore value) {
+        hotfixImports = Objects.requireNonNull(value); return this;
+    }
+    @Override public ClientHotfixStore hotfixImports() { return hotfixImports; }
     private BuildComparisons comparisons;
     BackendBuildService withComparisons(BuildComparisons value) { comparisons=value; return this; }
     @Override public BuildComparisons comparisons() { return comparisons; }
