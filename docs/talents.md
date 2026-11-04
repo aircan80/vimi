@@ -60,3 +60,17 @@ and [aura constants](https://github.com/TrinityCore/TrinityCore/blob/master/src/
 ![Authored resolved spell preview](images/talents-spell-text-authored.png)
 
 This image uses authored text/pixels to test numeric preview presentation.
+
+## Missing image and description explanations
+
+The selected talent's collapsed **Source details** section includes separate image
+and description status. Image results retain the actual decoder/file outcome,
+reported code/message, FileDataID and bounded missing-key identifiers. Unsupported
+formats, required downloads, protected bytes and validation failures remain
+distinct. Expanding this section uses already requested evidence; it does not
+start an additional source query.
+
+A missing icon reference or null description does not establish why it is missing.
+These cases explicitly say the cause was not reported. Class-level source notices
+are labelled as context rather than attributed to every selected talent. Raw
+client text and spell substitution sources remain available in the same section.

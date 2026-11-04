@@ -478,3 +478,18 @@ tasks.register('worldTextureUiTest', JavaExec) {
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.WorldTextureUiTest'
 }
+
+// Pure source-evidence explanations; no UI, network or user files.
+tasks.register('talentSourceDetailsTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.TalentSourceDetailsTest'
+}
+check.dependsOn talentSourceDetailsTest
+
+// Authored missing-image/text explanation and disclosure UI; display required.
+tasks.register('talentSourceDetailsUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.TalentSourceDetailsUiTest'
+}

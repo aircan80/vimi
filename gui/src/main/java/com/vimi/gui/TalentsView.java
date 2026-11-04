@@ -71,6 +71,8 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                     new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
 
     private record IconPixels(int width, int height, int[] argb) {}
+    private record IconLoad(IconPixels pixels, String explanation) {}
+    private java.util.List<String> classSourceNotices = java.util.List.of();
 
     private static ProgressIndicator spinner(String message, double size) {
         var spinner = new ProgressIndicator(-1);
@@ -364,6 +366,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
             ensureLoaded();
             return;
         }
+        classSourceNotices = java.util.List.of();
         selectedClass = player.id();
         classTitle.setText(player.name() + " · Talents");
         token.cancel();
@@ -404,6 +407,8 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                                                             ? "Trees from this build · select"
                                                                     + " a talent for details"
                                                             : String.join(" · ", result.issues()));
+                                            classSourceNotices = result.issues().stream().limit(12)
+                                                    .map(issue -> TalentSourceDetails.shortText(issue, 768)).toList();
                                             for (var tree : result.trees())
                                                 treePanels.getChildren().add(tree(tree, request));
                                         }));
@@ -576,8 +581,6 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                         title,
                         text(tree.name(), "talent-tooltip-context"),
                         text("Rank 1/" + talent.rankSpells().size(), "wow-line"));
-        if (talent.iconFileDataId() != null)
-            loadImage(talent.iconFileDataId(), art, ICON, generation, true);
         for (var edge : talent.prerequisites())
             selection
                     .getChildren()
@@ -615,9 +618,26 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                                                 + (talent.column() + 1),
                                         "muted"),
                                 text("Rank spell IDs: " + talent.rankSpells(), "muted")));
+        sourceDetails.setId("talent-source-details");
         sourceDetails.setExpanded(false);
         evidence.getChildren().add(sourceDetails);
         var facts = (VBox) sourceDetails.getContent();
+        var iconSource = text(talent.iconFileDataId() == null
+                ? TalentSourceDetails.missingIconReference()
+                : "Icon: loading FileDataID " + talent.iconFileDataId() + "…", "muted");
+        iconSource.setId("talent-source-icon");
+        var descriptionSource = text(talent.description() == null || talent.description().isBlank()
+                ? TalentSourceDetails.missingDescription()
+                : talent.description().length() > 16384 ? "Description: source text exceeds the preview limit."
+                : "Description: source text is available.", "muted");
+        descriptionSource.setId("talent-source-description");
+        facts.getChildren().addAll(iconSource, descriptionSource);
+        if (!classSourceNotices.isEmpty()) {
+            facts.getChildren().add(text("Class-level source notices (may affect other talents):", "muted"));
+            for (String notice : classSourceNotices) facts.getChildren().add(text(notice, "muted"));
+        }
+        if (talent.iconFileDataId() != null)
+            loadImage(talent.iconFileDataId(), art, ICON, generation, true, iconSource::setText);
         if (talent.description() != null && talent.description().length() <= 16384)
             facts.getChildren()
                     .add(text("Raw client description: " + talent.description(), "muted"));
@@ -646,6 +666,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                                                 if (error != null || result == null) {
                                                     description.setText(
                                                             "Description values are unavailable.");
+                                                    descriptionSource.setText("Description: value resolution failed; a precise source cause was not returned.");
                                                     return;
                                                 }
                                                 description.setText(
@@ -668,6 +689,12 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                                                                                 + " Source"
                                                                                 + " details.",
                                                                             "muted"));
+                                                descriptionSource.setText(switch (result.state()) {
+                                                    case READY -> "Description: readable source text; no value substitutions needed.";
+                                                    case RESOLVED -> "Description: source text and supported spell values resolved.";
+                                                    case UNRESOLVED -> "Description: readable text, but some values or expressions are not supported or lack usable source data. See substitutions below.";
+                                                    case UNAVAILABLE -> "Description: the resolver could not produce a usable preview. See its reported details below.";
+                                                });
                                                 for (var substitution : result.substitutions()) {
                                                     facts.getChildren()
                                                             .add(
@@ -752,15 +779,26 @@ final class TalentsView extends BorderPane implements AutoCloseable {
     }
 
     private void loadImage(long id, StackPane target, double size, long request, boolean guarded) {
+        loadImage(id, target, size, request, guarded, ignored -> {});
+    }
+
+    private void loadImage(long id, StackPane target, double size, long request, boolean guarded,
+            java.util.function.Consumer<String> sourceStatus) {
         var imageHandle = boundHandle;
         long imageRevision = revision;
         pendingIcons.add(target);
         target.setAccessibleText("Loading talent icon");
         target.getChildren().setAll(spinner("Loading talent icon", Math.min(size, 18)));
         icons.request(id)
-                .thenApplyAsync(TalentsView::convert, iconWorker)
+                .thenApplyAsync(result -> {
+                    String reason = TalentSourceDetails.icon(id, result);
+                    try { return new IconLoad(convert(result), reason); }
+                    catch (IllegalArgumentException invalid) {
+                        return new IconLoad(null, reason + "\nDisplay: decoded pixels exceed the viewer's icon bounds or are invalid.");
+                    }
+                }, iconWorker)
                 .whenComplete(
-                        (pixels, error) ->
+                        (loadedIcon, error) ->
                                 Platform.runLater(
                                         () -> {
                                             pendingIcons.remove(target);
@@ -769,6 +807,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                                                     || imageRevision != revision
                                                     || (guarded && request != generation)) return;
                                             if (!sourceCurrent()) {
+                                                sourceStatus.accept("Icon: workspace source changed; reload to inspect the current source.");
                                                 target.setAccessibleText(
                                                         "Talent icon unavailable after source"
                                                             + " change");
@@ -776,6 +815,10 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                                                         .setAll(text("—", "talent-placeholder"));
                                                 return;
                                             }
+                                            sourceStatus.accept(error != null || loadedIcon == null
+                                                    ? "Icon: request or processing failed; no detailed source result was returned.\nFileDataID: " + id
+                                                    : loadedIcon.explanation());
+                                            var pixels = loadedIcon == null ? null : loadedIcon.pixels();
                                             if (error != null || pixels == null) {
                                                 target.setAccessibleText("Talent icon unavailable");
                                                 target.getChildren()
