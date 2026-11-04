@@ -1,6 +1,7 @@
 package com.vimi.gui;
 
 import com.vibeminer.rendering.bgfx.GpuFrameFile;
+import com.vibeminer.rendering.bgfx.WorldStreamTransport;
 import com.vibeminer.rendering.bgfx.GpuSceneFile;
 import com.vibeminer.rendering.bgfx.GpuTerrainSceneFile;
 import com.vibeminer.rendering.world.TerrainScene;
@@ -150,6 +151,7 @@ final class GpuPreviewService {
     private final Object gate = new Object();
     private final SceneWriter writer;
     private final InlineStarter starter;
+    private final WorldStreamTransport.Starter streamingStarter;
     private final FrameFactory frameFactory;
     private final boolean nativeDefaults;
     private final Path temporaryParent;
@@ -158,10 +160,14 @@ final class GpuPreviewService {
     private Request desired, active;
     private boolean running, closed;
 
-    private enum RequestKind { MODEL, COLD_TERRAIN }
+    private enum RequestKind { MODEL, COLD_TERRAIN, STREAMING }
+
+    private record Streaming(WorldStreamTransport.Spec spec,
+            Consumer<WorldStreamTransport.Session> opened) {}
 
     private static final class Request {
         final RequestKind kind;
+        final Streaming streaming;
         final Object owner;
         final PreviewMesh mesh;
         final TerrainScene terrain;
@@ -191,6 +197,7 @@ final class GpuPreviewService {
                 Consumer<Status> listener,
                 Consumer<Frame> frames) {
             this.kind = RequestKind.MODEL;
+            this.streaming = null;
             this.frames = frames;
             this.owner = owner;
             this.mesh = mesh;
@@ -204,6 +211,7 @@ final class GpuPreviewService {
         Request(Object owner, TerrainScene terrain, WorldTextureSnapshot textures,
                 Consumer<Status> listener, Consumer<Frame> frames) {
             this.kind = RequestKind.COLD_TERRAIN;
+            this.streaming = null;
             this.owner = owner;
             this.terrain = terrain;
             this.textures = textures == null ? null : textures.retain();
@@ -212,6 +220,19 @@ final class GpuPreviewService {
             this.parts = Set.of();
             this.listener = listener;
             this.frames = frames;
+        }
+
+        Request(Object owner, Streaming streaming, Consumer<Status> listener) {
+            this.kind = RequestKind.STREAMING;
+            this.streaming = streaming;
+            this.owner = owner;
+            this.listener = listener;
+            this.frames = ignored -> {};
+            this.mesh = null;
+            this.terrain = null;
+            this.textures = null;
+            this.appearance = null;
+            this.parts = Set.of();
         }
 
         void finish(Throwable failure) {
@@ -270,6 +291,21 @@ final class GpuPreviewService {
             Path temporaryParent, SceneWriter writer, InlineStarter starter,
             FrameFactory frameFactory, Duration readyTimeout, Duration closeTimeout,
             boolean nativeDefaults) {
+        this(temporaryParent, writer, starter, frameFactory, readyTimeout, closeTimeout,
+                nativeDefaults, GpuPreviewService::startStreamingChild);
+    }
+
+    GpuPreviewService(Path temporaryParent, SceneWriter writer, InlineStarter starter,
+            FrameFactory frameFactory, Duration readyTimeout, Duration closeTimeout,
+            WorldStreamTransport.Starter streamingStarter) {
+        this(temporaryParent, writer, starter, frameFactory, readyTimeout, closeTimeout,
+                false, streamingStarter);
+    }
+
+    private GpuPreviewService(Path temporaryParent, SceneWriter writer, InlineStarter starter,
+            FrameFactory frameFactory, Duration readyTimeout, Duration closeTimeout,
+            boolean nativeDefaults, WorldStreamTransport.Starter streamingStarter) {
+        this.streamingStarter = Objects.requireNonNull(streamingStarter);
         this.nativeDefaults = nativeDefaults;
         this.frameFactory = Objects.requireNonNull(frameFactory);
         this.temporaryParent = temporaryParent;
@@ -329,28 +365,44 @@ final class GpuPreviewService {
         return enqueue(new Request(owner, scene, admitted, listener, frames));
     }
 
+    /** Same application GPU owner; the callback posts small controller metadata only. */
+    CompletableFuture<Void> openStreaming(Object owner, WorldStreamTransport.Spec spec,
+            Consumer<WorldStreamTransport.Session> opened, Consumer<Status> listener) {
+        Objects.requireNonNull(owner);
+        Objects.requireNonNull(spec);
+        Objects.requireNonNull(opened);
+        Objects.requireNonNull(listener);
+        return enqueue(new Request(owner, new Streaming(spec, opened), listener));
+    }
+
     private CompletableFuture<Void> enqueue(Request request) {
-        Request superseded;
-        boolean supersededPending, start;
+        Request superseded = null;
+        boolean supersededPending = false, start = false, rejected, waiting;
         synchronized (gate) {
-            if (closed) {
-                request.finish(new IllegalStateException("GPU preview service closed"));
-                return request.drained.copy();
+            rejected = closed;
+            waiting = active != null;
+            if (!rejected) {
+                superseded = desired;
+                supersededPending = superseded != null && superseded != active;
+                if (superseded != null) superseded.stopping = true;
+                desired = request;
+                if (active != null) active.stopping = true;
+                start = !running;
+                running = true;
+                gate.notifyAll();
             }
-            superseded = desired;
-            supersededPending = superseded != null && superseded != active;
-            if (superseded != null) superseded.stopping = true;
-            desired = request;
-            if (active != null) active.stopping = true;
-            start = !running;
-            running = true;
-            gate.notifyAll();
+        }
+        if (rejected) {
+            request.publish(State.FAILED, "GPU preview service is unavailable");
+            request.finish(new IllegalStateException("GPU preview service closed"));
+            return request.drained.copy();
         }
         if (supersededPending) {
             superseded.publish(State.CLOSED, "GPU preview superseded");
             superseded.finish(null);
         }
-        request.publish(State.PREPARING, "Preparing inline GPU preview…");
+        request.publish(State.PREPARING, waiting
+                ? "Waiting for the previous GPU renderer to stop…" : "Preparing inline GPU preview…");
         if (start) Thread.ofVirtual().name("gpu-preview-lifecycle").start(this::run);
         var delivery = request.drained.copy();
         delivery.whenComplete(
@@ -490,7 +542,107 @@ final class GpuPreviewService {
         }
     }
 
+    private void performStreaming(Request request) {
+        if (request.stopping) {
+            request.finish(null);
+            return;
+        }
+        WorldStreamTransport.PreparedSession prepared = null;
+        WorldStreamTransport.Session session = null;
+        Throwable failure = null;
+        boolean actualDrain = false, launchAttempted = false;
+        try {
+            var parent = temporaryParent == null
+                    ? Path.of(System.getProperty("java.io.tmpdir")) : temporaryParent;
+            prepared = WorldStreamTransport.prepare(parent, request.streaming.spec());
+            if (!request.stopping) {
+                request.publish(State.STARTING, "Starting persistent GPU World renderer…");
+                launchAttempted = true;
+                session = prepared.launch(streamingStarter);
+                var initialized = session.initialized();
+                var protocol = session.completion();
+                var drainedSession = session.terminatedAndDrained();
+                boolean opened = false, closeSent = false, failureShown = false;
+                while (!drainedSession.isDone()) {
+                    if (request.stopping && !closeSent) {
+                        closeSent = true;
+                        request.publish(State.STOPPING, "Stopping persistent GPU World renderer…");
+                        session.closeAsync();
+                    }
+                    if (!opened && !request.stopping && initialized.isDone()) {
+                        initialized.join();
+                        opened = true;
+                        request.streaming.opened().accept(session);
+                        request.publish(State.STARTING, "GPU World renderer started; preparing terrain…");
+                    }
+                    if (!failureShown && protocol.isCompletedExceptionally()) {
+                        failureShown = true;
+                        request.publish(State.FAILED, "GPU World unavailable; waiting for renderer cleanup…");
+                        request.stopping = true;
+                    }
+                    Thread.sleep(10);
+                }
+                drainedSession.join();
+                actualDrain = true;
+                // Protocol success is separate from actual drain. This wait is bounded and runs
+                // on this existing lifecycle lane, never on JavaFX or under the service monitor.
+                protocol.get(closeMillis, TimeUnit.MILLISECONDS);
+            }
+        } catch (Throwable error) {
+            String type = error.getClass().getName();
+            failure = new IOException("Persistent GPU World lifecycle failed ("
+                    + type.substring(0, Math.min(128, type.length())) + ")");
+        } finally {
+            if (session != null && !actualDrain) {
+                request.publish(State.STOPPING, "Waiting for GPU World resources to drain…");
+                try {
+                    session.closeAsync();
+                    session.terminatedAndDrained().join();
+                    actualDrain = true;
+                } catch (Throwable unconfirmed) {
+                    failure = new IOException("GPU World resource drain could not be confirmed");
+                }
+            }
+            if (prepared != null) {
+                try {
+                    prepared.closeAsync().join();
+                    if (!launchAttempted) actualDrain = true;
+                } catch (Throwable unconfirmed) {
+                    actualDrain = false;
+                    failure = new IOException("GPU World preparation resources did not drain");
+                }
+            }
+            if (!actualDrain) failClosed(request);
+            if (failure == null) {
+                request.publish(State.CLOSED, "Persistent GPU World renderer stopped");
+                request.finish(null);
+            } else {
+                request.publish(State.FAILED, "Persistent GPU World renderer unavailable");
+                request.finish(failure);
+            }
+        }
+    }
+
+    private void failClosed(Request request) {
+        Request pending;
+        synchronized (gate) {
+            closed = true;
+            pending = desired != null && desired != request ? desired : null;
+            desired = null;
+        }
+        var failure = new IOException("Previous GPU resources did not drain");
+        if (pending != null) {
+            pending.publish(State.FAILED, "Waiting for previous GPU renderer cleanup");
+            pending.finish(failure);
+        }
+        drained.completeExceptionally(failure);
+    }
+
     private void perform(Request request) {
+        if (request.kind == RequestKind.STREAMING) {
+            performStreaming(request);
+            return;
+        }
         Path directory = null, scene = null, framePath = null, texturePath = null;
         Frames frames = null;
         Process child = null;
@@ -648,15 +800,7 @@ final class GpuPreviewService {
                     else failure.addSuppressed(cleanup);
                 }
             } else {
-                synchronized (gate) {
-                    closed = true;
-                    if (desired != null && desired != request) {
-                        desired.finish(
-                                new IOException("Previous GPU process did not stop"));
-                    }
-                    desired = null;
-                    drained.completeExceptionally(new IOException("GPU process did not stop"));
-                }
+                failClosed(request);
             }
             if (failure == null) {
                 request.publish(State.CLOSED, "Inline GPU renderer stopped");
@@ -783,6 +927,27 @@ final class GpuPreviewService {
     }
 
     private static Process startChild(Path scene, Path frames, boolean terrain, Path textures) throws IOException {
+        var command = nativeCommand();
+        command.add(terrain ? "--terrain-scene" : "--scene");
+        command.add(scene.toAbsolutePath().toString());
+        if (textures != null) {
+            command.add("--terrain-textures");
+            command.add(textures.toAbsolutePath().toString());
+        }
+        command.add("--frames");
+        command.add(frames.toAbsolutePath().toString());
+        command.add("--parent-pid");
+        command.add(Long.toString(ProcessHandle.current().pid()));
+        return new ProcessBuilder(command).start();
+    }
+
+    private static Process startStreamingChild(List<String> arguments) throws IOException {
+        var command = nativeCommand();
+        command.addAll(arguments);
+        return new ProcessBuilder(command).start();
+    }
+
+    private static ArrayList<String> nativeCommand() {
         var command = new ArrayList<String>();
         boolean windows =
                 System.getProperty("os.name").toLowerCase(java.util.Locale.ROOT).contains("win");
@@ -795,16 +960,6 @@ final class GpuPreviewService {
         command.add("-cp");
         command.add(System.getProperty("java.class.path"));
         command.add("com.vibeminer.rendering.bgfx.GpuViewerMain");
-        command.add(terrain ? "--terrain-scene" : "--scene");
-        command.add(scene.toAbsolutePath().toString());
-        if (textures != null) {
-            command.add("--terrain-textures");
-            command.add(textures.toAbsolutePath().toString());
-        }
-        command.add("--frames");
-        command.add(frames.toAbsolutePath().toString());
-        command.add("--parent-pid");
-        command.add(Long.toString(ProcessHandle.current().pid()));
-        return new ProcessBuilder(command).start();
+        return command;
     }
 }

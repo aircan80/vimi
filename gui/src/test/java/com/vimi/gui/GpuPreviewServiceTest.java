@@ -46,6 +46,7 @@ public final class GpuPreviewServiceTest {
             latestFrameHandoffNeverRepublishesOlderWork();
             inlineFramesAndCoalescedControls(root);
             terrainAndModelsShareOwnerAndKeepControlsTyped(root);
+            streamingUsesTheSameOwnerAndWaitsHeldStarterDrain(root);
             emptyTexturesKeepNativeHeightFallbackAndRejectedBatchesClose(root);
             terrainTextureAcknowledgementsStayBoundToQualifiedSourceAndDrainClaims(root);
             terrainReplacementWaitsForAcceptedFrameButNotTerminalFailure(root);
@@ -94,6 +95,62 @@ public final class GpuPreviewServiceTest {
         require(
                 seen.equals(List.of(1, 3)) && scheduled.isEmpty(),
                 "Newer publication during handoff wins without older-value reinsertion");
+    }
+
+    private static void streamingUsesTheSameOwnerAndWaitsHeldStarterDrain(Path root)
+            throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var directory = new AtomicReference<Path>();
+        var modelStarts = new AtomicInteger();
+        var model = new FakeProcess(true);
+        var service = new GpuPreviewService(root, GpuPreviewServiceTest::write,
+                (scene, frames) -> {
+                    require(!Files.exists(directory.get()),
+                            "Model must wait actual streaming preparation/process drain");
+                    modelStarts.incrementAndGet();
+                    return model;
+                }, path -> new GpuPreviewService.Frames() {
+                    public GpuPreviewService.Frame readLatest(long after) { return null; }
+                    public void close() {}
+                }, Duration.ofSeconds(2), Duration.ofMillis(200), arguments -> {
+                    directory.set(Path.of(arguments.get(1)));
+                    entered.countDown();
+                    release.await();
+                    throw new IOException("Authored late no-child start failure");
+                });
+        Object worldOwner = new Object(), modelOwner = new Object();
+        var states = new ConcurrentLinkedQueue<GpuPreviewService.State>();
+        var world = service.openStreaming(worldOwner,
+                new com.vibeminer.rendering.bgfx.WorldStreamTransport.Spec("ab".repeat(32), 1,
+                        com.vibeminer.rendering.bgfx.WorldStreamTransport.Backend.DEFAULT),
+                session -> { throw new AssertionError("Failed start cannot publish session"); },
+                status -> states.add(status.state()));
+        try {
+            await(entered);
+            require(Files.exists(directory.get().resolve("frames.wsf")),
+                    "Held Starter retains its owned mapping");
+            service.closeOwner(new Object()).get(1, TimeUnit.SECONDS);
+            require(!world.isDone(), "An unrelated owner cannot retire active streaming work");
+            var next = service.open(modelOwner, mesh(), null, Set.of(), ignored -> {});
+            require(modelStarts.get() == 0, "No second renderer starts beside a held Starter");
+            require(!next.isDone(), "Successor remains pending while old ownership is held");
+            var closing = service.closeOwner(worldOwner);
+            require(!closing.isDone(), "Stop request is not an actual resource drain");
+            require(Files.exists(directory.get().resolve("frames.wsf")),
+                    "Superseding a source never deletes a held launch mapping");
+            release.countDown();
+            await(model.started);
+            require(modelStarts.get() == 1 && !Files.exists(directory.get()),
+                    "Exactly one successor starts after actual prior cleanup");
+            require(!states.contains(GpuPreviewService.State.READY),
+                    "Protocol initialization alone never claims a displayed World frame");
+            world.handle((value, error) -> null).get(2, TimeUnit.SECONDS);
+            service.closeOwner(modelOwner).get(2, TimeUnit.SECONDS);
+        } finally {
+            release.countDown();
+            service.closeAsync().get(3, TimeUnit.SECONDS);
+        }
     }
 
     private static void terrainAndModelsShareOwnerAndKeepControlsTyped(Path root) throws Exception {
