@@ -47,6 +47,14 @@ public final class ClientHotfixDetailsTest {
         check(lines.get(3).contains("local hotfix cache"), "Actual icon row origin");
         check(!String.join("\n", lines).contains("private-")
                 && !String.join("\n", lines).contains("cell data"), "No payload or private identity display");
+        var trait = new TalentTypes.Talent(104923, 0, 1, List.of(1328613L), 5, List.of(), "Name", "Text", 123L,
+                new TalentTypes.Origin(TalentTypes.Model.TRAIT_TREE, 1089L, 129583L, 134384L, 1620L, 2130L,
+                        null, false, false));
+        var traitLines = ClientHotfixDetails.talent(tables, trait, "1.60.1.70707", Cancellation.NONE).join();
+        check(traitLines.get(0).equals("Trait node record: base DB2 source")
+                && traitLines.get(1).equals("Trait entry record: base DB2 source")
+                && traitLines.get(2).equals("Trait definition record: base DB2 source")
+                && traitLines.get(3).contains("local hotfix cache"), "Trait talents report their trait rows");
         check(ClientHotfixDetails.row(tables, "Spell", 999, "Description", "70707", Cancellation.NONE)
                 .join().contains("hidden"), "Not-public origin stays explicit");
         check(ClientHotfixDetails.row(tables, "Spell", 998, "Description", "70707", Cancellation.NONE)
