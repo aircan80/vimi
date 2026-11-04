@@ -357,14 +357,15 @@ final class WorldStreamScopes {
                             "Map source exceeds bounded hot scope profile");
                 }
                 token.check();
+                int expectedRows = (int) Math.min(1, receipt.rowCount() - ordinal);
+                long expectedNext = ordinal + expectedRows;
+                Long next = expectedNext < receipt.rowCount() ? expectedNext : null;
                 if (page.state() != CapturedRowsTypes.ReadState.READ
                         || !page.identity().equals(receipt.graphIdentity())
                         || page.firstOrdinal() != ordinal
-                        || page.rows().size() > 1
-                        || page.nextOrdinal() != null
-                                && (page.nextOrdinal() <= ordinal
-                                        || page.nextOrdinal() > receipt.rowCount())) {
-                    throw new IllegalStateException("Unstable Map capture page");
+                        || page.rows().size() != expectedRows
+                        || !Objects.equals(page.nextOrdinal(), next)) {
+                    throw new IllegalStateException("Noncontiguous Map capture page");
                 }
                 for (var row : page.rows()) {
                     if (row.ordinal() != ordinal || row.ordinal() >= receipt.rowCount()) {
