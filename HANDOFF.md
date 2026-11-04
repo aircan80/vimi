@@ -1,5 +1,33 @@
 # vimi development handoff
 
+## Latest integration — reviewed source-to-packet bridge, inline controller next
+
+Integration branch `feature/world-streaming-integration` (draft PR153) now reaches
+`b50ffae`. Combined formats-world/concepts-world/rendering-world/bgfx/GUI checks
+PASS156tasks (66 executed):
+`/home/aircan/.cache/vimi-tmp/world-source-packet-bridge-combined-check.log`.
+The earlier isolated source combined gate also PASS36tasks.
+
+Integrated source cancellation/end ownership f0e2137 + final post-drain handoff
+7e66921, explicit-origin refusal650d18c + foreign-scope/unknown-cancellation fix
+d4f09f1; Tile transport579ad70 with rejected queued-cancel823c8f4, actual file
+retirement95a0903, excluded-commit dispositionff1e20c and exact clean-cancel565e25f.
+Root reviewed production changes; independent Tile review is still pending.
+
+Root fixed writer7989172 is independently approved and integrated9d38338; closed
+source bridgef4c3e81/f3358b9/1775b9a is root/independently approved and integrated
+52688f7/7ba753b/b50ffae. Genuine checked source admission alone authorizes file
+MOVE; PARTIAL material cache keys stay nullable; qualified-binding rejection omits
+atlas payload. Source and moved packet retire independently. These checkpoints
+do not switch WorldView or establish real movement smoothness.
+
+Architect continues concrete public Commit/frame APIs; source agent continues
+controller implementation; root owns WorldView integration. All future temporary
+Java/test files should use `JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=/home/aircan/.cache/vimi-tmp`
+and new worktrees `/home/aircan/.cache/vimi-worktrees`, avoiding the inode-limited
+/tmp mount. Existing relocated review checkouts have preserved /tmp symlink aliases.
+Alpha20 and its frozen launcher remain the published baseline. No new release yet.
+
 ## Current Linux checkpoint — alpha20 released, persistent World integration active
 
 Newest reviewed integration is `734bead` (PR153), superseding intermediate hashes
