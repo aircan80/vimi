@@ -176,7 +176,9 @@ public final class WorldSpawns {
                 throw new IllegalArgumentException("Invalid nearby spawn query");
             }
             var map = cells.get(mapId);
-            if (map == null) {
+            if (map == null
+                    || Math.abs(x) > WORLD_EXTENT + MAX_RADIUS
+                    || Math.abs(y) > WORLD_EXTENT + MAX_RADIUS) {
                 return new Nearby(mapId, radius, List.of(), 0, 0, List.of());
             }
             var placed = new ArrayList<Spawn>();
@@ -271,10 +273,6 @@ public final class WorldSpawns {
             if ((++rows & 4095) == 0) {
                 token.check();
             }
-            if (declared.size() >= MAX_SPAWNS) {
-                LocationAdapters.issue(issues, "Spawn index bound reached; readable prefix kept.");
-                break;
-            }
             try {
                 if (!"npc".equals(row.get("kind"))) {
                     if (!"object".equals(row.get("kind"))) {
@@ -282,10 +280,19 @@ public final class WorldSpawns {
                     }
                     continue;
                 }
+                if (declared.size() >= MAX_SPAWNS) {
+                    LocationAdapters.issue(
+                            issues, "Spawn index bound reached; readable prefix kept.");
+                    break;
+                }
                 long id = LocationAdapters.integer(row.get("id"), false);
                 long map = LocationAdapters.integer(row.get("map"), true);
                 long point = LocationAdapters.integer(row.get("n"), false);
                 double x = number(row.get("x")), y = number(row.get("y"));
+                if (!coordinate(x) || !coordinate(y)) {
+                    LocationAdapters.issue(issues, "Some spawn points lie outside the world grid.");
+                    continue;
+                }
                 Double z = null;
                 if (row.get("z") != null) {
                     try {
@@ -300,10 +307,6 @@ public final class WorldSpawns {
                                 issues, "Some spawn heights are unsupported; not placed.");
                     }
                 }
-                if (!coordinate(x) || !coordinate(y)) {
-                    LocationAdapters.issue(issues, "Some spawn points lie outside the world grid.");
-                    continue;
-                }
                 String record = "npc:" + id + ":" + map + ":" + point;
                 var spawn =
                         new Spawn(
@@ -313,7 +316,8 @@ public final class WorldSpawns {
                                 x,
                                 y,
                                 z,
-                                new LocationTypes.Evidence(source, "spawn", record, "x,y,z"));
+                                new LocationTypes.Evidence(
+                                        source, "spawn", record, z == null ? "x,y" : "x,y,z"));
                 if (conflicted.contains(record)) {
                     continue;
                 }
@@ -386,9 +390,11 @@ public final class WorldSpawns {
     }
 
     private static boolean same(Spawn left, Spawn right) {
-        return Double.compare(left.x(), right.x()) == 0
-                && Double.compare(left.y(), right.y()) == 0
-                && Objects.equals(left.z(), right.z());
+        return left.x() == right.x()
+                && left.y() == right.y()
+                && (left.z() == null
+                        ? right.z() == null
+                        : right.z() != null && left.z().doubleValue() == right.z().doubleValue());
     }
 
     private static double distance(Spawn spawn, double x, double y) {

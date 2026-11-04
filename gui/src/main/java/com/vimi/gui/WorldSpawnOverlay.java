@@ -66,7 +66,7 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
     private final Loader loader;
     private final Supplier<Object> revision;
     private final ThreadPoolExecutor worker =
-            new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(1),
+            new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(2),
                     runnable -> {
                         var thread = new Thread(runnable, "world-spawn-index");
                         thread.setDaemon(true);
@@ -82,7 +82,7 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
     private WorldSpawns.Index drawnIndex;
     private List<Marker> markers = List.of();
     private double lastWidth, lastHeight;
-    private boolean closed;
+    private boolean closed, running, rerun, suspended;
 
     WorldSpawnOverlay(Loader loader, Supplier<Object> revision) {
         this.loader = Objects.requireNonNull(loader);
@@ -116,7 +116,7 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
         };
         enabled.selectedProperty().addListener((observable, before, on) -> {
             if (on) {
-                timer.start();
+                if (!suspended) timer.start();
             } else {
                 timer.stop();
                 clearCanvas();
@@ -147,6 +147,20 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
         return status;
     }
 
+    /** Explorer hidden or left: stop polling and drop markers; the index is retained. */
+    void suspend() {
+        suspended = true;
+        timer.stop();
+        clearCanvas();
+    }
+
+    /** Explorer showing frames again: poll while the toggle is on. */
+    void resume() {
+        if (closed) return;
+        suspended = false;
+        if (enabled.isSelected()) timer.start();
+    }
+
     void refresh() {
         if (closed || !enabled.isSelected()) return;
         var view = views.get();
@@ -165,44 +179,53 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
     }
 
 
+    /** Latest request wins: at most one load runs; a newer revision waits for it to drain. */
     private void load(Object current) {
         if (loading != null) loading.cancel();
-        var token = new Cancellation();
-        loading = token;
+        loading = new Cancellation();
         indexRevision = current;
         index = null;
-        long request = ++generation;
+        ++generation;
         clearCanvas();
         show(true);
         status.setText("Indexing declared NPC spawn points…");
-        try {
-            CompletableFuture.supplyAsync(() -> {
-                try {
-                    return loader.load(token);
-                } catch (Exception failure) {
-                    throw new java.util.concurrent.CompletionException(failure);
-                }
-            }, worker).whenComplete((result, failure) -> Platform.runLater(() -> {
-                if (closed || request != generation) return;
-                loading = null;
-                show(false);
-                if (failure != null) {
-                    if (token.isCanceled()) return;
-                    index = WorldSpawns.unavailable(LocationTypes.State.UNKNOWN,
-                            "Spawn source could not be read: " + rootMessage(failure));
-                } else {
-                    index = result;
-                }
-                drawn = null;
-                refresh();
-                if (views.get() == null) status.setText(summary(index, null, 0));
-            }));
-        } catch (java.util.concurrent.RejectedExecutionException busy) {
-            // The single worker is draining a canceled index; retry on a later pulse.
-            loading = null;
-            indexRevision = null;
-            show(false);
+        if (running) {
+            rerun = true;
+            return;
         }
+        submit();
+    }
+
+    private void submit() {
+        var token = loading;
+        long request = generation;
+        running = true;
+        CompletableFuture.supplyAsync(() -> {
+            try {
+                return loader.load(token);
+            } catch (Exception failure) {
+                throw new java.util.concurrent.CompletionException(failure);
+            }
+        }, worker).whenComplete((result, failure) -> Platform.runLater(() -> {
+            running = false;
+            if (closed) return;
+            if (request != generation) {
+                if (rerun) {
+                    rerun = false;
+                    submit();
+                }
+                return;
+            }
+            rerun = false;
+            loading = null;
+            show(false);
+            index = failure == null ? result : WorldSpawns.unavailable(LocationTypes.State.UNKNOWN,
+                    "Spawn source could not be read: " + rootMessage(failure));
+            drawn = null;
+            if (!enabled.isSelected()) return;
+            refresh();
+            if (drawn == null) status.setText(summary(index, null, 0, 0));
+        }));
     }
 
     private void draw(View view) {
@@ -214,15 +237,18 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
         g.clearRect(0, 0, lastWidth, lastHeight);
         if (index.source().isEmpty()) {
             markers = List.of();
-            status.setText(summary(index, null, 0));
+            status.setText(summary(index, null, 0, 0));
             return;
         }
         var camera = view.camera();
-        var nearby = index.near(view.mapId(), camera.x(), camera.y(), RADIUS, LIMIT);
-        markers = project(nearby.placed(), camera, view.frameWidth(), view.frameHeight(),
+        // Cull to the frame first so off-screen points never consume the marker budget.
+        var nearby = index.near(view.mapId(), camera.x(), camera.y(), RADIUS, WorldSpawns.MAX_NEARBY);
+        var visible = project(nearby.placed(), camera, view.frameWidth(), view.frameHeight(),
                 lastWidth, lastHeight);
+        int capped = Math.max(0, visible.size() - LIMIT);
+        markers = visible.subList(capped, visible.size());
         paint(g, markers);
-        status.setText(summary(index, nearby, markers.size()));
+        status.setText(summary(index, nearby, markers.size(), capped + nearby.omitted()));
     }
 
     /**
@@ -297,7 +323,7 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
         };
     }
 
-    static String summary(WorldSpawns.Index index, WorldSpawns.Nearby nearby, int visible) {
+    static String summary(WorldSpawns.Index index, WorldSpawns.Nearby nearby, int visible, int capped) {
         if (index.source().isEmpty())
             return "NPC spawns unavailable: " + String.join(" ", index.issues());
         var source = index.source().get();
@@ -308,8 +334,8 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
                     .append(" placed within ").append((int) nearby.radius()).append(" yd");
             if (nearby.heightless() > 0)
                 text.append(" · ").append(nearby.heightless()).append(" without recorded height not placed");
-            if (nearby.omitted() > 0)
-                text.append(" · ").append(nearby.omitted()).append(" beyond the ").append(LIMIT).append("-marker cap");
+            if (capped > 0)
+                text.append(" · ").append(capped).append(" beyond the marker cap");
             if (nearby.placed().isEmpty() && nearby.heightless() == 0 && index.count(nearby.mapId()) == 0)
                 text.append(" · no declared points on this map");
         } else {
@@ -344,10 +370,6 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
         canvas.getGraphicsContext2D().clearRect(0, 0, canvas.getWidth(), canvas.getHeight());
     }
 
-    /** Explorer left or map replaced: retain the index, drop markers. */
-    void clear() {
-        clearCanvas();
-    }
 
     @Override
     public void close() {

@@ -38,12 +38,16 @@ are not consulted, and no other build or product is substituted.
   preparation or network call. It returns an explicit unavailable reason when Polestar is
   disabled, the product has no reviewed source, or no compatible snapshot is prepared.
 - `gui/WorldSpawnOverlay`: an **NPC spawns** footer toggle (off by default) and a
-  mouse-transparent canvas above the frame. One daemon worker builds at most one index, with a
-  one-slot queue; a source/workspace revision change cancels and retires the earlier load,
-  and closing the World view prevents any later publication. While the toggle is on, a redraw
-  runs only when the view, the index or the viewport size changes. At most 256 markers lie
-  within 300 yd; labels are limited to the 16 nearest within 120 yd. Marker colour shows the
-  published rank (normal, elite, rare elite, boss, rare, unknown).
+  mouse-transparent canvas above the frame. One daemon worker runs at most one index load;
+  the latest request wins, so a newer source selection cancels the running load and starts
+  after it drains. Results from a retired selection, or after close, never publish. The index
+  is keyed on Polestar enablement, the selected snapshot ID and the workspace revision, not
+  on unrelated source refreshes. Polling runs only while the toggle is on and the explorer is
+  showing frames; leaving the explorer or the World area suspends it. Redraws happen only
+  when the view, the index or the viewport size changes. Up to 512 points within 300 yd are
+  culled to the frame first, and then the nearest 256 visible points are drawn, with any
+  excess disclosed. Labels go to the 16 nearest markers with eye depth up to 120 yd. Marker
+  colour shows the published rank (normal, elite, rare elite, boss, rare, unknown).
 
 Markers use the explorer's current camera and the same eye transform and 0.8-width focal
 length as the CPU and GPU terrain paths. The frame is fitted to the viewport exactly as

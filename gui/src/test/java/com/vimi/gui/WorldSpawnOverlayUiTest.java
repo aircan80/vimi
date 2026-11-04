@@ -73,8 +73,9 @@ public final class WorldSpawnOverlayUiTest {
         fx(() -> require(overlay.get().status().getText().contains("Indexing"), "Loading is visible"));
         // A source revision change before the first load completes retires it.
         fx(() -> revision.set(2L));
-        await(() -> calls.get() >= 1 && fxValue(() -> overlay.get().status().getText().contains("Indexing")),
-                "Revision change keeps loading visible");
+        Thread.sleep(200);
+        require(calls.get() == 1, "A newer revision waits for the running load instead of stacking work");
+        fx(() -> require(overlay.get().status().getText().contains("Indexing"), "Reload stays visible"));
         gates.get(0).complete(index(List.of(spawn(1, 9, 50, 0, 0.0))));
         await(() -> calls.get() == 2, "Replacement load starts after the retired load drains");
         fx(() -> require(overlay.get().markers().isEmpty(), "Retired revision never publishes markers"));
@@ -94,6 +95,12 @@ public final class WorldSpawnOverlayUiTest {
         fx(() -> view.set(new WorldSpawnOverlay.View(new TerrainRenderer.Camera(0, 0, 4, Math.PI, 0), 0, 800, 500)));
         await(() -> fxValue(() -> overlay.get().markers().isEmpty()
                 && overlay.get().status().getText().contains("0 in view of 2 placed")), "Points behind the camera are culled");
+        fx(() -> overlay.get().suspend());
+        fx(() -> view.set(new WorldSpawnOverlay.View(new TerrainRenderer.Camera(0, 0, 4, 0, -.05), 0, 800, 500)));
+        Thread.sleep(150);
+        fx(() -> require(overlay.get().markers().isEmpty(), "Suspended overlay does not poll"));
+        fx(() -> overlay.get().resume());
+        await(() -> fxValue(() -> overlay.get().markers().size() == 2), "Resumed overlay redraws");
         fx(() -> overlay.get().toggle().setSelected(false));
         fx(() -> require(overlay.get().status().getText().contains("off"), "Disabling clears markers"));
         fx(() -> {
@@ -101,11 +108,16 @@ public final class WorldSpawnOverlayUiTest {
             revision.set(3L);
         });
         await(() -> calls.get() == 3, "New revision reloads");
-        fx(() -> overlay.get().close());
+        var before = new AtomicReference<String>();
+        fx(() -> {
+            before.set(overlay.get().status().getText());
+            overlay.get().close();
+        });
         gates.get(2).complete(authored);
         Thread.sleep(200);
         fx(() -> {
             require(overlay.get().markers().isEmpty(), "Closed overlay never publishes");
+            require(overlay.get().status().getText().equals(before.get()), "Closed overlay keeps its status");
             stage.get().close();
         });
         System.out.println("World spawn overlay UI: off-FX load, stale revision, culling and close passed");

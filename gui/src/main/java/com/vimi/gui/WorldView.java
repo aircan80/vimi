@@ -904,6 +904,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void cancelRequests() {
+        if (spawns != null) spawns.suspend();
         retireTextures();
         currentArea.setText("Terrain area unavailable");
         minimap.hide();
@@ -931,6 +932,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     void activate() {
         active = true;
+        if (spawns != null && explorer) spawns.resume();
         ensureLoaded();
         areaButtons();
         if (explorer && inventory != null) {
@@ -1346,6 +1348,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         new HBox(8, textureActivity, textureStatus, retryTextures)));
         if (spawns != null) ((VBox) content.getBottom()).getChildren().add(spawns.controls());
         status.setText("Loading terrain tile " + selected.key() + "…");
+        if (spawns != null) spawns.resume();
         show(firstFrameActivity, true);
         timer.start();
         streamingMode = gpuEnabled.isSelected() && gpuService != null

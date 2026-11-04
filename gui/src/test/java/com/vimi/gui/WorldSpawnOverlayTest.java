@@ -84,15 +84,16 @@ public final class WorldSpawnOverlayTest {
     private static void disclosure() {
         var index = index(List.of(spawn(1, 1, 10, 0, 1.0), spawn(1, 2, 20, 0, null)));
         var nearby = index.near(0, 0, 0, 300, 256);
-        String text = WorldSpawnOverlay.summary(index, nearby, 1);
+        String text = WorldSpawnOverlay.summary(index, nearby, 1, 0);
         require(text.contains("Polestar") && text.contains("1.60.1.70532"), "Source and its client build are shown");
         require(text.contains("1 in view of 1 placed") && text.contains("1 without recorded height"), "Counts are disclosed");
         require(text.contains("not depth-tested") && text.contains("phase unknown"), "Limitations are disclosed");
         var none = index.near(0, 5_000, 5_000, 300, 256);
-        require(WorldSpawnOverlay.summary(index, none, 0).contains("0 in view of 0 placed"), "Empty neighborhoods are explicit");
+        require(WorldSpawnOverlay.summary(index, none, 0, 0).contains("0 in view of 0 placed"), "Empty neighborhoods are explicit");
         var unavailable = WorldSpawns.unavailable(LocationTypes.State.UNSUPPORTED, "Polestar is disabled.");
-        require(WorldSpawnOverlay.summary(unavailable, null, 0).contains("unavailable: Polestar is disabled."),
+        require(WorldSpawnOverlay.summary(unavailable, null, 0, 0).contains("unavailable: Polestar is disabled."),
                 "Unavailable reason is shown");
+        require(WorldSpawnOverlay.summary(index, nearby, 1, 3).contains("3 beyond the marker cap"), "Cap is disclosed");
         require(WorldSpawnOverlay.rankColor(3) != WorldSpawnOverlay.rankColor(0), "Rank colors differ");
     }
 

@@ -89,6 +89,8 @@ public final class DataSourcesServiceTest {
                 require(spawns.npc(1).orElseThrow().name().equals("Authored record"),"Spawn labels come from the same snapshot");
                 var classic = new BuildInfo("wow_classic","Classic","1.15.7.61582","us","config",BuildInfo.BuildSource.CURRENT,false,null,0);
                 require(service.worldSpawns(classic,com.vibeminer.access.Cancellation.NONE).source().isEmpty(),"No world-yard source is guessed for other products");
+                var spawnKey = service.worldSpawnsKey(selectedBuild);
+                require(spawnKey.equals(service.worldSpawnsKey(selectedBuild)),"World spawn key is stable for one selection");
                 int beforeSync = calls.get();
                 service.sync(DataSourcesService.Id.POLESTAR).join();
                 require(calls.get() == beforeSync + 1 && service.polestar().snapshots().getFirst().records() == 15,
@@ -96,6 +98,7 @@ public final class DataSourcesServiceTest {
                 service.setEnabled(DataSourcesService.Id.POLESTAR,false).join();
                 require(service.npcInputs(selectedBuild,"enUS").isEmpty() && service.questInputs(selectedBuild,"enUS").isEmpty(),"Disabled source excluded from both catalogues");
                 require(service.worldSpawns(selectedBuild,com.vibeminer.access.Cancellation.NONE).state()==com.vibeminer.concepts.locations.LocationTypes.State.UNSUPPORTED,"Disabled Polestar supplies no world spawns");
+                require(!spawnKey.equals(service.worldSpawnsKey(selectedBuild)),"Disabling Polestar changes the world spawn key");
                 expectFailure(() -> service.syncPolestar().join());
                 require(service.polestar().snapshots().size()==1,"Disabling retains completed source data");
             } finally { service.closeAsync().join(); }

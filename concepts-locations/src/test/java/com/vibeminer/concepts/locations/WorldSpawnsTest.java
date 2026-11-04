@@ -108,7 +108,7 @@ final class WorldSpawnsTest {
     }
 
     @Test
-    void negativeCoordinatesUseFloorCellsWithoutLosingBoundaryPoints() {
+    void negativeAndBoundaryCoordinatesAreNotLostAcrossCells() {
         var index =
                 index(
                         List.of(
@@ -117,6 +117,10 @@ final class WorldSpawnsTest {
                                 spawn("npc", 3, 0, 1, -16_000, 16_000, 1.0)));
         assertEquals(2, index.near(0, -128, 0, 1, 10).placed().size());
         assertEquals(1, index.near(0, -16_000, 16_000, 1, 10).placed().size());
+        assertTrue(index.near(0, 1e300, -1e300, 10, 10).placed().isEmpty(), "Extreme queries end");
+        var limited = index.near(0, -128, 0, 1, 0);
+        assertTrue(limited.placed().isEmpty());
+        assertEquals(2, limited.omitted());
     }
 
     @Test

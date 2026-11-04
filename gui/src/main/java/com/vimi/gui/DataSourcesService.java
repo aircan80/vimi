@@ -307,14 +307,24 @@ public final class DataSourcesService {
         if (!"Forever".equals(automaticFlavor(build.product(), build.version())))
             return com.vibeminer.concepts.locations.WorldSpawns.unavailable(unsupported,
                     "No reviewed world-yard spawn source applies to this build.");
-        var snapshot = polestarState.snapshots().stream()
-                .filter(v -> v.preparedAt() != null && compatibleNpcBuild(v.catalog().clientBuild(), build.version()))
-                .max(java.util.Comparator.comparing(v -> v.catalog().clientBuild(), DataSourcesService::compareNpcBuild));
+        var snapshot = worldSpawnSnapshot(build);
         if (snapshot.isEmpty())
             return com.vibeminer.concepts.locations.WorldSpawns.unavailable(
                     com.vibeminer.concepts.locations.LocationTypes.State.UNKNOWN,
                     "No prepared Polestar snapshot at or before this build; use Data Sources.");
         return com.vibeminer.concepts.locations.WorldSpawns.polestar(polestar, snapshot.get(), token);
+    }
+
+    private java.util.Optional<com.vibeminer.polestar.PolestarTypes.Snapshot> worldSpawnSnapshot(BuildInfo build) {
+        return polestarState.snapshots().stream()
+                .filter(v -> v.preparedAt() != null && compatibleNpcBuild(v.catalog().clientBuild(), build.version()))
+                .max(java.util.Comparator.comparing(v -> v.catalog().clientBuild(), DataSourcesService::compareNpcBuild));
+    }
+
+    /** Changes only when the world-spawn source policy or selected snapshot changes. */
+    public Object worldSpawnsKey(BuildInfo build) {
+        return List.of(policy(Id.POLESTAR).enabled(),
+                worldSpawnSnapshot(build).map(com.vibeminer.polestar.PolestarTypes.Snapshot::id).orElse(""));
     }
 
     static boolean compatibleNpcBuild(String source, String target) {
