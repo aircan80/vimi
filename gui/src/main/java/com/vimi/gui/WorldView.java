@@ -209,6 +209,17 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final AtomicLong frameGeneration = new AtomicLong();
     private final AtomicReference<Render> latest = new AtomicReference<>();
     private final AtomicBoolean rendering = new AtomicBoolean();
+    private final Object cpuWorkLock = new Object();
+    private CpuWork inFlightCpu;
+    private static final class CpuWork implements AutoCloseable {
+        final Render render;
+        boolean retired;
+        CpuWork(Render render) { this.render = render; }
+        @Override public void close() {
+            render.close();
+            retired = true;
+        }
+    }
     @FunctionalInterface
     interface CpuRenderer {
         TerrainRenderer.Frame render(TerrainRenderer.Scene scene, TerrainRenderer.Camera camera,
@@ -1667,8 +1678,26 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void replaceRender(Render next) {
-        var previous = latest.getAndSet(next);
+        Render previous;
+        synchronized (cpuWorkLock) { previous = latest.getAndSet(next); }
         if (previous != null) previous.close();
+    }
+
+    private CpuWork takeCpuWork() {
+        synchronized (cpuWorkLock) {
+            var next = latest.get();
+            if (next == null) return null;
+            // Allocate metadata before removing the queued owner, even if allocation fails.
+            var work = new CpuWork(next);
+            latest.set(null);
+            inFlightCpu = work;
+            return work;
+        }
+    }
+
+    private boolean differentCpuOwner(Render work) {
+        return work != null && (work.scene() != terrainScene
+                || work.textureGeneration() != textureGeneration);
     }
 
     private void releaseCurrentTextures() {
@@ -1704,15 +1733,17 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private boolean materialAdmission() {
-        boolean accepted = presentedScene == terrainScene
-                && presentedTextureGeneration == textureGeneration;
-        if (gpu != null && gpuEnabled.isSelected() && gpu.ready()) {
-            // A CPU fallback from an earlier appearance may still own a different atlas set even
-            // after the new GPU appearance presents. Its finally block supplies the wakeup.
-            if (rendering.get()) {
+        synchronized (cpuWorkLock) {
+            if (cpuRetirementFailure != null
+                    || inFlightCpu != null && differentCpuOwner(inFlightCpu.render)
+                    || differentCpuOwner(latest.get())) {
                 materialWakeNeeded.set(true);
                 return false;
             }
+        }
+        boolean accepted = presentedScene == terrainScene
+                && presentedTextureGeneration == textureGeneration;
+        if (gpu != null && gpuEnabled.isSelected() && gpu.ready()) {
             if (accepted) return true;
         } else if (gpu != null && !gpu.retirement().isDone()) {
             materialWakeNeeded.set(true);
@@ -2210,10 +2241,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
         cpuRetirement = retired;
         Runnable render = () -> {
             try {
-                Render work;
-                while ((work = latest.getAndSet(null)) != null) {
-                    var current = work;
-                    try (current) {
+                CpuWork work;
+                while ((work = takeCpuWork()) != null) {
+                    var owner = work;
+                    var current = owner.render;
+                    try (owner) {
                         if (closed) continue;
                         java.util.function.BooleanSupplier canceled = () -> closed
                                 || frameGeneration.get() != current.generation();
@@ -2235,6 +2267,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     } catch (RuntimeException error) {
                         cpuFailure(error);
                         queueCpuDelivery(current, null);
+                    } catch (Error fatal) {
+                        cpuFailure(fatal);
+                        throw fatal;
+                    } finally {
+                        synchronized (cpuWorkLock) {
+                            if (owner.retired && inFlightCpu == owner) inFlightCpu = null;
+                        }
                     }
                     if (cpuRetirementFailure != null) break;
                 }

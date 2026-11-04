@@ -41,7 +41,7 @@ public final class WorldPreparedTextureUiTest {
     public static void main(String[] args) throws Exception {
         Platform.startup(() -> Platform.setImplicitExit(false));
         try { scenario(false, false, false); scenario(true, false, false);
-            scenario(false, true, false); scenario(false, false, true); scenario(false, false, false, true); }
+            scenario(false, true, false); scenario(false, false, true); scenario(false, false, false, true); scenario(false, false, false, true, true); }
         finally { Platform.exit(); }
         System.out.println("Prepared terrain bundle FX PASS: initial/full-window and replacement atomicity, old-camera continuity, partial/failure outcomes and ownership");
     }
@@ -51,10 +51,16 @@ public final class WorldPreparedTextureUiTest {
     }
 
     private static void scenario(boolean partial, boolean fail, boolean supersede, boolean heldCpu) throws Exception {
+        scenario(partial, fail, supersede, heldCpu, false);
+    }
+
+    private static void scenario(boolean partial, boolean fail, boolean supersede, boolean heldCpu, boolean currentCpu) throws Exception {
         var fixture = heldCpu ? TerrainGpuPreviewTextureFixture.streamingWindow()
                 : TerrainGpuPreviewTextureFixture.neighborhood(partial);
         var cpuEntered = new java.util.concurrent.CountDownLatch(1);
         var cpuRelease = new java.util.concurrent.CountDownLatch(1);
+        var cpuActive = new java.util.concurrent.atomic.AtomicBoolean();
+        var cpuEnded = new java.util.concurrent.atomic.AtomicLong();
         var deliveries = new java.util.concurrent.ConcurrentLinkedQueue<Runnable>();
         var children = new CopyOnWriteArrayList<GpuPreviewServiceTest.FakeProcess>();
         var frames = new CopyOnWriteArrayList<Frames>();
@@ -104,10 +110,15 @@ public final class WorldPreparedTextureUiTest {
             var ownedView = fx(() -> heldCpu ? new WorldView(() -> source, () -> 0, service,
                     (scene, camera, width, height, textures, canceled) -> {
                         require(!textures.isEmpty(), "Held CPU job owns scoped material borrows");
+                        cpuActive.set(true);
                         cpuEntered.countDown();
-                        try { require(cpuRelease.await(12, TimeUnit.SECONDS), "Release held CPU ownership"); }
-                        catch (InterruptedException error) { throw new AssertionError(error); }
-                        return new TerrainRenderer.Frame(width, height, new int[width * height], 0, false);
+                        try {
+                            // Actual ownership ends only at the explicit release below/finally.
+                            // All owner-thread waits remain independently bounded by await()/fx().
+                            cpuRelease.await();
+                            return new TerrainRenderer.Frame(width, height, new int[width * height], 0, false);
+                        } catch (InterruptedException error) { throw new AssertionError(error); }
+                        finally { cpuEnded.set(System.nanoTime()); cpuActive.set(false); }
                     }, deliveries::add) : new WorldView(() -> source, () -> 0, service));
             view = ownedView;
             debugView = ownedView;
@@ -145,6 +156,28 @@ public final class WorldPreparedTextureUiTest {
             int covered = partial ? 256 : 512;
             require(fx(() -> ((Label) ownedView.lookup("#world-texture-status")).getText()
                     .equals("Basic terrain textures · " + covered + "/512 regions")), "Full or partial initial coverage remains exact");
+            if (currentCpu) {
+                var currentScene = fx(() -> get(ownedView, "terrainScene"));
+                fx(() -> { ((javafx.scene.control.CheckBox)ownedView.lookup("#world-gpu-enabled")).fire(); return null; });
+                require(cpuEntered.await(5, TimeUnit.SECONDS), "Current-scene CPU callback enters scoped borrow");
+                long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(12);
+                boolean progressed=false;
+                while (System.nanoTime()<deadline) {
+                    progressed=fx(() -> {
+                        var camera=(TerrainRenderer.Camera)get(ownedView,"camera");
+                        set(ownedView,"camera",new TerrainRenderer.Camera(-2.5*WorldFormats.TILE_SIZE,
+                                camera.y(),camera.z(),camera.yaw()+.001,camera.pitch()));
+                        invoke(ownedView,"loadNext");invoke(ownedView,"requestFrame");
+                        return get(ownedView,"terrainScene")!=currentScene;
+                    });
+                    if(progressed) break;
+                    Thread.sleep(10);
+                }
+                require(progressed && reads.get()==2,"Current CPU aliases and replenished camera queue must not starve the second candidate");
+                require(cpuActive.get() && cpuRelease.getCount()==1,
+                        "Progress occurs before the actual current-scene CPU callback releases");
+                return;
+            }
             sourceGate.set(new CompletableFuture<>());
             var oldScene = fx(() -> get(ownedView, "terrainScene"));
             fx(() -> {
@@ -212,6 +245,9 @@ public final class WorldPreparedTextureUiTest {
             require(children.size() == 2 && reads.get() == (supersede ? 3 : 2),
                     "Only complete useful bundles launch a child; canceled intermediate never publishes");
             if (heldCpu) {
+                fx(() -> { ownedStage.setWidth(ownedStage.getWidth()+180); return null; });
+                await(() -> fx(() -> !((TerrainGpuPreview)get(ownedView,"gpu")).ready()),
+                        "Actual resize awaits a matching new GPU frame while CPU borrow remains held");
                 sourceGate.set(new CompletableFuture<>());
                 fx(() -> {
                     var camera = (TerrainRenderer.Camera) get(ownedView, "camera");
@@ -221,6 +257,10 @@ public final class WorldPreparedTextureUiTest {
                 });
                 await(() -> tileReads.get() == 4, "Fourth raw tile loads independently");
                 fx(() -> { invoke(ownedView, "advanceMaterials"); return null; });
+                require(cpuActive.get() && cpuEnded.get()==0 && cpuRelease.getCount()==1,
+                        "Actual CPU callback is still held, not an expired timed hold");
+                require(fx(() -> ((java.util.concurrent.atomic.AtomicBoolean)get(ownedView,"rendering")).get()),
+                        "Actual renderer remains admitted while its callback owns material borrows");
                 require(reads.get() == 2 && fx(() -> get(ownedView, "pendingPrepared") == null
                         && get(ownedView, "geometryJob") == null),
                         "Accepted GPU frame cannot admit third geometry/material owner while old CPU borrow lives");
