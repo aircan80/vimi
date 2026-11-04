@@ -26,6 +26,7 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
     private NpcsView npcs;
     private QuestsView quests;
     private WorldView world;
+    private MapsView maps;
     private MountsView mounts;
     private ProfessionsView professions;
     private DungeonsView dungeons;
@@ -49,7 +50,7 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         this.sources = sources;
         var navigation = new HBox(4);
         navigation.getStyleClass().add("area-navigation");
-        for (String area : List.of("Overview", "Files", "Tables", "Items", "Creatures", "NPCs", "Quests", "Talents", "Races", "Dungeons", "Mounts", "Professions", "World")) {
+        for (String area : List.of("Overview", "Files", "Tables", "Items", "Creatures", "NPCs", "Quests", "Talents", "Races", "Dungeons", "Mounts", "Professions", "World", "Maps")) {
             var button = new Button(area);
             button.getStyleClass().add("area-link");
             button.setOnAction(event -> show(area));
@@ -90,6 +91,7 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             workspaceRevision = work.revision();
             browsers.values().forEach(ResearchBrowser::invalidate);
             if (talents != null) talents.invalidate();
+            if (maps != null) maps.invalidate();
             if (races != null) races.invalidate();
             if (npcs != null) npcs.invalidate();
             if (quests != null) quests.invalidate();
@@ -163,6 +165,10 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             if (professions == null) professions = new ProfessionsView(work::professionsHandle, work::revision, work::icon, work::itemName);
             setCenter(professions); professions.ensureLoaded(); return;
         }
+        if (area.equals("Maps") && job.work() instanceof NativePreparationWork work) {
+            if (maps == null) maps = new MapsView(work::locationMapsHandle, work::revision, work::tablesHandle);
+            setCenter(maps); maps.ensureLoaded(); return;
+        }
         if (area.equals("World")) {
             if (world == null) world = new WorldView(job);
             setCenter(world); world.activate(); return;
@@ -204,6 +210,7 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         if (npcs != null) npcs.close();
         if (quests != null) quests.close();
         if (world != null) world.close();
+        if (maps != null) maps.close();
         if (mounts != null) mounts.close();
         if (professions != null) professions.close();
         if (dungeons != null) dungeons.close();

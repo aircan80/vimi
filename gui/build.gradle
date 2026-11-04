@@ -508,3 +508,10 @@ tasks.register('worldPreparedTextureUiTest', JavaExec) {
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.WorldPreparedTextureUiTest'
 }
+
+// Authored hierarchy/artwork and off-FX cancellation proof; requires a display.
+tasks.register('mapsBrowserUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.MapsBrowserUiTest'
+}
