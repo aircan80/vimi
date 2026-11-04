@@ -394,3 +394,15 @@ tasks.register('nativeGpuGlobalFrameOwnerProof', JavaExec) {
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args layout.buildDirectory.dir('native-global-frame-owner').get().asFile.absolutePath
 }
+
+// Actual GLOBAL child through the public parent transport; explicit hardware diagnostic.
+tasks.register('nativeGpuGlobalChildProof', JavaExec) {
+    group = 'verification'
+    description = 'Checks the actual GLOBAL child protocol, pixels, resize and drain on hardware.'
+    dependsOn testClasses, tasks.named('verifyGlobalCandidateShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.GlobalWmoChildProof'
+    timeout = java.time.Duration.ofMinutes(3)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-global-child').get().asFile.absolutePath
+}
