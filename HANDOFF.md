@@ -27,35 +27,77 @@ stationary-camera content changes,800x500resize, actual pixels, cancellation, re
 rejection and clean CLOSE/EOF. A separate real unread stdout pipe fills after573commands/
 1147completedwrites; independent watchdog terminates that owned child after11.884s.
 No GUI/source integration, nine-tile movement FPS or Metal/D3D runtime claim is made.
-Combined concepts/formats/rendering/GUI integration validation is running; inspect
-`/tmp/vimi-world-actor-integration-check.log` before promoting the branch.
+Combined actor checks passed149tasks; later source/helper validation below supersedes
+that checkpoint. None promotes the draft to a user-visible streaming feature.
 
 Reviewed source pieces already integrated:12-version geometry cache34cf891,
 off-caller WorldService close1b7fc64, detached actual admission metadata8100e1f,
 owned material drain/strict errorsb7837ad+184fcd1, raw WMO facts5dbc64c,
 private BASIC_WMO source factorya22b82d+unknown-size fixture01ddd9e.
-Cold neutral WMO annexf6ce9c2 in `/tmp/vimi-wmo-basic-source` is under independent
-review. No buildings, instance viewer, NPCs, music or character creator is delivered.
+Cold neutral WMO annexf6ce9c2 is also approved; detailed actual-source evidence follows.
+No buildings, instance viewer, NPCs, music or character creator is delivered.
 
-Actual70755 Map table is VERIFIED_NATIVE but PARTIAL73/81 with3encryptedsections/
-8excludedrecords. Do NOT blanket-allow PARTIAL or mistake an issue certificate for
-membership. Narrow selected-ID witness design40c7c31+explicit source access3659343
-is approved; implementation in `/tmp/vimi-partial-map-id-witness` remains uncommitted
-and must be independently reviewed. Candidate actual readonly-source proof passes
-Map0→WDT775971→root777947,37120vertices/256areas, geometrySHA
-c032876b1c24752cb8f2bedf95e710510402addf9ee98e89b6bff675601ae6df,
-with repeated geometry reusing one root read. Required negative/cancel/lifetime
-qualification is still being completed. Actual BASIC_WMO factory proof follows this gate.
+Partial Map selected-ID implementation bf70ac1 is now ROOT APPROVED and integrated
+as1a1a749 (+comment clarification3e36062/8a1fffa). It preserves complete READY
+qualification and NOT_CERTIFIED membership. Private WDC4/5 selected-ID witness
+requires exact per-section excluded-ID inventories/no copies and fresh Map stat,
+definitions/keys/full capture stamp/EOF. Root isolated full59tasks and forced16
+new fixtures pass; independent actual original+prior stores READONLY/localOnly proof
+passes Map0/WDT775971/root777947/37120vertices/256areas/same geometry SHA/rootReads1.
+Logs `/tmp/vimi-partial-map-root-{review,executed}.log` and
+`/tmp/vimi-partial-map-root-actual-proof/proof.log`. Do not blanket-allow PARTIAL.
+Combined formats/concepts/rendering/GUI checks pass161tasks after integration;
+`/tmp/vimi-partial-actor-annex-integration-final-check.log`. Actual child proof also
+passes same3commits/15CAM/EOF/realblockedpipe in preceding integration log.
 
-Next: review/promote the partial Map witness and cold WMO annex, implement combined
-source-owned material/packet transaction, parent process transport and inline coordinator,
-then prove real movement without renderer restart or temporary untextured replacements.
-Global-instance transform/source proposal runs separately in
-`/tmp/vimi-world-global-instance-source`; do not reuse ADT offset transforms or invent tiles.
-Remaining race/sex models and character customization follow current World milestones;
-independent immersive extras must not indefinitely postpone that work.
+Cold neutral WMO annex f6ce9c2 is independently APPROVED/integratedfd6d087. Actual
+source qualification exposed group106906 liquidType15 under exact flags9/noMLIQ;
+scoped source-profile fix3d304ad independently approved/integrated53beeaf accepts
+raw0/15 only, still refuses other descriptors/flags/anyMLIQ. Actual private full
+Map0→WDT→ADT/OBJ0→WMO106905/group106906→six actual BC1 images→guarded packet→final
+checks→base-bound annex read PASS:424vertices/378triangles/6batches/335872pixels/
+11bindings/1361404annexbytes. Original+priorinstance+city stores all READONLY,
+localOnly/new scratch only; `/tmp/vimi-wmo-root-actual-proof/proof-liquid15.log`.
+This is source/codec evidence, NOT visible buildings. Native draw pass/new eight
+shaders are active in `/tmp/vimi-wmo-native-cold-pass`; old32blobs unchanged.
 
-## Overnight continuation — Maps alpha20 candidate
+Parent typed status parser8cb24ed+2e79f70 independently approved/integrated;
+actual-child fixture parses real wire statuses. Parent facade/lifecycle design
+d08b775+91af541 approved after removing external-start/attach cleanup gap and
+requiring actual CAMERA_APPLIED plus COMMITTED before pixel allocation. Internal
+frame gate95a76fd and prepared-file ownership helperfcdf3b7 approved/integrated
+through3ea247f; root actual6fixture rerun passes. Process/Starter/kill/arbiter and
+full public transport remain active implementation, not implied by helper tests.
+Owner: architect `/tmp/vimi-world-stream-parent-transport-impl`. Latest combined
+concepts/rendering/GUI checks pass142tasks at3ea247f in
+`/tmp/vimi-world-source-parent-helper-integration-check.log`.
+
+Source worker `/tmp/vimi-world-qualified-tile-factory` now implements reviewed
+e89238c combined geometry/material/writer direction: hold admission through actual
+material cancellation drain, packet write and ALL final source checks. New private
+observed-binding trace must also cover terminal-failed inputs/negative lookup
+attempts before fallback; those are never positive source bindings. Twelve moving
+geometry/atlas/output owners, no repeated nine-tile alias-retains. No GUI wiring yet.
+
+Global-instance proposal7816dd2 has scoped zero-global transform/source direction
+approval: exactflags8/zero placement/scale disabled, D=(-x,-y,z), no ADT translation
+or fake tile. Budget remains provisional/unapproved. Actual raw28180batch triangles
+vs31219total and unsupported water/MOCV/light/doodad facts remain explicit. Root
+separate scratch-only image acquisition diagnostic establishes17BC1 opaque256² and
+one BC3/128² image128111 with alpha0..217 (all16384nonopaque),1130496totalpixels.
+Strict BC1-only proposal correctly REFUSES a complete candidate. Any explicit
+opaque-RGB/alpha-ignore global recipe needs separate review. Log
+`/tmp/vimi-onyxia-image-body-proof/proof-alpha-stats.log`; original/prior stores RO,
+network writes fresh scratch only. No game assets in Git.
+
+Next: complete source-owned packet transaction and parent process transport, then
+inline coordinator and real movement proof with no renderer restart or texture
+flash. Cold building native pass runs in parallel. Remaining race/sex models and
+character customization follow current World milestones; independent immersive
+extras must not indefinitely postpone that work. Latest released app is alpha20;
+no streaming/building/instance/NPC/music/character creator release claim yet.
+
+## Historical checkpoint — Maps alpha20 candidate
 
 Latest VERIFIED published release is alpha19 source39a42bb, run41775202595,
 all5platform packages/18assets, explicit prerelease. Main additionally FF-merges
