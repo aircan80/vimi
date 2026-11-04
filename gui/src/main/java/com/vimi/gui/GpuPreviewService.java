@@ -36,7 +36,9 @@ final class GpuPreviewService {
         FAILED
     }
 
-    record Status(State state, String message) {
+    record Status(State state, String message,
+            com.vibeminer.rendering.bgfx.TerrainTextureStatus textures) {
+        Status(State state, String message) { this(state, message, null); }
         boolean busy() {
             return state == State.PREPARING || state == State.STARTING || state == State.STOPPING;
         }
@@ -160,6 +162,8 @@ final class GpuPreviewService {
         final Object owner;
         final PreviewMesh mesh;
         final TerrainScene terrain;
+        final WorldTextureSnapshot textures;
+        volatile com.vibeminer.rendering.bgfx.TerrainTextureStatus textureStatus;
         final MeshAppearance appearance;
         final Set<Integer> parts;
         final Consumer<Status> listener;
@@ -187,15 +191,20 @@ final class GpuPreviewService {
             this.owner = owner;
             this.mesh = mesh;
             this.terrain = null;
+            this.textures = null;
             this.appearance = appearance;
             this.parts = Set.copyOf(parts);
             this.listener = listener;
         }
 
-        Request(Object owner, TerrainScene terrain, Consumer<Status> listener,
-                Consumer<Frame> frames) {
+        Request(Object owner, TerrainScene terrain, WorldTextureSnapshot textures,
+                Consumer<Status> listener, Consumer<Frame> frames) {
             this.owner = owner;
             this.terrain = terrain;
+            this.textures = textures == null ? null : textures.retain();
+            drained.whenComplete((ignored, failure) -> {
+                if (this.textures != null) this.textures.close();
+            });
             this.mesh = null;
             this.appearance = null;
             this.parts = Set.of();
@@ -205,7 +214,7 @@ final class GpuPreviewService {
 
         void publish(State state, String message) {
             try {
-                listener.accept(new Status(state, message));
+                listener.accept(new Status(state, message, textureStatus));
             } catch (RuntimeException ignored) {
                 /* UI delivery cannot orphan the native process. */
             }
@@ -293,16 +302,31 @@ final class GpuPreviewService {
         Objects.requireNonNull(scene);
         Objects.requireNonNull(listener);
         Objects.requireNonNull(frames);
-        return enqueue(new Request(owner, scene, listener, frames));
+        return openTerrain(owner, scene, null, listener, frames);
+    }
+
+    CompletableFuture<Void> openTerrain(Object owner, TerrainScene scene,
+            WorldTextureSnapshot textures, Consumer<Status> listener, Consumer<Frame> frames) {
+        Objects.requireNonNull(owner);
+        Objects.requireNonNull(scene);
+        Objects.requireNonNull(listener);
+        Objects.requireNonNull(frames);
+        if (textures != null && textures.scene() != scene) {
+            throw new IllegalArgumentException("Terrain texture snapshot belongs to another scene");
+        }
+        // A source batch may honestly qualify no atlas. Keep the native height path usable.
+        var admitted = textures != null && textures.atlasCount() > 0 ? textures : null;
+        return enqueue(new Request(owner, scene, admitted, listener, frames));
     }
 
     private CompletableFuture<Void> enqueue(Request request) {
         Request superseded;
         boolean supersededPending, start;
         synchronized (gate) {
-            if (closed)
-                return CompletableFuture.failedFuture(
-                        new IllegalStateException("GPU preview service closed"));
+            if (closed) {
+                request.drained.completeExceptionally(new IllegalStateException("GPU preview service closed"));
+                return request.drained.copy();
+            }
             superseded = desired;
             supersededPending = superseded != null && superseded != active;
             if (superseded != null) superseded.stopping = true;
@@ -457,7 +481,7 @@ final class GpuPreviewService {
     }
 
     private void perform(Request request) {
-        Path directory = null, scene = null, framePath = null;
+        Path directory = null, scene = null, framePath = null, texturePath = null;
         Frames frames = null;
         Process child = null;
         Thread stdout = null, stderr = null, controls = null;
@@ -472,7 +496,21 @@ final class GpuPreviewService {
             if (request.terrain == null) {
                 writer.write(scene, request.mesh, request.appearance, request.parts);
             } else {
-                GpuTerrainSceneFile.write(scene, request.terrain, () -> request.stopping);
+                if (request.textures == null) {
+                    GpuTerrainSceneFile.write(scene, request.terrain, () -> request.stopping);
+                } else {
+                    var geometry = GpuTerrainSceneFile.writeBound(scene, request.terrain, () -> request.stopping);
+                    texturePath = directory.resolve("terrain.vatx");
+                    final Path destination = texturePath;
+                    request.textures.withBindings(bindings -> {
+                        try {
+                            com.vibeminer.rendering.bgfx.GpuTerrainTextureAnnex.write(
+                                    destination, geometry, request.terrain, bindings, () -> request.stopping);
+                        } catch (IOException writeFailure) {
+                            throw new java.io.UncheckedIOException(writeFailure);
+                        }
+                    });
+                }
             }
             long sceneLimit = request.terrain == null ? MAX_SCENE_BYTES : GpuTerrainSceneFile.MAX_BYTES;
             if (Files.size(scene) > sceneLimit)
@@ -483,7 +521,7 @@ final class GpuPreviewService {
                     ? createFrames(framePath, 800, 500) : frameFactory.create(framePath);
             request.publish(State.STARTING, "Starting inline GPU renderer…");
             child = request.terrain != null && nativeDefaults
-                    ? startChild(scene, framePath, true) : starter.start(scene, framePath);
+                    ? startChild(scene, framePath, true, texturePath) : starter.start(scene, framePath);
             final Process process = child;
             stdout =
                     Thread.ofVirtual()
@@ -539,7 +577,9 @@ final class GpuPreviewService {
                     sequence = frame.sequence();
                     if (frame.controlRevision() > 0
                             && frame.controlRevision() <= request.revision
-                            && !request.stopping) {
+                            && !request.stopping
+                            && !request.protocolFailure
+                            && (request.textures == null || request.ready)) {
                         request.frames.accept(frame);
                         presentedRevision = Math.max(presentedRevision, frame.controlRevision());
                         frameProgress = System.nanoTime();
@@ -589,6 +629,7 @@ final class GpuPreviewService {
             boolean terminated = child == null || !child.isAlive();
             if (terminated) {
                 try {
+                    if (texturePath != null) Files.deleteIfExists(texturePath);
                     if (scene != null) Files.deleteIfExists(scene);
                     if (framePath != null) Files.deleteIfExists(framePath);
                     if (directory != null) Files.deleteIfExists(directory);
@@ -661,7 +702,7 @@ final class GpuPreviewService {
     }
 
     private static void accept(Request request, String line) {
-        if (request.stopping) return;
+        if (request.stopping || request.protocolFailure) return;
         if (line.startsWith("VIMI_GPU HELLO ")) {
             String backend = line.substring(15).strip();
             if (backend.isEmpty() || backend.length() > 128 || backend.equalsIgnoreCase("noop")) {
@@ -669,9 +710,25 @@ final class GpuPreviewService {
                 return;
             }
             request.backend = backend;
+        } else if (line.startsWith("VIMI_GPU TEXTURES ")) {
+            try {
+                var textures = com.vibeminer.rendering.bgfx.TerrainTextureStatus.parse(line);
+                if (request.terrain == null || request.textures == null || request.ready
+                        || request.textureStatus != null
+                        || textures.sceneTiles() != request.terrain.tiles().size()
+                        || textures.activeAtlases() > request.textures.atlasCount()
+                        || textures.coveredRects() > request.textures.coveredChunks()) {
+                    throw new IllegalArgumentException("Unexpected terrain texture acknowledgement");
+                }
+                request.textureStatus = textures;
+            } catch (IllegalArgumentException invalid) {
+                request.errorCode = "TEXTURE_PROTOCOL";
+                request.protocolFailure = true;
+            }
         } else if (line.startsWith("VIMI_GPU READY ")) {
             String backend = line.substring(15).strip();
-            if (backend.isEmpty() || !backend.equals(request.backend)) {
+            if (backend.isEmpty() || !backend.equals(request.backend)
+                    || (request.textures != null && request.textureStatus == null)) {
                 request.protocolFailure = true;
                 return;
             }
@@ -712,6 +769,10 @@ final class GpuPreviewService {
     }
 
     private static Process startChild(Path scene, Path frames, boolean terrain) throws IOException {
+        return startChild(scene, frames, terrain, null);
+    }
+
+    private static Process startChild(Path scene, Path frames, boolean terrain, Path textures) throws IOException {
         var command = new ArrayList<String>();
         boolean windows =
                 System.getProperty("os.name").toLowerCase(java.util.Locale.ROOT).contains("win");
@@ -726,6 +787,10 @@ final class GpuPreviewService {
         command.add("com.vibeminer.rendering.bgfx.GpuViewerMain");
         command.add(terrain ? "--terrain-scene" : "--scene");
         command.add(scene.toAbsolutePath().toString());
+        if (textures != null) {
+            command.add("--terrain-textures");
+            command.add(textures.toAbsolutePath().toString());
+        }
         command.add("--frames");
         command.add(frames.toAbsolutePath().toString());
         command.add("--parent-pid");

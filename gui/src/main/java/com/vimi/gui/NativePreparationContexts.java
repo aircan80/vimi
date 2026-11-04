@@ -40,6 +40,9 @@ final class NativePreparationContexts implements BuildPreparation.Factory {
     private final CachingObjectSource nameSource;
     private final CommunityFileNames names;
     private final Set<Context> contexts = new HashSet<>();
+    // All builds share one bounded pool; retiring a workspace never closes this owner.
+    private final com.vibeminer.concepts.world.TerrainAtlasPool terrainAtlases =
+            new com.vibeminer.concepts.world.TerrainAtlasPool();
     private boolean closing;
     private CompletableFuture<Void> closed;
 
@@ -148,7 +151,8 @@ final class NativePreparationContexts implements BuildPreparation.Factory {
                                     generated,
                                     names,
                                     context.localSource,
-                                    grids)
+                                    grids,
+                                    terrainAtlases)
                             .withLifecycle(() -> context.closeAsync().join());
             if (localOnly) {
                 work.withSourcePolicy(false, definitions).withPinnedCommunityKeys(pinnedKeys);
@@ -389,8 +393,8 @@ final class NativePreparationContexts implements BuildPreparation.Factory {
                 .whenComplete((ignored, failure) -> resolutionCache.close())
                 .handle(
                         (ignored, failure) ->
-                                nameSource
-                                        .closeAsync()
+                                CompletableFuture.allOf(
+                                                nameSource.closeAsync(), terrainAtlases.closeAsync())
                                         .handle(
                                                 (done, nameFailure) -> {
                                                     if (failure != null) {

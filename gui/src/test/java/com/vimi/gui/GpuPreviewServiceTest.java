@@ -46,6 +46,7 @@ public final class GpuPreviewServiceTest {
             latestFrameHandoffNeverRepublishesOlderWork();
             inlineFramesAndCoalescedControls(root);
             terrainAndModelsShareOwnerAndKeepControlsTyped(root);
+            emptyTexturesKeepNativeHeightFallbackAndRejectedBatchesClose(root);
             terrainReplacementWaitsForAcceptedFrameButNotTerminalFailure(root);
             normalExitAndOwnerIsolation(root);
             cancelDuringPreparationDoesNotLaunch(root);
@@ -154,6 +155,44 @@ public final class GpuPreviewServiceTest {
         }
         require(launches.get() == 2 && !terrainChild.isAlive() && !modelChild.isAlive(),
                 "One shared native lifecycle drains both renderer kinds");
+    }
+
+    private static void emptyTexturesKeepNativeHeightFallbackAndRejectedBatchesClose(Path root) throws Exception {
+        var tile = new com.vibeminer.formats.world.WorldFormats.Tile(17, 21, 1, 0, 0);
+        var scene = new com.vibeminer.rendering.world.TerrainScene(List.of(
+                com.vibeminer.rendering.world.TerrainScene.Tile.copyOf(17, 21,
+                        new float[] {10, -1, 0, 10, 1, 0, 10, 0, 1}, new int[] {0, 1, 2}, 1)));
+        for (boolean nullScene : List.of(true, false)) {
+            var batch = com.vibeminer.concepts.world.WorldTerrainTextureSource.BatchResult.unsupported(List.of(tile));
+            try {
+                WorldTextureSnapshot.prepare(nullScene ? null : scene, batch,
+                        nullScene ? () -> false : null);
+                throw new AssertionError("Invalid preparation arguments must be rejected");
+            } catch (NullPointerException expected) {
+            }
+            try {
+                batch.retainAtlas(17, 21);
+                throw new AssertionError("Rejected preparation must close its consumed batch");
+            } catch (IllegalStateException expected) {
+            }
+        }
+        var empty = WorldTextureSnapshot.prepare(scene,
+                com.vibeminer.concepts.world.WorldTerrainTextureSource.BatchResult.unsupported(List.of(tile)),
+                () -> false);
+        var child = new FakeProcess(true);
+        var ready = new CountDownLatch(1);
+        var fixture = service(root, GpuPreviewServiceTest::write, file -> child);
+        try (empty) {
+            fixture.openTerrain(new Object(), scene, empty,
+                    status -> { if (status.state() == GpuPreviewService.State.READY) ready.countDown(); },
+                    ignored -> {});
+            await(child.started);
+            child.send("VIMI_GPU HELLO Vulkan\nVIMI_GPU READY Vulkan\n");
+            await(ready);
+            require(empty.atlasCount() == 0, "Empty textures use height mode without requiring an annex ACK");
+        } finally {
+            fixture.closeAsync().get(3, TimeUnit.SECONDS);
+        }
     }
 
     private static void terrainReplacementWaitsForAcceptedFrameButNotTerminalFailure(Path root) throws Exception {

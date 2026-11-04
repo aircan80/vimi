@@ -128,6 +128,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     }
 
     private final java.nio.file.Path indexDirectory;
+    private final com.vibeminer.concepts.world.TerrainAtlasPool terrainAtlases;
     private final BuildInfo info;
     private final BuildTypes.BuildRef ref;
     private final String locale;
@@ -191,6 +192,22 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             CommunityFileNames community,
             ObjectSource localObjects,
             java.nio.file.Path indexDirectory) {
+        this(info, source, locale, builds, objects, generated, community, localObjects,
+                indexDirectory, null);
+    }
+
+    public NativePreparationWork(
+            BuildInfo info,
+            BuildInfo.RegionEvidence source,
+            String locale,
+            Builds builds,
+            ObjectSource objects,
+            GeneratedStore generated,
+            CommunityFileNames community,
+            ObjectSource localObjects,
+            java.nio.file.Path indexDirectory,
+            com.vibeminer.concepts.world.TerrainAtlasPool terrainAtlases) {
+        this.terrainAtlases = terrainAtlases;
         this.indexDirectory = indexDirectory;
         this.info = info;
         this.ref =
@@ -565,7 +582,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             synchronized (handlesGate) {
                 token.check();
                 if (closed.get()) throw new java.util.concurrent.CancellationException();
-                pending = new Workspace(next, localService, null, null, null, new com.vibeminer.concepts.talents.TalentsService(next,info.version()), new com.vibeminer.concepts.races.RacesService(next, fileHandle, generated), new com.vibeminer.concepts.world.WorldService(next,fileHandle), new com.vibeminer.concepts.mounts.MountsService(next,fileHandle,generated), new com.vibeminer.concepts.professions.ProfessionsService(next), new com.vibeminer.concepts.dungeons.DungeonsService(next), new com.vibeminer.concepts.locations.LocationMapsService(next,fileHandle,generated), 0);
+                pending = new Workspace(next, localService, null, null, null, new com.vibeminer.concepts.talents.TalentsService(next,info.version()), new com.vibeminer.concepts.races.RacesService(next, fileHandle, generated), new com.vibeminer.concepts.world.WorldService(next,fileHandle,terrainAtlases), new com.vibeminer.concepts.mounts.MountsService(next,fileHandle,generated), new com.vibeminer.concepts.professions.ProfessionsService(next), new com.vibeminer.concepts.dungeons.DungeonsService(next), new com.vibeminer.concepts.locations.LocationMapsService(next,fileHandle,generated), 0);
                 pendingWarmed = false;
                 staged = true;
             }
