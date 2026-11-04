@@ -2,6 +2,43 @@
 
 ## Current Linux checkpoint — alpha20 released, persistent World integration active
 
+Newest reviewed integration is `734bead` (PR153), superseding intermediate hashes
+below. Combined formats-world/concepts-world/rendering-world/bgfx/GUI checks pass
+155tasks (`/tmp/vimi-world-public-source-parent-raw-combined-check.log`). Public
+opaque terrain source14e4f16 is root/independently approved and integratedb46f1b1;
+root actual new-JAR proof is localOnly, original+prior stores READONLY, TEXTURED
+Map0/root777947/tex0777950/twelve diffuse, native bounds/fingerprint correct,
+retired1/claims0 (`/tmp/vimi-public-terrain-root-actual-proof/proof.log`). Source
+explicit-origin refusal mapping remains active, before closed packet bridge wiring.
+
+Parent metadata Statec16b8a9+51eeef3 is root approved/integrated8d7fc33/acbeee7.
+Its bounded caller-list snapshot runs OUTSIDE locks, with state rechecked inside;
+reentrant/held/throwing list fixtures pass. Root isolated38tasks pass
+`/tmp/vimi-world-parent-state-root-review.log`. Public transport still active.
+Typed neutral nonpacket refusal design8104730 is integrateddf2102e.
+GUI request-kind1af9a69 is independently approved/integrated686482d; existing model
+and cold-terrain service tests pass. A third streaming variant must have its own
+perform branch; do not let it fall through cold/model null-field dispatch.
+
+Global-instance RAW foundations are root approved/integrated: guarded group parser
+127bd75/f4c34c3→937ad57/029161e and WDT scanner648e8c6→734bead. Root fresh checks
+and actual read-only/localOnly eight-group and WDT proofs pass:
+`/tmp/vimi-wmo-group-spans-root-{review,actual-proof}.log` and
+`/tmp/vimi-wdt-reference-root-{review,actual-proof}.log`. No global positive source,
+instance renderer or full global budget grant follows. Maps agent is authorized
+for a behavior-preserving Map-only component extraction in an isolated branch,
+coordinated with source author's explicit-origin refusal edits.
+
+Root material identity amendment/helper branch is `/tmp/vimi-world-stream-material-identity`,
+`design/world-stream-material-identity`, commits82fd48a/133bf64/8c0d9a4, pending
+independent review/integration. Actual PARTIAL receipt.cacheKey can be null; preserve
+that genuine value. Separately namespaced structural material digest binds actual
+pixels/coverage/profile/source operands; codec field160 terminology corrected with
+explicit private-v2 amendment, no wire layout/cap change. Full40task checks and
+independent Python SHA oracle pass. It does not mint a composition cache receipt.
+Parent/file-MOVE/fixed writer/GUI controller remain the critical integration path.
+
+
 Latest reviewed integration checkpoint: `baf1b26` on
 `feature/world-streaming-integration` (draft PR153), not main or a release.
 Combined source/rendering-world/bgfx/GUI checks pass149tasks in
@@ -16,7 +53,7 @@ is root and independently approved, integrated43d6fb8 through38e3f4e. Scope
 invalidation distinguishes bounded standard async cancellation from source failure;
 source close requests active admission cancellation BEFORE arbitrary returned output
 cleanup. Root forced36tasks pass `/tmp/vimi-source-close-final-root-review.log`;
-independent51scope fixtures pass. Public opaque concepts facade is being implemented
+independent47scope fixtures pass (XML-count correction). Public opaque concepts facade is being implemented
 by java_world_streaming; no public DTO can mint this source qualification.
 
 Parent cancellation lane6e63202 is root reviewed/integrated12e027c; independent
