@@ -123,11 +123,41 @@ public final class WorldTravelUiTest {
             require(camera.x() == x && camera.y() == y && Math.abs(camera.z() - (height + 30)) < 1e-6,
                     "Arrives at the typed position above the rendered surface: " + camera);
             require(status.getText().startsWith("Arrived at"), "Arrival is reported: " + status.getText());
-            var low = new TerrainRenderer.Camera(x - 3, y - 4, height - 50, 1.25, -.3);
-            set(view, "camera", low);
-            ((Button) view.lookup("#world-save-bookmark")).fire();
-            var list = bookmarks(view);
-            await(() -> list.getItems().size() == 1, () -> crossMap(view, low, height));
+            inspectTerrain(view, x, y, height, () -> {
+                var low = new TerrainRenderer.Camera(x - 3, y - 4, height - 50, 1.25, -.3);
+                set(view, "camera", low);
+                ((Button) view.lookup("#world-save-bookmark")).fire();
+                var list = bookmarks(view);
+                await(() -> list.getItems().size() == 1, () -> crossMap(view, low, height));
+            });
+        });
+    }
+
+    /** A still primary click on the frame center casts a CPU ray onto the rendered surface. */
+    private static void inspectTerrain(WorldView view, double x, double y, double height, Runnable next) {
+        var image = (javafx.scene.image.ImageView) get(view, "image");
+        var viewport = (javafx.scene.layout.StackPane) get(view, "viewport");
+        var inspection = (Label) view.lookup("#world-inspection");
+        require(inspection != null && inspection.getText().startsWith("Click terrain"), "Inspection hint is shown");
+        await(() -> image.getImage() != null, () -> {
+            set(view, "camera", new TerrainRenderer.Camera(x, y, height + 30, 0, -1.2));
+            var center = viewport.localToScene(viewport.getWidth() / 2, viewport.getHeight() / 2);
+            var drag = new javafx.scene.input.MouseEvent(javafx.scene.input.MouseEvent.MOUSE_CLICKED,
+                    center.getX(), center.getY(), 0, 0, javafx.scene.input.MouseButton.PRIMARY, 1,
+                    false, false, false, false, true, false, false, false, false, false, null);
+            javafx.event.Event.fireEvent(viewport, drag);
+            require(inspection.getText().startsWith("Click terrain"), "A dragged release does not inspect");
+            var click = new javafx.scene.input.MouseEvent(javafx.scene.input.MouseEvent.MOUSE_CLICKED,
+                    center.getX(), center.getY(), 0, 0, javafx.scene.input.MouseButton.PRIMARY, 1,
+                    false, false, false, false, true, false, false, false, false, true, null);
+            javafx.event.Event.fireEvent(viewport, click);
+            await(() -> inspection.getText().startsWith("Terrain ·"), () -> {
+                String text = inspection.getText();
+                require(text.startsWith("Terrain · map 0 Authored continent · tile 30,40 · x "), "Picked tile: " + text);
+                require(text.contains("Area unknown") && text.contains("buildings, doodads and water are not picked"),
+                        "Uncatalogued area stays unknown: " + text);
+                next.run();
+            });
         });
     }
 

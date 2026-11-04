@@ -73,6 +73,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
             status = new Label("Choose a map"),
             position = new Label();
     private final Label currentArea = new Label("Terrain area unavailable");
+    private static final String INSPECT_HINT = "Click terrain or a shown NPC spawn marker to inspect it";
+    private final Label inspection = new Label(INSPECT_HINT);
+    // Latest click wins: one CPU pick at a time over immutable height snapshots, never on FX.
+    private final ThreadPoolExecutor picks = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<>(1), Thread.ofPlatform().daemon().name("world-pick").factory(),
+            new ThreadPoolExecutor.DiscardOldestPolicy());
+    private long pickGeneration;
     private final WorldAudioControls audio = new WorldAudioControls();
     private final Canvas tiles = new Canvas(512, 512);
     private final Label inventoryMessage = new Label("Choose a map to see its terrain inventory.");
@@ -545,6 +552,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
         VBox.setVgrow(maps, Priority.ALWAYS);
         heading.getStyleClass().add("h2");
         currentArea.setId("world-current-area");
+        inspection.setId("world-inspection");
+        inspection.setWrapText(true);
+        inspection.setMinWidth(0);
+        inspection.setMaxWidth(Double.MAX_VALUE);
+        inspection.setTooltip(new javafx.scene.control.Tooltip("Rendered ADT terrain under the pointer,"
+                + " or a declared NPC spawn marker with its source record. Buildings, doodads, water"
+                + " and live creatures are not picked; unknown facts are reported as unknown."));
         currentArea.setMinWidth(0);
         currentArea.setMaxWidth(Double.MAX_VALUE);
         currentArea.setTooltip(new javafx.scene.control.Tooltip("Recorded ADT terrain area; WMO interior volumes are not evaluated."));
@@ -705,6 +719,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     viewport.requestFocus();
                     mouseX = e.getX();
                     mouseY = e.getY();
+                });
+        viewport.setOnMouseClicked(
+                e -> {
+                    if (e.getButton() == javafx.scene.input.MouseButton.PRIMARY && e.isStillSincePress())
+                        inspect(e.getSceneX(), e.getSceneY());
                 });
         viewport.setOnMouseDragged(
                 e -> {
@@ -1066,6 +1085,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     private void cancelRequests() {
         if (spawns != null) spawns.suspend();
+        resetInspection();
         retireTextures();
         currentArea.setText("Terrain area unavailable");
         audio.area(null, -1, null);
@@ -1518,11 +1538,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                 + " · F walks")),
                         new HBox(10, walkMode, smoothMotion, motionStatus, saveBookmark),
                         currentArea,
+                        inspection,
                         audio.node(),
                         position,
                         new HBox(8, gpuEnabled, gpuActivity, retryGpu, gpuStatus),
                         new HBox(8, textureActivity, textureStatus, retryTextures)));
         if (spawns != null) ((VBox) content.getBottom()).getChildren().add(spawns.controls());
+        resetInspection();
         status.setText("Loading terrain tile " + selected.key() + "…");
         if (spawns != null) spawns.resume();
         show(firstFrameActivity, true);
@@ -2510,6 +2532,81 @@ final class WorldView extends BorderPane implements AutoCloseable {
         }
     }
 
+    private void resetInspection() {
+        pickGeneration++;
+        inspection.setText(INSPECT_HINT);
+    }
+
+    /**
+     * Inspects what lies under a scene point of the presented frame. A drawn spawn marker wins and
+     * is described from its declared record on FX (no I/O); otherwise a CPU ray is cast against the
+     * retained rendered-surface heights on the pick worker, and the latest click publishes.
+     */
+    private void inspect(double sceneX, double sceneY) {
+        long request = ++pickGeneration;
+        if (closed || !active || !explorer || camera == null || inventory == null
+                || !(image.getImage() instanceof javafx.scene.image.Image frame)) {
+            inspection.setText("Nothing to inspect until a terrain frame is shown");
+            return;
+        }
+        var map = inventory.map();
+        if (spawns != null) {
+            var local = spawns.sceneToLocal(sceneX, sceneY);
+            var picked = local == null ? java.util.Optional.<WorldSpawnOverlay.Picked>empty()
+                    : spawns.pick(local.getX(), local.getY());
+            if (picked.isPresent()) {
+                inspection.setText(WorldPick.describeSpawn(picked.get().spawn(), picked.get().npc(), map.name()));
+                return;
+            }
+        }
+        var local = viewport.sceneToLocal(sceneX, sceneY);
+        var ray = local == null ? java.util.Optional.<WorldPick.Ray>empty()
+                : WorldPick.ray(camera, frame.getWidth(), frame.getHeight(), viewport.getWidth(),
+                        viewport.getHeight(), local.getX(), local.getY());
+        if (ray.isEmpty()) {
+            inspection.setText("Nothing picked · the pointer is outside the rendered frame");
+            return;
+        }
+        var surface = currentGround();
+        long mapId = map.id(), chosen = selection;
+        String mapName = map.name();
+        var controller = streamingMode ? streaming : null;
+        var tiles = streamingMode ? java.util.List.<WorldService.LoadedTile>of() : java.util.List.copyOf(loaded.values());
+        var areaIndex = catalog == null ? null : catalog.areaIndex();
+        inspection.setText("Inspecting…");
+        try {
+            picks.execute(() -> {
+                String text;
+                try {
+                    var hit = WorldPick.terrain(ray.get(), surface);
+                    if (hit.isEmpty()) {
+                        text = WorldPick.describeMiss(surface.tiles() > 0);
+                    } else {
+                        var at = hit.get();
+                        var area = controller != null ? controller.areaAt(at.x(), at.y())
+                                : areaIndex == null
+                                        ? new com.vibeminer.concepts.world.WorldCurrentArea.Result(
+                                                com.vibeminer.concepts.world.WorldCurrentArea.State.UNAVAILABLE,
+                                                com.vibeminer.concepts.world.WorldCurrentArea.Reason.NO_LOADED_METADATA,
+                                                0, java.util.List.of())
+                                        : com.vibeminer.concepts.world.WorldCurrentArea.locate(
+                                                mapId, at.x(), at.y(), tiles, areaIndex);
+                        text = WorldPick.describeTerrain(at, mapId, mapName, area);
+                    }
+                } catch (RuntimeException failure) {
+                    text = "Inspection failed: " + (failure.getMessage() == null
+                            ? failure.getClass().getSimpleName() : failure.getMessage());
+                }
+                String result = text;
+                Platform.runLater(() -> {
+                    if (!closed && request == pickGeneration && chosen == selection) inspection.setText(result);
+                });
+            });
+        } catch (java.util.concurrent.RejectedExecutionException shutDown) {
+            inspection.setText(INSPECT_HINT);
+        }
+    }
+
     /** Mounts declared NPC spawn markers over the presented explorer frame. FX thread. */
     void attachSpawns(WorldSpawnOverlay overlay) {
         if (spawns != null || closed) throw new IllegalStateException("Spawn overlay already attached");
@@ -2531,6 +2628,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         pendingBookmark = null;
         travel.close();
         if (spawns != null) spawns.close();
+        picks.shutdownNow();
         streamingImages.clear();
         minimap.close();
         if (gpu != null) gpu.close();

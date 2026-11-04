@@ -24,6 +24,7 @@ import javafx.scene.text.TextAlignment;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -57,6 +58,13 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
 
     /** One marker in viewport pixels. */
     record Marker(WorldSpawns.Spawn spawn, double x, double footY, double headY, double depth) {}
+
+    /** A clicked marker's declared point and its NPC record from the same snapshot, if any. */
+    record Picked(WorldSpawns.Spawn spawn, WorldSpawns.Npc npc) {
+        Picked {
+            Objects.requireNonNull(spawn);
+        }
+    }
 
     private final Canvas canvas = new Canvas();
     private final CheckBox enabled = new CheckBox("NPC spawns");
@@ -137,6 +145,23 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
 
     List<Marker> markers() {
         return markers;
+    }
+
+    /**
+     * The drawn marker under an overlay-local point. Empty while markers are hidden, so a hidden
+     * marker is never inspected. FX thread; reads only the drawn snapshot.
+     */
+    Optional<Picked> pick(double x, double y) {
+        var current = index;
+        if (closed || suspended || !enabled.isSelected() || current == null || drawn == null)
+            return Optional.empty();
+        return WorldPick.marker(markers, x, y)
+                .map(m -> new Picked(m.spawn(), current.npc(m.spawn().npcId()).orElse(null)));
+    }
+
+    /** Drawn head radius for a marker at an eye depth. */
+    static double headRadius(double depth) {
+        return Math.clamp(240 / depth, 2.5, 7);
     }
 
     CheckBox toggle() {
@@ -291,7 +316,7 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
         for (int i = 0; i < markers.size(); i++) {
             var marker = markers.get(i);
             var npc = index.npc(marker.spawn().npcId()).orElse(null);
-            double radius = Math.clamp(240 / marker.depth(), 2.5, 7);
+            double radius = headRadius(marker.depth());
             Color color = rankColor(npc == null ? null : npc.rank());
             g.setStroke(Color.rgb(20, 24, 22, .85));
             g.setLineWidth(1.5);

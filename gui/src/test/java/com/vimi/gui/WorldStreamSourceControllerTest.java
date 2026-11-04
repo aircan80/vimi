@@ -39,6 +39,7 @@ public final class WorldStreamSourceControllerTest {
         fullPresentationUnionRecoversBackDemandWithoutAcceptingUnwantedPixels(false);
         fullPresentationUnionRecoversBackDemandWithoutAcceptingUnwantedPixels(true);
         backDemandDoesNotTreatPresentedOnlySourceAsLiveGpuResident();
+        pickedAreaUsesRetainedResidentMetadataWithoutBorrowing();
         uncoveredCameraFrameKeepsOldPixelsWhileNearestTileLoads();
         cameraPublicationSerializesInitialAndFxForwarding();
         initialSeedHeldReplacementCameraAndPresentationDrain();
@@ -376,6 +377,28 @@ public final class WorldStreamSourceControllerTest {
             fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
             check(fixture.files.opens(1002)>0,"Actual nearest tile readiness unblocks presentation");
         } finally { release.complete(null); fixture.close(); }
+    }
+
+    private static void pickedAreaUsesRetainedResidentMetadataWithoutBorrowing() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 1);
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase() == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().area() != null);
+            var view = fixture.controller.snapshot().seed().camera();
+            var picked = fixture.controller.areaAt(view.x() + 1, view.y());
+            var current = fixture.controller.snapshot().area();
+            check(picked.equals(current), "Picked area matches the controller's camera-area lookup: "
+                    + picked + " vs " + current);
+            check(fixture.controller.areaAt(1e6, 1e6).reason() == WorldCurrentArea.Reason.NO_COVERAGE,
+                    "Points off the residents have no coverage, never a nearest guess");
+        } finally {
+            fixture.close();
+        }
+        check(fixture.controller.areaAt(0, 0).reason() == WorldCurrentArea.Reason.NO_LOADED_METADATA,
+                "A closing controller retains no area metadata for picks");
     }
 
     private static void backDemandDoesNotTreatPresentedOnlySourceAsLiveGpuResident() throws Exception {
