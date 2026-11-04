@@ -2,7 +2,8 @@
 
 This branch is separate from the urgent Maps/build correction PR159. Its starting
 main is dc7c5a4; alpha.21 publication was blocked by the SDK native-path check.
-No visible instance, water or character-control feature is claimed here.
+Latest published prerelease remains alpha.20. This integration branch is not a release.
+No visible instance or water feature is claimed here.
 
 Reviewed and integrated:
 
@@ -23,13 +24,38 @@ Reviewed and integrated:
   geometry and atlas, preserving defaults and entering cache identity. Root reviewed
   production and full races checks pass48 tasks. Visible alternative proof is next.
 
-Combined root `check assemble` passes474 tasks (185 executed) after these changes,
-log `/home/aircan/.cache/vimi-tmp/world-next-combined-check.log`. Separate actual FX
-Maps/World checks above ran on the Linux display. Private acquired assets and proof
-images remain outside Git. Source ownership bounds are component envelopes, not
-whole-process memory or FPS claims.
+Additional reviewed integration, 2026-11-04:
 
-Agents continue pure global file/status primitives, single-root liquid Source
-qualification with actual native row/freshness gates, and an actual Dwarf skin-choice
-proof. Packet I/O/native rendering, world liquid coordinates/draw, and public
-character controls retain their separate implementation and review gates.
+- Camera geographic correction78ec862: Explorer lateral projection and turning now
+  agree with native north/west coordinates and minimap geography. Actual Vulkan,
+  persistent stream owner and FX input checks pass107 tasks. Portrait cameras are
+  unaffected. See world-camera-geographic-correction.md.
+- Dwarf source-derived appearance controls and Night Elf production qualification
+  are integrated through4aaf6f9. Dwarf combined checks pass143 tasks; Night Elf plus
+  native API checks pass73 tasks. Actual male/female native renders were inspected.
+  Undead remains blocked on qualified archive/appearance eligibility evidence.
+- Canonical standalone global WMO file I/O4194667 and conservative JDK staging
+  ledger ef82c70: root full bgfx checks pass39 tasks. Independent review read all
+  production code and forced all8 I/O tests to execute successfully. This does not
+  enable a public instance viewer.
+- Public service-owned global Source facade55f6037/6753c2d and fatal-health fix
+  15a54e7 preserve source pins, actual writer cancellation and sticky cleanup errors.
+  Root full concepts-world checks pass36 tasks. The fixed writer bridge is next.
+- Single-root liquid Source74ba41a plus rejected-work drain fix8901034 and native
+  coordinate mapping6adeaec are integrated after independent owner/drain review.
+  Flat geometry implementation93405ac remains under independent review before
+  promotion. There is no water draw or GUI integration yet.
+- Security/privacy inventory and review are merged into main7432249 (PR160),
+  including persistent decoded audio. See data-flow-inventory.md and security-review.md.
+
+Earlier combined root `check assemble` passed474 tasks (185 executed) BEFORE the
+additional integrations above; it is not a full check of the latest head. Focused
+checks are recorded above and in the component checkpoints. Private acquired assets
+and proof images remain outside Git. Component memory envelopes are not whole-process
+memory or FPS claims.
+
+Release gate: PR159 contains the Maps availability and SDK native-library path fixes.
+Its latest Linux and Windows source checks pass; hosted macOS jobs failed to acquire
+runners, including one infrastructure retry. Alpha.21 remains unpublished; do not
+retag it. A future combined candidate still needs final integration checks and all
+five platform package gates before publication.
