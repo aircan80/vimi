@@ -110,7 +110,11 @@ checkstyle {
 
 // Shader binaries are checked-in resources. Normal builds verify them without downloading tools.
 def shaderHelper = rootProject.layout.projectDirectory.file('scripts/rendering/compile_bgfx_shaders.py')
-def pythonExecutable = providers.gradleProperty('python').orElse('python')
+// Override with -Ppython=<interpreter>. Windows installers provide `python`; macOS and many
+// Linux distributions provide only `python3` on PATH.
+def defaultPython = providers.systemProperty('os.name')
+        .map { it.toLowerCase(Locale.ROOT).startsWith('windows') ? 'python' : 'python3' }
+def pythonExecutable = providers.gradleProperty('python').orElse(defaultPython)
 tasks.register('verifyShaders', Exec) {
     group = 'verification'
     description = 'Verifies committed shader sources, manifest and offline bgfx binaries.'
