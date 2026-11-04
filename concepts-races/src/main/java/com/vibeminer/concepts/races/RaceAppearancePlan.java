@@ -61,6 +61,19 @@ final class RaceAppearancePlan {
             RaceMediaTypes.Variant variant,
             Cancellation token,
             List<String> issues) {
+        return build(raceId, classId, variant, token, issues, null);
+    }
+
+    Plan build(
+            long raceId,
+            long classId,
+            RaceMediaTypes.Variant variant,
+            Cancellation token,
+            List<String> issues,
+            RaceCustomization.Selection sample) {
+        if (sample != null) {
+            sample.requireContext(media, raceId, classId, variant.chrModelId());
+        }
         if (!(raceId == 1 && variant.chrModelId() >= 1 && variant.chrModelId() <= 2)
                 && !(raceId == 2 && variant.chrModelId() >= 3 && variant.chrModelId() <= 4)
                 && !(raceId == 3 && variant.chrModelId() >= 5 && variant.chrModelId() <= 6)
@@ -159,9 +172,11 @@ final class RaceAppearancePlan {
                         > 8_388_608L) {
             throw materials.unsupported("Texture canvas memory exceeds preview bounds");
         }
-        var sample =
-                new RaceCustomization(media)
-                        .select(raceId, classId, variant.chrModelId(), token, issues);
+        var selectedSample =
+                sample != null
+                        ? sample
+                        : new RaceCustomization(media)
+                                .select(raceId, classId, variant.chrModelId(), token, issues);
         var elements = media.data("ChrCustomizationElement", 200000, token, issues);
         fields(
                 elements,
@@ -178,11 +193,13 @@ final class RaceAppearancePlan {
         var recipe = new ArrayList<Layer>();
         for (var element : elements.rows) {
             token.check();
-            if (!sample.choices().contains(elements.number(element, "ChrCustomizationChoiceID"))) {
+            if (!selectedSample
+                    .choices()
+                    .contains(elements.number(element, "ChrCustomizationChoiceID"))) {
                 continue;
             }
             long related = elements.number(element, "RelatedChrCustomizationChoiceID");
-            if (related != 0 && !sample.choices().contains(related)) {
+            if (related != 0 && !selectedSample.choices().contains(related)) {
                 continue;
             }
             long id = elements.number(element, "ChrCustomizationMaterialID");

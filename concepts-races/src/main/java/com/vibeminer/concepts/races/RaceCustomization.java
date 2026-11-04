@@ -5,14 +5,40 @@ import com.vibeminer.formats.db2.Db2Types;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 
 /** Known-player sample selection only; unknown unlock/prerequisite requirements are not guessed. */
 final class RaceCustomization {
-    record Selection(Set<Long> choices, Set<Long> allChoices) {
+    record Selection(
+            RaceMedia owner,
+            long raceId,
+            long classId,
+            long modelId,
+            Map<Long, Long> byOption,
+            Set<Long> choices,
+            Set<Long> allChoices) {
+        Selection(
+                RaceMedia owner,
+                long raceId,
+                long classId,
+                long modelId,
+                Map<Long, Long> byOption,
+                Set<Long> allChoices) {
+            this(owner, raceId, classId, modelId, byOption, Set.of(), allChoices);
+        }
+
         Selection {
-            choices = Set.copyOf(choices);
+            byOption = java.util.Collections.unmodifiableMap(new TreeMap<>(byOption));
+            choices = Set.copyOf(byOption.values());
             allChoices = Set.copyOf(allChoices);
+        }
+
+        void requireContext(RaceMedia media, long race, long characterClass, long model) {
+            if (owner != media || raceId != race || classId != characterClass || modelId != model) {
+                throw new IllegalArgumentException("Customization selection context changed");
+            }
         }
     }
 
@@ -112,7 +138,7 @@ final class RaceCustomization {
         if (bit < 0 || bit > 63) {
             throw races.unsupported("Unreviewed playable-race bit");
         }
-        var selected = new HashSet<Long>();
+        var selected = new TreeMap<Long, Long>();
         var all = new HashSet<Long>();
         for (var option : options.rows) {
             token.check();
@@ -152,14 +178,14 @@ final class RaceCustomization {
                                                             issues))
                             .findFirst();
             if (match.isPresent()) {
-                selected.add(match.get().id());
+                selected.put(option.id(), match.get().id());
             } else {
                 note(
                         issues,
                         "Some customization options have no known eligible readable sample choice.");
             }
         }
-        return new Selection(selected, all);
+        return new Selection(media, raceId, classId, modelId, selected, all);
     }
 
     private static boolean eligible(
