@@ -1,5 +1,13 @@
 # Linux continuation handoff — 2026-11-04
 
+## Final transfer checkpoint
+
+User requested transfer now. Work is saved; roadmap is not complete. PR #187 is independently approved and unmerged, but GitHub now reports DIRTY after #162 merged: resolve against current main, rerun checks and retain explicit merge hold. Final source commit before this documentation is 378da982. No actual 70707 validation was possible.
+
+Alpha.22 tag packaging run 41902679258 FAILED: four platforms passed; Windows failed Checkstyle while parsing WorldStreamSessionProof.java with java.lang.OutOfMemoryError: Java heap space in ANTLR PredictionContext.mergeArrays. Publication was skipped. Alpha.20 remains latest published. Diagnose build memory before retry; do not move/rewrite alpha.22 tag. Main merge is 666e6b1fe08837b49f5fcc3b97a1f13012b580ff. The earlier queued/publication-pending descriptions below are superseded by this checkpoint.
+
+PR #161 remains open and held. Dungeons/raids and water are partially implemented on preserved branches, not delivered. All other queued work remains unstarted under current scope. No root edits are intentionally left uncommitted after this checkpoint. Read this handoff from fix/client-hotfix-overlay; main HANDOFF is historical.
+
 ## Authorization and priority
 
 Finish urgent client hotfix support (#163 / draft PR #187), then hand off. Do not merge #187 or other held PRs without explicit user approval. Release candidate #162 alone is authorized to merge/publish when ready. Existing dungeon/raid and water work may resume in parallel; nothing else may start. Forever TraitTree talents #164 is next urgent but explicitly DO NOT START. Refresh/hotfix discovery #168 is also explicitly not started. Roadmap: GitHub issue #186, individual issues #163–185; character work also #104.
