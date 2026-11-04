@@ -605,6 +605,15 @@ final class WorldPreparedTerrain {
         }
         Thread.startVirtualThread(
                 () -> {
+                    CompletableFuture<Void> scopeDrain;
+                    try {
+                        // Request source cancellation before any arbitrary returned-R cleanup.
+                        scopeDrain = scopes.closeAsync();
+                    } catch (RuntimeException | Error startFailure) {
+                        scopeDrain = CompletableFuture.failedFuture(startFailure);
+                        // Failure is explicit, never evidence that outstanding owners drained.
+                        drained.completeExceptionally(startFailure);
+                    }
                     for (var value : retired) {
                         try {
                             value.close();
@@ -622,7 +631,7 @@ final class WorldPreparedTerrain {
                     if (empty) {
                         completeOutputs(terminal);
                     }
-                    var pending = CompletableFuture.allOf(scopes.closeAsync(), outputsDrained);
+                    var pending = CompletableFuture.allOf(scopeDrain, outputsDrained);
                     pending.whenComplete(
                             (ignored, error) -> {
                                 if (error != null) {

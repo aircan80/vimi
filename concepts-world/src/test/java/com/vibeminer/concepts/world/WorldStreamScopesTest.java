@@ -35,6 +35,73 @@ final class WorldStreamScopesTest {
             new WorldFormats.Tile(7, 19, 2, 0, 0, 0, 0, 3, 0, 0);
 
     @Test
+    @SuppressWarnings("try")
+    void closeRequestsActiveAdmissionCancellationBeforeBlockedOlderOutputCleanup()
+            throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var pool = new TerrainAtlasPool();
+        var world = new WorldService(tables.handle(), files.files(), pool);
+        var closeEntered = new CompletableFuture<Void>();
+        var closeRelease = new CompletableFuture<Void>();
+        var writerEntered = new CompletableFuture<Void>();
+        var writerRelease = new CompletableFuture<Void>();
+        var canceled = new CompletableFuture<Void>();
+        try {
+            var source = world.preparedTerrain();
+            var scope = source.createScope(REQUEST, Cancellation.NONE);
+            source.prepareAndWrite(
+                    scope,
+                    TILE,
+                    Cancellation.NONE,
+                    (borrow, cancel) ->
+                            (AutoCloseable)
+                                    () -> {
+                                        closeEntered.complete(null);
+                                        closeRelease.join();
+                                    });
+            var second =
+                    CompletableFuture.supplyAsync(
+                            () ->
+                                    source.prepareAndWrite(
+                                            scope,
+                                            TILE,
+                                            Cancellation.NONE,
+                                            (borrow, cancel) -> {
+                                                try (var registration =
+                                                        cancel.onCancel(
+                                                                () -> canceled.complete(null))) {
+                                                    writerEntered.complete(null);
+                                                    writerRelease.join();
+                                                }
+                                                return (AutoCloseable) () -> {};
+                                            }));
+            writerEntered.get(5, TimeUnit.SECONDS);
+            var closing = source.closeAsync();
+            closeEntered.get(5, TimeUnit.SECONDS);
+            try {
+                canceled.get(5, TimeUnit.SECONDS);
+                assertFalse(second.isDone());
+                assertFalse(closing.isDone(), "Request is not actual drain");
+            } finally {
+                closeRelease.complete(null);
+                writerRelease.complete(null);
+            }
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> second.get(5, TimeUnit.SECONDS));
+            closing.get(5, TimeUnit.SECONDS);
+            assertEquals(0, pool.stats().leaseClaims());
+        } finally {
+            closeRelease.complete(null);
+            writerRelease.complete(null);
+            world.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+            tables.close();
+        }
+    }
+
+    @Test
     void canceledNativeCapturePreservesKnownScopeWithoutCancelingExternalToken() throws Exception {
         var files = new WorldTerrainTextureSourceTest.Files();
         var tables = new Tables(files);
