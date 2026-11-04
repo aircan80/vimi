@@ -259,7 +259,7 @@ public final class WorldStreamTransport {
         private final CompletableFuture<Void> canceled = new CompletableFuture<>();
         private volatile boolean stop;
         private volatile WorldStreamProducerCancellation.Producer cancellation;
-        private boolean produced;
+        private boolean produced, offerOutstanding, cancelOutstanding;
 
         private TileReservation(Session session, WorldStreamParentState.Ticket ticket) {
             this.session = session;
@@ -525,9 +525,30 @@ public final class WorldStreamTransport {
                 if (outstandingReliable == 4) {
                     throw new IllegalStateException("World reliable command capacity");
                 }
+                if (command instanceof WorldStreamControl.Offer) {
+                    if (tile.offerOutstanding) {
+                        throw new IllegalStateException("Duplicate offer credit");
+                    }
+                    tile.offerOutstanding = true;
+                } else if (command instanceof WorldStreamControl.Cancel
+                        || command instanceof WorldStreamControl.CancelUnused) {
+                    if (tile.cancelOutstanding) {
+                        throw new IllegalStateException("Duplicate cancel credit");
+                    }
+                    tile.cancelOutstanding = true;
+                }
                 outstandingReliable++;
                 reliableCommands.addLast(command);
                 lock.notifyAll();
+            }
+        }
+
+        private void retireReliable() {
+            synchronized (lock) {
+                if (outstandingReliable < 1 || outstandingReliable > 4) {
+                    throw new IllegalStateException("World reliable command credit underflow");
+                }
+                outstandingReliable--;
             }
         }
 
@@ -819,7 +840,11 @@ public final class WorldStreamTransport {
                             TileReservation current;
                             synchronized (lock) {
                                 current = tile;
-                                outstandingReliable--;
+                                if (!current.offerOutstanding) {
+                                    throw new IllegalStateException("Missing offer command credit");
+                                }
+                                current.offerOutstanding = false;
+                                retireReliable();
                             }
                             if (!closing && !handle.stopping()) {
                                 current.result.complete(new Resident(current.ticket.resident));
@@ -833,7 +858,16 @@ public final class WorldStreamTransport {
                             TileReservation current;
                             synchronized (lock) {
                                 current = tile;
-                                outstandingReliable = 0;
+                                if (!current.cancelOutstanding) {
+                                    throw new IllegalStateException(
+                                            "Missing cancel command credit");
+                                }
+                                if (current.offerOutstanding) {
+                                    current.offerOutstanding = false;
+                                    retireReliable();
+                                }
+                                current.cancelOutstanding = false;
+                                retireReliable();
                             }
                             current.canceled.complete(null);
                             current.result.completeExceptionally(
@@ -842,12 +876,36 @@ public final class WorldStreamTransport {
                         }
                         case REJECTED -> {
                             TileReservation current;
+                            boolean cancelPending;
                             synchronized (lock) {
                                 current = tile;
-                                outstandingReliable = 0;
+                                if (!current.offerOutstanding) {
+                                    throw new IllegalStateException(
+                                            "Missing rejected offer credit");
+                                }
+                                current.offerOutstanding = false;
+                                retireReliable();
+                                cancelPending = current.cancelOutstanding;
                             }
-                            current.result.completeExceptionally(
-                                    new IOException("World packet rejected"));
+                            var error = new IOException("World packet rejected");
+                            if (!cancelPending) {
+                                current.canceled.completeExceptionally(error);
+                            }
+                            current.result.completeExceptionally(error);
+                        }
+                        case CANCEL_REJECTED -> {
+                            TileReservation current;
+                            synchronized (lock) {
+                                current = tile;
+                                if (!current.cancelOutstanding) {
+                                    throw new IllegalStateException("Missing stale cancel credit");
+                                }
+                                current.cancelOutstanding = false;
+                                retireReliable();
+                            }
+                            capacityChanged();
+                            current.canceled.completeExceptionally(
+                                    new IOException("Tile packet rejected before cancellation"));
                         }
                         case CLOSED -> {
                             closedStatus = true;

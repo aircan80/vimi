@@ -12,7 +12,14 @@ final class WorldStreamParentState {
         final long transaction;
         final int x, y;
         boolean producerStarted, producerDrained, offered, inputConsumed, fileRetired = true;
-        boolean cancelRequested, cancelSent, unusedSent, canceled, rejected, committed, credited;
+        boolean cancelRequested,
+                cancelSent,
+                cancelResolved,
+                unusedSent,
+                canceled,
+                rejected,
+                committed,
+                credited;
         int outcome, coverage;
         Resident resident;
 
@@ -64,6 +71,7 @@ final class WorldStreamParentState {
         STAGED,
         COMMITTED,
         REJECTED,
+        CANCEL_REJECTED,
         CANCELED,
         CLOSED
     }
@@ -89,7 +97,10 @@ final class WorldStreamParentState {
         if (closed
                 || !hello
                 || credit == null
-                || ticket != null && (!ticket.credited || !ticket.fileRetired)
+                || ticket != null
+                        && (!ticket.credited
+                                || !ticket.fileRetired
+                                || ticket.cancelSent && !ticket.cancelResolved)
                 || commit != null && (!commit.terminal || !commit.fileRetired)) {
             return null;
         }
@@ -329,6 +340,15 @@ final class WorldStreamParentState {
             require(value.transaction() != 0, "Session rejected");
             if (ticket != null
                     && ticket.transaction == value.transaction()
+                    && ticket.cancelSent
+                    && !ticket.cancelResolved
+                    && ticket.rejected
+                    && value.reason() == WorldStreamStatus.Rejection.STALE_TRANSACTION) {
+                ticket.cancelResolved = true;
+                return Change.CANCEL_REJECTED;
+            }
+            if (ticket != null
+                    && ticket.transaction == value.transaction()
                     && ticket.offered
                     && ticket.inputConsumed
                     && !ticket.rejected
@@ -362,6 +382,7 @@ final class WorldStreamParentState {
                                             && ticket.fileRetired),
                     "Unmatched cancellation");
             ticket.canceled = true;
+            ticket.cancelResolved = true;
             return Change.CANCELED;
         }
         require(message instanceof WorldStreamStatus.Closed, "Unknown status");
