@@ -348,6 +348,32 @@ final class HotfixCacheReaderTest {
         assertEquals(44,capacity.get());
     }
 
+    @Test
+    void independentAsyncCancellationKeepsOriginalFailureAfterActualReadRetires() throws Exception {
+        var hold=new java.util.concurrent.atomic.AtomicBoolean();
+        var entered=new CompletableFuture<Void>();
+        var lower=new CompletableFuture<Void>();
+        var source=new Source(Db2ByteSource.memory(cache(entry(70,1,1,1,new byte[4])))) {
+            @Override public CompletableFuture<Void> readRange(long offset,ByteBuffer out,Cancellation token) {
+                if(hold.get()){entered.complete(null);return lower;}
+                return super.readRange(offset,out,token);
+            }
+        };
+        var index=HotfixCacheReader.inspect(source,BUILD,new HotfixCacheReader.Limits(),Cancellation.NONE).join();
+        var stop=new Cancellation();var result=new CompletableFuture<Throwable>();hold.set(true);
+        Thread.ofVirtual().start(()->{
+            try { HotfixCacheReader.readPayloadBlocking(source,index,0,4,stop);
+                result.completeExceptionally(new AssertionError("Canceled read escaped"));
+            }catch(Throwable failure){result.complete(failure);}
+        });
+        try {
+            entered.get(3,TimeUnit.SECONDS);stop.cancel();
+            assertFalse(result.isDone(),"Actual lower read still owns its destination");
+            var original=new java.util.concurrent.CancellationException();lower.completeExceptionally(original);
+            assertSame(original,root(result.get(3,TimeUnit.SECONDS)));
+        }finally{lower.completeExceptionally(new java.util.concurrent.CancellationException());result.get(3,TimeUnit.SECONDS);}
+    }
+
     private static void put(byte[] bytes, int at, int value) {
         ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(at, value);
     }
