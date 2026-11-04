@@ -93,11 +93,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final CheckBox gpuEnabled = new CheckBox("GPU terrain");
     private final CheckBox walkMode = new CheckBox("Walk on terrain (F)");
     private final CheckBox smoothMotion = new CheckBox("Smooth motion");
-    private final Label motionStatus = new Label("Free flight");
+    private final Label motionStatus = new Label("Free flight · no collision");
     private final ExplorerMotion motion = new ExplorerMotion();
     // Immutable rendered-surface heights of the visible CPU scene; streaming reads its controller.
     private TerrainGround ground = TerrainGround.empty();
-    private ExplorerMotion.Ground groundState = ExplorerMotion.Ground.FREE;
     private final Button retryGpu = new Button("Retry GPU");
     private final Label gpuStatus = new Label();
     private final ProgressIndicator gpuActivity = activity("world-gpu-activity", 18);
@@ -706,7 +705,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     speed = Math.clamp(speed * (delta > 0 ? 1.2 : .8), 10, 800);
                 } else if (camera != null && terrainScene != null) {
                     double step = Math.copySign(Math.min(Math.abs(delta) / 40, 3)
-                            * Math.clamp(speed * .1, 2, 32), delta);
+                            * Math.clamp(motion.speed(speed, false) * .1, motion.mode()
+                                    == ExplorerMotion.Mode.WALK ? .5 : 2, 32), delta);
                     var zoomed = motion.dolly(camera, step, currentGround());
                     groundStatus(zoomed.ground());
                     if (zoomed.moved()) {
@@ -786,7 +786,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                             long cadence = streamingMode || gpu != null && gpu.ready()
                                     ? 16_000_000 : 100_000_000;
                             // The final settling/coasting step is always shown, not dropped by cadence.
-                            if (now - lastRender > cadence || !steering && !motion.coasting()) {
+                            if (now - lastRender > cadence || stepped.resting()) {
                                 lastRender = now;
                                 requestFrame();
                             }
@@ -819,13 +819,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private void motionChanged() {
         motion.mode(walkMode.isSelected() ? ExplorerMotion.Mode.WALK : ExplorerMotion.Mode.FLY);
         motion.smooth(smoothMotion.isSelected());
-        groundStatus(walkMode.isSelected()
-                ? ExplorerMotion.Ground.FOLLOWING : ExplorerMotion.Ground.FREE);
+        if (!walkMode.isSelected() || camera == null) groundStatus(ExplorerMotion.Ground.FREE);
+        else groundStatus(Double.isNaN(currentGround().heightAt(camera.x(), camera.y()))
+                ? ExplorerMotion.Ground.UNAVAILABLE : ExplorerMotion.Ground.FOLLOWING);
         if (explorer) viewport.requestFocus();
     }
 
     private void groundStatus(ExplorerMotion.Ground next) {
-        groundState = next;
         motionStatus.setText(switch (next) {
             case FREE -> "Free flight · no collision";
             case FOLLOWING -> "Walking · eye "
@@ -1999,7 +1999,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         camera.x(),
                         camera.y(),
                         camera.z(),
-                        speed,
+                        motion.speed(speed, keys.contains(KeyCode.SHIFT)),
                         loaded.size()));
         if (gpu != null && gpuEnabled.isSelected() && gpuScene != null) {
             if (!viewportActive()) {
@@ -2142,7 +2142,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (snapshot.area() != null) currentArea.setText(snapshot.area().label());
         if (camera != null) position.setText(String.format(java.util.Locale.ROOT,
                 "Tile %d,%d · x %.1f / y %.1f / altitude %.1f · %.0f yards/s · %d / %d tiles",
-                tileX(), tileY(), camera.x(), camera.y(), camera.z(), speed,
+                tileX(), tileY(), camera.x(), camera.y(), camera.z(),
+                motion.speed(speed, keys.contains(KeyCode.SHIFT)),
                 snapshot.prepared(), snapshot.desired()));
         var pending = controller.takePresentation();
         if (pending.isEmpty()) return;

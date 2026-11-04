@@ -837,14 +837,10 @@ final class WorldStreamSourceController {
         for (var entry : current) {
             var known = heights.get(entry);
             if (known == null) {
+                // Current residents are never retired here; borrow failures surface like updateArea.
                 TerrainGround.Tile[] built = {null};
-                try {
-                    entry.source().withPayload(
-                            borrow -> built[0] = TerrainGround.Tile.of(borrow.geometry()));
-                } catch (RuntimeException retired) {
-                    // A retiring resident simply contributes no ground; it is not cached.
-                    continue;
-                }
+                entry.source().withPayload(
+                        borrow -> built[0] = TerrainGround.Tile.of(borrow.geometry()));
                 known = Optional.ofNullable(built[0]);
                 heights.put(entry, known);
             }

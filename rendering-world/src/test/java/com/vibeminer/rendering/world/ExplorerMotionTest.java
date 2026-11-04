@@ -161,4 +161,25 @@ class ExplorerMotionTest {
         assertEquals(1, new ExplorerMotion.Input(5, -3, 0, 0, 0, false).forward());
         assertEquals(-1, new ExplorerMotion.Input(5, -3, 0, 0, 0, false).strafe());
     }
+
+    @Test
+    void restingMarksOnlyTheFinalSettledStep() {
+        var motion = new ExplorerMotion();
+        motion.mode(ExplorerMotion.Mode.WALK);
+        var camera = inside(400);
+        var first = motion.step(camera, ExplorerMotion.Input.NONE, 1 / 60.0, 80, GROUND);
+        assertTrue(first.moved() && !first.resting(), "settling ticks are not resting");
+        camera = first.camera();
+        ExplorerMotion.Step last = first;
+        for (int i = 0; i < 400 && !last.resting(); i++) {
+            last = motion.step(camera, ExplorerMotion.Input.NONE, 1 / 60.0, 80, GROUND);
+            camera = last.camera();
+        }
+        assertTrue(last.resting() && last.moved(), "the final settling step moves and rests");
+        var turning =
+                motion.step(camera, new ExplorerMotion.Input(0, 0, 0, 1, 0, false), .1, 80, GROUND);
+        assertFalse(turning.resting(), "turning is not resting");
+        var fly = new ExplorerMotion();
+        assertFalse(fly.step(camera, FORWARD, .1, 80, GROUND).resting());
+    }
 }

@@ -17,6 +17,7 @@ public final class TerrainGround {
     private static final int GRID = 145, CELLS = 64, MAX_CHUNKS = 256;
     private static final double UNIT = WorldFormats.TILE_SIZE / 256, CELL = 2 * UNIT;
     private static final float POSITION_TOLERANCE = .01f;
+    private static final double SEAM = .01, SEAM_CELLS = SEAM / CELL;
     private static final TerrainGround EMPTY = new TerrainGround(List.of());
 
     /**
@@ -118,15 +119,20 @@ public final class TerrainGround {
         }
 
         double heightAt(double x, double y) {
-            if (x < minX || x > maxX || y < minY || y > maxY) {
+            if (x < minX - SEAM || x > maxX + SEAM || y < minY - SEAM || y > maxY + SEAM) {
                 return Double.NaN;
             }
             for (int chunk = 0; chunk < originX.length; chunk++) {
                 double s = (originX[chunk] - x) / CELL, t = (originY[chunk] - y) / CELL;
-                if (s < 0 || s > 8 || t < 0 || t > 8) {
+                // Float-rounded neighbor origins leave tiny seams; accept a bounded overlap.
+                if (s < -SEAM_CELLS
+                        || s > 8 + SEAM_CELLS
+                        || t < -SEAM_CELLS
+                        || t > 8 + SEAM_CELLS) {
                     continue;
                 }
-                int row = Math.min(7, (int) s), col = Math.min(7, (int) t);
+                int row = Math.clamp((int) Math.floor(s), 0, 7),
+                        col = Math.clamp((int) Math.floor(t), 0, 7);
                 if ((rendered[chunk] >>> (row * 8 + col) & 1) == 0) {
                     continue;
                 }

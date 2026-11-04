@@ -18,8 +18,8 @@ inference are out of scope and need separate source evidence.
   when smoothing is on, and snaps when it is off.
 - **Smooth motion** (default on) eases velocity with a 0.12 s response, then
   coasts to rest. Off reproduces the previous exact displacement per frame, which
-  the existing navigation oracles pin. The last coasting or settling step is always
-  rendered, not dropped by frame cadence.
+  the existing navigation oracles pin. The position label shows the effective
+  speed, and the walk wheel step is scaled to walking speed.
 - Where no qualified surface is loaded (holes, unloaded tiles, other mesh
   layouts), walk holds altitude and the footer says **no rendered terrain here;
   altitude held**. No height is guessed.
@@ -33,7 +33,11 @@ on the documented 17-row grid (position tolerance 0.01 yd) and exactly one
 and contributes no ground. It retains only 145 heights, a 64-bit rendered-cell
 mask and the origin per chunk (about 150 KiB per tile), at most 12 tiles.
 Queries choose the fan triangle containing the point and interpolate
-barycentrically from the actual vertex positions.
+barycentrically on the reconstructed grid positions, which equal the parser's
+vertices bit for bit (accepted meshes differ by at most the 0.01 yd tolerance).
+Float-rounded chunk seams accept a 0.01 yd overlap, so walking across a seam
+never reports missing ground for a frame. The final settling or coasting step is
+always presented; intermediate settling ticks keep the normal frame cadence.
 
 - CPU scenes build heights on the existing preparation worker with the neighborhood
   and publish them with that scene, so walk follows what is drawn.

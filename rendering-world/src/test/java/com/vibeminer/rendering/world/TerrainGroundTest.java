@@ -1,6 +1,7 @@
 package com.vibeminer.rendering.world;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -147,5 +148,25 @@ class TerrainGroundTest {
         assertThrows(IllegalArgumentException.class, () -> TerrainGround.of(thirteen));
         assertEquals(12, TerrainGround.of(thirteen.subList(0, 12)).tiles());
         assertEquals(256, qualified.chunks());
+    }
+
+    @Test
+    void floatRoundedChunkSeamsRemainCovered() {
+        var source = tile(false);
+        var ground = TerrainGround.of(List.of(TerrainGround.Tile.of(source)));
+        double chunk = WorldFormats.TILE_SIZE / 16;
+        for (int seam = 1; seam < 16; seam++) {
+            double x = ORIGIN_X - seam * chunk, y = ORIGIN_Y - 7.3;
+            for (double offset : new double[] {-1e-5, 0, 1e-5}) {
+                assertFalse(Double.isNaN(ground.heightAt(x + offset, y)), "X seam " + seam);
+                assertFalse(
+                        Double.isNaN(
+                                ground.heightAt(
+                                        y - ORIGIN_Y + ORIGIN_X - 9,
+                                        ORIGIN_Y - seam * chunk + offset)),
+                        "Y seam " + seam);
+            }
+        }
+        assertTrue(Double.isNaN(ground.heightAt(ORIGIN_X + .5, ORIGIN_Y - 7.3)));
     }
 }

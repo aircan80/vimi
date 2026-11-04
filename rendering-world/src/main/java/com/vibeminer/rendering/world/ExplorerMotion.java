@@ -37,12 +37,17 @@ public final class ExplorerMotion {
         }
     }
 
-    public record Step(TerrainRenderer.Camera camera, Ground ground, boolean moved) {}
+    /**
+     * {@code resting} is true once velocity has decayed and any downward settle has finished, so
+     * callers can always present the final position without rendering every settling tick.
+     */
+    public record Step(
+            TerrainRenderer.Camera camera, Ground ground, boolean moved, boolean resting) {}
 
     /** Explorer eye height in yards; a viewing convenience, not a race-specific client value. */
     public static final double EYE_HEIGHT = 2;
 
-    /** Base walk speed in yards per second (the documented default run speed). */
+    /** Base walk speed in yards per second; an explorer default, not a client parity claim. */
     public static final double WALK_SPEED = 7;
 
     public static final double WALK_SPRINT = 2, FLY_SPRINT = 4;
@@ -131,6 +136,7 @@ public final class ExplorerMotion {
                                 camera)
                         .look(input.turn() * dt, input.tilt() * dt);
         var state = Ground.FREE;
+        boolean settled = true;
         if (walking) {
             double height = ground.heightAt(next.x(), next.y());
             if (Double.isNaN(height)) {
@@ -138,9 +144,14 @@ public final class ExplorerMotion {
             } else {
                 state = Ground.FOLLOWING;
                 next = settle(next, height + EYE_HEIGHT, dt);
+                settled = next.z() == height + EYE_HEIGHT;
             }
         }
-        return new Step(next, state, !next.equals(camera));
+        return new Step(
+                next,
+                state,
+                !next.equals(camera),
+                settled && !coasting() && input.turn() == 0 && input.tilt() == 0);
     }
 
     /**
@@ -169,7 +180,7 @@ public final class ExplorerMotion {
                 next = settle(next, height + EYE_HEIGHT, 0);
             }
         }
-        return new Step(next, state, !next.equals(camera));
+        return new Step(next, state, !next.equals(camera), true);
     }
 
     /** Rising terrain lifts immediately; descending eases when smoothing is enabled. */
