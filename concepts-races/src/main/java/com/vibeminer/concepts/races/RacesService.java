@@ -100,6 +100,37 @@ public final class RacesService implements BuildRaces {
     }
 
     @Override
+    public CompletableFuture<RaceCustomizationTypes.Catalog> customizations(
+            long raceId, long classId, long modelId, Cancellation token) {
+        return submit(
+                token,
+                request -> new RaceCustomization(media).catalog(raceId, classId, modelId, request));
+    }
+
+    @Override
+    public CompletableFuture<RaceAppearanceTypes.Result> appearance(
+            RaceCustomizationTypes.Request selection, Cancellation token) {
+        Objects.requireNonNull(selection);
+        return submit(
+                        token,
+                        request ->
+                                appearance.prepare(
+                                        selection.raceId(),
+                                        selection.classId(),
+                                        selection.modelId(),
+                                        request,
+                                        new RaceCustomization(media).requested(selection, request)))
+                .thenCompose(
+                        prepared ->
+                                prepared.failure() != null
+                                        ? CompletableFuture.completedFuture(prepared.failure())
+                                        : submit(
+                                                appearanceWorker,
+                                                token,
+                                                request -> appearance.render(prepared, request)));
+    }
+
+    @Override
     public CompletableFuture<RaceTypes.Catalog> catalog(Cancellation token) {
         return submit(
                 token,
