@@ -128,7 +128,7 @@ public final class WorldStreamTransport {
         private volatile boolean closing, closedStatus;
         private volatile IOException failure;
         private WorldStreamControl.Camera pendingCamera;
-        private boolean closeWritten;
+        private boolean closeWritten, actualExit, statusesDrained;
 
         private Session(WorldStreamEnvelope.Session descriptor) {
             this.descriptor = descriptor;
@@ -138,7 +138,7 @@ public final class WorldStreamTransport {
 
         private void launched(WorldStreamLaunchOwner.Handle handle) {
             owner = handle;
-            handle.childExited().thenRun(state::processExited);
+            handle.childExited().thenRun(this::childExited);
             handle.terminatedAndDrained()
                     .whenComplete(
                             (drain, error) -> {
@@ -169,7 +169,15 @@ public final class WorldStreamTransport {
         private void attach(Process process, WorldStreamLaunchOwner.Handle handle) {
             owner = handle;
             handle.runWorker("commands", () -> writeCommands(process, handle));
-            handle.runWorker("statuses", () -> readStatuses(process, handle));
+            handle.runWorker(
+                    "statuses",
+                    () -> {
+                        try {
+                            readStatuses(process, handle);
+                        } finally {
+                            statusesDrained();
+                        }
+                    });
             handle.runWorker("stderr", () -> drainErrors(process));
         }
 
@@ -221,6 +229,25 @@ public final class WorldStreamTransport {
             frames.close();
         }
 
+        private void childExited() {
+            requestClose();
+            synchronized (lock) {
+                actualExit = true;
+                if (statusesDrained) {
+                    state.processExited();
+                }
+            }
+        }
+
+        private void statusesDrained() {
+            synchronized (lock) {
+                statusesDrained = true;
+                if (actualExit) {
+                    state.processExited();
+                }
+            }
+        }
+
         private void writeCommands(Process process, WorldStreamLaunchOwner.Handle handle)
                 throws Exception {
             var output = process.getOutputStream();
@@ -260,14 +287,18 @@ public final class WorldStreamTransport {
                     switch (change) {
                         case SESSION -> {
                             handle.initialized();
-                            initialized.complete(null);
+                            if (!closing && !handle.stopping()) {
+                                initialized.complete(null);
+                            } else {
+                                initialized.completeExceptionally(
+                                        problem("World session stopped during initialization"));
+                            }
                         }
                         case CAMERA -> frames.applied((WorldStreamStatus.CameraApplied) message);
                         case CLOSED -> {
                             closedStatus = true;
                             requestClose();
                             handle.closeAsync();
-                            return;
                         }
                         case IGNORED, CREDIT -> {}
                         default ->

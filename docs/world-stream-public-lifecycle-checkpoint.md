@@ -51,11 +51,20 @@ must become inert after MOVE, rather than sharing a deleting close flag with the
 A failed drain future is never an exit certificate. The launch owner publishes a separate
 private childExited event only after its actual Process.onExit observation and a non-live check.
 This event can precede held worker finally blocks, so input retirement after confirmed exit
-cannot deadlock waiting for the later aggregate drain. Public state uses that event for
-processExited; aggregate success/failure only closes state. No-child start and unavailable exit
+cannot deadlock waiting for the later aggregate drain. The public session immediately stops new operations and closes the frame gate on that event,
+but invokes state.processExited only after BOTH confirmed exit and the status reader actual
+finally. Aggregate success/failure alone only closes state. This preserves validation of buffered
+CLOSED and other acknowledgements without authorizing new positive handoffs after exit. No-child start and unavailable exit
 observation never publish childExited.
 
 An authored live, unkillable Process with throwing onExit proves aggregate failure cannot enable
 retirement of an advertised input; the mapping remains retained. A held-worker fixture proves
 actual confirmed exit is observable before worker release while aggregate drain and file cleanup
 remain pending. Genuine subprocess lifecycle tests remain separate from that adversarial fake.
+
+A deterministic buffered-status regression holds the reader after SESSION/CREDIT, completes actual
+exit, waits for the session exit handler under its metadata lock, then releases a previously
+buffered CLOSED. It requires successful protocol completion and actual cleanup. A negative
+control making processExited run before status-finally fails with `Status after terminal`;
+the restored gate passes. A separate negative control interpreting failed drain as processExited
+fails the live-child advertised-input-retirement guard. Neither control requires native hardware.
