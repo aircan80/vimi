@@ -375,6 +375,139 @@ final class CapturedRowsTest {
     }
 
     @Test
+    void explicitNativePreparationCoexistsWithLegacyAndRetainedUnknownCapture() {
+        var fixture = new Fixture(true, true, false);
+        byte[] bytes = Db2Fixture.numeric("WDC5", 0, 32, 9, new long[0], true);
+        var file =
+                new FileTypes.BuildFile(
+                        100,
+                        "dbfilesclient/numbers.db2",
+                        FileTypes.FilePathSource.LISTFILE,
+                        (long) bytes.length,
+                        CKEY,
+                        FileTypes.FileFormat.DB2,
+                        FileTypes.FileFormatSource.EXTENSION,
+                        FileTypes.FileStorage.STORED,
+                        false);
+        var fileSystem =
+                new com.vibeminer.files.MemoryFiles()
+                        .add(TablesContract.BUILD, "enUS", file, bytes, List.of());
+        var realFiles =
+                fileSystem.forBuild(TablesContract.BUILD, "enUS", Cancellation.NONE).join().files();
+        var files =
+                (BuildFiles)
+                        Proxy.newProxyInstance(
+                                BuildFiles.class.getClassLoader(),
+                                new Class<?>[] {BuildFiles.class},
+                                (proxy, method, args) -> {
+                                    try {
+                                        return method.invoke(
+                                                method.getName().equals("listContentInventory")
+                                                        ? fixture.files
+                                                        : realFiles,
+                                                args);
+                                    } catch (InvocationTargetException failure) {
+                                        throw failure.getCause();
+                                    }
+                                });
+        try (var tables =
+                        new ClientBuildTables(
+                                fileSystem,
+                                files,
+                                "1.2.3.4",
+                                fixture.definitions,
+                                fixture.writable,
+                                fixture.options,
+                                new BackgroundBuilds(),
+                                new ProtectedIds());
+                var retained = tables.capturePreparedLocal(REF, Cancellation.NONE).join().rows()) {
+            assertNotNull(retained);
+            assertEquals(
+                    CapturedRowsTypes.IssueChannelState.UNKNOWN,
+                    retained.receipt().issueChannelEvidence().state());
+            assertEquals(
+                    TableTypes.State.READY,
+                    tables.check(REF, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                            .join()
+                            .state());
+            try (var stillLegacy =
+                    tables.capturePreparedLocal(REF, Cancellation.NONE).join().rows()) {
+                assertEquals(
+                        retained.receipt().graphIdentity(), stillLegacy.receipt().graphIdentity());
+            }
+            var artifactBytes =
+                    fixture.artifacts.stream()
+                            .map(
+                                    key ->
+                                            fixture.memory
+                                                    .read(
+                                                            key,
+                                                            com.vibeminer.generated.Cancellation
+                                                                    .NONE)
+                                                    .join()
+                                                    .bytes())
+                            .toList();
+            var phases = new java.util.ArrayList<NativePreparationTypes.Phase>();
+            var result =
+                    tables.prepareNativeEvidence(
+                                    REF,
+                                    TableTypes.Priority.INTERACTIVE,
+                                    NativePreparationTypes.SourceAccess.CONFIGURED_SOURCE,
+                                    progress -> phases.add(progress.phase()),
+                                    Cancellation.NONE)
+                            .join();
+            assertEquals(NativePreparationTypes.State.READY, result.state(), result.toString());
+            assertFalse(result.stamp().graphIdentity().equals(retained.receipt().graphIdentity()));
+            assertEquals(
+                    List.of(
+                            NativePreparationTypes.Phase.PREPARING,
+                            NativePreparationTypes.Phase.VALIDATING),
+                    phases);
+            try (var fresh = tables.capturePreparedLocal(REF, Cancellation.NONE).join().rows()) {
+                assertEquals(result.stamp().graphIdentity(), fresh.receipt().graphIdentity());
+                assertEquals(
+                        CapturedRowsTypes.IssueChannelState.VERIFIED_NATIVE,
+                        fresh.receipt().issueChannelEvidence().state());
+                assertEquals(
+                        retained.readOrdinalPage(0, 1, Cancellation.NONE)
+                                .join()
+                                .rows()
+                                .getFirst()
+                                .row()
+                                .values(),
+                        fresh.readOrdinalPage(0, 1, Cancellation.NONE)
+                                .join()
+                                .rows()
+                                .getFirst()
+                                .row()
+                                .values());
+            }
+            assertEquals(
+                    CapturedRowsTypes.IssueChannelState.UNKNOWN,
+                    retained.receipt().issueChannelEvidence().state());
+            for (int i = 0; i < fixture.artifacts.size(); i++) {
+                org.junit.jupiter.api.Assertions.assertArrayEquals(
+                        artifactBytes.get(i),
+                        fixture.memory
+                                .read(
+                                        fixture.artifacts.get(i),
+                                        com.vibeminer.generated.Cancellation.NONE)
+                                .join()
+                                .bytes());
+            }
+            var again =
+                    tables.prepareNativeEvidence(
+                                    REF,
+                                    TableTypes.Priority.INTERACTIVE,
+                                    NativePreparationTypes.SourceAccess.CONFIGURED_SOURCE,
+                                    ignored -> {},
+                                    Cancellation.NONE)
+                            .join();
+            assertEquals(result.stamp(), again.stamp());
+        }
+    }
+
+    @Test
     void nativeBoundedReadsAcceptExactLimitsAndRejectEachLowerLimitWithoutInvalidation() {
         var fixture =
                 new Fixture(
