@@ -51,6 +51,7 @@ public final class WorldMinimapUiTest {
                         stage.show();
                     });
             orientationAndNeighborPlacement();
+            cameraForwardCardinalLandmarks();
             delayedLatestSourceAndHide();
             synchronousProviderCancellation();
             fx(
@@ -64,6 +65,46 @@ public final class WorldMinimapUiTest {
         } finally {
             Platform.exit();
         }
+    }
+
+    private static void cameraForwardCardinalLandmarks() throws Exception {
+        // Authored cardinal crosses, tied to native X/Y rather than a copied yaw formula.
+        int[] argb = new int[256 * 256];
+        java.util.Arrays.fill(argb, 0xff223038);
+        int[] colors = {0xffff0000, 0xff00ff00, 0xff0000ff, 0xffffffff};
+        int[][] centers = {{128, 64}, {64, 128}, {128, 192}, {192, 128}};
+        for (int i = 0; i < centers.length; i++) {
+            for (int dy = -8; dy <= 8; dy++) {
+                for (int dx = -8; dx <= 8; dx++) {
+                    argb[(centers[i][1] + dy) * 256 + centers[i][0] + dx] = colors[i];
+                }
+            }
+        }
+        var source = new Provider();
+        source.immediate = new WorldService.Minimap(256, 256, IntBuffer.wrap(argb), null);
+        var inventory = inventory(List.of(ORIGIN));
+        fx(() -> { map.hide(); update(source, inventory, X - SIDE / 2, Y - SIDE / 2, 0); });
+        await(() -> !busy(), "cardinal landmark artwork");
+        fx(() -> {
+            var orientation = (ChoiceBox<?>) map.lookup("#world-minimap-orientation");
+            orientation.getSelectionModel().select(1);
+            var origin = new com.vibeminer.rendering.world.TerrainCamera(
+                    X - SIDE / 2, Y - SIDE / 2, 0, 0, 0);
+            double[] headings = {0, Math.PI / 2, Math.PI, -Math.PI / 2};
+            String[] names = {"north", "west", "south", "east"};
+            for (int i = 0; i < headings.length; i++) {
+                var camera = origin.look(headings[i], 0);
+                var ahead = camera.move(SIDE / 4, 0, 0);
+                int sourceU = (int) Math.round((Y - ahead.y()) / SIDE * 256);
+                int sourceV = (int) Math.round((X - ahead.x()) / SIDE * 256);
+                require(argb[sourceV * 256 + sourceU] == colors[i], "actual camera reaches " + names[i]);
+                update(source, inventory, camera.x(), camera.y(), camera.yaw());
+                require(snapshot().getPixelReader().getArgb(90, 50) == colors[i],
+                        "actual camera forward landmark stays ahead: " + names[i]);
+                saveScreenshot("camera-forward-" + names[i] + ".png");
+            }
+            orientation.getSelectionModel().select(0);
+        });
     }
 
     private static void orientationAndNeighborPlacement() throws Exception {
@@ -283,9 +324,9 @@ public final class WorldMinimapUiTest {
                             (int) image.getHeight(),
                             java.awt.image.BufferedImage.TYPE_INT_ARGB);
             png.setRGB(0, 0, png.getWidth(), png.getHeight(), argb, 0, png.getWidth());
-            Files.createDirectories(Path.of("/tmp/vimi-minimap-authored"));
+            Files.createDirectories(Path.of(System.getProperty("java.io.tmpdir"), "vimi-minimap-authored"));
             javax.imageio.ImageIO.write(
-                    png, "png", Path.of("/tmp/vimi-minimap-authored").resolve(name).toFile());
+                    png, "png", Path.of(System.getProperty("java.io.tmpdir"), "vimi-minimap-authored").resolve(name).toFile());
         } catch (java.io.IOException failure) {
             throw new AssertionError(failure);
         }
