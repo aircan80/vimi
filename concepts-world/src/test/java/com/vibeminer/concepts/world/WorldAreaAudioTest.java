@@ -234,6 +234,24 @@ final class WorldAreaAudioTest {
     }
 
     @Test
+    void storageFailuresShowNoLocalPaths() {
+        var files =
+                (com.vibeminer.files.BuildFiles)
+                        java.lang.reflect.Proxy.newProxyInstance(
+                                WorldAreaAudioTest.class.getClassLoader(),
+                                new Class<?>[] {com.vibeminer.files.BuildFiles.class},
+                                (proxy, method, args) -> {
+                                    throw new java.io.UncheckedIOException(
+                                            new java.io.IOException(
+                                                    "/home/someone/.cache/vimi/files/index.db:"
+                                                            + " locked"));
+                                });
+        var file = WorldAreaAudio.read(files, 9001, Cancellation.NONE);
+        assertEquals(WorldAreaAudio.FileState.UNAVAILABLE, file.state());
+        assertEquals("Audio file #9001: source unavailable", file.issue());
+    }
+
+    @Test
     void absentBuildFilesAreUnavailableRatherThanSilent() {
         var file = WorldAreaAudio.read(null, 9001, Cancellation.NONE);
         assertEquals(WorldAreaAudio.FileState.UNAVAILABLE, file.state());

@@ -41,12 +41,18 @@ Playback:
 - A stream that decodes no audio is reported and is not retried until the area, kit or
   toggle changes. Turning a channel on clears its previous track and waits for the
   current area, which also retries an earlier failure.
+- Each track first checks that an audio output exists. Without one, the channel reports
+  `Audio output is unavailable on this machine.` before reading the file or starting a
+  decoder. An output that stops accepting audio, or an unexpected stream failure, is
+  reported and waits for a change instead of re-decoding in a loop.
 - Volume changes and toggling a channel off ramp the gain, so changes do not click.
   Turning a channel off releases its decoder and line. Leaving the World view, resetting
   it or closing it stops both channels.
 - Missing, protected, oversized and undecodable files appear in the status text, for
   example `Audio file #… is NOT_FOUND.` or `cannot be decoded: …`. They never become
-  silent success.
+  silent success. Status text shows only messages authored by vimi and the decoder;
+  process start, pipe and storage errors map to fixed text so that local paths (such as
+  the Java installation or the cache) never appear.
 
 ## Decoding
 
@@ -65,7 +71,8 @@ Playback:
   [JavaMP3](https://github.com/delthas/JavaMP3) 1.0.1 (`fr.delthas:javamp3`, MIT), a
   small pure-Java decoder with no transitive dependencies. It is unmaintained since 2017,
   which is one reason it runs only inside the bounded child. The license is retained in
-  `formats-audio/src/main/resources/META-INF/NOTICE-formats-audio`.
+  `formats-audio/src/main/resources/META-INF/LICENSE-JavaMP3`, referenced from
+  `NOTICE-formats-audio`.
 
 The existing 30-second `VoiceDecoder`/`PcmClip` path for Races voice previews is
 unchanged.

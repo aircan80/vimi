@@ -383,11 +383,17 @@ public final class WorldAreaAudio {
         }
     }
 
-    private static String reason(Throwable error) {
-        while (error.getCause() != null) {
-            error = error.getCause();
+    /**
+     * Shows only messages authored here; other failures (storage, I/O) can carry local paths, so
+     * they map to a fixed message.
+     */
+    static String reason(Throwable error) {
+        for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+            if (cause instanceof Unavailable authored && authored.getMessage() != null) {
+                return authored.getMessage();
+            }
         }
-        return error.getMessage() == null ? "source unavailable" : error.getMessage();
+        return "source unavailable";
     }
 
     private static final class Unavailable extends RuntimeException {
