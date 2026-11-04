@@ -33,7 +33,22 @@ public final class TalentSourceDetailsTest {
         String bounded = TalentSourceDetails.icon(206, result(BlpImageTypes.State.PROTECTED, null,
                 java.util.Collections.nCopies(100, "a".repeat(200)), "b".repeat(1000), "c".repeat(10000)));
         require(bounded.length() < 2400, "Untrusted result strings and key identifiers are bounded");
-        System.out.println("Talent source details PASS: protected, unsupported, download, unresolved and bounded evidence");
+        var trait = new com.vibeminer.concepts.talents.TalentTypes.Talent(104923, 0, 1, List.of(16814L), 5,
+                List.of(), "Trait", null, null, new com.vibeminer.concepts.talents.TalentTypes.Origin(
+                        com.vibeminer.concepts.talents.TalentTypes.Model.TRAIT_TREE, 1089L, 129583L, 134384L,
+                        1620L, 2130L, null, false, false));
+        String identity = TalentSourceDetails.identity(trait);
+        require(identity.contains("TraitTree 1089") && identity.contains("TraitNode 104923")
+                && identity.contains("1620, 2130") && identity.contains("tier 1 · column 2"),
+                "Trait talents identify their TraitTree source rows and recorded position");
+        require(TalentSourceDetails.spells(trait).contains("maximum rank 5"),
+                "A trait definition spell is not presented as one spell per rank");
+        var legacy = new com.vibeminer.concepts.talents.TalentTypes.Talent(7, -1, -1, List.of(1L, 2L), List.of(),
+                "Legacy", null, null);
+        require(TalentSourceDetails.identity(legacy).contains("legacy Talent table")
+                && TalentSourceDetails.identity(legacy).contains("not placed"),
+                "Legacy rows and unplaced talents stay distinct");
+        System.out.println("Talent source details PASS: protected, unsupported, download, unresolved, bounded evidence and trait source rows");
     }
 
     private static BlpImageTypes.Result result(BlpImageTypes.State state,
