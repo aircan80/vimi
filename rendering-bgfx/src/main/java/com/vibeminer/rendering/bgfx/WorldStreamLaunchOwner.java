@@ -63,14 +63,24 @@ final class WorldStreamLaunchOwner {
             Attachment attachment,
             long graceMillis,
             long deadlineMillis) {
+        return launch(prepared, starter, attachment, graceMillis, deadlineMillis, 0);
+    }
+
+    static Handle launch(
+            WorldStreamPreparedFiles prepared,
+            Starter starter,
+            Attachment attachment,
+            long graceMillis,
+            long deadlineMillis,
+            long startupMillis) {
         Objects.requireNonNull(starter);
         Objects.requireNonNull(attachment);
-        if (graceMillis < 0 || deadlineMillis < 1) {
+        if (graceMillis < 0 || deadlineMillis < 1 || startupMillis < 0) {
             throw new IllegalArgumentException("Invalid close timing");
         }
         // Files change owner BEFORE any scheduling or externally supplied Starter invocation.
         var files = prepared.claimForLaunch();
-        var owner = new Handle(files, graceMillis, deadlineMillis);
+        var owner = new Handle(files, graceMillis, deadlineMillis, startupMillis);
         owner.start(starter, attachment);
         return owner;
     }
@@ -78,7 +88,9 @@ final class WorldStreamLaunchOwner {
     static final class Handle {
         private final Object lock = new Object();
         private final WorldStreamPreparedFiles.LaunchFiles files;
-        private final long graceMillis, deadlineMillis;
+        private final long graceMillis, deadlineMillis, startupMillis;
+        private final AtomicBoolean initialized = new AtomicBoolean();
+        private volatile boolean startupDone;
         private final AtomicBoolean stopping = new AtomicBoolean();
         private final CompletableFuture<Drain> actualDrain = new CompletableFuture<>();
         private final CompletableFuture<Drain> boundedClose = new CompletableFuture<>();
@@ -90,10 +102,20 @@ final class WorldStreamLaunchOwner {
         private boolean sealed;
 
         private Handle(
-                WorldStreamPreparedFiles.LaunchFiles files, long graceMillis, long deadlineMillis) {
+                WorldStreamPreparedFiles.LaunchFiles files,
+                long graceMillis,
+                long deadlineMillis,
+                long startupMillis) {
             this.files = files;
             this.graceMillis = graceMillis;
             this.deadlineMillis = deadlineMillis;
+            this.startupMillis = startupMillis;
+            startupDone = startupMillis == 0;
+        }
+
+        /** Metadata acknowledgement only; never a callback or a source readiness claim. */
+        void initialized() {
+            initialized.set(true);
         }
 
         boolean stopping() {
@@ -143,6 +165,16 @@ final class WorldStreamLaunchOwner {
 
         private void start(Starter starter, Attachment attachment) {
             try {
+                if (startupMillis > 0) {
+                    try {
+                        Thread.ofVirtual()
+                                .name("world-v2-parent-startup-deadline")
+                                .start(this::watchStartup);
+                    } catch (RuntimeException | Error error) {
+                        startupDone = true;
+                        throw error;
+                    }
+                }
                 Thread.ofVirtual()
                         .name("world-v2-parent-start")
                         .start(
@@ -242,7 +274,7 @@ final class WorldStreamLaunchOwner {
                         throw new IOException("Exit observation disagrees with live child");
                     }
                 }
-                while (!attachmentDone || !workersDone()) {
+                while (!attachmentDone || !startupDone || !workersDone()) {
                     LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
                 }
                 if (child != null) {
@@ -261,6 +293,22 @@ final class WorldStreamLaunchOwner {
                 failure = detached(error);
                 actualDrain.completeExceptionally(failure);
                 boundedClose.completeExceptionally(failure);
+            }
+        }
+
+        private void watchStartup() {
+            try {
+                long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(startupMillis);
+                while (!initialized.get() && !stopping.get()) {
+                    if (System.nanoTime() - until >= 0) {
+                        failure = new IOException("World initialization deadline exceeded");
+                        closeAsync();
+                        return;
+                    }
+                    LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
+                }
+            } finally {
+                startupDone = true;
             }
         }
 

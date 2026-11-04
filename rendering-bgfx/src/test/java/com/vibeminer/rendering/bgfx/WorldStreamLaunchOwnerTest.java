@@ -31,6 +31,62 @@ class WorldStreamLaunchOwnerTest {
             new WorldStreamEnvelope.Session(new WorldStreamState.Nonce(10, 20), "ab".repeat(32), 1);
 
     @Test
+    void startupDeadlineCoversHeldStarterWithoutInventingDrainAndAcknowledgementDisarmsIt()
+            throws Exception {
+        var prepared = WorldStreamPreparedFiles.create(directory, SESSION, null);
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var owner =
+                WorldStreamLaunchOwner.launch(
+                        prepared,
+                        arguments -> {
+                            entered.countDown();
+                            release.await();
+                            throw new java.io.IOException("authored no-child start");
+                        },
+                        (process, handle) -> {},
+                        0,
+                        100,
+                        50);
+        try {
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!owner.stopping() && System.nanoTime() < until) {
+                Thread.sleep(2);
+            }
+            assertTrue(owner.stopping());
+            assertTrue(owner.failure().getMessage().contains("initialization deadline"));
+            assertFalse(owner.terminatedAndDrained().isDone());
+            assertTrue(Files.exists(owner.files().framePath()));
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> owner.closeAsync().get(2, TimeUnit.SECONDS));
+        } finally {
+            release.countDown();
+        }
+        assertTrue(owner.terminatedAndDrained().get(3, TimeUnit.SECONDS).childPid().isEmpty());
+        assertFalse(Files.exists(owner.files().directory()));
+
+        var attached = new CountDownLatch(1);
+        var ready =
+                WorldStreamLaunchOwner.launch(
+                        WorldStreamPreparedFiles.create(directory, SESSION, null),
+                        arguments -> new Child(),
+                        (process, handle) -> {
+                            handle.initialized();
+                            attached.countDown();
+                        },
+                        0,
+                        1000,
+                        100);
+        assertTrue(attached.await(2, TimeUnit.SECONDS));
+        Thread.sleep(160);
+        assertFalse(ready.stopping());
+        ready.closeAsync().get(3, TimeUnit.SECONDS);
+        assertFalse(Files.exists(ready.files().directory()));
+    }
+
+    @Test
     void heldStarterCloseOldPreparationAndBoundedFailureNeverDeleteBeforeLateChildExit()
             throws Exception {
         var prepared = WorldStreamPreparedFiles.create(directory, SESSION, "vulkan");

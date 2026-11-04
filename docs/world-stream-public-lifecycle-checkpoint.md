@@ -14,18 +14,24 @@ reviewed actual process exit, worker-finally, pipe cleanup, mapping cleanup and 
 receipt. Protocol completion remains separate: no-child startup failure and exit without
 successful CLOSED fail completion even if resource drain succeeds.
 
-Four bounded IO lanes currently drain commands, typed statuses, stderr and the future frame
-poll lane. The latter currently enforces the initialization deadline after attachment. Cameras
+Three bounded IO lanes currently drain commands, typed statuses and stderr. The frame poll,
+producer/file and cancellation lanes remain the other three of the eventual six IO lanes.
+One separately tracked lifecycle-management deadline covers initialization, including a held
+Starter, without occupying an IO lane. Cameras
 occupy one replaceable slot, CLOSE is sticky, and pipe writes/reads never execute on the caller.
 SESSION/CREDIT/CAMERA_APPLIED/CLOSED use the reviewed strict reducer and camera gate. Any
 matching operation status without an actual published operation fails closed. No frame is
-accepted by this checkpoint. Six IO lanes remain the eventual ceiling (producer/file and
-cancellation occupy the remaining two).
+accepted by this checkpoint. Six IO lanes remain the eventual ceiling.
 
-A known remaining launch integration task is an autonomous initialization timeout while the
-external Starter itself is held. Explicit close already remains bounded and retains all files
-until that Starter really finishes; this checkpoint does not claim the autonomous timeout for
-that interval. A tracked lifecycle management deadline must cover it before promotion.
+The opt-in launch-owner startup deadline defaults to disabled for existing helper callers. The
+public facade enables ten seconds. Its single management task only samples metadata and requests
+existing close, with no pipe IO, user callbacks or joins on the timer. SESSION acknowledgement or
+stop disarms it. Actual drain additionally waits for that task's finally, the real Starter return,
+child exit and all existing workers. Timeout cannot delete files or release the application GPU
+permit while Starter remains held. A focused causal fixture uses a 50ms deadline with held Starter,
+asserts autonomous stop/bounded-close failure/retained mapping/no drain, then releases the Starter
+and verifies eventual no-child cleanup. A separate acknowledgement fixture remains live beyond its
+100ms deadline and closes normally afterward.
 
 Two focused tests execute an actual Java-only authored protocol subprocess and a held external
 Starter. They prove typed SESSION/camera exchange, coalesced caller camera publication, graceful
