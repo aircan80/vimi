@@ -61,6 +61,11 @@ final class WorldPreparedTerrain {
             return tile;
         }
 
+        WorldFormats.Tile recorded() {
+            check();
+            return owner.geometry.recorded();
+        }
+
         TerrainTextureBinding texture() {
             check();
             return texture;
@@ -127,6 +132,7 @@ final class WorldPreparedTerrain {
     /** One base geometry pin and at most one base atlas lease, moved through residency. */
     static final class WrittenTile<R extends AutoCloseable> implements AutoCloseable {
         private WorldPreparedTerrain source;
+        private final Object sourceIdentity;
         private WorldStreamScopes.Scope scope;
         private WorldGeometryCache.Prepared geometry;
         private TerrainAtlasPool.Lease atlas;
@@ -147,11 +153,47 @@ final class WorldPreparedTerrain {
 
         private WrittenTile(WorldPreparedTerrain source, WorldStreamScopes.Scope scope) {
             this.source = source;
+            this.sourceIdentity = source.identity;
             this.scope = scope;
         }
 
         synchronized boolean isOpen() {
             return !closed && source != null && !source.invalidated && source.scopes.isKnown(scope);
+        }
+
+        <T extends AutoCloseable> T withWaterJoin(
+                WorldPreparedTerrain expected,
+                java.util.function.BiFunction<WorldStreamScopes.Scope, Borrow, T> use) {
+            if (sourceIdentity != expected.identity) {
+                throw new IllegalArgumentException("Foreign terrain source");
+            }
+            expected.requireHealthy();
+            synchronized (this) {
+                check();
+            }
+            var result = new Object[1];
+            try {
+                withPayload(borrow -> result[0] = use.apply(scope, borrow));
+                expected.requireHealthy();
+                synchronized (this) {
+                    check();
+                }
+                @SuppressWarnings("unchecked")
+                T value = (T) result[0];
+                return value;
+            } catch (RuntimeException | Error primary) {
+                if (result[0] instanceof AutoCloseable unreturned) {
+                    try {
+                        unreturned.close();
+                    } catch (Exception | Error cleanup) {
+                        if (primary != cleanup) {
+                            primary.addSuppressed(cleanup);
+                        }
+                        throw new IllegalStateException("Water join cleanup failed", primary);
+                    }
+                }
+                throw primary;
+            }
         }
 
         private synchronized void check() {
@@ -387,6 +429,7 @@ final class WorldPreparedTerrain {
 
     private final WorldService world;
     private final WorldStreamScopes scopes;
+    private final Object identity = new Object();
     private final WorldTerrainTextureSource materials;
     private final ArrayList<WrittenTile<?>> outputs = new ArrayList<>();
     private final CompletableFuture<Void> outputsDrained = new CompletableFuture<>();
@@ -401,6 +444,27 @@ final class WorldPreparedTerrain {
         this.world = Objects.requireNonNull(world);
         this.scopes = Objects.requireNonNull(scopes);
         this.materials = Objects.requireNonNull(materials);
+    }
+
+    <T extends AutoCloseable> T withWaterJoin(
+            WorldTerrainStreaming.WrittenTile<?> terrain,
+            java.util.function.BiFunction<WorldStreamScopes.Scope, Borrow, T> use) {
+        return WorldTerrainStreaming.withWaterJoin(terrain, this, use);
+    }
+
+    WorldTerrainLiquids waterSource() {
+        checkOpen();
+        return scopes.liquids();
+    }
+
+    void requireHealthy() {
+        scopes.requireHealthy();
+        synchronized (this) {
+            if (cleanupFailure != null) {
+                throw new IllegalStateException("Terrain source cleanup failed", cleanupFailure);
+            }
+        }
+        checkOpen();
     }
 
     WorldStreamScopes.Scope createScope(WorldService.MapInfo comparison, Cancellation cancel) {
@@ -721,9 +785,11 @@ final class WorldPreparedTerrain {
                         // Request source cancellation before any arbitrary returned-R cleanup.
                         scopeDrain = scopes.closeAsync();
                     } catch (RuntimeException | Error startFailure) {
-                        scopeDrain = CompletableFuture.failedFuture(startFailure);
-                        // Failure is explicit, never evidence that outstanding owners drained.
-                        drained.completeExceptionally(startFailure);
+                        // Failed cleanup is not evidence that other Source owners drained.
+                        scopeDrain =
+                                CompletableFuture.allOf(
+                                        scopes.whenClosed(),
+                                        CompletableFuture.failedFuture(startFailure));
                     }
                     for (var value : retired) {
                         try {

@@ -17,7 +17,42 @@ public record TablesOptions(
         int maxScanRows,
         int maxReferenceSources,
         long maxReferenceScanRows,
-        boolean localDefinitionsOnly) {
+        boolean localDefinitionsOnly,
+        HotfixBinding hotfix) {
+    public TablesOptions(
+            BiFunction<BuildRef, Cancellation, CompletableFuture<String>> buildVersion,
+            Db2Types.Limits limits,
+            Function<BuildRef, KeyStatus> keys,
+            TableWorkScheduler scheduler,
+            int maxScanRows,
+            int maxReferenceSources,
+            long maxReferenceScanRows,
+            boolean localDefinitionsOnly) {
+        this(
+                buildVersion,
+                limits,
+                keys,
+                scheduler,
+                maxScanRows,
+                maxReferenceSources,
+                maxReferenceScanRows,
+                localDefinitionsOnly,
+                null);
+    }
+
+    public TablesOptions withHotfix(HotfixBinding binding) {
+        return new TablesOptions(
+                buildVersion,
+                limits,
+                keys,
+                scheduler,
+                maxScanRows,
+                maxReferenceSources,
+                maxReferenceScanRows,
+                localDefinitionsOnly,
+                java.util.Objects.requireNonNull(binding));
+    }
+
     public TablesOptions(
             BiFunction<BuildRef, Cancellation, CompletableFuture<String>> buildVersion,
             Db2Types.Limits limits,
@@ -47,7 +82,8 @@ public record TablesOptions(
                 maxScanRows,
                 maxReferenceSources,
                 maxReferenceScanRows,
-                true);
+                true,
+                hotfix);
     }
 
     public TablesOptions(BiFunction<BuildRef, Cancellation, CompletableFuture<String>> version) {
