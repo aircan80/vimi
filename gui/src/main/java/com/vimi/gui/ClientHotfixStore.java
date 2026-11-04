@@ -24,6 +24,7 @@ import java.nio.file.attribute.PosixFilePermissions;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.util.Base64;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
@@ -131,9 +132,84 @@ final class ClientHotfixStore implements AutoCloseable {
         this.probe = Objects.requireNonNull(probe);
     }
 
+    /** Outcome of checking one opted-in watched original during a source refresh. */
+    enum RefreshOutcome {
+        /** Same size/mtime, or reread bytes equal the bound import. */
+        UNCHANGED,
+        /** A different verified cache for the same exact build was imported and bound. */
+        UPDATED,
+        /** The original now declares another client build; the existing binding is kept. */
+        CLIENT_BUILD_CHANGED,
+        /** The remembered original no longer exists; the existing binding is kept. */
+        MISSING,
+        /** The original could not be read or verified; the existing binding is kept. */
+        FAILED
+    }
+
+    /** {@code scope} is null only for an unreadable watch record. Never carries the path. */
+    record RefreshResult(
+            Scope scope, RefreshOutcome outcome, Summary summary, int clientBuild, Throwable failure) {}
+
+    static final int MAX_WATCHES = 64;
+
     CompletableFuture<Summary> importCache(Scope scope, Path original, Cancellation token) {
+        return importCache(scope, original, false, token);
+    }
+
+    /**
+     * Imports and binds an explicitly selected original. With {@code watch}, the original's
+     * location is remembered privately so Refresh sources can detect and import a newer cache
+     * for this exact scope; without it any earlier watch for the scope is removed.
+     */
+    CompletableFuture<Summary> importCache(
+            Scope scope, Path original, boolean watch, Cancellation token) {
         Objects.requireNonNull(original);
-        return submit(token, cancel -> unchecked(() -> importActual(scope, original, cancel)));
+        return submit(
+                token,
+                cancel ->
+                        unchecked(
+                                () -> {
+                                    // Drop any earlier watch before binding, so a failure can
+                                    // never leave an old original able to override this choice.
+                                    deleteWatch(scope, cancel);
+                                    var imported = importActual(scope, original, false, cancel);
+                                    if (watch) {
+                                        try {
+                                            writeWatch(
+                                                    scope,
+                                                    imported.input(),
+                                                    imported.source(),
+                                                    Cancellation.NONE);
+                                        } catch (IOException | RuntimeException ignored) {
+                                            // The binding is committed; the reopened workspace
+                                            // reports the scope as unwatched and can retry.
+                                        }
+                                    }
+                                    return imported.summary();
+                                }));
+    }
+
+    /** Stops checking the remembered original. The binding and imported files are unchanged. */
+    CompletableFuture<Void> unwatch(Scope scope, Cancellation token) {
+        Objects.requireNonNull(scope);
+        return submit(
+                token,
+                cancel ->
+                        unchecked(
+                                () -> {
+                                    ensureStorage();
+                                    deleteWatch(scope, cancel);
+                                    return null;
+                                }));
+    }
+
+    /**
+     * Checks every opted-in watched original once. Changed same-build caches are fully verified,
+     * imported and atomically bound; open snapshots stay immutable, so open workspaces keep the
+     * data they loaded until reopened. Nothing is discovered beyond the remembered files.
+     */
+    CompletableFuture<List<RefreshResult>> refreshWatched(Cancellation token) {
+        return submit(token, cancel -> unchecked(() -> refreshActual(cancel)));
     }
 
     CompletableFuture<Snapshot> open(Scope scope, Cancellation token) {
@@ -144,17 +220,20 @@ final class ClientHotfixStore implements AutoCloseable {
                                 () -> {
                                     ensureStorage();
                                     var summary = readManifest(scope);
-                                    return summary == null
-                                            ? null
-                                            : openSnapshot(
+                                    if (summary == null) return null;
+                                    var snapshot =
+                                            openSnapshot(
                                                     object(summary.sha256()),
                                                     scope,
                                                     summary,
                                                     cancel);
+                                    snapshot.watched =
+                                            Files.exists(watch(scope), LinkOption.NOFOLLOW_LINKS);
+                                    return snapshot;
                                 }));
     }
 
-    /** Clears association only. Immutable imported bytes are deliberately retained. */
+    /** Clears association and any watch. Immutable imported bytes are deliberately retained. */
     CompletableFuture<Void> disable(Scope scope, Cancellation token) {
         return submit(
                 token,
@@ -163,6 +242,7 @@ final class ClientHotfixStore implements AutoCloseable {
                                 () -> {
                                     ensureStorage();
                                     Path binding = binding(scope);
+                                    deleteWatch(scope, cancel);
                                     if (Files.exists(binding, LinkOption.NOFOLLOW_LINKS)) {
                                         regular(binding);
                                         cancel.check();
@@ -272,7 +352,12 @@ final class ClientHotfixStore implements AutoCloseable {
         finishIfDrained();
     }
 
-    private Summary importActual(Scope scope, Path original, Cancellation token)
+    /** Verified import plus the exact original attributes observed before and after copying. */
+    private record Imported(
+            Summary summary, Path input, BasicFileAttributes source, boolean changed) {}
+
+    private Imported importActual(
+            Scope scope, Path original, boolean keepIdentical, Cancellation token)
             throws IOException {
         Objects.requireNonNull(scope);
         ensureStorage();
@@ -350,13 +435,18 @@ final class ClientHotfixStore implements AutoCloseable {
                     || !Objects.equals(after.fileKey(), before.fileKey()))
                 throw new IOException("Client cache changed during import");
             token.check();
+            if (keepIdentical) {
+                var current = readManifest(scope);
+                if (current != null && current.sha256().equals(digest))
+                    return new Imported(current, input, after, false);
+            }
             Path destination = object(digest);
             if (Files.exists(destination, LinkOption.NOFOLLOW_LINKS)) {
                 var existing = openSnapshot(destination, scope, summary, token);
                 existing.closeActual();
             } else Files.move(temporary, destination);
             writeManifest(scope, summary, token);
-            return summary;
+            return new Imported(summary, input, after, true);
         } catch (IOException | RuntimeException | Error error) {
             failure = error;
             throw error;
@@ -414,6 +504,7 @@ final class ClientHotfixStore implements AutoCloseable {
 
     final class Snapshot implements AutoCloseable {
         private final Object monitor = new Object();
+        private volatile boolean watched;
         private final Path path;
         private final CompletableFuture<Void> finished = new CompletableFuture<>();
         private FileChannel channel;
@@ -495,6 +586,11 @@ final class ClientHotfixStore implements AutoCloseable {
 
         Db2ByteSource source() {
             return source;
+        }
+
+        /** Whether Refresh sources was asked to check this scope's original when opened. */
+        boolean watched() {
+            return watched;
         }
 
         HotfixCacheReader.Index index() {
@@ -648,6 +744,7 @@ final class ClientHotfixStore implements AutoCloseable {
             ownedDirectory(directory);
             ownedDirectory(directory.resolve("objects"));
             ownedDirectory(directory.resolve("bindings"));
+            ownedDirectory(directory.resolve("watches"));
             return;
         }
         if (!canonicalized) {
@@ -658,6 +755,7 @@ final class ClientHotfixStore implements AutoCloseable {
         privateDirectory(directory);
         privateDirectory(directory.resolve("objects"));
         privateDirectory(directory.resolve("bindings"));
+        privateDirectory(directory.resolve("watches"));
         Path path = directory.resolve("store.lock");
         if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) regular(path);
         lockChannel =
@@ -690,21 +788,8 @@ final class ClientHotfixStore implements AutoCloseable {
     }
 
     private Summary readManifest(Scope scope) throws IOException {
-        Path path = binding(scope);
-        if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return null;
-        var attributes = regular(path);
-        if (attributes.size() > MAX_MANIFEST_BYTES)
-            throw new IOException("Client-cache binding exceeds bounds");
-        byte[] bytes;
-        try (var input =
-                owned(FileChannel.open(path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
-            if (input.size() != attributes.size())
-                throw new IOException("Client-cache binding changed");
-            var data = ByteBuffer.allocate((int) attributes.size());
-            while (data.hasRemaining())
-                if (input.read(data) < 0) throw new IOException("Client-cache binding truncated");
-            bytes = data.array();
-        }
+        byte[] bytes = readPrivate(binding(scope));
+        if (bytes == null) return null;
         String text = new String(bytes, StandardCharsets.UTF_8);
         var lines = text.split("\n", -1);
         if (lines.length != 8
@@ -747,11 +832,31 @@ final class ClientHotfixStore implements AutoCloseable {
                         scope.version(),
                         summary.importedAt().toString(),
                         "");
-        byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
+        writeAtomic(binding(scope), text.getBytes(StandardCharsets.UTF_8), token);
+    }
+
+    /** Bounded private record read; null when absent. Symbolic links are refused. */
+    private byte[] readPrivate(Path path) throws IOException {
+        if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return null;
+        var attributes = regular(path);
+        if (attributes.size() > MAX_MANIFEST_BYTES)
+            throw new IOException("Client-cache record exceeds bounds");
+        try (var input =
+                owned(FileChannel.open(path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
+            if (input.size() != attributes.size())
+                throw new IOException("Client-cache record changed");
+            var data = ByteBuffer.allocate((int) attributes.size());
+            while (data.hasRemaining())
+                if (input.read(data) < 0) throw new IOException("Client-cache record truncated");
+            return data.array();
+        }
+    }
+
+    /** Owner-only temporary write, then atomic replacement of one private record. */
+    private void writeAtomic(Path path, byte[] bytes, Cancellation token) throws IOException {
         if (bytes.length > MAX_MANIFEST_BYTES)
-            throw new IOException("Client-cache binding exceeds bounds");
-        Path path = binding(scope),
-                temporary = path.resolveSibling("binding-" + UUID.randomUUID() + ".tmp");
+            throw new IOException("Client-cache record exceeds bounds");
+        Path temporary = path.resolveSibling("record-" + UUID.randomUUID() + ".tmp");
         Throwable failure = null;
         try {
             try (var output = create(temporary)) {
@@ -781,6 +886,208 @@ final class ClientHotfixStore implements AutoCloseable {
                 else throw cleanup;
             }
         }
+    }
+
+    private Path watch(Scope scope) {
+        return directory.resolve("watches").resolve(scope.key() + ".watch");
+    }
+
+    /** Private opt-in record of one original location plus its last verified size/mtime. */
+    private record Watch(
+            Scope scope, Path original, long size, long modifiedNanos, String fileKey) {}
+
+    /** Filesystem identity (for example device/inode), so atomic replacement is detected. */
+    private static String fileIdentity(BasicFileAttributes attributes) {
+        return Base64.getUrlEncoder()
+                .withoutPadding()
+                .encodeToString(
+                        String.valueOf(attributes.fileKey()).getBytes(StandardCharsets.UTF_8));
+    }
+
+    private void writeWatch(
+            Scope scope, Path input, BasicFileAttributes source, Cancellation token)
+            throws IOException {
+        var build = scope.build();
+        String text =
+                String.join(
+                        "\n",
+                        "vimi-client-hotfix-watch-v1",
+                        scope.key(),
+                        build.product(),
+                        build.buildConfig(),
+                        build.cdnConfig(),
+                        build.region() == null ? "<none>" : build.region(),
+                        scope.locale(),
+                        scope.version(),
+                        Base64.getUrlEncoder()
+                                .withoutPadding()
+                                .encodeToString(input.toString().getBytes(StandardCharsets.UTF_8)),
+                        Long.toString(source.size()),
+                        Long.toString(source.lastModifiedTime().to(TimeUnit.NANOSECONDS)),
+                        fileIdentity(source),
+                        "");
+        writeAtomic(watch(scope), text.getBytes(StandardCharsets.UTF_8), token);
+    }
+
+    private void deleteWatch(Scope scope, Cancellation token) throws IOException {
+        ensureStorage();
+        Path path = watch(scope);
+        if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) return;
+        regular(path);
+        token.check();
+        Files.delete(path);
+    }
+
+    private Watch readWatch(Path file) throws IOException {
+        byte[] bytes = readPrivate(file);
+        if (bytes == null) throw new IOException("Client-cache watch disappeared");
+        var lines = new String(bytes, StandardCharsets.UTF_8).split("\n", -1);
+        if (lines.length != 13
+                || !lines[0].equals("vimi-client-hotfix-watch-v1")
+                || !lines[1].matches("[0-9a-f]{64}")
+                || !file.getFileName().toString().equals(lines[1] + ".watch")
+                || !lines[9].matches("0|[1-9][0-9]{0,8}")
+                || !lines[10].matches("-?[0-9]{1,19}")
+                || !lines[11].matches("[A-Za-z0-9_-]{0,512}")
+                || !lines[12].isEmpty()) throw new IOException("Client-cache watch is invalid");
+        try {
+            var scope =
+                    new Scope(
+                            new BuildRef(
+                                    lines[2],
+                                    lines[3],
+                                    lines[4],
+                                    lines[5].equals("<none>") ? null : lines[5]),
+                            lines[6],
+                            lines[7]);
+            Path original =
+                    Path.of(
+                            new String(
+                                    Base64.getUrlDecoder().decode(lines[8]),
+                                    StandardCharsets.UTF_8));
+            if (!scope.key().equals(lines[1]) || !original.isAbsolute())
+                throw new IllegalArgumentException();
+            return new Watch(
+                    scope,
+                    original,
+                    Long.parseLong(lines[9]),
+                    Long.parseLong(lines[10]),
+                    lines[11]);
+        } catch (RuntimeException invalid) {
+            throw new IOException("Client-cache watch is invalid", invalid);
+        }
+    }
+
+    private List<RefreshResult> refreshActual(Cancellation token) throws IOException {
+        ensureStorage();
+        var files = new java.util.ArrayList<Path>();
+        try (var stream = Files.newDirectoryStream(directory.resolve("watches"), "*.watch")) {
+            for (Path file : stream) {
+                if (files.size() == MAX_WATCHES)
+                    throw new IOException("Too many watched client caches");
+                files.add(file);
+            }
+        }
+        files.sort(null);
+        var results = new java.util.ArrayList<RefreshResult>();
+        // On cancellation, stop and return what was already checked: those bindings are
+        // durable, and the caller still reports the run as canceled from its own token.
+        try {
+            for (Path file : files) {
+                token.check();
+                var result = refreshOne(file, token);
+                if (result != null) results.add(result);
+            }
+        } catch (IOException | RuntimeException failure) {
+            if (!(token.isCanceled() || canceled(failure))) throw failure;
+        }
+        return List.copyOf(results);
+    }
+
+    private RefreshResult refreshOne(Path file, Cancellation token) throws IOException {
+        Watch watch;
+        Summary current;
+        try {
+            watch = readWatch(file);
+            current = readManifest(watch.scope());
+        } catch (IOException | RuntimeException invalid) {
+            // An unreadable private record cannot be cleared from any workspace; remove it
+            // (regular files only) so it fails one refresh rather than every refresh.
+            try {
+                regular(file);
+                Files.delete(file);
+            } catch (IOException | RuntimeException ignored) {
+                /* Reported below; the next refresh retries the removal. */
+            }
+            return new RefreshResult(null, RefreshOutcome.FAILED, null, 0, invalid);
+        }
+        var scope = watch.scope();
+        if (current == null) {
+            // A watch never outlives its binding through this store; drop an orphan quietly.
+            try {
+                deleteWatch(scope, token);
+            } catch (IOException | RuntimeException failure) {
+                if (token.isCanceled()) throw failure;
+            }
+            return null;
+        }
+        BasicFileAttributes now;
+        try {
+            now = regular(watch.original());
+        } catch (java.nio.file.NoSuchFileException missing) {
+            return new RefreshResult(scope, RefreshOutcome.MISSING, current, 0, null);
+        } catch (IOException | RuntimeException unreadable) {
+            return new RefreshResult(scope, RefreshOutcome.FAILED, current, 0, unreadable);
+        }
+        if (now.size() == watch.size()
+                && now.lastModifiedTime().to(TimeUnit.NANOSECONDS) == watch.modifiedNanos()
+                && fileIdentity(now).equals(watch.fileKey()))
+            return new RefreshResult(
+                    scope, RefreshOutcome.UNCHANGED, current, scope.buildNumber(), null);
+        Imported imported;
+        try {
+            int declared = declaredBuild(watch.original());
+            if (declared > 0 && declared != scope.buildNumber())
+                return new RefreshResult(
+                        scope, RefreshOutcome.CLIENT_BUILD_CHANGED, current, declared, null);
+            imported = importActual(scope, watch.original(), true, token);
+        } catch (IOException | RuntimeException failure) {
+            if (token.isCanceled() || canceled(failure)) throw failure;
+            return new RefreshResult(scope, RefreshOutcome.FAILED, current, 0, failure);
+        }
+        Throwable statFailure = null;
+        try {
+            writeWatch(scope, imported.input(), imported.source(), token);
+        } catch (IOException | RuntimeException failure) {
+            if (token.isCanceled() || canceled(failure)) throw failure;
+            // The verified binding is already durable; a stale recorded stat only forces the
+            // next refresh to reverify the same bytes, so report the real outcome plus failure.
+            statFailure = failure;
+        }
+        return new RefreshResult(
+                scope,
+                imported.changed() ? RefreshOutcome.UPDATED : RefreshOutcome.UNCHANGED,
+                imported.summary(),
+                scope.buildNumber(),
+                statFailure);
+    }
+
+    /** Header build of a recognizable XFTH v9 file, else -1; full verification follows. */
+    private int declaredBuild(Path path) throws IOException {
+        try (var input =
+                owned(FileChannel.open(path, StandardOpenOption.READ, LinkOption.NOFOLLOW_LINKS))) {
+            var header = ByteBuffer.allocate(12).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            while (header.hasRemaining()) if (input.read(header) < 0) return -1;
+            header.flip();
+            if (header.getInt() != 0x48544658 || header.getInt() != 9) return -1;
+            return header.getInt();
+        }
+    }
+
+    private static boolean canceled(Throwable error) {
+        for (int i = 0; i < 8 && error != null; i++, error = error.getCause())
+            if (error instanceof CancellationException) return true;
+        return false;
     }
 
     private static BasicFileAttributes regular(Path path) throws IOException {

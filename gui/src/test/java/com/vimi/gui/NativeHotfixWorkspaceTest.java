@@ -144,7 +144,8 @@ public final class NativeHotfixWorkspaceTest {
         cleanupFailureRemainsPhysicalFailure();
         foreignCancellationIsNotClassified();
         invalidVersionNeverTouchesStore();
-        System.out.println("NATIVE_HOTFIX_WORKSPACE_PASS scenarios=7 noNetwork=true");
+        refreshedBindingMarksOnlyOlderLoadedSnapshotsForReopen();
+        System.out.println("NATIVE_HOTFIX_WORKSPACE_PASS scenarios=8 noNetwork=true");
     }
 
     private static void loadedSnapshotRetiresWithWork() throws Exception {
@@ -337,6 +338,73 @@ public final class NativeHotfixWorkspaceTest {
                         "Explicit base-only reason");
             } finally {
                 invalid.close();
+            }
+        }
+    }
+
+    private static byte[] cacheWithRecord(int value) {
+        return ByteBuffer.allocate(79)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .putInt(0x48544658)
+                .putInt(9)
+                .putInt(70707)
+                .put(new byte[32])
+                .putInt(0x48544658)
+                .putInt(70)
+                .putInt(1)
+                .putInt(1)
+                .putInt(0x12345678)
+                .putInt(1328613)
+                .putInt(3)
+                .put((byte) 1)
+                .put(new byte[3])
+                .put((byte) value)
+                .put((byte) 2)
+                .put((byte) 3)
+                .array();
+    }
+
+    /** Refresh notes compare at read time, so note/adoption ordering cannot hide a reopen. */
+    private static void refreshedBindingMarksOnlyOlderLoadedSnapshotsForReopen() throws Exception {
+        try (var fixture = new Fixture(new ClientHotfixStore.Probe() {})) {
+            var scope = fixture.work.hotfixScope();
+            var original = fixture.root.resolve("watched-DBCache.bin");
+            Files.write(original, cacheWithRecord(1));
+            Files.setLastModifiedTime(original, java.nio.file.attribute.FileTime.fromMillis(1_700_000_000_000L));
+            var first = fixture.store.importCache(scope, original, true, Cancellation.NONE)
+                    .get(3, TimeUnit.SECONDS);
+            ensure(fixture.work, Cancellation.NONE);
+            check(fixture.work.hotfixWatched(), "Loaded watched snapshot reports its watch");
+            check(fixture.work.hotfixStatus().contains("checked on Refresh sources"),
+                    "Status says the cache is checked on refresh");
+            fixture.work.noteRefreshedHotfix(first.sha256());
+            check(!fixture.work.hotfixRefreshPending(), "Unchanged binding needs no reopen");
+
+            Files.write(original, cacheWithRecord(2));
+            Files.setLastModifiedTime(original, java.nio.file.attribute.FileTime.fromMillis(1_700_000_010_000L));
+            var results = fixture.store.refreshWatched(Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            check(results.size() == 1 && results.getFirst().outcome() == ClientHotfixStore.RefreshOutcome.UPDATED,
+                    "Refresh imports the newer same-build cache");
+            String newer = results.getFirst().summary().sha256();
+            fixture.work.noteRefreshedHotfix(newer);
+            check(fixture.work.hotfixRefreshPending(), "Older loaded snapshot is marked for reopen");
+            check(fixture.work.hotfixStatus().contains("reopen to apply"), "Status asks for reopen");
+            check(!fixture.work.hotfixStatus().contains(fixture.root.toString()), "Status never includes the path");
+            var loaded = (ClientHotfixStore.Snapshot) field(fixture.work, "hotfixSnapshot");
+            check(loaded.index().sha256().equals(first.sha256()), "Open workspace keeps its immutable snapshot");
+
+            var reopened = work(fixture.store, "1.60.1.70707");
+            try {
+                // Note recorded before adoption completes: the reopened work loads the newer
+                // binding and must not report a pending reopen.
+                reopened.noteRefreshedHotfix(newer);
+                check(!reopened.hotfixRefreshPending(), "Unloaded work is not pending");
+                ensure(reopened, Cancellation.NONE);
+                var adopted = (ClientHotfixStore.Snapshot) field(reopened, "hotfixSnapshot");
+                check(adopted.index().sha256().equals(newer), "Reopened work applies refreshed import");
+                check(!reopened.hotfixRefreshPending(), "Reopened work is current");
+            } finally {
+                reopened.close();
             }
         }
     }

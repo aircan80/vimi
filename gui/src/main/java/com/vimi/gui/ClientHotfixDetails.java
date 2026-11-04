@@ -30,6 +30,33 @@ final class ClientHotfixDetails {
                 ? "The operation was canceled." : "The local cache could not be read or verified.";
     }
 
+    /** Fixed-vocabulary refresh summary; never includes paths, payloads or provider text. */
+    static String refreshSummary(List<ClientHotfixStore.RefreshResult> results) {
+        if (results.isEmpty()) return "No client caches are marked for checking";
+        int updated = 0, unchanged = 0, moved = 0, missing = 0, failed = 0;
+        for (var result : results) {
+            switch (result.outcome()) {
+                case UPDATED -> updated++;
+                case UNCHANGED -> unchanged++;
+                case CLIENT_BUILD_CHANGED -> moved++;
+                case MISSING -> missing++;
+                case FAILED -> failed++;
+            }
+        }
+        var parts = new java.util.ArrayList<String>();
+        if (updated > 0) parts.add(updated + " newer cache" + (updated == 1 ? "" : "s")
+                + " imported; reopen the build to apply");
+        if (unchanged > 0) parts.add(unchanged + " unchanged");
+        if (moved > 0) parts.add(moved + " now for another client build; existing import kept");
+        if (missing > 0) parts.add(missing + " not found; existing import kept");
+        if (failed > 0) parts.add(failed + " could not be verified; existing import kept");
+        return String.join(" · ", parts);
+    }
+
+    static boolean refreshFailed(List<ClientHotfixStore.RefreshResult> results) {
+        return results.stream().anyMatch(result -> result.outcome() == ClientHotfixStore.RefreshOutcome.FAILED);
+    }
+
     static CompletableFuture<String> row(BuildTables tables, String table, long id,
             String label, String version, Cancellation token) {
         return tables.hotfixInfo(TableTypes.Ref.forName(table), id,
