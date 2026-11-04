@@ -118,6 +118,7 @@ final class TerrainTextureTasks {
                     }
                     notifyAll();
                 }
+                request.completeObservations();
                 if (request.cancellationFailure == null) {
                     request.drained.complete(null);
                 } else {
@@ -223,6 +224,7 @@ final class TerrainTextureTasks {
         request.canceled = true;
         request.registration.close();
         request.registration = null;
+        request.completeObservations();
         request.future.completeExceptionally(failure);
         request.drained.complete(null);
     }

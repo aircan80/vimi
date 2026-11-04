@@ -538,6 +538,7 @@ final class WorldStreamScopes {
         private final long mapId;
         private final AdmissionMetadata metadata;
         private final ArrayList<Binding> bindings = new ArrayList<>();
+        private List<WorldTerrainTextureSource.Observation> materialObservations = List.of();
         private Input input;
         private final long threadId = Thread.currentThread().threadId();
         private boolean reserved;
@@ -596,6 +597,29 @@ final class WorldStreamScopes {
         Cancellation cancellation() {
             check();
             return token;
+        }
+
+        /** Metadata from the actual owned operation, available only after its worker drains. */
+        void observeMaterial(WorldTerrainTextureSource.Operation operation) {
+            check();
+            if (profile != UseProfile.TERRAIN_BASIC
+                    || reserved
+                    || input != null
+                    || !materialObservations.isEmpty()) {
+                throw new IllegalStateException("Material observation phase");
+            }
+            var observed = operation.observations();
+            var ids = new java.util.HashSet<Long>();
+            for (var binding : bindings) {
+                ids.add(binding.id());
+            }
+            for (var value : observed) {
+                ids.add(value.fileId());
+            }
+            if (ids.size() > 67) {
+                throw new IllegalStateException("Material observation limit");
+            }
+            materialObservations = observed;
         }
 
         /** Rechecks a private cache's existing actual-read proof; never constructs such a proof. */
@@ -728,6 +752,7 @@ final class WorldStreamScopes {
                 input.close();
             }
             bindings.clear();
+            materialObservations = List.of();
             token = null;
             engine = null;
         }
@@ -771,8 +796,26 @@ final class WorldStreamScopes {
             if (admission.input != null || admission.reserved) {
                 throw new IllegalStateException("Input not drained before transfer");
             }
+            var finalIds = new java.util.HashSet<Long>();
+            for (var binding : admission.bindings) {
+                finalIds.add(binding.id());
+            }
+            for (var observed : admission.materialObservations) {
+                finalIds.add(observed.fileId());
+            }
+            if (finalIds.size() > (profile == UseProfile.TERRAIN_BASIC ? 67 : 11)) {
+                throw new IllegalStateException("Final binding observation limit");
+            }
             for (var binding : admission.bindings) {
                 validateBinding(binding, token);
+            }
+            for (var observed : admission.materialObservations) {
+                token.check();
+                var fresh = files.stat(FileTypes.FileRef.id(observed.fileId()), token).join();
+                token.check();
+                if (!observed.matches(fresh)) {
+                    throw new IllegalStateException("Material source changed");
+                }
             }
             validateProof(proof, token);
             synchronized (this) {
