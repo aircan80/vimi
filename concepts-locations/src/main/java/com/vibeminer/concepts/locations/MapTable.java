@@ -39,6 +39,20 @@ final class MapTable {
         columns = result.columns();
     }
 
+    static MapTable captured(
+            String name, com.vibeminer.formats.tables.CapturedRowsTypes.Receipt receipt) {
+        String expected = LAYOUTS.get(name);
+        if (expected == null
+                || receipt.table().counts() == null
+                || !expected.equals(receipt.table().counts().layoutHash())
+                || !receipt.schema().layoutHashes().contains(expected)) {
+            throw new Projection(MapTypes.State.UNSUPPORTED, "Unqualified captured layout");
+        }
+        return new MapTable(
+                name,
+                new TableTypes.SchemaResult(receipt.table(), receipt.columns(), receipt.schema()));
+    }
+
     static MapTable open(BuildTables tables, String name, Cancellation token, List<String> issues) {
         token.check();
         var result =

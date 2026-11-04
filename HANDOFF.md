@@ -13,6 +13,67 @@ remains the latest verified published prerelease until publication is checked.
 No city/instance/NPC/music/hotstreaming/characterUI feature is claimed delivered.
 
 
+## Alpha20 publication and active streaming checkpoint
+
+Maps PR158 is FF-merged on main at590aa0e. Current-head hosted gates and allfive
+platform packaging dry run41778802552 passed. Immutable alpha20 tag points at590;
+publication run41780488095 is VERIFIED SUCCESS: allfive platform jobs,18assets,
+explicit prerelease/notdraft. Release https://github.com/aircan80/vimi/releases/tag/v0.1.0-alpha.20 Frozen local preview
+`.local/apps/preview-590aa0e/bin/vimi-gui-prototype` passes packaged UI/native24shader
+smoke. Do not move tags or overwrite frozen launchers. Authored placeholder-only
+review screenshot is in docs/screenshots; actual game-art proof images stay PRIVATE.
+
+All3agents are actively implementing, not stopped: architect production native
+core93cf11f after1bd1aa5 (/tmp/vimi-persistent-world-native-owner) passes actual
+Vulkan104replacement/cancelcycles SAMEprocess,1469camera frames duringupload,
+4410callbacksdrained,4MiBproducerpeak; independent review pending and no parentGUI/
+controlpipes wired yet. Rootstreamingintegration currentc2a69a4+ownedhelperb7837ad/
+testcleanup184fcd1 combines reviewed tile/frame/control/cache/deadline/source pieces.
+WorldBasicWmoa22b82d+unknown-sizefixture01ddd9e source-only checkpoint is root-review
+pending (/tmp/vimi-wmo-basic-source); neutral coldannex23ecedb+a4b9e12 designapproved
+for implementation. No visible buildings/instances delivered yet.
+
+CRITICAL actual-source gate: source proof `/tmp/vimi-world-source-live-proof/proof3.log`
+finds actualselected70755 Map VERIFIED_NATIVE but PARTIAL73/81,3encryptedsections/
+8excludedrecords, layoutD43AFAC3, textIssueCount0, scopeunencryptedSections. Existing
+Scopes READY+zeroexcluded policy blocks evenreadableMap0. Do NOT blanketallowPARTIAL
+or treat nativeissuecertificate as membership. Worker proposal40c7c31 approved for
+narrow native per-ID-domain inspection: complete explicit excluded IDs, zero copies,
+WDC4/5, private selected-row witness bound to samecapture/source/keys/definitions,
+<=1MiBsource and4MiBphase. Add explicit CONFIGURED_SOURCE access parameter (may
+acquire Map source, but no tableprepare/repair/definitionfetch/whole-rowdecode).
+ActualMap0 scope/root/WMO proof must pass afterward before hot GUI/sourcepromotion.
+Legacyviewer/Mapsalpha20 remain functional. Sourceworker is implementing this now.
+
+## Overnight continuation — Maps alpha20 candidate
+
+Latest VERIFIED published release is alpha19 source39a42bb, run41775202595,
+all5platform packages/18assets, explicit prerelease. Main additionally FF-merges
+PR156 native selected-table preparation90149dd and PR157 raw WDT scene facts
+ce10829 after independent review and hosted gates. No alpha20 tag exists yet.
+
+PR158/worktree `/tmp/vimi-maps-browser-ui` is the Maps candidate. Source/model,
+strict native bindings/EOF, close and GUI all independently approved through
+source47fb1ba and UI554a574+10f48a2; actualGUIproof passes on06a3b89 with947→1415→1429,
+12/12recordedarttiles each, Back/Up/direct and activity/close. Original library
+read-only, missingartacquiredtoscratch, generatedoverlayonly; seeprivate
+`/tmp/vimi-maps-live-ui-proof/proof-final.log`, noassetsGit. Source-details reasons
+follow-up passes125GUI+authoredUI tasks. Full check/assemble/MapsUI+VulkanWorld proof
+passes468tasks `/tmp/vimi-alpha20-combined-check.log`. Release notes alpha20 ready;
+run current-head hosted gates and five-platform packaging dry run, then FF/main,
+unusedtag and publication verification. Never move tags or overwrite launchers.
+
+Future PR153 streaming integration includes reviewed framev2, controlcodec,
+mailbox, tilepacketf59fd26 and statusdeadline99b87e7+liveclockwrappersf83571d;
+sharedscopeadmission7ba3334 and existing12-cache replacement34cf891 approved,
+combined147tasks pass. WorldService offcallerclose1b7fc64 review pending.
+Puredeadline is NOT a running watchdog. Production persistentnativeowner/renderer
+is being implemented by architect in isolatedworktree; noGUIhotwireyet. Source
+worker continues final scopedgeometry/materialfactory; WMOauthor nowimplements
+private BASIC_WMO factory using approvedsourceprofile/rawparser5dbc64c. Current
+World stillcoldhands off perneighborhood. Character milestone remains queued after
+current World milestones; expanded roadmap remains authoritative below.
+
 ## Current authorization and expanded roadmap
 
 The user explicitly authorized continued autonomous/overnight work and all additions

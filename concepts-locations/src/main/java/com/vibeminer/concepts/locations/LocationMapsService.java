@@ -69,6 +69,11 @@ public final class LocationMapsService implements BuildLocationMaps {
     }
 
     @Override
+    public CompletableFuture<MapNavigationSourceTypes.Result> navigation(Cancellation token) {
+        return submit(token, request -> MapNavigationSource.read(tables, request));
+    }
+
+    @Override
     public CompletableFuture<MapTypes.Resolution> resolve(
             LocationTypes.Location location, Cancellation token) {
         Objects.requireNonNull(location);
@@ -830,32 +835,42 @@ public final class LocationMapsService implements BuildLocationMaps {
     }
 
     @Override
-    public synchronized CompletableFuture<Void> closeAsync() {
-        if (closing != null) {
-            return closing.copy();
+    public CompletableFuture<Void> closeAsync() {
+        final CompletableFuture<Void> result;
+        synchronized (this) {
+            if (closing != null) {
+                return closing.copy();
+            }
+            closing = new CompletableFuture<>();
+            result = closing;
         }
-        closing = new CompletableFuture<>();
-        Throwable failure = null;
-        try {
-            lifetime.cancel();
-        } catch (Throwable error) {
-            failure = error;
-        }
-        var cancellationFailure = failure;
-        worker.shutdown();
-        Thread.startVirtualThread(
-                () -> {
-                    try {
-                        while (!worker.awaitTermination(1, TimeUnit.SECONDS)) {}
-                        if (cancellationFailure == null) {
-                            closing.complete(null);
-                        } else {
-                            closing.completeExceptionally(cancellationFailure);
-                        }
-                    } catch (Throwable error) {
-                        closing.completeExceptionally(error);
-                    }
-                });
-        return closing.copy();
+        // One close task per service. Cancellation may invoke arbitrary lower callbacks;
+        // neither the caller (including FX) nor the lifecycle monitor may run them.
+        Thread.ofVirtual()
+                .name("location-maps-close")
+                .start(
+                        () -> {
+                            worker.shutdown();
+                            Throwable cancellationFailure = null;
+                            try {
+                                lifetime.cancel();
+                            } catch (Throwable failure) {
+                                cancellationFailure = failure;
+                            }
+                            try {
+                                while (!worker.awaitTermination(1, TimeUnit.SECONDS)) {}
+                                if (cancellationFailure == null) {
+                                    result.complete(null);
+                                } else {
+                                    result.completeExceptionally(cancellationFailure);
+                                }
+                            } catch (Throwable failure) {
+                                if (cancellationFailure != null) {
+                                    failure.addSuppressed(cancellationFailure);
+                                }
+                                result.completeExceptionally(failure);
+                            }
+                        });
+        return result.copy();
     }
 }

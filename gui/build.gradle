@@ -518,3 +518,10 @@ tasks.register('worldInlineCadenceProof', JavaExec) {
     jvmArgs '--enable-native-access=ALL-UNNAMED', '-Dprism.order=sw'
     args layout.buildDirectory.dir('world-inline-cadence').get().asFile.absolutePath
 }
+
+// Authored hierarchy/artwork and off-FX cancellation proof; requires a display.
+tasks.register('mapsBrowserUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.MapsBrowserUiTest'
+}
