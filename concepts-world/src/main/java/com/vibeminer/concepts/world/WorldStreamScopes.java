@@ -1129,10 +1129,14 @@ final class WorldStreamScopes {
                 }
             }
         }
+        Throwable requestFailure = null;
         try {
             if (active != null) {
                 active.request();
             }
+        } catch (RuntimeException | Error failure) {
+            requestFailure = failure;
+            throw failure;
         } finally {
             Throwable cleanup = null;
             for (var liquid : liquidOwners) {
@@ -1145,6 +1149,10 @@ final class WorldStreamScopes {
                         cleanup.addSuppressed(error);
                     }
                 }
+            }
+            if (cleanup != null && requestFailure != null && cleanup != requestFailure) {
+                // Preserve the cancellation-request failure behind the cleanup failure.
+                cleanup.addSuppressed(requestFailure);
             }
             if (cleanup instanceof Error fatal) {
                 throw fatal;

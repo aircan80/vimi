@@ -1085,6 +1085,7 @@ class WorldTerrainLiquidsTest {
                                                 throw new AssertionError("stale terrain joined");
                                             }));
             assertEquals(WorldTerrainStreaming.Refusal.Reason.SOURCE_INVALIDATED, refused.reason());
+            assertEquals("WATER_ROOT_BINDING", refused.site());
             f.authored.changedRoot = false;
             try (var recovered =
                     f.water.prepareAndWrite(

@@ -59,11 +59,12 @@ public interface BuildWorld extends AutoCloseable {
                 WorldTerrainTextureSource.BatchResult.unsupported(tiles));
     }
 
-    /** Optional actual-source streaming capability; custom providers perform no fallback IO. */
+    /** Optional single-root static water preview joined to actual prepared terrain tiles. */
     default java.util.Optional<WorldWaterPreview> waterPreview() {
         return java.util.Optional.empty();
     }
 
+    /** Optional actual-source global scene capability; custom providers perform no fallback IO. */
     default java.util.Optional<WorldGlobalScenes> globalScenes() {
         return java.util.Optional.empty();
     }

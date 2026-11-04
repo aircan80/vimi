@@ -248,6 +248,10 @@ public final class WorldWaterPreview {
         }
     }
 
+    /**
+     * Runs synchronously on the single Source worker lane while the terrain tile is exclusively
+     * pinned. Keep it bounded; never hop to FX or block on other Source work.
+     */
     @FunctionalInterface
     public interface Output<R extends AutoCloseable> {
         R writeUnadvertised(CheckedBorrow borrow, Cancellation actualAdmissionToken);
@@ -298,28 +302,42 @@ public final class WorldWaterPreview {
             return facade.open && owner.isOpen();
         }
 
+        /**
+         * Same-thread scalar borrow. A concurrent or nested borrow is a typed RETRY_LATER refusal.
+         * Coordinates are native terrain axes: north (terrain x), west (terrain y), up (z).
+         */
         public <T> T withPayload(Function<CheckedBorrow, T> read) {
             Objects.requireNonNull(read);
             facade.check();
-            return owner.withBorrow(
-                    b -> {
-                        var checked = new CheckedBorrow(b, facts);
-                        try {
-                            return read.apply(checked);
-                        } finally {
-                            checked.expire();
-                        }
-                    });
+            return pressureRefused(
+                    () ->
+                            owner.withBorrow(
+                                    b -> {
+                                        var checked = new CheckedBorrow(b, facts);
+                                        try {
+                                            return read.apply(checked);
+                                        } finally {
+                                            checked.expire();
+                                        }
+                                    }));
         }
 
+        /**
+         * Pinned borrow of the returned writer resource. This is NOT an ownership transfer: this
+         * owner still closes R. A consumer that needs data beyond this owner copies it.
+         */
         public void withWrittenResource(Consumer<R> moveOnly) {
             Objects.requireNonNull(moveOnly);
             facade.check();
-            owner.withResource(
-                    resource -> {
-                        @SuppressWarnings("unchecked")
-                        R r = (R) resource;
-                        moveOnly.accept(r);
+            pressureRefused(
+                    () -> {
+                        owner.withResource(
+                                resource -> {
+                                    @SuppressWarnings("unchecked")
+                                    R r = (R) resource;
+                                    moveOnly.accept(r);
+                                });
+                        return null;
                     });
         }
 
@@ -330,6 +348,17 @@ public final class WorldWaterPreview {
         @Override
         public void close() {
             owner.close();
+        }
+    }
+
+    private static <T> T pressureRefused(java.util.function.Supplier<T> action) {
+        try {
+            return action.get();
+        } catch (WorldTerrainLiquids.Pressure busy) {
+            if (busy.getCause() == null && busy.getSuppressed().length == 0) {
+                throw WorldSourceRefusals.at(WorldSourceRefusals.Site.WATER_OUTPUT_CREDIT);
+            }
+            throw busy;
         }
     }
 
