@@ -1,5 +1,18 @@
 # vimi development handoff
 
+## Alpha.19 parser allocation release candidate
+
+Focused release worktree `/tmp/vimi-terrain-parser-release`, branch
+`fix/terrain-parser-release`, includes independently approved8e57ff1+f0bba22.
+Only terrain geometry accumulation changed: bounded primitive buffers replace
+boxing/per-fan arrays. Five authored old-parser geometry/area goldens and actual
+three-ADT hashes/counts agree. Fulltile measuredallocation13.3MB→5.3MB;
+actualthree-source5.3–6.1MB, noFPS/wholeheapclaim. Root andindependentreviews pass.
+Full combined/hosted/package gates still required before alpha.19 tag; alpha.18
+remains the latest verified published prerelease until publication is checked.
+No city/instance/NPC/music/hotstreaming/characterUI feature is claimed delivered.
+
+
 ## Current authorization and expanded roadmap
 
 The user explicitly authorized continued autonomous/overnight work and all additions
