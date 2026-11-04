@@ -29,6 +29,7 @@ public final class WorldStreamSourceBridgeTest {
         fatalCleanupAfterMove();
         destinationStoppingCancelsActualSourceAdmission();
         cleanSourceRetirementMapsButProviderFailureStaysFatal();
+        stickySourceCleanupHealthIsFatalBeforeFileMove();
     }
 
     private static void successfulMove(boolean height, boolean partial, boolean rejectedBinding) throws Exception {
@@ -132,6 +133,54 @@ public final class WorldStreamSourceBridgeTest {
             check(fixture.pool.stats().leaseClaims() == 0, "Late-view base retired");
         } finally {
             fixture.close();
+            Files.deleteIfExists(path);
+            Files.deleteIfExists(path.getParent());
+        }
+    }
+
+    private static void stickySourceCleanupHealthIsFatalBeforeFileMove() throws Exception {
+        stickySourceCleanupHealthIsFatalAt(2);
+        stickySourceCleanupHealthIsFatalAt(3);
+    }
+
+    private static void stickySourceCleanupHealthIsFatalAt(int checkpoint) throws Exception {
+        var fixture=new Fixture();
+        var path=Files.createTempDirectory("bridge-health-").resolve("tile-1.wst");
+        var health=new IllegalStateException("Authored sticky cleanup failure");
+        var checks=new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            var scope=fixture.scope();
+            try(var producer=new WorldStreamSourceBridge.Producer(fixture.source,scope,TILE,()->{
+                if(checks.incrementAndGet()==checkpoint) {
+                    try {
+                        var get=WorldService.class.getDeclaredMethod("preparedTerrain");
+                        get.setAccessible(true);
+                        var prepared=get.invoke(fixture.world);
+                        var field=prepared.getClass().getDeclaredField("scopes");
+                        field.setAccessible(true);
+                        var engine=field.get(prepared);
+                        var failure=engine.getClass().getDeclaredField("cleanupFailure");
+                        failure.setAccessible(true);
+                        failure.set(engine,health); // Negative fault only, never source positivity.
+                    } catch(ReflectiveOperationException error) { throw new AssertionError(error); }
+                }
+                return true;
+            })) {
+                try {
+                    producer.prepare(AuthoredPacketDestination.create(path,scope.scopeSha256()),()->false);
+                    throw new AssertionError("Unknown source cleanup fault cannot become typed retirement");
+                } catch(IllegalStateException expected) {
+                    check(expected.getCause()==health,"Actual source health guard preserves fatal cleanup cause");
+                    check(producer.sourceRefusal()==null,"False isOpen is never origin evidence for cleanup failure");
+                    check(!Files.exists(path),"Unadvertised input retires on fatal source health failure");
+                }
+            }
+            check(fixture.pool.stats().leaseClaims()==0,"Source base retires despite sticky source fault");
+        } finally {
+            try { fixture.world.closeAsync().get(5,TimeUnit.SECONDS); }
+            catch(java.util.concurrent.ExecutionException expected) { /* Sticky source cleanup stays fatal. */ }
+            fixture.pool.closeAsync().get(5,TimeUnit.SECONDS);
+            fixture.tables.close();
             Files.deleteIfExists(path);
             Files.deleteIfExists(path.getParent());
         }
