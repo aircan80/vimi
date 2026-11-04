@@ -375,6 +375,277 @@ final class CapturedRowsTest {
     }
 
     @Test
+    void nativeBoundedReadsAcceptExactLimitsAndRejectEachLowerLimitWithoutInvalidation() {
+        var fixture =
+                new Fixture(
+                        true,
+                        false,
+                        false,
+                        "before",
+                        null,
+                        true,
+                        Db2Fixture.definition(
+                                "int ID\nint Value", "$id,noninline$ID<u32>\nValue<u32>"),
+                        Db2Fixture.numeric("WDC5", 0, 32, 1234, new long[0], true));
+        try (var tables = fixture.open();
+                var rows = tables.capturePreparedLocal(REF, Cancellation.NONE).join().rows()) {
+            var receipt = rows.receipt();
+            assertEquals(
+                    CapturedRowsTypes.IssueChannelState.VERIFIED_NATIVE,
+                    receipt.issueChannelEvidence().state());
+            var legacy = rows.readOrdinalPage(0, 1, Cancellation.NONE).join();
+            int[] exact = new int[6];
+            for (int dimension = 0; dimension < 6; dimension++) {
+                exact[dimension] = minimumPassing(rows, dimension);
+                var passing =
+                        rows.readOrdinalPage(
+                                        0,
+                                        1,
+                                        limits(dimension, exact[dimension]),
+                                        Cancellation.NONE)
+                                .join();
+                assertEquals(legacy, passing, "Exact limit dimension " + dimension);
+                if (exact[dimension] > 1) {
+                    var rejected =
+                            rows.readOrdinalPage(
+                                            0,
+                                            1,
+                                            limits(dimension, exact[dimension] - 1),
+                                            Cancellation.NONE)
+                                    .join();
+                    assertLimitPage(receipt, rejected);
+                    assertEquals(
+                            legacy, rows.readOrdinalPage(0, 1, strict(), Cancellation.NONE).join());
+                    assertEquals(legacy, rows.readOrdinalPage(0, 1, Cancellation.NONE).join());
+                    assertEquals(
+                            receipt,
+                            rows.receipt(),
+                            "A limit is not new native issue evidence or identity");
+                }
+            }
+            assertEquals(2, exact[3]);
+            assertEquals(4, exact[5]);
+            assertEquals(1, exact[4], "No issue entries in this numeric native row");
+            assertTrue(
+                    fixture.memory.has(GeneratedKey.parse(fixture.node)).join(),
+                    "No graph discard on caller policy refusal");
+        }
+    }
+
+    @Test
+    void boundedIssueCountRefusalPreservesNativeIssueChannelAndLaterReads() {
+        var fixture =
+                new Fixture(
+                        true,
+                        false,
+                        false,
+                        "before",
+                        null,
+                        true,
+                        Db2Fixture.definition(
+                                "int ID\nlocstring Name\nint Value\nint Parent",
+                                "$id,noninline$ID<u32>\nName\nValue<u32>\n$noninline,relation$Parent<u32>"),
+                        sparseText(new byte[] {(byte) 0xff}));
+        try (var tables = fixture.open();
+                var rows = tables.capturePreparedLocal(REF, Cancellation.NONE).join().rows()) {
+            var before = rows.readOrdinalPage(0, 1, Cancellation.NONE).join();
+            assertEquals(2, before.rows().getFirst().row().textIssues().size());
+            assertLimitPage(
+                    rows.receipt(),
+                    rows.readOrdinalPage(0, 1, limits(4, 1), Cancellation.NONE).join());
+            assertEquals(
+                    before, rows.readOrdinalPage(0, 1, limits(4, 2), Cancellation.NONE).join());
+            assertEquals(before, rows.readOrdinalPage(0, 1, Cancellation.NONE).join());
+            assertTrue(fixture.memory.has(GeneratedKey.parse(fixture.node)).join());
+        }
+    }
+
+    @Test
+    void
+            generatedTableBoundedAdapterCombinesRecordAndDecodeLimitsWithoutDiscardingEitherOpenMode() {
+        var fixture =
+                new Fixture(
+                        true,
+                        false,
+                        false,
+                        "before",
+                        null,
+                        true,
+                        Db2Fixture.definition(
+                                "int ID\nint Value", "$id,noninline$ID<u32>\nValue<u32>"),
+                        Db2Fixture.numeric("WDC5", 0, 32, 1234, new long[0], true));
+        var before =
+                fixture.writable
+                        .savedArtifacts(fixture.source, TactKeyStatus.NONE, Cancellation.NONE)
+                        .join();
+        for (boolean prepared : List.of(false, true)) {
+            var table =
+                    (prepared
+                                    ? fixture.readonly.openPreparedLocal(
+                                            fixture.source, TactKeyStatus.NONE, Cancellation.NONE)
+                                    : fixture.writable.open(
+                                            fixture.source, TactKeyStatus.NONE, Cancellation.NONE))
+                            .join();
+            var row = table.readPage(0, 1, Cancellation.NONE).join().getFirst();
+            int encoded = com.vibeminer.formats.generated.RowCodec.encode(row).length;
+            var generousRead =
+                    new com.vibeminer.generated.RecordFile.ReadLimits(
+                            256 << 10, 128 << 10, 64 << 10);
+            var exactDecode =
+                    new com.vibeminer.formats.generated.RowCodec.DecodeLimits(encoded, 2, 1, 4);
+            assertEquals(
+                    List.of(row),
+                    table.readPage(0, 1, generousRead, exactDecode, Cancellation.NONE).join());
+            for (boolean decodeRestricts : List.of(false, true)) {
+                var read =
+                        decodeRestricts
+                                ? generousRead
+                                : new com.vibeminer.generated.RecordFile.ReadLimits(
+                                        256 << 10, 128 << 10, encoded - 1);
+                var decode =
+                        decodeRestricts
+                                ? new com.vibeminer.formats.generated.RowCodec.DecodeLimits(
+                                        encoded - 1, 2, 1, 4)
+                                : exactDecode;
+                var error =
+                        assertThrows(
+                                java.util.concurrent.CompletionException.class,
+                                () -> table.readPage(0, 1, read, decode, Cancellation.NONE).join());
+                assertTrue(
+                        error.getCause()
+                                instanceof com.vibeminer.generated.GeneratedStoreException);
+                assertEquals(
+                        com.vibeminer.generated.GeneratedTypes.LIMIT,
+                        ((com.vibeminer.generated.GeneratedStoreException) error.getCause())
+                                .code());
+                assertEquals(List.of(row), table.readPage(0, 1, Cancellation.NONE).join());
+                assertEquals(
+                        before,
+                        fixture.writable
+                                .savedArtifacts(
+                                        fixture.source, TactKeyStatus.NONE, Cancellation.NONE)
+                                .join());
+            }
+        }
+    }
+
+    @Test
+    void boundedDefaultForCustomCapturesRefusesWithoutCallingLegacyReader() {
+        var calls = new AtomicInteger();
+        CapturedRows custom =
+                new CapturedRows() {
+                    public CapturedRowsTypes.Receipt receipt() {
+                        throw new AssertionError("No receipt access needed");
+                    }
+
+                    public CompletableFuture<CapturedRowsTypes.Page> readOrdinalPage(
+                            long first, int count, Cancellation token) {
+                        calls.incrementAndGet();
+                        throw new AssertionError("No silent unbounded fallback");
+                    }
+
+                    public CompletableFuture<Void> closeAsync() {
+                        return CompletableFuture.completedFuture(null);
+                    }
+                };
+        try (custom) {
+            var error =
+                    assertThrows(
+                            java.util.concurrent.CompletionException.class,
+                            () -> custom.readOrdinalPage(0, 1, strict(), Cancellation.NONE).join());
+            assertTrue(error.getCause() instanceof UnsupportedOperationException);
+            assertEquals(0, calls.get());
+        }
+    }
+
+    @Test
+    void boundedReadCancellationAndCloseDrainHeldLowerReadWithoutChangingIdentity()
+            throws Exception {
+        var fixture =
+                new Fixture(
+                        true,
+                        false,
+                        false,
+                        "before",
+                        null,
+                        true,
+                        Db2Fixture.definition(
+                                "int ID\nint Value", "$id,noninline$ID<u32>\nValue<u32>"),
+                        Db2Fixture.numeric("WDC5", 0, 32, 9, new long[0], true));
+        try (var tables = fixture.open();
+                var rows = tables.capturePreparedLocal(REF, Cancellation.NONE).join().rows()) {
+            var receipt = rows.receipt();
+            var canceled = new Cancellation();
+            canceled.cancel();
+            assertEquals(
+                    CapturedRowsTypes.ReadState.CANCELED,
+                    rows.readOrdinalPage(0, 1, strict(), canceled).join().state());
+            assertEquals(
+                    CapturedRowsTypes.ReadState.READ,
+                    rows.readOrdinalPage(0, 1, strict(), Cancellation.NONE).join().state());
+            fixture.delay.set(true);
+            var pending = rows.readOrdinalPage(0, 1, strict(), Cancellation.NONE);
+            assertTrue(fixture.reading.await(2, TimeUnit.SECONDS));
+            var closed = rows.closeAsync();
+            assertFalse(closed.isDone(), "Close waits for actual lower owner drain");
+            fixture.release.complete(null);
+            assertEquals(
+                    CapturedRowsTypes.ReadState.CANCELED, pending.get(2, TimeUnit.SECONDS).state());
+            closed.get(2, TimeUnit.SECONDS);
+            assertEquals(
+                    CapturedRowsTypes.ReadState.CLOSED,
+                    rows.readOrdinalPage(0, 1, strict(), Cancellation.NONE).join().state());
+            assertEquals(receipt, rows.receipt());
+        }
+    }
+
+    private static CapturedRowsTypes.ReadLimits strict() {
+        return limits(-1, 0);
+    }
+
+    private static CapturedRowsTypes.ReadLimits limits(int dimension, int maximum) {
+        int[] values = {256 << 10, 128 << 10, 64 << 10, 128, 128, 64 << 10};
+        if (dimension >= 0) {
+            values[dimension] = maximum;
+        }
+        return new CapturedRowsTypes.ReadLimits(
+                values[0], values[1], values[2], values[3], values[4], values[5]);
+    }
+
+    private static int minimumPassing(CapturedRows rows, int dimension) {
+        int low = 1,
+                high =
+                        switch (dimension) {
+                            case 0 -> 256 << 10;
+                            case 1 -> 128 << 10;
+                            case 2, 5 -> 64 << 10;
+                            default -> 128;
+                        };
+        while (low < high) {
+            int middle = low + (high - low) / 2;
+            var page =
+                    rows.readOrdinalPage(0, 1, limits(dimension, middle), Cancellation.NONE).join();
+            if (page.state() == CapturedRowsTypes.ReadState.READ) {
+                high = middle;
+            } else {
+                assertEquals(CapturedRowsTypes.ReadState.LIMIT_EXCEEDED, page.state());
+                low = middle + 1;
+            }
+        }
+        return low;
+    }
+
+    private static void assertLimitPage(
+            CapturedRowsTypes.Receipt receipt, CapturedRowsTypes.Page page) {
+        assertEquals(CapturedRowsTypes.ReadState.LIMIT_EXCEEDED, page.state());
+        assertEquals("CAPTURE_READ_LIMIT", page.code());
+        assertEquals(receipt.graphIdentity(), page.identity());
+        assertTrue(page.rows().isEmpty());
+        assertTrue(page.cellIssues().isEmpty());
+        assertNull(page.nextOrdinal());
+    }
+
+    @Test
     void auditedReaderStoreReopenCaptureNormalizesOnlyCertifiedRowsIncludingCopies() {
         var fixture =
                 new Fixture(
