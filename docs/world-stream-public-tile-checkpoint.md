@@ -129,3 +129,19 @@ then removes via next COMMIT or retries cancellation after a rejection. Three de
 fixtures cover exclusion preserving an old table/new credit, wrong ack and forbidden remix,
 commit rejection and pending cancel non-mutation, and empty-table resolution retaining the actual
 input deletion barrier. Public commit/frame methods are still the next implementation milestone.
+
+## Offer/cancel publication transaction
+
+Final stop decision, private OwnedPacket metadata claim, State.offer and OFFER enqueue are one
+Session metadata transaction against public cancel. Cancellation cannot set cancelRequested in
+between or enqueue CANCEL ahead of its OFFER. If cancellation wins, actual unadvertised cleanup
+happens outside the session lock, then UNUSED is published after real retirement. Packet ownership
+uses a private monitor rather than the publicly exposed packet object's monitor; metadata methods
+under the session lock invoke no IO or user callback. STAGED received after per-tile stop drains
+protocol metadata but does not publish a new positive Resident result.
+
+The independent boundary fixture holds final ownership metadata, races cancellation, then releases.
+It supports both the old exposed packet monitor and the new private monitor, waits for the actual
+producer ownership stack and an actual cancel boundary, and requires clean child protocol/file
+cleanup with OFFER preceding CANCEL. Frozen565 fails this fixture with `Offer publication`; the
+atomic implementation passes. Full module/native authored tile proof also passes in isolation.

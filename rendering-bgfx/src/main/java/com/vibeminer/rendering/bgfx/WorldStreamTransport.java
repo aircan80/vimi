@@ -130,6 +130,7 @@ public final class WorldStreamTransport {
 
     /** Only producer/fixed-writer lanes receive this unadvertised owner; close is off JavaFX. */
     public static final class OwnedPacket implements AutoCloseable {
+        private final Object ownershipLock = new Object();
         private WorldStreamPacketFile.Moved moved;
         private final int outcome, coverage;
 
@@ -143,22 +144,33 @@ public final class WorldStreamTransport {
             this.coverage = coverage;
         }
 
-        private synchronized WorldStreamPacketFile.Moved claim(
-                Object identity, WorldStreamTileFile.Expected expected) {
-            if (moved == null
-                    || moved.destinationIdentity() != identity
-                    || !moved.expected().equals(expected)) {
-                throw new IllegalStateException("Foreign or already transferred packet");
+        private WorldStreamTileFile.Expected expected() {
+            synchronized (ownershipLock) {
+                if (moved == null) {
+                    throw new IllegalStateException("Packet already transferred or closed");
+                }
+                return moved.expected();
             }
-            var value = moved;
-            moved = null;
-            return value;
+        }
+
+        private WorldStreamPacketFile.Moved claim(
+                Object identity, WorldStreamTileFile.Expected expected) {
+            synchronized (ownershipLock) {
+                if (moved == null
+                        || moved.destinationIdentity() != identity
+                        || !moved.expected().equals(expected)) {
+                    throw new IllegalStateException("Foreign or already transferred packet");
+                }
+                var value = moved;
+                moved = null;
+                return value;
+            }
         }
 
         @Override
         public void close() {
             WorldStreamPacketFile.Moved value;
-            synchronized (this) {
+            synchronized (ownershipLock) {
                 value = moved;
                 moved = null;
             }
@@ -688,9 +700,11 @@ public final class WorldStreamTransport {
                     }
                     state.retireTileFile(reservation.ticket);
                     capacityChanged();
-                    var command = state.cancel(reservation.ticket);
-                    if (command != null) {
-                        enqueueCommand(command);
+                    synchronized (lock) {
+                        var command = state.cancel(reservation.ticket);
+                        if (command != null) {
+                            enqueueCommand(command);
+                        }
                     }
                     if (error instanceof PreparationRefusal refusal) {
                         reservation.result.completeExceptionally(refusal);
@@ -700,26 +714,45 @@ public final class WorldStreamTransport {
                     }
                     return;
                 }
-                var expected = packet.moved.expected();
-                if (!expected.nonce().equals(descriptor.nonce())
-                        || !expected.scope().equals(descriptor.scope())
-                        || expected.transaction() != reservation.ticket.transaction
-                        || !expected.lease().equals(reservation.ticket.lease)) {
-                    throw new IOException("Foreign finalized packet identity");
-                }
-                var moved = packet.claim(destination.identity, expected);
+                boolean published = false;
                 synchronized (lock) {
-                    input = moved;
+                    if (!reservation.stop && !closing && !owner.stopping()) {
+                        var expected = packet.expected();
+                        if (!expected.nonce().equals(descriptor.nonce())
+                                || !expected.scope().equals(descriptor.scope())
+                                || expected.transaction() != reservation.ticket.transaction
+                                || !expected.lease().equals(reservation.ticket.lease)) {
+                            throw new IOException("Foreign finalized packet identity");
+                        }
+                        input = packet.claim(destination.identity, expected);
+                        var command =
+                                state.offer(
+                                        reservation.ticket,
+                                        expected.length(),
+                                        expected.sha256(),
+                                        packet.outcome,
+                                        packet.coverage);
+                        enqueueCommand(command);
+                        packet = null;
+                        published = true;
+                    }
                 }
-                var command =
-                        state.offer(
-                                reservation.ticket,
-                                expected.length(),
-                                expected.sha256(),
-                                packet.outcome,
-                                packet.coverage);
-                packet = null;
-                enqueueCommand(command);
+                if (!published) {
+                    packet.close();
+                    packet = null;
+                    state.retireTileFile(reservation.ticket);
+                    capacityChanged();
+                    synchronized (lock) {
+                        var command = state.cancel(reservation.ticket);
+                        if (command != null) {
+                            enqueueCommand(command);
+                        }
+                    }
+                    reservation.result.completeExceptionally(
+                            new java.util.concurrent.CancellationException(
+                                    "Tile stopped before offer"));
+                }
+
             } catch (Throwable failed) {
                 if (packet != null) {
                     packet.close();
@@ -899,7 +932,7 @@ public final class WorldStreamTransport {
                                 current.offerOutstanding = false;
                                 retireReliable();
                             }
-                            if (!closing && !handle.stopping()) {
+                            if (!closing && !handle.stopping() && !current.stop) {
                                 current.result.complete(new Resident(current.ticket.resident));
                             } else {
                                 current.result.completeExceptionally(
