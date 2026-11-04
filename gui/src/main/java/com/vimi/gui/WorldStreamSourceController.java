@@ -9,6 +9,7 @@ import com.vibeminer.concepts.world.WorldTerrainTextureSource;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.rendering.bgfx.WorldStreamTransport;
 import com.vibeminer.rendering.world.TerrainCamera;
+import com.vibeminer.rendering.world.TerrainGround;
 
 import java.lang.ref.WeakReference;
 import java.nio.IntBuffer;
@@ -189,6 +190,10 @@ final class WorldStreamSourceController {
     private final IdentityHashMap<WorldStreamTransport.Resident, Entry> entries =
             new IdentityHashMap<>();
     private List<Entry> current = List.of(), presented = List.of(), committing = List.of();
+    // Worker-owned compact heights of current residents; FX reads only the immutable aggregate.
+    private final IdentityHashMap<Entry, Optional<TerrainGround.Tile>> heights =
+            new IdentityHashMap<>();
+    private volatile TerrainGround ground = TerrainGround.empty();
     private CompletableFuture<WorldStreamTransport.CommitReceipt> commit;
     private WorldStreamTransport.CommitReceipt currentReceipt, acceptedReceipt;
     private Entry staged;
@@ -275,6 +280,11 @@ final class WorldStreamSourceController {
         synchronized (lock) {
             return snapshot;
         }
+    }
+
+    /** Rendered-surface heights of the current resident tiles; never source or payload handles. */
+    TerrainGround ground() {
+        return closing ? TerrainGround.empty() : ground;
     }
 
     Optional<Presentation> takePresentation() {
@@ -852,7 +862,28 @@ final class WorldStreamSourceController {
         changed();
     }
 
+    private void updateGround() {
+        var live = java.util.Collections.newSetFromMap(new IdentityHashMap<Entry, Boolean>());
+        live.addAll(current);
+        heights.keySet().retainAll(live);
+        var tiles = new ArrayList<TerrainGround.Tile>();
+        for (var entry : current) {
+            var known = heights.get(entry);
+            if (known == null) {
+                // Current residents are never retired here; borrow failures surface like updateArea.
+                TerrainGround.Tile[] built = {null};
+                entry.source().withPayload(
+                        borrow -> built[0] = TerrainGround.Tile.of(borrow.geometry()));
+                known = Optional.ofNullable(built[0]);
+                heights.put(entry, known);
+            }
+            known.ifPresent(tiles::add);
+        }
+        ground = TerrainGround.of(tiles);
+    }
+
     private void updateArea() {
+        updateGround();
         var latest = camera;
         if (latest == null) return;
         long[] selected = {0};
