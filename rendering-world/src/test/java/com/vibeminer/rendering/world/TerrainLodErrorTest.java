@@ -232,6 +232,13 @@ class TerrainLodErrorTest {
                 IllegalArgumentException.class, () -> CheckedLeafPlan.create(source, 1, 0, 2, 0));
         assertThrows(
                 IllegalArgumentException.class, () -> CheckedLeafPlan.create(source, 0, 0, 1, 1));
-        assertThrows(IllegalArgumentException.class, () -> new ErrorWork(100_000_001, 1));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new ErrorWork(ErrorWork.MAX_ARITHMETIC + 1, 1));
+        assertThrows(
+                IllegalArgumentException.class, () -> new ErrorWork(1, ErrorWork.MAX_PLANES + 1));
+        var ceiling = new ErrorWork(ErrorWork.MAX_ARITHMETIC, ErrorWork.MAX_PLANES);
+        assertEquals(0, ceiling.arithmeticUsed());
+        assertEquals(0, ceiling.planesUsed());
     }
 }

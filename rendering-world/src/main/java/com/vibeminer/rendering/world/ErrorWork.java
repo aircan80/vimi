@@ -2,6 +2,8 @@ package com.vibeminer.rendering.world;
 
 /** One caller-owned shared work allowance; not thread safe and not a shipping distance policy. */
 public final class ErrorWork {
+    public static final long MAX_ARITHMETIC = 100_000_000;
+    public static final long MAX_PLANES = 16_000_000;
     private final long arithmeticLimit, planeLimit;
     private long arithmetic, planes;
     final float[] coordinates;
@@ -10,9 +12,9 @@ public final class ErrorWork {
 
     public ErrorWork(long arithmeticLimit, long planeLimit) {
         if (arithmeticLimit < 1
-                || arithmeticLimit > 100_000_000
+                || arithmeticLimit > MAX_ARITHMETIC
                 || planeLimit < 1
-                || planeLimit > 1_000_000) {
+                || planeLimit > MAX_PLANES) {
             throw new IllegalArgumentException("Invalid error-oracle work limits");
         }
         this.arithmeticLimit = arithmeticLimit;

@@ -6,7 +6,7 @@ Status: production **math/API only**, pending independent implementation review.
 
 `CheckedLeafPlan.create(TerrainGrid.Chunk,row,column,size,splitMask)` performs only bounded structural checks and constructs at most eight original source-index perimeter references. Size is1/2/4/8, aligned and within the source8×8 cell grid. Split bits TOP/RIGHT/BOTTOM/LEFT insert the existing midpoint on the specified final edge; size1 forbids extra splits. The plan retains its immutable source chunk reference, scalar cell bounds, center and perimeter indices. It does **not** retain145XYZ samples, normalize positions or create an independently trusted source receipt.
 
-`TerrainLodError.evaluate(plan,ErrorWork,canceled)` performs all charged hole/native-topology validation and coordinate extraction. ErrorWork is a caller-owned, single-worker shared allowance and reusable scratch owner. It contains435floats,145indices,32interval doubles and56plane doubles: **3024bytes of primitive payload**, plus bounded object/array headers. Its constructor validates explicit arithmetic/plane limits before scratch allocation. The API hard bounds are100million charged arithmetic/validation groups and1million plane events; these are ceilings, not proposed per-frame/per-scene defaults. Counters accumulate across evaluations, with no implicit reset.
+`TerrainLodError.evaluate(plan,ErrorWork,canceled)` performs all charged hole/native-topology validation and coordinate extraction. ErrorWork is a caller-owned, single-worker shared allowance and reusable scratch owner. It contains435floats,145indices,32interval doubles and56plane doubles: **3024bytes of primitive payload**, plus bounded object/array headers. Its constructor validates explicit arithmetic/plane limits before scratch allocation. The API hard bounds are100million charged arithmetic/validation groups and16million plane events; these are ceilings, not proposed per-frame/per-scene defaults. Counters accumulate across evaluations, with no implicit reset.
 
 Validation/copy groups charge before each source cell/sample; arithmetic helpers charge before each primitive interval operation; coefficient/residual plane events have their own allowance. Cancellation is checked at each charge. Budget exhaustion returns UNRESOLVED with no usable bound; cancellation propagates. Only one bounded scratch set is needed for successive candidates. The future planner must separately bound retained plan count and source/cache/mesh ownership, not build a per-node object graph under this math API.
 
@@ -31,3 +31,15 @@ Java floating arithmetic is strict; float constants convert exactly to double. E
 The full8×8 flat-source example charges eight coefficient planes plus8×145 residual events; this is an authored count, not a latency claim. Work refusal is honest even if more arithmetic could have succeeded. No actual-source acceptance rate, 7×7 coverage or preparation speed has been measured, and no numeric consumer budget or0/1/4/16 ring policy is approved by these tests.
 
 Remaining gates: independently review interval implementation; benchmark bounded full source grids/refinement; choose work/fidelity policy; integrate source-index topology without retained-node growth; distinguish existing cross-chunk float gaps from new LOD cracks; preflight unchanged geometry/batch/IPC limits; preserve smooth scene replacement; then prove real CPU/native frames. Current scene rendering remains unchanged.
+
+## Unshipped work-ceiling correction and full schedule diagnostic
+
+The initial1million plane-event hard ceiling could not admit even an ideal flat7×7 ring schedule. The corrected API ceiling is16million plane events; the100million arithmetic-group ceiling stays unchanged. Neither ceiling selects a UI/default work allowance, changes geometry caps or promises that rough/refined candidates complete.
+
+An explicit non-CI diagnostic, `TerrainLodErrorScheduleProof`, evaluates49tile slots ×256MCNK slots with ring spacings1/2/4/8, no holes and splitMask0, reusing one source-free flat native grid and one scratch owner. All71680leaves complete with **8175616plane events and63338496arithmetic groups**. The independent ring arithmetic is center256×64, ring1=8×256×16, ring2=16×256×4, ring3=24×256. No geometry output or source I/O is allocated. The observed local diagnostic elapsed time was2302.21ms; it is not a game-source benchmark, latency acceptance, planner runtime or shipping policy. Stitching, nonflat refinement, source work and cancellation can cost more and remain separately gated.
+
+After compiling test classes, run explicitly from repository root:
+
+```sh
+java -cp rendering-world/build/classes/java/test:rendering-world/build/classes/java/main:formats-world/build/classes/java/main com.vibeminer.rendering.world.TerrainLodErrorScheduleProof
+```
