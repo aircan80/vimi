@@ -1,5 +1,45 @@
 # vimi development handoff
 
+## Current Linux continuation — alpha.18 integration
+
+Latest published release remains alpha.17 at c70e88d; its frozen launcher is
+`.local/apps/preview-c70e88d/bin/vimi-gui-prototype`. No alpha.18 tag exists yet.
+This section supersedes older progress statements below.
+
+Active worktree `/tmp/vimi-world-appearance-integration`, branch
+`feature/world-appearance-integration`, draft PR150 now includes GPU/CPU BASIC
+terrain atlases, atomic geometry/material publication, zone/subzone labels,
+wheel zoom (Shift+wheel changes speed), X descent, heading-up minimap option,
+shared HTTP activity indicator, Talent Source details and item286556 token
+resolution. Original source text and uncertain/missing source causes remain visible.
+Game-derived assets and proof images stay private outside Git.
+
+Atomic bundle correction595ecea (author a11368c) has independent architecture
+approval and focused FX/loader acceptance. Canceled CPU borrows retire before
+another material candidate is admitted; queued CPU deliveries retain pixels and
+primitive epochs only. Network indicator has independent approval and corrected
+actual-header/minimize/disposal acceptance70117bd. Combined root check/assemble
+and World/network/Talent FX gate is running; do not treat it as passed yet.
+
+This still uses one cold native renderer handoff per changed neighborhood.
+Initial display waits for geometry and a terminal material result together;
+unsupported/failed material sources retain explicit partial/height fallback.
+Current3×3 window and memory limits remain. No game-like zero-stutter claim.
+
+Persistent GPU streaming is a separate test-only spike, branch
+`spike/world-persistent-gpu`, worktree `/tmp/vimi-world-persistent-gpu-spike`.
+Fixed ten slots, incremental uploads/callback ownership and camera frames during
+uploads have authored Vulkan proof. Windows shader artifact41755619629 has been
+imported with six other blobs and inputs byte-identical; all four profiles verify.
+Independent large-coordinate/UV/depth precision acceptance is underway. No hot
+production protocol or renderer integration is delivered. Maps is design-only;
+larger view distance, buildings/doodads, water and verified HD/SD mapping remain.
+
+Before publication: finish combined/native gates, commit accurate release notes,
+update PR150, pass hosted checks, then FF main and tag the next unused prerelease.
+Never overwrite published tags or frozen applications. Continue parallel agents.
+
+
 ## Terrain texture integration checkpoint after alpha.17
 
 Draft PR150 / `/tmp/vimi-world-appearance-integration` now contains independently
