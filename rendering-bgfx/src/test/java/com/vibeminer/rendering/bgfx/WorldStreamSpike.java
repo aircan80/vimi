@@ -770,7 +770,9 @@ public final class WorldStreamSpike {
                 int spill = Short.toUnsignedInt(bgfx_get_stats().numVertexBuffers());
                 require(spill == ten + 1, "Small spill exceeds all ten near4MiB capacities");
                 System.out.println(
-                        "WORLD_DYNAMIC_ALLOCATION_PASS before="
+                        "WORLD_DYNAMIC_ALLOCATION_PASS requestedFrameLatency="
+                                + Integer.getInteger("vimi.worldStreamSpike.frameLatency", 0)
+                                + " before="
                                 + before
                                 + " full10="
                                 + ten
@@ -812,7 +814,15 @@ public final class WorldStreamSpike {
             var init = BGFXInit.calloc(stack);
             bgfx_init_ctor(init);
             init.type(BGFX_RENDERER_TYPE_VULKAN).fallback(false);
-            init.resolution().width(0).height(0).reset(BGFX_RESET_NONE);
+            int latency = Integer.getInteger("vimi.worldStreamSpike.frameLatency", 0);
+            if (latency < 0 || latency > 3) {
+                throw new IllegalArgumentException("Frame latency outside test range0..3");
+            }
+            init.resolution()
+                    .width(0)
+                    .height(0)
+                    .reset(BGFX_RESET_NONE)
+                    .maxFrameLatency((byte) latency);
             BGFXPlatform.bgfx_render_frame(0);
             if (!bgfx_init(init)) {
                 throw new IOException("Headless Vulkan unavailable");

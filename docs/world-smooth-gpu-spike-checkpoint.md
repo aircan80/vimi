@@ -56,6 +56,25 @@ Pinned implementation references:
 - [Default staging and frame-latency configuration](https://github.com/LWJGL-CI/bgfx/blob/780f7bf00a29573473b90dcfab9f92a7d8687702/src/config.h)
 - [Reference-release lifetime contract](https://github.com/LWJGL-CI/bgfx/blob/780f7bf00a29573473b90dcfab9f92a7d8687702/include/bgfx/c99/bgfx.h)
 
+## Runtime frame-latency experiment
+
+The pinned public `Resolution.maxFrameLatency` setting is runtime configurable. The Vulkan
+implementation uses zero as the compiled default (three here); the scratch buffer size itself
+is compile-time. A test-only opt-in leaves the default experiment unchanged:
+
+```sh
+JAVA_TOOL_OPTIONS=-Dvimi.worldStreamSpike.frameLatency=1 ./gradlew :rendering-bgfx:nativeGpuWorldStreamSpike
+```
+
+The same 104-cycle/nine-active/camera-progress/callback experiment passes at latency one.
+Its baseline heap statistic was 54,736,128 bytes, increasing to 96,679,168 bytes for ten maximum
+backings (the same exact 40-MiB delta). Resident rendering reported 108,290,340 bytes. The
+75,497,472-byte reduction versus default is observed context overhead, consistent with fewer
+scratch/uniform resources; it does not change any logical payload cap. Maximum enqueue step
+remained approximately 4.2 ms. This test proves neither lower asynchronous display latency nor
+higher frame rate. Production configuration requires independent review and real readback-ring
+qualification; no production initialization setting is changed here.
+
 ## Remaining gates
 
 Independent authored native acceptance must verify UV, common-rebase, coplanar/source-order,
