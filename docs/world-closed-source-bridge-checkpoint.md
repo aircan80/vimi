@@ -40,3 +40,12 @@ shader verification helper, material identity39cec42, and source final-handoff7e
 WorldStreamTileWriter copy is a compile-only parent-owned dependency until its frozen checkpoint is
 available; this adapter does not claim authorship or approval of that implementation. No FPS or
 end-to-end GUI smoothness claim is made by these source/ownership tests.
+
+The final source lifetime gates use actual `withWrittenResource` callbacks both for MOVE and a
+post-MOVE inert-resource check. Boolean isOpen/isKnown is not typed refusal evidence: sticky source
+cleanup health also makes it false. The actual gate preserves unknown health failure as fatal and
+only private explicit-origin retirement produces SourceInvalidated. Authored negative-only health
+injection before and after MOVE proves the fatal cause survives, no refusal metadata is minted,
+and both unadvertised/moved file plus independent base owners retire. Any bridge cleanup failure
+clears previously captured refusal policy metadata; controller still requires an exact clean
+PreparationRefusal result and correlated reason before using that metadata.
