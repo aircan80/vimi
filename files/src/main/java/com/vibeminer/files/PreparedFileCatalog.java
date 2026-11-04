@@ -126,15 +126,26 @@ public final class PreparedFileCatalog {
                             var writer = new RecordFileWriter(store)) {
                         long count = 0, unknown = 0;
                         long locale = FileLocales.bitOf(identity.locale());
+                        var batch = new Batch(writer, generated.value);
                         for (long id : build.fileDataIds(identity.locale())) {
                             token.check();
-                            var variant =
-                                    BuildFilesHandle.pick(build.resolve(id).variants(), locale);
-                            if (variant == null) {
-                                throw new IllegalStateException(
-                                        "Locale catalog contains an unresolved ID");
+                            byte[] record;
+                            BuildTypes.FileVariant variant;
+                            try {
+                                variant =
+                                        BuildFilesHandle.pick(build.resolve(id).variants(), locale);
+                                if (variant == null) {
+                                    throw new IllegalStateException(
+                                            "Locale catalog contains an unresolved ID");
+                                }
+                                record = encode(variant);
+                            } catch (RuntimeException failure) {
+                                // Earlier records reach the writer first, so its failures win as
+                                // they did when each record was written before the next resolved.
+                                batch.flush();
+                                throw failure;
                             }
-                            writer.add(id, encode(variant), generated.value).join();
+                            batch.add(id, record);
                             count++;
                             if (variant.decodedSize() == null) {
                                 unknown++;
@@ -143,6 +154,7 @@ public final class PreparedFileCatalog {
                                 progress.accept(count, Math.max(total, count));
                             }
                         }
+                        batch.flush();
                         token.check();
                         writer.complete(key(identity), metadata(identity, unknown), generated.value)
                                 .join();
@@ -158,6 +170,38 @@ public final class PreparedFileCatalog {
                 command -> Thread.startVirtualThread(command));
     }
 
+    /** Hands records to the writer in bounded groups, one worker hop per group. */
+    private static final class Batch {
+        static final int RECORDS = 4096;
+        private final RecordFileWriter writer;
+        private final com.vibeminer.generated.Cancellation cancellation;
+        private final long[] ids = new long[RECORDS];
+        private final byte[][] records = new byte[RECORDS][];
+        private int size;
+
+        Batch(RecordFileWriter writer, com.vibeminer.generated.Cancellation cancellation) {
+            this.writer = writer;
+            this.cancellation = cancellation;
+        }
+
+        void add(long id, byte[] record) {
+            ids[size] = id;
+            records[size++] = record;
+            if (size == RECORDS) {
+                flush();
+            }
+        }
+
+        void flush() {
+            if (size > 0) {
+                int n = size;
+                size = 0;
+                writer.addAll(ids, records, n, cancellation).join();
+                Arrays.fill(records, 0, n, null);
+            }
+        }
+    }
+
     public CompletableFuture<List<Entry>> page(
             Catalog catalog, long first, int count, Cancellation token) {
         var generated = new Token(token);
@@ -171,7 +215,7 @@ public final class PreparedFileCatalog {
                 .whenComplete((value, error) -> generated.close());
     }
 
-    private static byte[] encode(BuildTypes.FileVariant variant) {
+    static byte[] encode(BuildTypes.FileVariant variant) {
         try {
             var bytes = new ByteArrayOutputStream();
             try (var out = new DataOutputStream(bytes)) {
@@ -232,7 +276,7 @@ public final class PreparedFileCatalog {
         }
     }
 
-    private static byte[] metadata(Identity identity, long unknown) {
+    static byte[] metadata(Identity identity, long unknown) {
         try {
             var bytes = new ByteArrayOutputStream();
             try (var out = new DataOutputStream(bytes)) {

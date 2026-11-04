@@ -4,6 +4,7 @@ import com.vibeminer.network.CdnKey;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -78,7 +79,11 @@ public final class EncodingTable {
 
     public record Encoded(CdnKey key, long encodedSize, int specIndex) {}
 
-    private record Directory(CdnKey[] firsts, byte[] hashes, int pageBytes, int pagesOffset) {
+    private record Directory(CdnKey[] firsts, int pageBytes, int pagesOffset) {
+        int pageAt(int page) {
+            return pagesOffset + page * pageBytes;
+        }
+
         int pageFor(CdnKey key) {
             int lo = 0, hi = firsts.length;
             while (lo < hi) {
@@ -331,7 +336,7 @@ public final class EncodingTable {
                 throw invalid("Indexed EN page is empty");
             }
         }
-        return new Directory(firsts, hashes, bytes, pagesAt);
+        return new Directory(firsts, bytes, pagesAt);
     }
 
     private static void checkRecord(int records, Limits limits, long[] counts) {
@@ -354,42 +359,35 @@ public final class EncodingTable {
         return key;
     }
 
-    private byte[] page(Directory directory, int p) {
-        byte[] page =
-                FormatSupport.slice(
-                        data,
-                        directory.pagesOffset() + p * directory.pageBytes(),
-                        directory.pageBytes());
-        integrity(FormatSupport.md5(page), FormatSupport.slice(directory.hashes(), p * 16, 16));
-        return page;
-    }
+    // open() verified every page's MD5 and layout against its own private copy of the table, which
+    // nothing mutates afterwards; lookups therefore search the validated bytes in place.
 
     public Content findContent(CdnKey key) {
         int p = content.pageFor(key);
         if (p < 0) {
             return null;
         }
-        byte[] page = page(content, p);
-        for (int at = 0; at < page.length; ) {
-            int n = Byte.toUnsignedInt(page[at]);
+        byte[] wanted = key.bytes();
+        int at = content.pageAt(p), end = at + content.pageBytes();
+        while (at < end) {
+            int n = Byte.toUnsignedInt(data[at]);
             if (n == 0) {
                 return null;
             }
             int width = 22 + 16 * n;
-            if (width > page.length - at) {
+            if (width > end - at) {
                 throw invalid("Validated EN row changed");
             }
-            CdnKey found = FormatSupport.key(page, at + 6);
-            int order = found.compareTo(key);
+            int order = Arrays.compareUnsigned(data, at + 6, at + 22, wanted, 0, 16);
             if (order > 0) {
                 return null;
             }
             if (order == 0) {
                 List<CdnKey> keys = new ArrayList<>(n);
                 for (int i = 0; i < n; i++) {
-                    keys.add(FormatSupport.key(page, at + 22 + i * 16));
+                    keys.add(FormatSupport.key(data, at + 22 + i * 16));
                 }
-                return new Content(key, u40(page, at + 1), keys);
+                return new Content(key, u40(data, at + 1), keys);
             }
             at += width;
         }
@@ -401,46 +399,52 @@ public final class EncodingTable {
         if (p < 0) {
             return null;
         }
-        byte[] page = page(encoded, p);
-        for (int at = 0; page.length - at >= 25; at += 25) {
-            if (FormatSupport.zero(page, at, 16)) {
-                return null;
-            }
-            Encoded row = encodedAt(page, at);
-            int order = row.key().compareTo(key);
-            if (order > 0) {
-                return null;
-            }
-            if (order == 0) {
-                return row;
+        // A validated encoded page is a strictly ascending run of nonzero 25-byte rows followed
+        // only
+        // by zero keys in every remaining row slot, so the first slot that is zero or not below the
+        // key is found by binary search.
+        byte[] wanted = key.bytes();
+        int base = encoded.pageAt(p), lo = 0, hi = encoded.pageBytes() / 25;
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            if (belowKey(base + mid * 25, wanted)) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
             }
         }
-        return null;
+        int at = base + lo * 25;
+        if (lo == encoded.pageBytes() / 25
+                || FormatSupport.zero(data, at, 16)
+                || Arrays.compareUnsigned(data, at, at + 16, wanted, 0, 16) != 0) {
+            return null;
+        }
+        return encodedAt(data, at);
+    }
+
+    private boolean belowKey(int at, byte[] wanted) {
+        return !FormatSupport.zero(data, at, 16)
+                && Arrays.compareUnsigned(data, at, at + 16, wanted, 0, 16) < 0;
     }
 
     public Iterable<Encoded> encodedRows() {
         return () ->
                 new Iterator<>() {
-                    private int p, at;
-                    private byte[] page;
+                    private int p, at, end;
                     private Encoded next = advance();
 
                     private Encoded advance() {
                         while (true) {
-                            if (page == null
-                                    || at + 25 > page.length
-                                    || FormatSupport.zero(page, at, 16)) {
-                                if (p == encoded.firsts().length) {
-                                    return null;
-                                }
-                                page = page(encoded, p++);
-                                at = 0;
-                            }
-                            if (at + 25 <= page.length && !FormatSupport.zero(page, at, 16)) {
-                                Encoded row = encodedAt(page, at);
+                            if (end - at >= 25 && !FormatSupport.zero(data, at, 16)) {
+                                Encoded row = encodedAt(data, at);
                                 at += 25;
                                 return row;
                             }
+                            if (p == encoded.firsts().length) {
+                                return null;
+                            }
+                            at = encoded.pageAt(p++);
+                            end = at + encoded.pageBytes();
                         }
                     }
 
