@@ -589,8 +589,8 @@ public final class WorldStreamTransport {
                             statusesDrained();
                         }
                     });
-            stderrAttached = true;
             handle.runWorker("stderr", () -> drainErrors(process));
+            stderrAttached = true;
             handle.runWorker("producer-files", () -> files(handle));
             handle.runWorker("frames", () -> pollFrames(handle));
             handle.runWorker(

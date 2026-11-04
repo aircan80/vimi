@@ -122,9 +122,9 @@ final class WorldDiagnostics {
             }
             String message = trusted(chosen) ? chosen.getMessage() : null;
             return cap(message == null || message.isBlank()
-                    ? chosen.getClass().getSimpleName() : clean(message), MAX_BRIEF_CHARS);
+                    ? name(chosen) : clean(message), MAX_BRIEF_CHARS);
         } catch (Throwable unreadable) {
-            return chosen.getClass().getSimpleName();
+            return name(chosen);
         }
     }
 
@@ -135,6 +135,11 @@ final class WorldDiagnostics {
         } catch (Throwable unreadable) {
             return unreadable;
         }
+    }
+
+    private static String name(Throwable failure) {
+        String simple = failure.getClass().getSimpleName();
+        return simple.isEmpty() ? failure.getClass().getName() : simple;
     }
 
     static <T extends Throwable> T find(Throwable failure, Class<T> type) {
