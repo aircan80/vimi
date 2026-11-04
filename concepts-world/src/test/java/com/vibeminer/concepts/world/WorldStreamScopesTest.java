@@ -35,6 +35,70 @@ final class WorldStreamScopesTest {
             new WorldFormats.Tile(7, 19, 2, 0, 0, 0, 0, 3, 0, 0);
 
     @Test
+    void externalCancellationNeverRunsHeldLowerCallbacksOnCallerAndDrainsBeforeNextJob()
+            throws Exception {
+        var lowerEntered = new CountDownLatch(1);
+        var lowerRelease = new CompletableFuture<Void>();
+        var useEntered = new CountDownLatch(1);
+        var useRelease = new CompletableFuture<Void>();
+        var attached = new java.util.concurrent.atomic.AtomicBoolean();
+        var files =
+                new WorldTerrainTextureSourceTest.Files() {
+                    @Override
+                    FileTypes.FileStat stat(long id, Cancellation token) {
+                        if (id == 2 && attached.compareAndSet(false, true)) {
+                            token.onCancel(
+                                    () -> {
+                                        lowerEntered.countDown();
+                                        lowerRelease.join();
+                                    });
+                        }
+                        return super.stat(id, token);
+                    }
+                };
+        var tables = new Tables(files);
+        var source = new WorldStreamScopes(tables.handle(), files.files());
+        var external = new Cancellation();
+        try {
+            var scope = source.create(REQUEST, Cancellation.NONE);
+            var work =
+                    CompletableFuture.supplyAsync(
+                            () ->
+                                    source.withRecordedTile(
+                                            scope,
+                                            TILE,
+                                            WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                                            external,
+                                            admission -> {
+                                                try (var root =
+                                                        admission.readRecorded(
+                                                                WorldStreamScopes.RecordedInput
+                                                                        .ROOT)) {
+                                                    assertTrue(root.bytes().length > 0);
+                                                }
+                                                useEntered.countDown();
+                                                useRelease.join();
+                                                return (AutoCloseable) () -> {};
+                                            }));
+            assertTrue(useEntered.await(5, TimeUnit.SECONDS));
+            CompletableFuture.runAsync(external::cancel).get(1, TimeUnit.SECONDS);
+            assertTrue(lowerEntered.await(5, TimeUnit.SECONDS));
+            useRelease.complete(null);
+            var drain = source.closeAsync();
+            assertFalse(drain.isDone());
+            assertFalse(work.isDone(), "Source guard includes lower cancellation callback drain");
+            lowerRelease.complete(null);
+            assertThrows(java.util.concurrent.CompletionException.class, work::join);
+            drain.join();
+        } finally {
+            useRelease.complete(null);
+            lowerRelease.complete(null);
+            source.closeAsync().join();
+            tables.close();
+        }
+    }
+
+    @Test
     void derivedCandidatesAreFixedBoundReadsAndNeverMintRenderableEvidence() throws Exception {
         var files = new WorldTerrainTextureSourceTest.Files();
         var tables = new Tables(files);
