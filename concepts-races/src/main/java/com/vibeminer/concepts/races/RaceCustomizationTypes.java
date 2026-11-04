@@ -1,5 +1,6 @@
 package com.vibeminer.concepts.races;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
@@ -18,8 +19,7 @@ public final class RaceCustomizationTypes {
     public record Request(long raceId, long classId, long modelId, List<Pick> picks) {
         public Request {
             context(raceId, classId, modelId);
-            bounded(picks, 16);
-            picks = List.copyOf(picks);
+            picks = snapshot(picks, 16);
             var seen = new HashSet<Long>();
             for (var pick : picks) {
                 if (!seen.add(pick.optionId())) {
@@ -40,8 +40,7 @@ public final class RaceCustomizationTypes {
         public Option {
             RaceCustomizationTypes.id(id, false);
             label = text(label);
-            bounded(choices, 64);
-            choices = List.copyOf(choices);
+            choices = snapshot(choices, 64);
             var seen = new HashSet<Long>();
             for (var choice : choices) {
                 if (!seen.add(choice.id())) {
@@ -65,8 +64,7 @@ public final class RaceCustomizationTypes {
         public Catalog {
             Objects.requireNonNull(state);
             context(raceId, classId, modelId);
-            bounded(options, 16);
-            options = List.copyOf(options);
+            options = snapshot(options, 16);
             int choices = 0;
             var seen = new HashSet<Long>();
             for (var option : options) {
@@ -75,8 +73,7 @@ public final class RaceCustomizationTypes {
                     throw new IllegalArgumentException("Customization catalog exceeds bounds");
                 }
             }
-            bounded(issues, 32);
-            issues = issues.stream().map(RaceCustomizationTypes::text).toList();
+            issues = snapshot(issues, 32).stream().map(RaceCustomizationTypes::text).toList();
             if (message != null) {
                 message = text(message);
             }
@@ -95,11 +92,20 @@ public final class RaceCustomizationTypes {
         }
     }
 
-    private static void bounded(List<?> values, int maximum) {
+    private static <T> List<T> snapshot(List<T> values, int maximum) {
         Objects.requireNonNull(values);
         if (values.size() > maximum) {
             throw new IllegalArgumentException("Customization list exceeds bounds");
         }
+        var copy = new ArrayList<T>();
+        var iterator = values.iterator();
+        while (iterator.hasNext()) {
+            if (copy.size() == maximum) {
+                throw new IllegalArgumentException("Customization list exceeds bounds");
+            }
+            copy.add(Objects.requireNonNull(iterator.next()));
+        }
+        return List.copyOf(copy);
     }
 
     private static String text(String value) {
