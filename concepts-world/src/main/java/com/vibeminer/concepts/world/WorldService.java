@@ -94,8 +94,15 @@ public final class WorldService implements BuildWorld {
     private Catalog catalog;
     private WorldAreaNavigation areaNavigation;
     private WorldPlacementSource placements;
+    private final TerrainAtlasPool atlasPool;
+    private WorldTerrainTextureSource terrainTextures;
 
     public WorldService(BuildTables tables, BuildFiles files) {
+        this(tables, files, null);
+    }
+
+    public WorldService(BuildTables tables, BuildFiles files, TerrainAtlasPool atlasPool) {
+        this.atlasPool = atlasPool;
         this.tables = java.util.Objects.requireNonNull(tables);
         this.files = files;
         this.minimaps = new WorldMinimaps(files);
@@ -497,6 +504,25 @@ public final class WorldService implements BuildWorld {
         return placements.read(map, tile, token);
     }
 
+    @Override
+    public synchronized CompletableFuture<WorldTerrainTextureSource.BatchResult> terrainTextures(
+            MapInfo map,
+            List<WorldFormats.Tile> tiles,
+            Cancellation token,
+            java.util.function.Consumer<WorldTerrainTextureSource.Progress> progress) {
+        if (closing != null) {
+            return CompletableFuture.failedFuture(
+                    new IllegalStateException("World workspace closed"));
+        }
+        if (atlasPool == null || files == null) {
+            return BuildWorld.super.terrainTextures(map, tiles, token, progress);
+        }
+        if (terrainTextures == null) {
+            terrainTextures = new WorldTerrainTextureSource(files, atlasPool);
+        }
+        return terrainTextures.read(map, tiles, token, progress);
+    }
+
     public synchronized CompletableFuture<Void> closeAsync() {
         if (closing != null) {
             return closing.copy();
@@ -513,12 +539,20 @@ public final class WorldService implements BuildWorld {
                 placements == null
                         ? CompletableFuture.<Void>completedFuture(null)
                         : placements.closeAsync();
+        var texturesClosed =
+                terrainTextures == null
+                        ? CompletableFuture.<Void>completedFuture(null)
+                        : terrainTextures.closeAsync();
         Thread.startVirtualThread(
                 () -> {
                     try {
                         while (!worker.awaitTermination(1, TimeUnit.SECONDS)) {}
                         try {
-                            CompletableFuture.allOf(areasClosed, minimapsClosed, placementsClosed)
+                            CompletableFuture.allOf(
+                                            areasClosed,
+                                            minimapsClosed,
+                                            placementsClosed,
+                                            texturesClosed)
                                     .join();
                         } finally {
                             cache.clear();

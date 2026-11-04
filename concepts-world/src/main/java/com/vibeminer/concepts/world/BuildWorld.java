@@ -48,6 +48,17 @@ public interface BuildWorld extends AutoCloseable {
                 WorldPlacementSource.Result.unavailable("World object metadata is unsupported"));
     }
 
+    /** Optional recorded basic-coverage texture batch; caller closes the owned result. */
+    default CompletableFuture<WorldTerrainTextureSource.BatchResult> terrainTextures(
+            WorldService.MapInfo map,
+            java.util.List<WorldFormats.Tile> tiles,
+            Cancellation token,
+            java.util.function.Consumer<WorldTerrainTextureSource.Progress> progress) {
+        token.check();
+        return CompletableFuture.completedFuture(
+                WorldTerrainTextureSource.BatchResult.unsupported(tiles));
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override

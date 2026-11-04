@@ -18,13 +18,15 @@ public final class TerrainAtlasPool {
             int cachedEntries,
             int leaseClaims,
             int borrowPins,
-            long chargedBytes) {}
+            long chargedBytes,
+            long receiptMetadataBytes) {}
 
     private static final class Entry {
         final int slot;
         boolean reserved = true, cached;
         int claims, borrows;
         TerrainTileAtlas atlas;
+        WorldTerrainTextureSource.Receipt receipt;
 
         Entry(int slot) {
             this.slot = slot;
@@ -97,6 +99,13 @@ public final class TerrainAtlasPool {
         }
 
         Lease publish(TerrainTileAtlas atlas, String completeCacheKey) {
+            return publish(atlas, completeCacheKey, null);
+        }
+
+        Lease publish(
+                TerrainTileAtlas atlas,
+                String completeCacheKey,
+                WorldTerrainTextureSource.Receipt receipt) {
             Objects.requireNonNull(atlas);
             if (atlas.retainedBytes() > ENTRY_BYTES
                     || atlas.supportedChunks() == 0
@@ -114,6 +123,7 @@ public final class TerrainAtlasPool {
                 }
                 Entry published = entry;
                 published.atlas = atlas;
+                published.receipt = receipt;
                 published.reserved = false;
                 if (completeCacheKey != null) {
                     cache.put(completeCacheKey, published);
@@ -141,6 +151,35 @@ public final class TerrainAtlasPool {
     private final LinkedHashMap<String, Entry> cache = new LinkedHashMap<>(MAX_ENTRIES, .75f, true);
     private CompletableFuture<Void> closing;
     private boolean closeCompletionStarted;
+    private boolean workDrained = true;
+    private Throwable workFailure;
+    private TerrainTextureTasks tasks;
+
+    record Cached(Lease lease, WorldTerrainTextureSource.Receipt receipt) {}
+
+    synchronized boolean isClosing() {
+        return closing != null;
+    }
+
+    synchronized TerrainTextureTasks tasks() {
+        requireOpen();
+        if (tasks == null) {
+            tasks = new TerrainTextureTasks();
+            workDrained = false;
+        }
+        return tasks;
+    }
+
+    synchronized Optional<Cached> cachedReceipt(String key) {
+        requireOpen();
+        if (!validKey(key)) {
+            throw new IllegalArgumentException("Invalid atlas cache key");
+        }
+        Entry hit = cache.get(key);
+        return hit == null || hit.receipt == null
+                ? Optional.empty()
+                : Optional.of(new Cached(new Lease(this, hit), hit.receipt));
+    }
 
     public TerrainAtlasPool() {}
 
@@ -180,21 +219,31 @@ public final class TerrainAtlasPool {
 
     public synchronized Stats stats() {
         int entries = 0, reserved = 0, claims = 0, borrows = 0;
+        long metadata = 0;
         for (Entry entry : slots) {
             if (entry != null) {
                 entries++;
                 reserved += entry.reserved ? 1 : 0;
                 claims += entry.claims;
                 borrows += entry.borrows;
+                if (entry.receipt != null) {
+                    metadata += entry.receipt.metadataBytes();
+                }
             }
         }
-        return new Stats(entries, reserved, cache.size(), claims, borrows, entries * ENTRY_BYTES);
+        return new Stats(
+                entries, reserved, cache.size(), claims, borrows, entries * ENTRY_BYTES, metadata);
     }
 
-    public synchronized CompletableFuture<Void> closeAsync() {
-        if (closing == null) {
+    public CompletableFuture<Void> closeAsync() {
+        TerrainTextureTasks retiring;
+        CompletableFuture<Void> result;
+        synchronized (this) {
+            if (closing != null) {
+                return closing.copy();
+            }
             closing = new CompletableFuture<>();
-            // The cache owns entries, never BuildFiles, source instances or source-owner sets.
+            retiring = tasks;
             var retired = cache.values().toArray(Entry[]::new);
             cache.clear();
             for (Entry entry : retired) {
@@ -202,8 +251,21 @@ public final class TerrainAtlasPool {
                 releaseIfUnused(entry);
             }
             finishCloseIfDrained();
+            result = closing.copy();
         }
-        return closing.copy();
+        // Never acquire the scheduler lock while holding the pool lock.
+        if (retiring != null) {
+            retiring.closeAsync()
+                    .whenComplete(
+                            (unused, failure) -> {
+                                synchronized (TerrainAtlasPool.this) {
+                                    workDrained = true;
+                                    workFailure = failure;
+                                    finishCloseIfDrained();
+                                }
+                            });
+        }
+        return result;
     }
 
     private void requireOpen() {
@@ -225,15 +287,26 @@ public final class TerrainAtlasPool {
         if (!entry.reserved && !entry.cached && entry.claims == 0 && entry.borrows == 0) {
             slots[entry.slot] = null;
             entry.atlas = null;
+            entry.receipt = null;
         }
         finishCloseIfDrained();
     }
 
     private void finishCloseIfDrained() {
-        if (closing != null && !closeCompletionStarted && freeCount() == MAX_ENTRIES) {
+        if (closing != null
+                && workDrained
+                && !closeCompletionStarted
+                && freeCount() == MAX_ENTRIES) {
             closeCompletionStarted = true;
             // Never execute caller completion code under the pool lock or on a lease closer.
-            Thread.startVirtualThread(() -> closing.complete(null));
+            Thread.startVirtualThread(
+                    () -> {
+                        if (workFailure == null) {
+                            closing.complete(null);
+                        } else {
+                            closing.completeExceptionally(workFailure);
+                        }
+                    });
         }
     }
 
