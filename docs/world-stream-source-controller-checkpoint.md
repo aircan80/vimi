@@ -203,3 +203,10 @@ GPU checkbox integration is owned by root and uses actual drain before legacy CP
 checkpoint does not claim UI integration, actual movement smoothness, or software pixels over an
 active GPU session. Unknown/source cleanup/actual-owner failures remain conservatively exceptional
 on close; exact clean close-induced cancellation and clean logical capability refusal do not.
+
+Camera publication follow-up serializes initial Session publication/forward and every later camera
+forward under the same short controller metadata gate. Actual final Session.camera performs only
+metadata updates and no IO/callback. A causal test holds the real parent's metadata monitor while
+initial revision1 enters; a simulated FX revision2 must remain behind the controller gate, then the
+actual accepted first frame belongs to revision2. An old initial camera can never follow a newer FX
+camera and trigger the parent's monotonicity failure.
