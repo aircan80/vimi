@@ -94,3 +94,55 @@ metadata; it ends only at accepted presentation or explicit terminal outcome.
    union pressure, no height flash, untaken/MOVED cleanup, stale frames and hide/close drain.
 4. Root integration then traverses real Map0 in the same child, measuring source/upload/presentation
    latency. No source-only test claims FPS or completed game-like smoothness.
+
+## Frozen view-facing API shape
+
+The concrete class is `WorldStreamSourceController` (package-private GUI). Root may wire this shape
+while implementation remains isolated:
+
+```java
+record Request(long viewGeneration, BuildWorld world, WorldService.MapInfo map,
+    WorldService.Inventory inventory, WorldFormats.Tile origin,
+    WorldFormats.AreaPoint areaPoint, WorldCurrentArea.Index areaIndex) {}
+interface GpuStarter { GpuOwner start(String qualifiedScopeSha256); }
+interface GpuOwner {
+    CompletableFuture<WorldStreamTransport.Session> session();
+    CompletableFuture<Void> closeAsync();
+}
+interface Events { void changed(); }
+// Controller owns worker and source acquisition; fxPost is Platform::runLater in production.
+WorldStreamSourceController(Request request, GpuStarter gpu, Events events,
+    Consumer<Runnable> fxPost);
+void camera(WorldStreamTransport.Camera camera);
+void neighborhood(List<WorldFormats.Tile> ordered); // unique, <=9
+void pulse();
+void software(boolean enabled);
+Snapshot snapshot();
+Optional<Presentation> takePresentation();
+boolean mayPresent(Presentation frame);
+boolean presented(Presentation frame); // only after actual successful pixel upload
+void discard(Presentation frame);
+CompletableFuture<Void> closeAsync();
+```
+
+`Snapshot` contains phase/detail, prepared/desired counts, nullable `Seed(camera,originX,originY,bounds)`
+and `WorldCurrentArea.Result`. `Presentation` is opaque/private-constructed and exposes sequence,
+cameraRevision, policy, width/height and readonly detached pixels, never source handles. Frames are
+pulled from a coalesced mailbox on FX; no per-frame queued runnable captures payload owners. At most
+one presentation is borrowed by FX; actor does not take another parent frame until ack/discard.
+
+`Request.world` and Index are borrowed references; source creation/Scope qualification run only on
+the controller worker. Initial selected tile fully qualifies before any seed is derived. Original
+Inventory is bounded to 4096 comparisons and reused; the controller does not acquire a second
+inventory or copy its tile/Map graph. A controller's small membership/descriptors/control ledger
+is separate from the existing source receipt reserve. New view requests close the old controller;
+no legacy LoadedTile acquisition pipeline runs in parallel.
+
+GpuOwner.closeAsync returns the actual application request-owner drain (`CF<Void>`), including a
+request canceled while queued before a Session exists. Session's actual transport drain remains
+separate; no fake no-child DrainReceipt is constructed. An await-session future must fail when a
+request ends without opening. Request completion/failure alone never releases that owner.
+
+The pure area adapter is `WorldCurrentArea.resolve(mapId,recordedAreaId,Index)` from a512700. Controller
+scans checked AreaChunk coverage inside off-FX payload borrows and passes only the actual recorded
+scalar area ID to this helper; root minimap continues using Inventory, seeded origin and camera.
