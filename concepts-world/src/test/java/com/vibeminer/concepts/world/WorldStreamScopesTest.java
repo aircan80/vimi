@@ -3146,7 +3146,7 @@ final class WorldStreamScopesTest {
                 r.issueChannelEvidence());
     }
 
-    private static final class Tables {
+    static final class Tables {
         final WorldTerrainTextureSourceTest.Files files;
         final AtomicInteger pages = new AtomicInteger(),
                 captures = new AtomicInteger(),
