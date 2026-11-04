@@ -26,6 +26,30 @@ class WorldStreamProducerCancellationTest {
     @TempDir Path directory;
 
     @Test
+    void callbackMessageTrapCannotRetireAsSuccessOrPermitAnotherProducer() throws Exception {
+        var lane = new WorldStreamProducerCancellation();
+        var producer = lane.begin();
+        var touched = new AtomicInteger();
+        producer.onStopping(
+                () -> {
+                    throw new RuntimeException() {
+                        @Override
+                        public String getMessage() {
+                            touched.incrementAndGet();
+                            throw new AssertionError("message trap");
+                        }
+                    };
+                });
+        producer.stop();
+        lane.work();
+        producer.finished();
+        assertEquals(0, touched.get());
+        assertNotNull(lane.failure());
+        assertTrue(producer.retired());
+        assertThrows(IllegalStateException.class, lane::begin);
+    }
+
+    @Test
     void tileStopBeforeRegistrationIsAsynchronousOnceAndDestinationExpires() throws Exception {
         var lane = new WorldStreamProducerCancellation();
         var producer = lane.begin();

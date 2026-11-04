@@ -163,12 +163,7 @@ final class WorldStreamProducerCancellation {
             try {
                 action.run();
             } catch (Throwable failure) {
-                String message = failure.getMessage();
-                if (message == null) {
-                    message = failure.getClass().getSimpleName();
-                }
-                error = new IOException(message.substring(0, Math.min(256, message.length())));
-                error.setStackTrace(new StackTraceElement[0]);
+                error = WorldStreamLaunchOwner.Handle.detached(failure);
             } finally {
                 synchronized (lock) {
                     slot.action = null;
