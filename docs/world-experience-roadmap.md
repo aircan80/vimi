@@ -35,3 +35,10 @@ Character controls should expose supported skin, face, hair style/color, facial 
 Placement sources must distinguish real world XYZ from zone percentages or interaction observations. Existing Polestar adapters can carry world-map XYZ; Questie spawn adapters carry area percentages and no height. Neither a creature definition nor a quest hint alone proves a precise world spawn. Instance classifications likewise do not determine whether a map uses terrain, global WMO or both.
 
 Release readiness requires relevant component checks, authored UI/native proofs for changed paths, independent review and hosted/package validation. Document limitations; keep acquired game assets and private proof output outside Git. No gameplay interaction, NPC AI or complete game-server simulation is required by this roadmap.
+
+## Tracked terrain texture bug
+
+[Handmade BC3/DXT5 terrain textures](bugs/terrain-handmade-bc3.md): reported five
+textures rejected as DIFFUSE_PROFILE. Narrow BC3 opt-in fix and synthetic256×256
+full-mip regression implemented locally; independent review/release integration
+pending. This is separate from broader terrain material-quality work.
