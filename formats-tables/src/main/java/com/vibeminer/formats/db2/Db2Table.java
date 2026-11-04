@@ -26,7 +26,7 @@ import java.util.function.Supplier;
  */
 public final class Db2Table {
     private final Db2Input input;
-    private final boolean sparse, partial;
+    private final boolean sparse, partial, completeExcludedIdDomain;
     private final int alignment, recordSize, declaredRecords;
     private final List<Section> sections;
     private final List<Binding> bindings;
@@ -69,6 +69,7 @@ public final class Db2Table {
             Map<Long, Integer> copyIndex,
             int[] copyStart,
             Map<Long, Integer> protectedIds,
+            boolean completeExcludedIdDomain,
             boolean partial,
             Db2Types.Header header,
             List<Db2Types.Section> sectionInfo,
@@ -94,6 +95,7 @@ public final class Db2Table {
         this.copyStart = copyStart;
         this.protectedIds = Map.copyOf(protectedIds);
         this.partial = partial;
+        this.completeExcludedIdDomain = completeExcludedIdDomain;
         this.header = header;
         this.nativeIssueOrigin = java.util.Objects.requireNonNull(nativeIssueOrigin);
         this.sectionInfo = List.copyOf(sectionInfo);
@@ -298,6 +300,102 @@ public final class Db2Table {
                             completion.consumedBytes(),
                             budget.issues);
                 });
+    }
+
+    public enum IdDomainState {
+        READABLE_UNIQUE,
+        PROTECTED_ID,
+        NOT_OBSERVED,
+        UNSUPPORTED_DOMAIN
+    }
+
+    /**
+     * Metadata-only observation; values are never decoded and full catalog membership is not
+     * implied.
+     */
+    public static final class IdDomainObservation {
+        private final IdDomainState state;
+        private final long ordinal;
+        private final int excludedCount;
+        private final String excludedDigest;
+
+        private IdDomainObservation(
+                IdDomainState state, long ordinal, int excludedCount, String excludedDigest) {
+            this.state = state;
+            this.ordinal = ordinal;
+            this.excludedCount = excludedCount;
+            this.excludedDigest = excludedDigest;
+        }
+
+        public IdDomainState state() {
+            return state;
+        }
+
+        public long ordinal() {
+            return ordinal;
+        }
+
+        public int excludedCount() {
+            return excludedCount;
+        }
+
+        public String excludedDigest() {
+            return excludedDigest;
+        }
+    }
+
+    public IdDomainObservation inspectIdDomain(long id, Cancellation token) {
+        token.check();
+        if (id < 0 || id > 0xffff_ffffL) {
+            throw new IllegalArgumentException("Unsigned ID required");
+        }
+        if (!completeExcludedIdDomain
+                || !copies.isEmpty()
+                || protectedIds.size() != completion.excludedPhysicalRecords()) {
+            return new IdDomainObservation(IdDomainState.UNSUPPORTED_DOMAIN, -1, 0, null);
+        }
+        IdDomainState state;
+        Integer ordinal = rowIndex.get(id);
+        if (ordinal != null) {
+            state = IdDomainState.READABLE_UNIQUE;
+        } else if (protectedIds.containsKey(id)) {
+            state = IdDomainState.PROTECTED_ID;
+        } else {
+            state = IdDomainState.NOT_OBSERVED;
+        }
+        try {
+            var hash = java.security.MessageDigest.getInstance("SHA-256");
+            var sorted = new long[protectedIds.size()];
+            int at = 0;
+            for (long excluded : protectedIds.keySet()) {
+                sorted[at++] = excluded;
+            }
+            java.util.Arrays.sort(sorted);
+            try (var out =
+                    new java.io.DataOutputStream(
+                            new java.security.DigestOutputStream(
+                                    java.io.OutputStream.nullOutputStream(), hash))) {
+                out.writeUTF("native-excluded-id-domain-v1");
+                out.writeUTF(header.format());
+                out.writeUTF(header.layoutHash());
+                out.writeLong(completion.declaredRecords());
+                out.writeInt(sorted.length);
+                for (long excluded : sorted) {
+                    token.check();
+                    out.writeLong(excluded);
+                    int section = protectedIds.get(excluded);
+                    out.writeInt(section);
+                    out.writeUTF(sectionInfo.get(section).key());
+                }
+            }
+            return new IdDomainObservation(
+                    state,
+                    ordinal == null ? -1 : ordinal,
+                    sorted.length,
+                    java.util.HexFormat.of().formatHex(hash.digest()));
+        } catch (java.io.IOException | java.security.NoSuchAlgorithmException impossible) {
+            throw new AssertionError(impossible);
+        }
     }
 
     public Map<Long, String> protectedIds(int max) {
