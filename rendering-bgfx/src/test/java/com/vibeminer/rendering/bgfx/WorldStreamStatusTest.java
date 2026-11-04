@@ -102,8 +102,9 @@ class WorldStreamStatusTest {
                 new InputStream() {
                     @Override
                     public int read() {
-                        if (reads.incrementAndGet() > 256)
+                        if (reads.incrementAndGet() > 256) {
                             throw new AssertionError("Read beyond fixed limit");
+                        }
                         return 'a';
                     }
                 };
