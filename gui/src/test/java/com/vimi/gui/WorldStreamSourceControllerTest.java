@@ -28,6 +28,7 @@ public final class WorldStreamSourceControllerTest {
     private WorldStreamSourceControllerTest() {}
 
     public static void main(String[] args) throws Exception {
+        cameraPublicationSerializesInitialAndFxForwarding();
         initialSeedHeldReplacementCameraAndPresentationDrain();
         supersededHeldSourceCancelsBeforeStalePredicateAndKeepsSession();
         missingRootIsFinitePerDemandAndDoesNotInvalidateCurrentScope();
@@ -35,6 +36,71 @@ public final class WorldStreamSourceControllerTest {
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
         queuedGpuOwnerLateCloseIsPartOfControllerDrain();
         closeDuringActualInitialWdtQualificationIsCleanAndWaitsSourceDrain();
+    }
+
+    private static void cameraPublicationSerializesInitialAndFxForwarding() throws Exception {
+        var fixture=new Fixture(new AuthoredTerrainSource.Files(),1);
+        var started=new CompletableFuture<Void>();
+        var opening=new CompletableFuture<WorldStreamTransport.Session>();
+        var fxDone=new CompletableFuture<Void>();
+        Thread fx=null;
+        try {
+            fixture.start(scope->{
+                fixture.gpu.start(scope);
+                started.complete(null);
+                return new WorldStreamSourceController.GpuOwner() {
+                    public CompletableFuture<WorldStreamTransport.Session> session() { return opening.copy(); }
+                    public CompletableFuture<Void> closeAsync() { return fixture.gpu.closeAsync(); }
+                };
+            });
+            fixture.controller.camera(new WorldStreamTransport.Camera(1,1,80,50,new TerrainCamera(0,0,110,0,-.8)));
+            started.get(5,TimeUnit.SECONDS);
+            fixture.gpu.session.initialized().get(5,TimeUnit.SECONDS);
+            var field=WorldStreamTransport.Session.class.getDeclaredField("lock");
+            field.setAccessible(true);
+            Object parentGate=field.get(fixture.gpu.session);
+            synchronized(parentGate) {
+                opening.complete(fixture.gpu.session);
+                long until=System.nanoTime()+TimeUnit.SECONDS.toNanos(3);
+                boolean initialBlocked=false;
+                while(!initialBlocked && System.nanoTime()<until) {
+                    for(var entry:Thread.getAllStackTraces().entrySet()) {
+                        if(!entry.getKey().getName().equals("world-source-controller")) continue;
+                        for(var line:entry.getValue()) {
+                            if(line.getClassName().equals(WorldStreamTransport.Session.class.getName())
+                                    && line.getMethodName().equals("camera")) initialBlocked=true;
+                        }
+                    }
+                    if(!initialBlocked) Thread.sleep(1);
+                }
+                check(initialBlocked,"Actual initial Session.camera is held at its metadata gate");
+                fx=Thread.ofPlatform().daemon().name("authored-fx-camera").start(()->{
+                    try {
+                        fixture.controller.camera(new WorldStreamTransport.Camera(2,1,80,50,new TerrainCamera(1,0,110,0,-.8)));
+                        fxDone.complete(null);
+                    } catch(Throwable failure) { fxDone.completeExceptionally(failure); }
+                });
+                until=System.nanoTime()+TimeUnit.SECONDS.toNanos(3);
+                while(fx.getState()!=Thread.State.BLOCKED && System.nanoTime()<until) Thread.sleep(1);
+                check(fx.getState()==Thread.State.BLOCKED,"FX metadata update waits the same publication gate");
+                var current=WorldStreamSourceController.class.getDeclaredField("camera");
+                current.setAccessible(true);
+                check(((WorldStreamTransport.Camera)current.get(fixture.controller)).revision()==1,
+                        "FX revision2 cannot publish ahead of held initial revision1 forwarding");
+            }
+            fxDone.get(5,TimeUnit.SECONDS);
+            fixture.until(()->fixture.controller.snapshot().seed()!=null);
+            var frame=fixture.nextFrame();
+            try {
+                check(frame.cameraRevision()==2 && fixture.controller.mayPresent(frame),
+                        "Actual accepted first frame belongs to latest monotonic camera");
+                fixture.controller.presented(frame);
+            } finally { fixture.controller.discard(frame); }
+        } finally {
+            opening.complete(fixture.gpu.session);
+            if(fx!=null) fx.join(1000);
+            fixture.close();
+        }
     }
 
     private static void initialSeedHeldReplacementCameraAndPresentationDrain() throws Exception {

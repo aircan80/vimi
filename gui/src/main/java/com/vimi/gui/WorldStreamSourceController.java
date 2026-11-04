@@ -217,22 +217,21 @@ final class WorldStreamSourceController {
 
     void camera(WorldStreamTransport.Camera next) {
         Objects.requireNonNull(next);
+        RuntimeException problem=null;
         synchronized (lock) {
             if (closing) return;
             if (camera != null && next.revision() <= camera.revision()) {
                 throw new IllegalArgumentException("Camera revision must advance");
             }
-            camera = next;
-        }
-        // Parent camera replaces metadata only; source/CPU/retirement work cannot stall motion.
-        var active = session;
-        if (active != null) {
-            try {
-                active.camera(next);
-            } catch (RuntimeException failure) {
-                failLater(failure);
+            camera=next;
+            // Actual final Session.camera only replaces metadata; no IO/external callback.
+            // Use the same gate as initial publication so an older initial camera cannot follow.
+            if(session!=null) {
+                try { session.camera(next); }
+                catch(RuntimeException failure) { problem=failure; }
             }
         }
+        if(problem!=null) failLater(problem);
         kick();
     }
 
@@ -429,9 +428,11 @@ final class WorldStreamSourceController {
         }
         if (session == null) {
             if (!opening.isDone()) return;
-            session = opening.join();
-            var latest = camera;
-            if (latest != null) session.camera(latest);
+            var opened=opening.join();
+            synchronized(lock) {
+                session=opened;
+                if(camera!=null && !closing) opened.camera(camera);
+            }
             session.initialized().whenComplete((ignored, failure) -> kick());
             session.completion()
                     .whenComplete(
