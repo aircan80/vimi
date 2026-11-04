@@ -390,6 +390,31 @@ final class WorldStreamParentState {
         return Change.CLOSED;
     }
 
+    enum Cancellation {
+        PENDING,
+        CANCELED,
+        REJECTED,
+        COMMITTED,
+        RETIRED
+    }
+
+    synchronized Cancellation cancellation(Ticket value) {
+        require(value != null && value.owner == owner, "Foreign tile cancellation");
+        if (value.canceled && value.producerDrained && value.fileRetired) {
+            return Cancellation.CANCELED;
+        }
+        if (value.rejected && (!value.cancelSent || value.cancelResolved)) {
+            return Cancellation.REJECTED;
+        }
+        if (value.committed) {
+            return active.contains(value.resident) ? Cancellation.COMMITTED : Cancellation.RETIRED;
+        }
+        if (value.credited && !value.canceled && !value.rejected) {
+            return Cancellation.RETIRED;
+        }
+        return Cancellation.PENDING;
+    }
+
     synchronized List<Resident> active() {
         return active;
     }

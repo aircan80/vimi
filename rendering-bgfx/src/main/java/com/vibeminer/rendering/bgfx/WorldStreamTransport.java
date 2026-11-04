@@ -70,6 +70,26 @@ public final class WorldStreamTransport {
         }
     }
 
+    public enum CancellationReason {
+        ALREADY_COMMITTED,
+        PACKET_REJECTED,
+        ALREADY_RETIRED
+    }
+
+    public static final class CancellationRefusal extends Exception {
+        private static final long serialVersionUID = 1L;
+        private final transient CancellationReason reason;
+
+        private CancellationRefusal(CancellationReason reason) {
+            super(reason.name(), null, false, false);
+            this.reason = reason;
+        }
+
+        public CancellationReason reason() {
+            return reason;
+        }
+    }
+
     @FunctionalInterface
     public interface StopRegistration extends AutoCloseable {
         @Override
@@ -271,8 +291,7 @@ public final class WorldStreamTransport {
         }
 
         public CompletableFuture<Void> cancel() {
-            session.cancel(this);
-            return canceled.copy();
+            return session.cancel(this);
         }
     }
 
@@ -502,18 +521,49 @@ public final class WorldStreamTransport {
             return reservation.result.copy();
         }
 
-        private void cancel(TileReservation reservation) {
-            WorldStreamControl.Command command;
+        private CompletableFuture<Void> cancel(TileReservation reservation) {
             synchronized (lock) {
+                var terminal = state.cancellation(reservation.ticket);
+                if (terminal == WorldStreamParentState.Cancellation.CANCELED) {
+                    return CompletableFuture.completedFuture(null);
+                }
+                if (terminal != WorldStreamParentState.Cancellation.PENDING) {
+                    return CompletableFuture.failedFuture(cancelRefusal(terminal));
+                }
                 reservation.stop = true;
                 var lower = reservation.cancellation;
                 if (lower != null) {
                     lower.stop();
                 }
-                command = state.cancel(reservation.ticket);
+                var command = state.cancel(reservation.ticket);
                 if (command != null) {
                     enqueueCommand(command);
                 }
+            }
+            return reservation.canceled.copy();
+        }
+
+        private static CancellationRefusal cancelRefusal(
+                WorldStreamParentState.Cancellation terminal) {
+            return new CancellationRefusal(
+                    switch (terminal) {
+                        case COMMITTED -> CancellationReason.ALREADY_COMMITTED;
+                        case REJECTED -> CancellationReason.PACKET_REJECTED;
+                        case RETIRED -> CancellationReason.ALREADY_RETIRED;
+                        default -> throw new IllegalArgumentException("Nonterminal cancellation");
+                    });
+        }
+
+        /**
+         * Called only on existing workers; never completes exposed futures from caller metadata
+         * APIs.
+         */
+        private void publishCancellation(TileReservation reservation) {
+            var terminal = state.cancellation(reservation.ticket);
+            if (terminal == WorldStreamParentState.Cancellation.CANCELED) {
+                reservation.canceled.complete(null);
+            } else if (terminal != WorldStreamParentState.Cancellation.PENDING) {
+                reservation.canceled.completeExceptionally(cancelRefusal(terminal));
             }
         }
 
@@ -830,6 +880,7 @@ public final class WorldStreamTransport {
                                             }
                                             owned.close();
                                             state.retireTileFile(current.ticket);
+                                            publishCancellation(current);
                                             capacityChanged();
                                             synchronized (lock) {
                                                 input = null;
@@ -869,7 +920,7 @@ public final class WorldStreamTransport {
                                 current.cancelOutstanding = false;
                                 retireReliable();
                             }
-                            current.canceled.complete(null);
+                            publishCancellation(current);
                             current.result.completeExceptionally(
                                     new java.util.concurrent.CancellationException(
                                             "Tile canceled"));
@@ -889,7 +940,7 @@ public final class WorldStreamTransport {
                             }
                             var error = new IOException("World packet rejected");
                             if (!cancelPending) {
-                                current.canceled.completeExceptionally(error);
+                                publishCancellation(current);
                             }
                             current.result.completeExceptionally(error);
                         }
@@ -904,8 +955,7 @@ public final class WorldStreamTransport {
                                 retireReliable();
                             }
                             capacityChanged();
-                            current.canceled.completeExceptionally(
-                                    new IOException("Tile packet rejected before cancellation"));
+                            publishCancellation(current);
                         }
                         case CLOSED -> {
                             closedStatus = true;

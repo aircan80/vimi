@@ -92,3 +92,24 @@ qualification oracle; existing native parser fixtures establish malformed-packet
 The pipe fixture also fails causally when INVALID_PACKET is changed back to clearing all
 reliable credits: the later cancel retirement underflows and no genuine successor credit can be
 used. Restoring independent OFFER/CANCEL accounting makes the unchanged fixture pass.
+
+## Cancellation success includes parent file retirement
+
+CANCELED is an acknowledgement, not parent deletion completion. The metadata cancellation
+query reports success only with authentic canceled ack, producer/callback-finally drain and
+actual input-file retirement. The status reader and file lane both retry publication, using the
+original reservation even if a newer ticket is later admitted. No exposed future is completed
+from a caller metadata method or under a session monitor.
+
+An already-canceled reservation returns bounded completed success for that old reservation.
+Rejected, active committed and otherwise retired tickets return a fresh already-failed
+CancellationRefusal (PACKET_REJECTED/ALREADY_COMMITTED/ALREADY_RETIRED), without another child
+command, fake CANCELED or an indefinitely pending future. Replacing an active committed tile
+requires a subsequent COMMIT; failure does not certify physical resource drain.
+
+An actual authored Java child emits INPUT/STAGED, then CANCELED/CREDIT while a test-only task
+holds the parent's sole file lane ahead of deletion. Cancellation stays pending, the input file
+remains and no successor construction is admitted. Releasing the lane deletes the real file and
+only then completes cancellation; repeating old cancellation is bounded. The old immediate-ack
+publication fails this unchanged fixture causally. The rejection/queued-cancel pipe fixture also
+checks a repeated old ticket cancellation returns typed PACKET_REJECTED after successor credit.

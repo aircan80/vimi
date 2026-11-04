@@ -153,6 +153,14 @@ class WorldStreamTransportRejectedCancelTest {
                     java.util.concurrent.ExecutionException.class,
                     () -> canceled.get(3, TimeUnit.SECONDS));
             var successor = reserve(session, 8, 19);
+            var oldCancel =
+                    assertThrows(
+                            java.util.concurrent.ExecutionException.class,
+                            () -> ticket.cancel().get(1, TimeUnit.SECONDS));
+            assertTrue(
+                    oldCancel.getCause() instanceof WorldStreamTransport.CancellationRefusal refusal
+                            && refusal.reason()
+                                    == WorldStreamTransport.CancellationReason.PACKET_REJECTED);
             assertTrue(child.get().isAlive());
             assertFalse(session.completion().isDone());
             successor.cancel().get(3, TimeUnit.SECONDS);
