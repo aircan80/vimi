@@ -63,7 +63,11 @@ public final class WorldStreamTransport {
     }
     public static final class PacketDestination {
         public Path path(); // exact private tile-<tx>.wst destination
+        public StopRegistration onStopping(Runnable requestCancellation);
         // Opaque writer context; no public protocol counter setters or sourceVerified flag.
+    }
+    public interface StopRegistration extends AutoCloseable {
+        @Override void close(); // metadata-only seal, never a callback join/drain proof
     }
     public static final class OwnedPacket implements AutoCloseable {
         // Opaque source-neutral file owner, minted by the separately reviewed packet-writing adapter.
@@ -166,6 +170,38 @@ admission, packet write, final read-set validation and unadvertised-result trans
 No output file may still be written after return. Any unreturned output is the callback's local
 try/finally responsibility; once returned, ownership transfers to the transport. The callback
 must not retain geometry/atlas leases, BuildFiles or source owners inside OwnedPacket.
+
+A BooleanSupplier alone cannot cancel blocked source IO. `PacketDestination.onStopping`
+registers at most ONE external cancellation-request action during the active producer callback.
+A second registration or an escaped destination used after producer return is refused, even
+if the first registration was sealed. The bridge registers its operation-local source token's
+`cancel` request, never a callback that joins this producer or this session's drain future.
+It does not register an entire close-and-wait operation.
+
+Registration/unregistration and requesting stop are short metadata changes only. Cancellation
+requests execute at most once on ONE bounded cancellation lane, outside every monitor, outside
+FX/caller threads and outside the producer/file lane. An already-stopping registration follows
+the same asynchronous path. The cancellation lane can observe the owner's stop flag in its own
+bounded timed wait; there is no per-registration watcher/seventh IO worker. The six IO workers
+are command, status, stderr, frame, producer/file and cancellation. Existing bounded lifecycle/
+deadline/one-file-cleanup management tasks remain distinct and are not per-registration tasks.
+
+`StopRegistration.close` seals future scheduling without waiting. If the request was already
+scheduled/running, its actual invocation and finally still count toward drain, even if sealed;
+the queued/running action is not silently relabeled completed by unregistering. If seal wins
+before any scheduling, the callback reference is dropped without invocation. Both races are
+linearized under the same metadata lock. A scheduled action drops its source closure only in
+its actual finally. The next producer/credit cannot reuse that callback slot before the prior
+producer AND any scheduled/running cancellation action actually finish. Repeated stop requests
+coalesce; no unbounded cancellation queue or new thread per request.
+
+Throwing actions record a detached bounded failure and request session stop. They cannot become
+material fallback or successful source/output drain. Session terminationAndDrain and arbiter
+release include the cancellation lane's finally; bounded close may fail while it is held.
+Causal tests must hold a real lower-cancellation callback while the source producer is waiting,
+prove prompt off-caller cancellation/no early file deletion or successor, then release it and
+prove producer/cancellation/file/child drain in order. Removing asynchronous dispatch or treating
+unregister as completion must fail those fixtures.
 
 A callback exception does not imply that an arbitrary unregistered partial path is safe to
 ignore. Its exact destination is registered before invocation and is cleaned only after the
