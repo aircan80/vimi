@@ -112,6 +112,10 @@ public final class HotfixCacheReader {
         public List<Entry> entries() {
             return entries;
         }
+
+        public boolean isFor(Db2ByteSource candidate) {
+            return source == candidate;
+        }
     }
 
     /** Uses one virtual worker; source reads may block and never run on the JavaFX thread. */
