@@ -312,6 +312,27 @@ public final class WorldAudioPlaybackTest {
             throw new AssertionError("Dead line must not re-decode in a loop: " + opens.get());
         playback.closeAsync().get(10, TimeUnit.SECONDS);
 
+        // A line whose write throws (device removed mid-write) is reported, not a dead worker.
+        var throwingOpens = new AtomicInteger();
+        var throwing = new WorldAudioPlayback(format -> (SourceDataLine) Proxy.newProxyInstance(
+                WorldAudioPlaybackTest.class.getClassLoader(),
+                new Class<?>[] {SourceDataLine.class}, (proxy, method, args) -> {
+                    if (method.getName().equals("write"))
+                        throw new IllegalStateException("device removed");
+                    return method.getName().startsWith("is") ? false : null;
+                }), (bytes, canceled) -> {
+                    throwingOpens.incrementAndGet();
+                    return new FakePcm(400);
+                }, statuses::add);
+        throwing.ambience.track(track(WorldAreaAudio.Kind.AMBIENCE, 11, 0), FILES);
+        throwing.ambience.enabled(true);
+        await(() -> count(statuses, WorldAudioPlayback.OUTPUT_STOPPED) == 2,
+                "throwing line was hidden");
+        Thread.sleep(200);
+        if (throwingOpens.get() != 1)
+            throw new AssertionError("Throwing line must not re-decode: " + throwingOpens.get());
+        throwing.closeAsync().get(10, TimeUnit.SECONDS);
+
         var failing = new AtomicInteger();
         var broken = new WorldAudioPlayback(format -> new Device().line(), (bytes, canceled) -> {
             failing.incrementAndGet();
@@ -360,6 +381,11 @@ public final class WorldAudioPlaybackTest {
         if (statuses.stream().anyMatch(s -> s.message().contains("/home")
                 || s.message().contains("Cannot run")))
             throw new AssertionError("Status text must not name local paths: " + statuses);
+
+        if (!WorldAudioPlayback.detail(new IOException(
+                "Voice preview requires a complete valid single Vorbis stream"), "x")
+                .equals("not a valid Vorbis stream"))
+            throw new AssertionError("Shared Ogg preflight wording must fit world audio");
 
         // Authored decoder messages stay visible.
         if (!WorldAudioPlayback.detail(new IOException("World audio decoder stalled"), "x")

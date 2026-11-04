@@ -28,7 +28,9 @@ final class WorldAudioPlayback implements AutoCloseable {
     static final String OUTPUT_UNAVAILABLE = "Audio output is unavailable on this machine.",
             OUTPUT_STOPPED = "Audio output stopped accepting audio.";
     /** A common line format, used only to check that an output device exists before decoding. */
-    static final AudioFormat PROBE = new AudioFormat(44_100, 16, 2, true, true);
+    static final AudioFormat PROBE = new AudioFormat(AudioFormat.Encoding.PCM_SIGNED,
+            AudioSystem.NOT_SPECIFIED, 16, AudioSystem.NOT_SPECIFIED, AudioSystem.NOT_SPECIFIED,
+            AudioSystem.NOT_SPECIFIED, true);
 
     static boolean outputSupported() {
         return AudioSystem.isLineSupported(new DataLine.Info(SourceDataLine.class, PROBE));
@@ -69,8 +71,11 @@ final class WorldAudioPlayback implements AutoCloseable {
      */
     static String detail(IOException failure, String fallback) {
         String message = failure.getMessage();
-        return message != null && (message.startsWith("World audio ")
-                || message.startsWith("Voice preview requires")) ? message : fallback;
+        if (message == null) return fallback;
+        if (message.startsWith("World audio ")) return message;
+        // OggVoiceInput's shared preflight is worded for voice previews.
+        if (message.startsWith("Voice preview requires")) return "not a valid Vorbis stream";
+        return fallback;
     }
 
     static Pcm decode(byte[] encoded, BooleanSupplier canceled) throws IOException {
@@ -370,7 +375,13 @@ final class WorldAudioPlayback implements AutoCloseable {
                             if (!adopt(pcm)) return null;
                             continue;
                         }
-                        if (live) line.drain();
+                        if (live) {
+                            try {
+                                line.drain();
+                            } catch (RuntimeException stopped) {
+                                return current(expected) ? OUTPUT_STOPPED : null;
+                            }
+                        }
                         return null;
                     }
                     frames += count / frame;
@@ -382,7 +393,12 @@ final class WorldAudioPlayback implements AutoCloseable {
                     double target = fadingOut ? 0 : volume;
                     gain = apply(block, count, pcm.channels(), gain, target, step);
                     for (int offset = 0; offset < count; ) {
-                        int written = line.write(block, offset, count - offset);
+                        int written;
+                        try {
+                            written = line.write(block, offset, count - offset);
+                        } catch (RuntimeException stopped) {
+                            written = 0;
+                        }
                         // A removed device or a line stopped by the OS; stop instead of re-looping.
                         if (written <= 0) return current(expected) ? OUTPUT_STOPPED : null;
                         offset += written;
