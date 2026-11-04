@@ -71,7 +71,30 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         return new ClientHotfixStore.Scope(ref, locale, info.version());
     }
 
-    String hotfixStatus() { return hotfixStatus; }
+    private volatile String hotfixSha;
+    private volatile boolean hotfixWatched, hotfixRefreshPending;
+
+    String hotfixStatus() {
+        String status = hotfixStatus;
+        if (hotfixSha != null && hotfixWatched) status += " · checked on Refresh sources";
+        if (hotfixRefreshPending)
+            status += "\nRefresh sources imported a newer local cache for this build; reopen to apply it.";
+        return status;
+    }
+
+    /** Whether the loaded scope's original is checked by Refresh sources. */
+    boolean hotfixWatched() { return hotfixWatched; }
+
+    void hotfixWatched(boolean value) { hotfixWatched = value; }
+
+    /** A newer verified import is bound; this open workspace keeps its loaded snapshot. */
+    boolean hotfixRefreshPending() { return hotfixRefreshPending; }
+
+    /** Records a refresh-bound import. Equal or unloaded snapshots need no reopen. */
+    void noteRefreshedHotfix(String sha256) {
+        String loaded = hotfixSha;
+        if (loaded != null && !loaded.equals(sha256)) hotfixRefreshPending = true;
+    }
 
     boolean canImportHotfix() {
         try { hotfixScope(); return true; }
@@ -121,6 +144,8 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                         }
                         if (snapshot != null) {
                             var index = snapshot.index();
+                            hotfixSha = index.sha256();
+                            hotfixWatched = snapshot.watched();
                             hotfixStatus = "Local hotfix cache · build " + index.build() + " · "
                                     + locale + " · " + index.entries().size() + " cached operations · "
                                     + index.sha256().substring(0, 16);
