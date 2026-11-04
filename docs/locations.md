@@ -85,6 +85,34 @@ silently promoted to quest pickup markers. Reverse Questie NPC/object
 `questStarts` and item `startQuest` are possible future enrichment; the first
 adapter uses the quest's explicit `startedBy` groups.
 
+## Maps role overlays
+
+The Maps browser can draw quest giver, vendor, trainer and flight master markers.
+Each layer has its own footer toggle and all are off by default. `MapRoles` reads
+only the build's mapped, already prepared QuestieDB version. It never downloads,
+prepares or substitutes another flavor.
+
+- Quest givers come from explicit NPC `questStarts` entries. The `QUEST_GIVER`
+  NPC flag alone does not make one.
+- Vendors, trainers and flight masters come from `npcFlags`. The bit layout
+  differs by flavor. It follows QuestieDB v1.0.10
+  `src/corrections/enum/expansions.lua` and the flavor `rules` map in
+  `src/config.lua`. Vanilla and Forever use vendor 4, flight master 8 and
+  trainer 16. TBC, Wrath, Cata and Mists use vendor 128, trainer 16 and flight
+  master 8192. Any other release tag keeps this layout and reports the catalog
+  as partial.
+- Positions stay Questie AreaID percentages. The selected build resolves them in
+  one batch through `UiMapAssignment` (`BuildLocationMaps.resolveAll`), and the
+  existing area/world projection rules apply. A location is drawn on a UiMap
+  only when every drawable candidate for that map agrees. Conflicting
+  assignments and locations with no drawable candidate are counted, not drawn.
+
+The status line names the Questie release and flavor and counts each enabled
+layer on the presented map. It also reports unplaced and conflicting positions
+and the 2,048-marker cap. Faction reaction, phase, quest availability and
+service inventories are not evaluated. Questie `friendlyToFaction` is kept on
+each NPC but not yet used as a filter.
+
 ## Provider boundaries and selection
 
 `LocationSources` accepts the already selected prepared version/snapshot; it never

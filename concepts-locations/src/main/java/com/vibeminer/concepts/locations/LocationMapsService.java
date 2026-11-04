@@ -27,6 +27,10 @@ import java.util.function.Function;
 @SuppressWarnings("try")
 public final class LocationMapsService implements BuildLocationMaps {
     private static final int MAX_TILES = 256;
+
+    /** Observations accepted by one {@link #resolveAll} worker pass. */
+    public static final int MAX_BATCH = 16_384;
+
     private final BuildTables tables;
     private final BuildFiles files;
     private final BlpImages images;
@@ -77,136 +81,177 @@ public final class LocationMapsService implements BuildLocationMaps {
     public CompletableFuture<MapTypes.Resolution> resolve(
             LocationTypes.Location location, Cancellation token) {
         Objects.requireNonNull(location);
+        return submit(token, request -> resolution(location, request));
+    }
+
+    /** One bounded worker pass over many observations; shares cached map tables. */
+    @Override
+    public CompletableFuture<List<MapTypes.Resolution>> resolveAll(
+            List<LocationTypes.Location> locations, Cancellation token) {
+        var copy = List.copyOf(locations);
+        if (copy.size() > MAX_BATCH) {
+            throw new IllegalArgumentException("Too many locations in one map batch");
+        }
         return submit(
                 token,
                 request -> {
-                    var issues = new ArrayList<String>();
-                    var result = new ArrayList<MapTypes.Candidate>();
-                    try {
-                        load("UiMap", 8192, request, issues);
-                        var direct = new HashSet<Long>();
-                        for (var coordinate : location.coordinates()) {
-                            if (coordinate.map().kind() != LocationTypes.MapKind.UI_MAP) {
+                    var result = new ArrayList<MapTypes.Resolution>(copy.size());
+                    for (var location : copy) {
+                        request.check();
+                        result.add(resolution(location, request));
+                    }
+                    return List.copyOf(result);
+                });
+    }
+
+    private MapTypes.Resolution resolution(LocationTypes.Location location, Cancellation request) {
+        var issues = new ArrayList<String>();
+        var result = new ArrayList<MapTypes.Candidate>();
+        try {
+            load("UiMap", 8192, request, issues);
+            var direct = new HashSet<Long>();
+            for (var coordinate : location.coordinates()) {
+                if (coordinate.map().kind() != LocationTypes.MapKind.UI_MAP) {
+                    continue;
+                }
+                try {
+                    var info = map(coordinate.map().id(), issues);
+                    if (info == null) {
+                        continue;
+                    }
+                    double divisor = coordinate.units() == LocationTypes.Units.PERCENT ? 100 : 1;
+                    result.add(
+                            new MapTypes.Candidate(
+                                    info,
+                                    coordinate.x() / divisor,
+                                    coordinate.y() / divisor,
+                                    null,
+                                    MapTypes.Basis.RECORDED_UI_MAP,
+                                    mapSources(info.id(), issues),
+                                    null));
+                    direct.add(info.id());
+                } catch (MapTable.Projection failure) {
+                    MapTable.issue(issues, failure.getMessage());
+                }
+            }
+            try {
+                var assignments = load("UiMapAssignment", 16_384, request, issues);
+                var data = schemas.get("UiMapAssignment");
+                data.reference("AreaID", "AreaTable");
+                data.reference("UiMapID", "UiMap");
+                data.reference("MapID", "Map");
+                var index = assignmentIndex(assignments, data, request);
+                if (!location.coordinates().isEmpty()) {
+                    for (var failure : index.failures()) {
+                        MapTable.issue(issues, failure);
+                    }
+                }
+                for (var coordinate : location.coordinates()) {
+                    var kind = coordinate.map().kind();
+                    var related =
+                            kind == LocationTypes.MapKind.AREA
+                                    ? index.byArea().getOrDefault(coordinate.map().id(), List.of())
+                                    : kind == LocationTypes.MapKind.WORLD_MAP
+                                            ? index.byMap()
+                                                    .getOrDefault(coordinate.map().id(), List.of())
+                                            : List.<Db2Types.Row>of();
+                    for (var assignment : related) {
+                        request.check();
+                        try {
+                            long uiMap = data.number(assignment, "UiMapID");
+                            if (direct.contains(uiMap)) {
                                 continue;
                             }
-                            try {
-                                var info = map(coordinate.map().id(), issues);
-                                if (info == null) {
-                                    continue;
-                                }
-                                double divisor =
-                                        coordinate.units() == LocationTypes.Units.PERCENT ? 100 : 1;
-                                result.add(
-                                        new MapTypes.Candidate(
-                                                info,
-                                                coordinate.x() / divisor,
-                                                coordinate.y() / divisor,
-                                                null,
-                                                MapTypes.Basis.RECORDED_UI_MAP,
-                                                mapSources(info.id(), issues),
-                                                null));
-                                direct.add(info.id());
-                            } catch (MapTable.Projection failure) {
-                                MapTable.issue(issues, failure.getMessage());
+                            var info = map(uiMap, issues);
+                            if (info == null
+                                    || schemas.get("UiMap").number(mapRow(uiMap), "System") != 0) {
+                                continue;
                             }
-                        }
-                        try {
-                            var assignments = load("UiMapAssignment", 16_384, request, issues);
-                            var data = schemas.get("UiMapAssignment");
-                            data.reference("AreaID", "AreaTable");
-                            data.reference("UiMapID", "UiMap");
-                            data.reference("MapID", "Map");
-                            for (var coordinate : location.coordinates()) {
-                                for (var assignment : assignments) {
-                                    request.check();
-                                    try {
-                                        long uiMap = data.number(assignment, "UiMapID");
-                                        if (direct.contains(uiMap)) {
-                                            continue;
-                                        }
-                                        var info = map(uiMap, issues);
-                                        if (info == null
-                                                || schemas.get("UiMap")
-                                                                .number(mapRow(uiMap), "System")
-                                                        != 0) {
-                                            continue;
-                                        }
-                                        if (coordinate.map().kind() == LocationTypes.MapKind.AREA
-                                                && data.number(assignment, "AreaID")
-                                                        == coordinate.map().id()) {
-                                            var candidate =
-                                                    area(
-                                                            coordinate,
-                                                            info,
-                                                            data,
-                                                            assignment,
-                                                            issues);
-                                            if (candidate != null) {
-                                                result.add(candidate);
-                                            }
-                                        } else if (coordinate.map().kind()
-                                                        == LocationTypes.MapKind.WORLD_MAP
-                                                && data.number(assignment, "MapID")
-                                                        == coordinate.map().id()) {
-                                            var candidate =
-                                                    world(
-                                                            coordinate,
-                                                            info,
-                                                            data,
-                                                            assignment,
-                                                            issues);
-                                            if (candidate != null) {
-                                                result.add(candidate);
-                                            }
-                                        }
-                                    } catch (MapTable.Projection failure) {
-                                        MapTable.issue(issues, failure.getMessage());
-                                    }
-                                }
+                            var candidate =
+                                    kind == LocationTypes.MapKind.AREA
+                                            ? area(coordinate, info, data, assignment, issues)
+                                            : world(coordinate, info, data, assignment, issues);
+                            if (candidate != null) {
+                                result.add(candidate);
                             }
                         } catch (MapTable.Projection failure) {
                             MapTable.issue(issues, failure.getMessage());
                         }
-                        result.sort(
-                                Comparator.comparing(
-                                                (MapTypes.Candidate c) ->
-                                                        c.basis() != MapTypes.Basis.RECORDED_UI_MAP)
-                                        .thenComparingLong(c -> c.map().id())
-                                        .thenComparing(
-                                                c ->
-                                                        c.assignmentId() == null
-                                                                ? -1L
-                                                                : c.assignmentId()));
-                        var counts = new HashMap<Long, Integer>();
-                        for (var candidate : result) {
-                            counts.merge(candidate.map().id(), 1, Integer::sum);
-                        }
-                        if (counts.values().stream().anyMatch(count -> count > 1)) {
-                            MapTable.issue(
-                                    issues,
-                                    "Multiple assignments target the same UiMap; no preferred assignment is chosen.");
-                        }
-                        return new MapTypes.Resolution(
-                                result.isEmpty() ? MapTypes.State.UNAVAILABLE : state(issues),
-                                tables.build(),
-                                tables.locale(),
-                                location,
-                                result,
-                                issues,
-                                result.isEmpty()
-                                        ? "No reviewed selected-build map relationship resolves this location."
-                                        : null);
-                    } catch (MapTable.Projection failure) {
-                        return new MapTypes.Resolution(
-                                failure.state,
-                                tables.build(),
-                                tables.locale(),
-                                location,
-                                result,
-                                issues,
-                                failure.getMessage());
                     }
-                });
+                }
+            } catch (MapTable.Projection failure) {
+                MapTable.issue(issues, failure.getMessage());
+            }
+            result.sort(
+                    Comparator.comparing(
+                                    (MapTypes.Candidate c) ->
+                                            c.basis() != MapTypes.Basis.RECORDED_UI_MAP)
+                            .thenComparingLong(c -> c.map().id())
+                            .thenComparing(c -> c.assignmentId() == null ? -1L : c.assignmentId()));
+            var counts = new HashMap<Long, Integer>();
+            for (var candidate : result) {
+                counts.merge(candidate.map().id(), 1, Integer::sum);
+            }
+            if (counts.values().stream().anyMatch(count -> count > 1)) {
+                MapTable.issue(
+                        issues,
+                        "Multiple assignments target the same UiMap; no preferred assignment is chosen.");
+            }
+            return new MapTypes.Resolution(
+                    result.isEmpty() ? MapTypes.State.UNAVAILABLE : state(issues),
+                    tables.build(),
+                    tables.locale(),
+                    location,
+                    result,
+                    issues,
+                    result.isEmpty()
+                            ? "No reviewed selected-build map relationship resolves this location."
+                            : null);
+        } catch (MapTable.Projection failure) {
+            return new MapTypes.Resolution(
+                    failure.state,
+                    tables.build(),
+                    tables.locale(),
+                    location,
+                    result,
+                    issues,
+                    failure.getMessage());
+        }
+    }
+
+    /**
+     * Assignment rows keyed by recorded AreaID and MapID, in table order; built once per row list.
+     */
+    private record AssignmentIndex(
+            List<Db2Types.Row> source,
+            Map<Long, List<Db2Types.Row>> byArea,
+            Map<Long, List<Db2Types.Row>> byMap,
+            List<String> failures) {}
+
+    private AssignmentIndex assignmentIndex;
+
+    private AssignmentIndex assignmentIndex(
+            List<Db2Types.Row> assignments, MapTable data, Cancellation token) {
+        if (assignmentIndex != null && assignmentIndex.source() == assignments) {
+            return assignmentIndex;
+        }
+        var byArea = new HashMap<Long, List<Db2Types.Row>>();
+        var byMap = new HashMap<Long, List<Db2Types.Row>>();
+        var failures = new ArrayList<String>();
+        for (var assignment : assignments) {
+            token.check();
+            for (String field : List.of("AreaID", "MapID")) {
+                try {
+                    (field.equals("AreaID") ? byArea : byMap)
+                            .computeIfAbsent(data.number(assignment, field), k -> new ArrayList<>())
+                            .add(assignment);
+                } catch (MapTable.Projection failure) {
+                    MapTable.issue(failures, failure.getMessage());
+                }
+            }
+        }
+        assignmentIndex = new AssignmentIndex(assignments, byArea, byMap, List.copyOf(failures));
+        return assignmentIndex;
     }
 
     private MapTypes.Candidate area(

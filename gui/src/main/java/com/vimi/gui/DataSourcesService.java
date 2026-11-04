@@ -327,6 +327,24 @@ public final class DataSourcesService {
                 worldSpawnSnapshot(build).map(com.vibeminer.polestar.PolestarTypes.Snapshot::id).orElse(""));
     }
 
+    /**
+     * Service-NPC roles for Maps overlays from the build's mapped prepared Questie version only.
+     * Local reads; never downloads, prepares or substitutes another flavor.
+     */
+    public com.vibeminer.concepts.locations.MapRoles.Catalog mapRoles(BuildInfo build, String locale,
+            com.vibeminer.access.Cancellation token) {
+        var mapping = mapping(build);
+        if (mapping.versionId() == null) throw new IllegalStateException(mapping.message());
+        return com.vibeminer.concepts.locations.MapRoles.questie(questie, mapping.versionId(),
+                com.vibeminer.questie.QuestieTypes.Flavor.parse(mapping.flavor()), locale, token);
+    }
+
+    /** Changes only when the mapped Questie version for this build changes. */
+    public Object mapRolesKey(BuildInfo build) {
+        var mapping = mapping(build);
+        return java.util.Arrays.asList(mapping.flavor(), mapping.versionId(), mapping.message());
+    }
+
     static boolean compatibleNpcBuild(String source, String target) {
         if (source == null || target == null || !source.matches("\\d+\\.\\d+\\.\\d+\\.\\d+") || !target.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) return false;
         try {
