@@ -274,3 +274,13 @@ tasks.register('nativeGpuWorldStreamSpike', JavaExec) {
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args layout.buildDirectory.dir('native-world-stream-spike').get().asFile.absolutePath
 }
+
+tasks.register('nativeGpuWorldStreamAcceptance', JavaExec) {
+    group = 'verification'
+    description = 'Checks authored common-rebase UV, seams, coplanar order and reversed-depth pixels.'
+    dependsOn testClasses, tasks.named('verifyWorldStreamSpikeShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamSpikeAcceptance'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-world-stream-acceptance').get().asFile.absolutePath
+}
