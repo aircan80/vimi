@@ -51,7 +51,7 @@ protects transport; it does not hide requests from those operators.
 | `https://api.github.com/repos/fitzforge/polestar/git/ref/heads/next`; `https://raw.githubusercontent.com/fitzforge/polestar/{commit}/forever-db/...` | Polestar index/datapackage, JSONL datasets, schemas and notices from an admitted path set. | Enabled source synchronization/preparation and applicable Forever build mapping. |
 
 Official CDN hosts are restricted to `level3.blizzard.com`,
-`level3.ssl.blizzard.com`, or the admitted `{letters}.cdn.blizzard.com` pattern.
+`level3.ssl.blizzard.com`, or the admitted `{2–8 lowercase letters}.cdn.blizzard.com` pattern.
 Listfile release redirects admit `release-assets.githubusercontent.com` and
 `objects.githubusercontent.com`. This is not a general-purpose web browser.
 
@@ -87,7 +87,7 @@ Evidence: [HttpEngine](../network-clients/src/main/java/com/vibeminer/network/Ht
 [NetworkOptions](../network-clients/src/main/java/com/vibeminer/network/NetworkOptions.java),
 [DataSourcesService](../gui/src/main/java/com/vimi/gui/DataSourcesService.java)
 `policy` / `checkDue`, [NativePreparationWork](../gui/src/main/java/com/vimi/gui/NativePreparationWork.java)
-`withSources`, and [BuildDownloads](../gui/src/main/java/com/vimi/gui/BuildDownloads.java).
+`withSourcePolicies`, and [BuildDownloads](../gui/src/main/java/com/vimi/gui/BuildDownloads.java).
 
 ## Persistent filesystem locations
 
@@ -107,7 +107,7 @@ are part of the local trust boundary.
 | Location | What the app reads / stores | Lifetime / privacy consequence |
 | --- | --- | --- |
 | `<data>/library/objects.sqlite3` | Unified library index, ownership and build metadata; saved preparation receipts, product/source settings and background-download policy use this database. SQLite sidecar/journal files can exist while in use. | Persistent. Can reveal selected products/builds/locales, source use and preparation/download history. |
-| `<data>/library/packs/pack-*.vmp` | Acquired original objects and generated objects through owner-bound library views; retained content/provenance can be shared across builds. | Persistent content cache. It is not encrypted by an application storage key. Content decryption is distinct from storage encryption. |
+| `<data>/library/packs/pack-*.vmp` | Acquired originals and generated objects (including decoded voice PCM) through owner-bound library views; retained content/provenance can be shared across builds. | Persistent content cache. It is not encrypted by an application storage key. Content decryption is distinct from storage encryption. |
 | `<data>/library/staging/` and library lock files | Store transaction/recovery staging and exclusive-writer coordination. | Operational state; do not delete or manipulate a live library. Crash recovery and retained originals need separate handling. |
 | `<data>/catalog.sqlite` | Local advertised/observed build catalog. | Persistent browsing/build history rather than an account login database. |
 | `<data>/derived/grids/` | Compact prepared browser grids/derived indexes. | Persistent, reconstructible derived content; still may reveal the builds/tables inspected. |
@@ -141,9 +141,10 @@ and [EgLinkRepository](../eg-link/src/main/java/com/vibeminer/eglink/EgLinkRepos
   correlation and integrity, not confidentiality.
 - GPU and Vorbis preview helpers launch the executable under `java.home` through
   argument lists. GPU file paths/classpaths appear in child arguments. Audio uses
-  pipes for encoded input and decoded PCM; no persistent audio output is created
-  by the reviewed voice-preview path. Child JVMs inherit user privileges and
-  environment; they are not OS sandboxes.
+  pipes for encoded input and decoded PCM rather than an audio temporary file.
+  `RaceVoices` can cache decoded PCM as a generated library object for later playback;
+  closing the preview does not erase that derivative. Child JVMs inherit user
+  privileges and environment; they are not OS sandboxes.
 - Runtime reads also include packaged JARs, pinned bundled definitions, shaders,
   native libraries, JRE configuration and OS fonts/drivers/audio resources. Native
   loading and OS-specific caches are not fully enumerable from Java source alone.
@@ -156,7 +157,9 @@ and [EgLinkRepository](../eg-link/src/main/java/com/vibeminer/eglink/EgLinkRepos
 Evidence: [GpuPreviewService](../gui/src/main/java/com/vimi/gui/GpuPreviewService.java),
 [WorldStreamPreparedFiles](../rendering-bgfx/src/main/java/com/vibeminer/rendering/bgfx/WorldStreamPreparedFiles.java),
 [WorldStreamTransport](../rendering-bgfx/src/main/java/com/vibeminer/rendering/bgfx/WorldStreamTransport.java),
-and [VoiceDecoder](../formats-audio/src/main/java/com/vibeminer/formats/audio/VoiceDecoder.java).
+[VoiceDecoder](../formats-audio/src/main/java/com/vibeminer/formats/audio/VoiceDecoder.java),
+and [RaceVoices](../concepts-races/src/main/java/com/vibeminer/concepts/races/RaceVoices.java)
+`decode` / generated PCM read and write.
 
 ## Retention, deletion and sharing
 
