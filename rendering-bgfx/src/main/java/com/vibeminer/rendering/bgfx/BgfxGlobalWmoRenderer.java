@@ -440,7 +440,7 @@ final class BgfxGlobalWmoRenderer implements GlobalWmoNativeScene {
     }
 
     private static short shader(String profile, String name) throws IOException {
-        if (!List.of("glsl", "spirv", "metal").contains(profile)) {
+        if (!List.of("glsl", "spirv", "metal", "dx11").contains(profile)) {
             throw new IOException("Global candidate profile unqualified");
         }
         String path =

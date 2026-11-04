@@ -24,17 +24,25 @@ final class WorldGlobalSourceBridge {
         private final WorldGlobalSceneWriter.Destination destination;
         private final Path directory;
         private final Cancellation cancellation;
+        private final float[] bounds;
         private boolean moved;
 
         private Prepared(
                 WorldGlobalScenes.WrittenScene<WorldGlobalSceneWriter.UnadvertisedFile> source,
                 WorldGlobalSceneWriter.Destination destination,
                 Path directory,
-                Cancellation cancellation) {
+                Cancellation cancellation,
+                float[] bounds) {
             this.source = source;
             this.destination = destination;
             this.directory = directory;
             this.cancellation = cancellation;
+            this.bounds = bounds.clone();
+        }
+
+        /** Descriptive native XYZ AABB captured under the actual writer borrow. */
+        float[] bounds() {
+            return bounds.clone();
         }
 
         WorldGlobalScenes.Facts facts() {
@@ -185,6 +193,7 @@ final class WorldGlobalSourceBridge {
         var directory =
                 Files.createTempDirectory(parent, "global-source-").toAbsolutePath().normalize();
         WorldGlobalScenes.WrittenScene<WorldGlobalSceneWriter.UnadvertisedFile> written = null;
+        float[] bounds = new float[6];
         boolean returned = false;
         Throwable failure = null;
         try {
@@ -196,6 +205,7 @@ final class WorldGlobalSourceBridge {
                             scope,
                             cancel,
                             (borrow, actualToken) -> {
+                                captureBounds(borrow, bounds);
                                 try {
                                     return WorldGlobalSceneWriter.writeUnadvertised(
                                             destination,
@@ -205,7 +215,7 @@ final class WorldGlobalSourceBridge {
                                     throw new UncheckedIOException(error);
                                 }
                             });
-            var result = new Prepared(written, destination, directory, cancel);
+            var result = new Prepared(written, destination, directory, cancel, bounds);
             returned = true;
             return result;
         } catch (RuntimeException | Error error) {
@@ -233,6 +243,25 @@ final class WorldGlobalSourceBridge {
                         rethrow(cleanup);
                     }
                 }
+            }
+        }
+    }
+
+    /** Bounded scalar scan (at most 32768 vertices) inside the live borrow; no arrays or IO. */
+    static void captureBounds(WorldGlobalScenes.CheckedBorrow borrow, float[] bounds) {
+        int vertices = borrow.vertices();
+        if (vertices < 1 || vertices > 32768) {
+            throw new IllegalStateException("Global vertex bound");
+        }
+        for (int axis = 0; axis < 3; axis++) {
+            bounds[axis] = Float.POSITIVE_INFINITY;
+            bounds[axis + 3] = Float.NEGATIVE_INFINITY;
+        }
+        for (int vertex = 0; vertex < vertices; vertex++) {
+            for (int axis = 0; axis < 3; axis++) {
+                float value = borrow.vertex(vertex, axis);
+                bounds[axis] = Math.min(bounds[axis], value);
+                bounds[axis + 3] = Math.max(bounds[axis + 3], value);
             }
         }
     }
