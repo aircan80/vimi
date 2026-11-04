@@ -361,7 +361,7 @@ final class WorldStreamScopesTest {
 
     @Test
     void metadataInputsAreProfileBoundedBeforeIdentityHashingOrRowReads() {
-        for (int mode = 1; mode <= 11; mode++) {
+        for (int mode = 1; mode <= 23; mode++) {
             var files = new WorldTerrainTextureSourceTest.Files();
             var tables = new Tables(files);
             tables.metadataMode = mode;
@@ -386,6 +386,12 @@ final class WorldStreamScopesTest {
             CapturedRowsTypes.Receipt r, int mode) {
         var columns = new ArrayList<>(r.columns());
         var schema = r.schema();
+        var header = r.header();
+        var completion = r.completion();
+        var sections = r.sections();
+        var holes = r.holeKeys();
+        var keys = r.effectiveKeys();
+        var table = r.table();
         String revision = r.readerRevision(),
                 encoding = r.rowEncoding(),
                 scope = r.encodingScope(),
@@ -439,12 +445,105 @@ final class WorldStreamScopesTest {
                                     r.schema().match(),
                                     r.schema().locale(),
                                     "c".repeat(1025));
+            case 12 ->
+                    header =
+                            new Db2Types.Header(
+                                    header.schemaVersion(),
+                                    header.tableHash(),
+                                    header.layoutHash(),
+                                    header.declaredRecords(),
+                                    header.declaredCopyRecords(),
+                                    header.recordSize(),
+                                    header.columns(),
+                                    "f".repeat(17));
+            case 13 ->
+                    completion =
+                            new Db2Types.Completion(
+                                    completion.declaredRecords(),
+                                    completion.physicalRows(),
+                                    completion.copyRows(),
+                                    completion.excludedEncryptedSections(),
+                                    completion.excludedPhysicalRecords(),
+                                    completion.excludedCopyRecords(),
+                                    "s".repeat(65),
+                                    completion.consumedBytes(),
+                                    completion.textIssueCount());
+            case 14 -> sections = java.util.Collections.nCopies(129, sections.getFirst());
+            case 15 -> {
+                var section = sections.getFirst();
+                sections =
+                        List.of(
+                                new Db2Types.Section(
+                                        section.index(),
+                                        section.recordCount(),
+                                        section.copyCount(),
+                                        "k".repeat(65),
+                                        section.isEncrypted(),
+                                        section.protectedCopyCount(),
+                                        section.unresolvedCopyCount(),
+                                        section.isDecrypted()));
+            }
+            case 16 -> holes = java.util.Collections.nCopies(129, "key");
+            case 17 -> holes = List.of("k".repeat(65));
+            case 18 ->
+                    keys =
+                            java.util.Collections.nCopies(
+                                    129, new CapturedRowsTypes.KeyFingerprint("key", null));
+            case 19 -> keys = List.of(new CapturedRowsTypes.KeyFingerprint("key", "f".repeat(65)));
+            case 20 ->
+                    header =
+                            new Db2Types.Header(
+                                    header.schemaVersion(),
+                                    header.tableHash(),
+                                    header.layoutHash(),
+                                    header.declaredRecords(),
+                                    header.declaredCopyRecords(),
+                                    header.recordSize(),
+                                    java.util.Collections.nCopies(129, columns.getFirst()),
+                                    header.format());
+            case 21 -> {
+                var c = table.counts();
+                table =
+                        new TableTypes.Entry(
+                                table.fileDataId(),
+                                table.name(),
+                                table.state(),
+                                table.checked(),
+                                table.reason(),
+                                new TableTypes.Counts(
+                                        c.declaredRows(),
+                                        c.readableRows(),
+                                        c.excludedSections(),
+                                        c.excludedRecords(),
+                                        "f".repeat(17),
+                                        c.layoutHash()),
+                                table.contentKey());
+            }
+            case 22 -> {
+                holes = java.util.Collections.nCopies(128, "k".repeat(64));
+                keys =
+                        java.util.Collections.nCopies(
+                                128,
+                                new CapturedRowsTypes.KeyFingerprint(
+                                        "k".repeat(64), "f".repeat(64)));
+            }
+            case 23 ->
+                    header =
+                            new Db2Types.Header(
+                                    header.schemaVersion(),
+                                    "h".repeat(17),
+                                    header.layoutHash(),
+                                    header.declaredRecords(),
+                                    header.declaredCopyRecords(),
+                                    header.recordSize(),
+                                    header.columns(),
+                                    header.format());
             default -> throw new AssertionError();
         }
         return new CapturedRowsTypes.Receipt(
                 r.build(),
                 r.locale(),
-                r.table(),
+                table,
                 schema,
                 columns,
                 r.definitionSha256(),
@@ -456,11 +555,348 @@ final class WorldStreamScopesTest {
                 encoding,
                 scope,
                 r.rowCount(),
-                r.header(),
-                r.completion(),
-                r.sections(),
-                r.holeKeys(),
-                r.effectiveKeys(),
+                header,
+                completion,
+                sections,
+                holes,
+                keys,
+                r.retention(),
+                r.membership(),
+                r.issueChannelEvidence());
+    }
+
+    @Test
+    void stableScopeUsesFreshCapturesAndEofProbesWithoutRepeatedDataOrdinals() {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        tables.rowCount = 16;
+        var source = new WorldStreamScopes(tables.handle(), files.files());
+        try {
+            var scope = source.create(REQUEST, Cancellation.NONE);
+            assertEquals(
+                    16,
+                    tables.dataReads.get(),
+                    "Initial proof scans the entire unique Map domain once");
+            assertEquals(2, tables.captures.get());
+            assertEquals(2, tables.eofProbes.get());
+            for (int i = 0; i < 5; i++) {
+                assertEquals(TILE, source.recorded(scope, TILE, Cancellation.NONE));
+            }
+            assertEquals(16, tables.dataReads.get());
+            assertEquals(7, tables.captures.get());
+            assertEquals(7, tables.eofProbes.get());
+            assertEquals(1, files.totalOpens(), "No repeated WDT payload read");
+        } finally {
+            source.closeAsync().join();
+            tables.close();
+        }
+    }
+
+    @Test
+    void everyBoundedEofProvenanceAndCapabilityFailureRefusesAnEqualStamp() {
+        for (int mode = 1; mode <= 12; mode++) {
+            var files = new WorldTerrainTextureSourceTest.Files();
+            var tables = new Tables(files);
+            var source = new WorldStreamScopes(tables.handle(), files.files());
+            try {
+                var scope = source.create(REQUEST, Cancellation.NONE);
+                int data = tables.dataReads.get();
+                if (mode <= 10) {
+                    tables.eofMode = mode;
+                } else if (mode == 11) {
+                    tables.boundedUnsupported = true;
+                } else {
+                    tables.unknownEvidence = true;
+                }
+                assertThrows(
+                        RuntimeException.class,
+                        () -> source.recorded(scope, TILE, Cancellation.NONE));
+                assertEquals(
+                        data,
+                        tables.dataReads.get(),
+                        "No fallback full scan under failed fresh capability");
+                assertEquals(0, source.retainedProofs());
+            } finally {
+                source.closeAsync().join();
+                tables.close();
+            }
+        }
+    }
+
+    @Test
+    void completeSourceStampChangesInvalidateWithoutRescanningData() {
+        for (int mode = 1; mode <= 13; mode++) {
+            var files = new WorldTerrainTextureSourceTest.Files();
+            var tables = new Tables(files);
+            var source = new WorldStreamScopes(tables.handle(), files.files());
+            try {
+                var scope = source.create(REQUEST, Cancellation.NONE);
+                int data = tables.dataReads.get();
+                tables.stampMode = mode;
+                assertThrows(
+                        RuntimeException.class,
+                        () -> source.recorded(scope, TILE, Cancellation.NONE));
+                assertEquals(data, tables.dataReads.get());
+                assertEquals(0, source.retainedProofs());
+                tables.stampMode = 0;
+                assertThrows(
+                        IllegalStateException.class,
+                        () -> source.recorded(scope, TILE, Cancellation.NONE));
+                source.create(REQUEST, Cancellation.NONE);
+                assertTrue(
+                        tables.dataReads.get() > data,
+                        "Replacement proof performs a complete scan");
+            } finally {
+                source.closeAsync().join();
+                tables.close();
+            }
+        }
+    }
+
+    @Test
+    void heldFreshEofCancellationAndCloseDrainWithoutDataRescanOrStaleSuccess() throws Exception {
+        for (boolean close : new boolean[] {false, true}) {
+            var files = new WorldTerrainTextureSourceTest.Files();
+            var tables = new Tables(files);
+            var source = new WorldStreamScopes(tables.handle(), files.files());
+            try {
+                var scope = source.create(REQUEST, Cancellation.NONE);
+                int data = tables.dataReads.get();
+                tables.held = new CompletableFuture<>();
+                var canceled = new Cancellation();
+                var pending =
+                        CompletableFuture.supplyAsync(() -> source.recorded(scope, TILE, canceled));
+                assertTrue(tables.heldEntered.await(2, TimeUnit.SECONDS));
+                CompletableFuture<Void> drained = null;
+                if (close) {
+                    drained = source.closeAsync();
+                    assertFalse(drained.isDone());
+                } else {
+                    canceled.cancel();
+                }
+                tables.held.complete(tables.page(tables.rowCount));
+                assertThrows(java.util.concurrent.CompletionException.class, pending::join);
+                assertEquals(data, tables.dataReads.get());
+                tables.held = null;
+                if (close) {
+                    drained.get(2, TimeUnit.SECONDS);
+                    assertEquals(0, source.retainedProofs());
+                } else {
+                    assertEquals(TILE, source.recorded(scope, TILE, Cancellation.NONE));
+                    assertEquals(data, tables.dataReads.get());
+                }
+            } finally {
+                source.closeAsync().join();
+                tables.close();
+            }
+        }
+    }
+
+    @Test
+    void newlyOversizedMetadataCannotReuseAnOtherwiseKnownPrivateProof() {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var source = new WorldStreamScopes(tables.handle(), files.files());
+        try {
+            var scope = source.create(REQUEST, Cancellation.NONE);
+            int reads = tables.pages.get();
+            tables.metadataMode = 23;
+            assertThrows(
+                    UnsupportedOperationException.class,
+                    () -> source.recorded(scope, TILE, Cancellation.NONE));
+            assertEquals(
+                    reads,
+                    tables.pages.get(),
+                    "No hash/ordinal/EOF read under rejected metadata profile");
+            assertEquals(0, source.retainedProofs());
+        } finally {
+            source.closeAsync().join();
+            tables.close();
+        }
+    }
+
+    @Test
+    void authoredRepeatedSourceValidationReportsWorkCountsAndTimings() {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        tables.rowCount = 256;
+        var source = new WorldStreamScopes(tables.handle(), files.files());
+        try {
+            long start = System.nanoTime();
+            var scope = source.create(REQUEST, Cancellation.NONE);
+            long initial = System.nanoTime() - start;
+            long[] elapsed = new long[7];
+            int before = tables.dataReads.get();
+            for (int i = 0; i < elapsed.length; i++) {
+                start = System.nanoTime();
+                source.recorded(scope, TILE, Cancellation.NONE);
+                elapsed[i] = System.nanoTime() - start;
+            }
+            java.util.Arrays.sort(elapsed);
+            System.out.println(
+                    "WORLD_SCOPE_AUTHORED rows=256 runs=7 initial_us="
+                            + initial / 1000
+                            + " median_us="
+                            + elapsed[3] / 1000
+                            + " p95_us="
+                            + elapsed[6] / 1000
+                            + " max_us="
+                            + elapsed[6] / 1000
+                            + " repeated_data_ordinals="
+                            + (tables.dataReads.get() - before)
+                            + " total_data_ordinals="
+                            + tables.dataReads.get()
+                            + " captures="
+                            + tables.captures.get()
+                            + " eof_probes="
+                            + tables.eofProbes.get());
+        } finally {
+            source.closeAsync().join();
+            tables.close();
+        }
+    }
+
+    private static CapturedRowsTypes.Receipt changedStamp(CapturedRowsTypes.Receipt r, int mode) {
+        var schema = r.schema();
+        var header = r.header();
+        var completion = r.completion();
+        var sections = r.sections();
+        var holes = r.holeKeys();
+        var keys = r.effectiveKeys();
+        var table = r.table();
+        String definition = r.definitionSha256(),
+                revision = r.readerRevision(),
+                encoding = r.rowEncoding();
+        long count = r.rowCount();
+        switch (mode) {
+            case 1 -> definition = "f".repeat(64);
+            case 2 ->
+                    schema =
+                            new TableSchema(
+                                    schema.columns(),
+                                    schema.layoutHashes(),
+                                    schema.match(),
+                                    schema.locale(),
+                                    "changed");
+            case 3 -> {
+                var fields = new ArrayList<>(schema.columns());
+                var f = fields.getFirst();
+                fields.set(
+                        0,
+                        new TableSchema.SchemaColumn(
+                                f.name(),
+                                f.kind(),
+                                31,
+                                f.unsigned(),
+                                f.arrayLength(),
+                                f.foreignKey(),
+                                f.id(),
+                                f.relation(),
+                                f.verifiedName(),
+                                f.locale(),
+                                f.columnComment(),
+                                f.fieldComment()));
+                schema =
+                        new TableSchema(
+                                fields,
+                                schema.layoutHashes(),
+                                schema.match(),
+                                schema.locale(),
+                                schema.comment());
+            }
+            case 4 ->
+                    header =
+                            new Db2Types.Header(
+                                    header.schemaVersion(),
+                                    header.tableHash(),
+                                    header.layoutHash(),
+                                    header.declaredRecords() + 1,
+                                    header.declaredCopyRecords(),
+                                    header.recordSize(),
+                                    header.columns(),
+                                    header.format());
+            case 5 ->
+                    completion =
+                            new Db2Types.Completion(
+                                    completion.declaredRecords(),
+                                    completion.physicalRows(),
+                                    completion.copyRows(),
+                                    completion.excludedEncryptedSections(),
+                                    completion.excludedPhysicalRecords(),
+                                    completion.excludedCopyRecords(),
+                                    completion.scope(),
+                                    completion.consumedBytes() + 1,
+                                    completion.textIssueCount());
+            case 6 -> {
+                var section = sections.getFirst();
+                sections =
+                        List.of(
+                                new Db2Types.Section(
+                                        section.index(),
+                                        section.recordCount(),
+                                        section.copyCount(),
+                                        "changed",
+                                        section.isEncrypted(),
+                                        section.protectedCopyCount(),
+                                        section.unresolvedCopyCount(),
+                                        section.isDecrypted()));
+            }
+            case 7 -> holes = List.of("changed");
+            case 8 ->
+                    keys = List.of(new CapturedRowsTypes.KeyFingerprint("changed", "1".repeat(64)));
+            case 9 -> {
+                var c = table.counts();
+                table =
+                        new TableTypes.Entry(
+                                table.fileDataId(),
+                                table.name(),
+                                table.state(),
+                                table.checked(),
+                                table.reason(),
+                                new TableTypes.Counts(
+                                        c.declaredRows(),
+                                        c.readableRows() + 1,
+                                        c.excludedSections(),
+                                        c.excludedRecords(),
+                                        c.format(),
+                                        c.layoutHash()),
+                                table.contentKey());
+            }
+            case 10 -> revision = revision + "changed";
+            case 11 -> encoding = encoding + "changed";
+            case 12 ->
+                    table =
+                            new TableTypes.Entry(
+                                    table.fileDataId() + 1,
+                                    table.name(),
+                                    table.state(),
+                                    table.checked(),
+                                    table.reason(),
+                                    table.counts(),
+                                    table.contentKey());
+            case 13 -> count++;
+            default -> throw new AssertionError();
+        }
+        return new CapturedRowsTypes.Receipt(
+                r.build(),
+                r.locale(),
+                table,
+                schema,
+                r.columns(),
+                definition,
+                r.blockIdentity(),
+                r.graphIdentity(),
+                r.sourceIdentity(),
+                r.readerOptions(),
+                revision,
+                encoding,
+                r.encodingScope(),
+                count,
+                header,
+                completion,
+                sections,
+                holes,
+                keys,
                 r.retention(),
                 r.membership(),
                 r.issueChannelEvidence());
@@ -468,10 +904,13 @@ final class WorldStreamScopesTest {
 
     private static final class Tables {
         final WorldTerrainTextureSourceTest.Files files;
-        final AtomicInteger pages = new AtomicInteger();
-        final CountDownLatch entered = new CountDownLatch(1);
+        final AtomicInteger pages = new AtomicInteger(),
+                captures = new AtomicInteger(),
+                dataReads = new AtomicInteger(),
+                eofProbes = new AtomicInteger();
+        final CountDownLatch entered = new CountDownLatch(1), heldEntered = new CountDownLatch(1);
         volatile long mapId = 7;
-        volatile int rowCount = 1, metadataMode;
+        volatile int rowCount = 1, metadataMode, eofMode, stampMode;
         volatile boolean skipPage, emptyMiddle;
         volatile String wdt = "1", identity = "owned-map-row";
         volatile boolean duplicate,
@@ -508,6 +947,46 @@ final class WorldStreamScopesTest {
                         null,
                         null);
             }
+            if (original.rows().isEmpty()) {
+                if (eofMode == 0) {
+                    return original;
+                }
+                var state =
+                        switch (eofMode) {
+                            case 6 -> CapturedRowsTypes.ReadState.LIMIT_EXCEEDED;
+                            case 7 -> CapturedRowsTypes.ReadState.CANCELED;
+                            case 8 -> CapturedRowsTypes.ReadState.CLOSED;
+                            case 9 -> CapturedRowsTypes.ReadState.CORRUPT;
+                            case 10 -> CapturedRowsTypes.ReadState.INVALIDATED;
+                            default -> CapturedRowsTypes.ReadState.READ;
+                        };
+                return new CapturedRowsTypes.Page(
+                        eofMode == 1 ? "wrong" : original.identity(),
+                        eofMode == 2 ? first - 1 : first,
+                        state,
+                        eofMode == 3
+                                ? List.of(
+                                        new TableTypes.Row(
+                                                0,
+                                                new Db2Types.Row(
+                                                        7,
+                                                        false,
+                                                        null,
+                                                        List.of("7", "1"),
+                                                        List.of())))
+                                : List.of(),
+                        eofMode == 4 ? Long.valueOf(first + 1) : null,
+                        null,
+                        null,
+                        eofMode == 5
+                                ? List.of(
+                                        new CapturedRowsTypes.CellIssue(
+                                                first,
+                                                -1,
+                                                CapturedRowsTypes.CellState.LIMITED,
+                                                "bad"))
+                                : List.of());
+            }
             var row = original.rows().getFirst();
             if (mapId != 7 || !wdt.equals("1")) {
                 row =
@@ -535,6 +1014,7 @@ final class WorldStreamScopesTest {
         }
 
         CapturedRowsTypes.Capture capture(Cancellation token) {
+            captures.incrementAndGet();
             if (unsupported) {
                 return CapturedRowsTypes.Capture.unsupported();
             }
@@ -570,6 +1050,9 @@ final class WorldStreamScopesTest {
                     new CapturedRows() {
                         public CapturedRowsTypes.Receipt receipt() {
                             var r = delegate.receipt();
+                            if (stampMode != 0) {
+                                return changedStamp(r, stampMode);
+                            }
                             if (metadataMode != 0) {
                                 return oversizedMetadata(r, metadataMode);
                             }
@@ -632,6 +1115,11 @@ final class WorldStreamScopesTest {
                                 CapturedRowsTypes.ReadLimits limits,
                                 Cancellation cancel) {
                             assertEquals(WorldStreamScopes.READ_LIMITS, limits);
+                            if (first < delegate.receipt().rowCount()) {
+                                dataReads.incrementAndGet();
+                            } else {
+                                eofProbes.incrementAndGet();
+                            }
                             if (boundedUnsupported) {
                                 return CompletableFuture.failedFuture(
                                         new UnsupportedOperationException(
@@ -651,9 +1139,11 @@ final class WorldStreamScopesTest {
                             assertEquals(1, count, "Map proof never requests a wide generic page");
                             pages.incrementAndGet();
                             entered.countDown();
-                            return held != null
-                                    ? held
-                                    : CompletableFuture.completedFuture(page(first));
+                            if (held != null) {
+                                heldEntered.countDown();
+                                return held;
+                            }
+                            return CompletableFuture.completedFuture(page(first));
                         }
 
                         public CompletableFuture<Void> closeAsync() {

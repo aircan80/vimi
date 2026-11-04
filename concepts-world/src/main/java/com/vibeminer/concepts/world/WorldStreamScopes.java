@@ -8,13 +8,16 @@ import com.vibeminer.formats.db2.NativeIssueIdentity;
 import com.vibeminer.formats.definitions.WowLocale;
 import com.vibeminer.formats.generated.GeneratedTableSource;
 import com.vibeminer.formats.tables.BuildTables;
+import com.vibeminer.formats.tables.CapturedRows;
 import com.vibeminer.formats.tables.CapturedRowsTypes;
 import com.vibeminer.formats.tables.TableTypes;
 import com.vibeminer.formats.world.WorldFormats;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.security.DigestOutputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
@@ -61,7 +64,14 @@ final class WorldStreamScopes {
         }
     }
 
-    private record MapBinding(long mapId, long wdtId, String identity) {}
+    private record MapBinding(long mapId, long wdtId, String identity, String sourceStamp) {}
+
+    private record MapContext(
+            CapturedRowsTypes.Receipt receipt,
+            TableTypes.SchemaResult schema,
+            int column,
+            String layout,
+            String stamp) {}
 
     private static final class Source implements AutoCloseable {
         private final String key;
@@ -132,7 +142,7 @@ final class WorldStreamScopes {
             }
             Maid maid = readMaid(map.wdtId(), token);
             // Recheck the qualified selected row and WDT identity before committing a proof.
-            if (!map.equals(map(requested.id(), token))
+            if (!revalidateMap(map, token)
                     || !maid.key().equals(stat(map.wdtId(), token).contentKey())) {
                 throw new IllegalStateException("Scope source changed");
             }
@@ -237,12 +247,18 @@ final class WorldStreamScopes {
             synchronized (this) {
                 proof = resolve(scope);
             }
-            if (!proof.map().equals(map(scope.mapId(), token))
-                    || !scope.wdtKey().equals(stat(scope.wdtId(), token).contentKey())) {
-                synchronized (this) {
-                    invalidate(scope);
+            try {
+                if (!revalidateMap(proof.map(), token)
+                        || !scope.wdtKey().equals(stat(scope.wdtId(), token).contentKey())) {
+                    throw new IllegalStateException("Scope source changed");
                 }
-                throw new IllegalStateException("Scope source changed");
+            } catch (RuntimeException failure) {
+                if (!token.isCanceled()) {
+                    synchronized (this) {
+                        invalidate(scope);
+                    }
+                }
+                throw failure;
             }
             int ordinal = caller.y() * 64 + caller.x();
             if (!proof.present().get(ordinal)) {
@@ -327,31 +343,69 @@ final class WorldStreamScopes {
         }
     }
 
-    private MapBinding map(long requestedId, Cancellation token) {
+    private CapturedRows openMap(Cancellation token) {
         var capture = tables.capturePreparedLocal(TableTypes.Ref.forName("Map"), token).join();
         if (capture.rows() == null) {
             throw new UnsupportedOperationException("Prepared native Map capture unavailable");
         }
-        try (var rows = capture.rows()) {
-            var receipt = rows.receipt();
-            requireEntry(receipt.table());
-            if (!receipt.build().equals(build)
-                    || !receipt.locale().equals(locale)
-                    || receipt.rowCount() > 10_000
-                    || receipt.completion().excludedEncryptedSections() != 0
-                    || receipt.completion().excludedPhysicalRecords() != 0
-                    || receipt.completion().excludedCopyRecords() != 0) {
-                throw new IllegalStateException("Unqualified Map capture scope");
-            }
-            validateNative(receipt);
-            var schema =
-                    new TableTypes.SchemaResult(
-                            receipt.table(), receipt.columns(), receipt.schema());
-            int column = WorldService.column(schema, "WdtFileDataID", true);
-            if (column < 0) {
-                throw new IllegalStateException("Unqualified Map WDT field");
-            }
-            String layout = mapLayout(schema);
+        return capture.rows();
+    }
+
+    private MapContext qualifyMap(CapturedRows rows, Cancellation token) {
+        token.check();
+        var receipt = rows.receipt();
+        requireEntry(receipt.table());
+        if (!receipt.build().equals(build)
+                || !receipt.locale().equals(locale)
+                || receipt.rowCount() > 10_000
+                || receipt.completion().excludedEncryptedSections() != 0
+                || receipt.completion().excludedPhysicalRecords() != 0
+                || receipt.completion().excludedCopyRecords() != 0) {
+            throw new IllegalStateException("Unqualified Map capture scope");
+        }
+        validateNative(receipt);
+        var schema =
+                new TableTypes.SchemaResult(receipt.table(), receipt.columns(), receipt.schema());
+        int column = WorldService.column(schema, "WdtFileDataID", true);
+        if (column < 0) {
+            throw new IllegalStateException("Unqualified Map WDT field");
+        }
+        String layout = mapLayout(schema);
+        return new MapContext(
+                receipt, schema, column, layout, sourceStamp(receipt, column, layout));
+    }
+
+    private boolean revalidateMap(MapBinding binding, Cancellation token) {
+        try (var rows = openMap(token)) {
+            var context = qualifyMap(rows, token);
+            probeEof(rows, context.receipt(), token);
+            return binding.sourceStamp().equals(context.stamp());
+        }
+    }
+
+    private static void probeEof(
+            CapturedRows rows, CapturedRowsTypes.Receipt receipt, Cancellation token) {
+        token.check();
+        var page = rows.readOrdinalPage(receipt.rowCount(), 1, READ_LIMITS, token).join();
+        token.check();
+        if (page.state() != CapturedRowsTypes.ReadState.READ
+                || !page.identity().equals(receipt.graphIdentity())
+                || page.firstOrdinal() != receipt.rowCount()
+                || !page.rows().isEmpty()
+                || !page.cellIssues().isEmpty()
+                || page.nextOrdinal() != null) {
+            throw new UnsupportedOperationException(
+                    "Fresh Map capture lacks bounded EOF capability");
+        }
+    }
+
+    private MapBinding map(long requestedId, Cancellation token) {
+        try (var rows = openMap(token)) {
+            var context = qualifyMap(rows, token);
+            var receipt = context.receipt();
+            var schema = context.schema();
+            int column = context.column();
+            String layout = context.layout();
             long ordinal = 0;
             MapBinding found = null;
             do {
@@ -417,12 +471,15 @@ final class WorldStreamScopes {
                                     + ":"
                                     + column
                                     + ":"
-                                    + wdt;
+                                    + wdt
+                                    + ":"
+                                    + context.stamp();
                     found =
                             new MapBinding(
                                     requestedId,
                                     wdt,
-                                    sha(binding.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+                                    sha(binding.getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+                                    context.stamp());
                 }
                 if (page.nextOrdinal() == null) {
                     if (ordinal + page.rows().size() != receipt.rowCount()) {
@@ -435,6 +492,7 @@ final class WorldStreamScopes {
             if (found == null) {
                 throw new IllegalStateException("Unknown Map ID");
             }
+            probeEof(rows, receipt, token);
             return found;
         }
     }
@@ -488,10 +546,38 @@ final class WorldStreamScopes {
         profileBuild(r.build(), r.locale());
         if (r.columns().size() > 128
                 || r.schema().columns().size() > 128
-                || r.schema().layoutHashes().size() > 32) {
+                || r.schema().layoutHashes().size() > 32
+                || r.header().columns().size() > 128
+                || r.sections().size() > 128
+                || r.holeKeys().size() > 128
+                || r.effectiveKeys().size() > 128) {
             throw new UnsupportedOperationException("Map metadata shape exceeds hot profile");
         }
         long bytes = 1024;
+        bytes +=
+                profileString(r.header().tableHash(), 16, false)
+                        + profileString(r.header().layoutHash(), 16, false)
+                        + profileString(r.header().format(), 16, false)
+                        + profileString(r.completion().scope(), 64, false);
+        if (r.table().counts() == null) {
+            throw new UnsupportedOperationException("Missing Map counts");
+        }
+        bytes +=
+                profileString(r.table().counts().format(), 16, false)
+                        + profileString(r.table().counts().layoutHash(), 16, false);
+        for (var section : r.sections()) {
+            bytes += 64 + profileString(section.key(), 64, false);
+        }
+        for (var key : r.holeKeys()) {
+            bytes += 32 + profileString(key, 64, false);
+        }
+        for (var key : r.effectiveKeys()) {
+            bytes +=
+                    64
+                            + profileString(key.name(), 64, false)
+                            + profileString(key.fingerprint(), 64, true);
+        }
+
         bytes += profileString(r.sourceIdentity(), 8256, false);
         bytes += profileString(r.definitionSha256(), 64, false);
         bytes += profileString(r.graphIdentity(), 32, false);
@@ -537,6 +623,9 @@ final class WorldStreamScopes {
         if (bytes > 64 << 10) {
             throw new UnsupportedOperationException("Map metadata exceeds hot profile");
         }
+        if (!r.header().columns().equals(r.columns())) {
+            throw new IllegalStateException("Map header columns differ");
+        }
         var e = r.issueChannelEvidence();
         long tuple = 64;
         for (var value :
@@ -570,6 +659,168 @@ final class WorldStreamScopes {
             throw new UnsupportedOperationException("Hot source metadata scalar exceeds profile");
         }
         return 16L + 4L * value.length();
+    }
+
+    // Canonical v1 stamp streams into SHA-256; no full-schema serialization buffer is retained.
+    private static String sourceStamp(CapturedRowsTypes.Receipt r, int column, String layout) {
+        try {
+            var hash = MessageDigest.getInstance("SHA-256");
+            try (var out =
+                    new DataOutputStream(
+                            new DigestOutputStream(OutputStream.nullOutputStream(), hash))) {
+                out.writeUTF("vimi-world-map-source-stamp-v1");
+                var build = r.build();
+                for (var value :
+                        new String[] {
+                            build.product(),
+                            build.buildConfig(),
+                            build.cdnConfig(),
+                            build.region(),
+                            r.locale()
+                        }) {
+                    text(out, value);
+                }
+                var table = r.table();
+                out.writeLong(table.fileDataId());
+                text(out, table.name());
+                out.writeBoolean(table.checked());
+                text(out, table.state().name());
+                text(out, table.contentKey());
+                var counts = table.counts();
+                out.writeLong(counts.declaredRows());
+                out.writeLong(counts.readableRows());
+                out.writeInt(counts.excludedSections());
+                out.writeLong(counts.excludedRecords());
+                text(out, counts.format());
+                text(out, counts.layoutHash());
+                for (var value :
+                        new String[] {
+                            r.definitionSha256(),
+                            r.blockIdentity(),
+                            r.graphIdentity(),
+                            r.sourceIdentity(),
+                            r.readerOptions(),
+                            r.readerRevision(),
+                            r.rowEncoding(),
+                            r.encodingScope(),
+                            r.retention().name(),
+                            r.membership().name()
+                        }) {
+                    text(out, value);
+                }
+                out.writeInt(column);
+                text(out, layout);
+                var schema = r.schema();
+                text(out, schema.match().name());
+                text(out, schema.locale().name());
+                text(out, schema.comment());
+                out.writeInt(schema.layoutHashes().size());
+                for (var value : schema.layoutHashes()) {
+                    text(out, value);
+                }
+                out.writeInt(schema.columns().size());
+                for (var field : schema.columns()) {
+                    text(out, field.name());
+                    text(out, field.kind() == null ? null : field.kind().name());
+                    number(out, field.bits());
+                    bool(out, field.unsigned());
+                    out.writeInt(field.arrayLength());
+                    out.writeBoolean(field.foreignKey() != null);
+                    if (field.foreignKey() != null) {
+                        text(out, field.foreignKey().table());
+                        text(out, field.foreignKey().column());
+                    }
+                    text(out, field.id() == null ? null : field.id().name());
+                    text(out, field.relation() == null ? null : field.relation().name());
+                    out.writeBoolean(field.verifiedName());
+                    text(out, field.locale() == null ? null : field.locale().name());
+                    text(out, field.columnComment());
+                    text(out, field.fieldComment());
+                }
+                var e = r.issueChannelEvidence();
+                for (var value :
+                        new String[] {
+                            e.state().name(),
+                            e.policyId(),
+                            e.producerId(),
+                            e.graphIdentity(),
+                            e.sourceIdentitySha256(),
+                            e.resolvedBlockSha256(),
+                            e.readerOptionsSha256(),
+                            e.actualColumnsSha256()
+                        }) {
+                    text(out, value);
+                }
+                var header = r.header();
+                out.writeLong(header.schemaVersion());
+                text(out, header.tableHash());
+                text(out, header.layoutHash());
+                out.writeLong(header.declaredRecords());
+                out.writeLong(header.declaredCopyRecords());
+                out.writeInt(header.recordSize());
+                text(out, header.format());
+                // Header/receipt columns equality and native actual-columns digest were verified
+                // first.
+                text(out, e.actualColumnsSha256());
+                out.writeLong(r.rowCount());
+                var completion = r.completion();
+                out.writeLong(completion.declaredRecords());
+                out.writeLong(completion.physicalRows());
+                out.writeLong(completion.copyRows());
+                out.writeInt(completion.excludedEncryptedSections());
+                out.writeLong(completion.excludedPhysicalRecords());
+                out.writeLong(completion.excludedCopyRecords());
+                text(out, completion.scope());
+                out.writeLong(completion.consumedBytes());
+                out.writeLong(completion.textIssueCount());
+                out.writeInt(r.sections().size());
+                for (var section : r.sections()) {
+                    out.writeInt(section.index());
+                    out.writeInt(section.recordCount());
+                    out.writeInt(section.copyCount());
+                    text(out, section.key());
+                    out.writeBoolean(section.isEncrypted());
+                    out.writeInt(section.protectedCopyCount());
+                    out.writeInt(section.unresolvedCopyCount());
+                    out.writeBoolean(section.isDecrypted());
+                }
+                out.writeInt(r.holeKeys().size());
+                for (var key : r.holeKeys()) {
+                    text(out, key);
+                }
+                out.writeInt(r.effectiveKeys().size());
+                for (var key : r.effectiveKeys()) {
+                    text(out, key.name());
+                    text(out, key.fingerprint());
+                }
+            }
+            return HexFormat.of().formatHex(hash.digest());
+        } catch (IOException impossible) {
+            throw new AssertionError(impossible);
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new AssertionError(impossible);
+        }
+    }
+
+    private static void text(DataOutputStream out, String value) throws IOException {
+        out.writeBoolean(value != null);
+        if (value != null) {
+            out.writeUTF(value);
+        }
+    }
+
+    private static void number(DataOutputStream out, Integer value) throws IOException {
+        out.writeBoolean(value != null);
+        if (value != null) {
+            out.writeInt(value);
+        }
+    }
+
+    private static void bool(DataOutputStream out, Boolean value) throws IOException {
+        out.writeBoolean(value != null);
+        if (value != null) {
+            out.writeBoolean(value);
+        }
     }
 
     private static String mapLayout(TableTypes.SchemaResult schema) {
