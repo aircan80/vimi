@@ -229,7 +229,17 @@ public final class GpuPreviewServiceTest {
             expectFailure(actualDrain, "Actual close retains the late startup failure");
             require(!Files.exists(directory.get()),
                     "Actual adapter close waits for owned mapping retirement");
-            first.closeAsync().get(1, TimeUnit.SECONDS);
+            expectFailure(first.closeAsync(), "Retired owner retains its earlier failed lifetime");
+            var third = new WorldStreamGpuOwner(service, "ef".repeat(32));
+            try {
+                third.session().get(3, TimeUnit.SECONDS);
+                throw new AssertionError("Authored failed start cannot produce a Session");
+            } catch (java.util.concurrent.ExecutionException expected) {
+                // The request fails spontaneously, before the adapter receives any close call.
+            }
+            service.closeAsync().get(3, TimeUnit.SECONDS);
+            expectFailure(third.closeAsync(),
+                    "First close after service teardown preserves original failed request");
         } finally {
             release.countDown();
             service.closeAsync().get(3, TimeUnit.SECONDS);
