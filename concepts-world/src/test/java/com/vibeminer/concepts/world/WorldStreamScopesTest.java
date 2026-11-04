@@ -130,9 +130,9 @@ final class WorldStreamScopesTest {
         } finally {
             releaseRead.complete(null);
             releaseLower.complete(null);
-            scopes.closeAsync().join();
-            helper.closeAsync().join();
-            pool.closeAsync().join();
+            scopes.closeAsync().get(5, TimeUnit.SECONDS);
+            helper.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
             tables.close();
         }
     }
