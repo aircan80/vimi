@@ -146,6 +146,13 @@ public final class WorldStreamSessionProof {
                                         require(
                                                 line.length() <= 255 && line.startsWith("WS2 "),
                                                 "Invalid status framing");
+                                        byte[] encoded =
+                                                (line + "\n").getBytes(StandardCharsets.US_ASCII);
+                                        var decoded =
+                                                WorldStreamStatus.decode(encoded, encoded.length);
+                                        require(
+                                                decoded.nonce().equals(NONCE),
+                                                "Wrong status session");
                                         var body = line.substring(37);
                                         if (body.startsWith("CREDIT ")) {
                                             var fields = body.split(" ");
