@@ -1,5 +1,139 @@
 # vimi development handoff
 
+## Alpha.19 parser allocation release candidate
+
+Focused release worktree `/tmp/vimi-terrain-parser-release`, branch
+`fix/terrain-parser-release`, includes independently approved8e57ff1+f0bba22.
+Only terrain geometry accumulation changed: bounded primitive buffers replace
+boxing/per-fan arrays. Five authored old-parser geometry/area goldens and actual
+three-ADT hashes/counts agree. Fulltile measuredallocation13.3MB→5.3MB;
+actualthree-source5.3–6.1MB, noFPS/wholeheapclaim. Root andindependentreviews pass.
+Full combined/hosted/package gates still required before alpha.19 tag; alpha.18
+remains the latest verified published prerelease until publication is checked.
+No city/instance/NPC/music/hotstreaming/characterUI feature is claimed delivered.
+
+
+## Current authorization and expanded roadmap
+
+The user explicitly authorized continued autonomous/overnight work and all additions
+in [the world/character roadmap](docs/world-experience-roadmap.md). Keep agents
+working in parallel; publish reviewed ready groups as prereleases. Current world
+streaming/cities/instances remain priorities. Finish remaining character models
+and a WoW-inspired character creator AFTER current world milestones; do not lose
+that request or make every later immersive extra block it. NPC/monster static
+placement, area music, sky/lighting/fog/time-of-day, ambient audio, walk/fly,
+inspection, search/travel/bookmarks, quest/vendor/trainer/flight overlays, idle
+animations and dungeon floor/group/entrance navigation are all authorized.
+
+Main includes alpha19 source39a42bb and later handoff docs. Alpha.19 is VERIFIED
+published by run41775202595: all five platform jobs passed,18assets, explicitly
+prerelease and not draft. Release https://github.com/aircan80/vimi/releases/tag/v0.1.0-alpha.19
+Frozen Linux launcher `.local/apps/preview-39a42bb/bin/vimi-gui-prototype` passes
+packaged UI/native24shader smoke. Never move tags or overwrite frozen launchers.
+Parser allocations fall about13.3MB to5.3–6.1MB on three real inputs with identical
+geometry/area fingerprints; persistent streaming/cities remain future work.
+
+Future draft PR153/worktree `/tmp/vimi-world-streaming-integration` now merges
+alpha19. Combined concepts/formats/rendering/GUI check passes153tasks; actual
+World GPU/navigation proof passes92tasks, with accepted Vulkan pixels, camera/resize,
+hide/resume, software toggle and drain. Framev2 codec05e1e1c is
+committed, independently approved and integrated; eight tests include mapping
+lifetime, CRC and presentation barriers. It is not wired into a hot renderer.
+
+World scope source engine througha9e17fe is independently approved and integrated.
+Cache/admission proposalsab05565/941833b/e2e171b+0e52788 and WMO
+factoryc2ec2ca+1378984 are approved for private implementation after explicit serial
+live input reservations and pre-return factory output cleanup. Admission0104600 is
+a tested intermediate, with derived edges/cache/pins still being implemented.
+Primitive parser makes the cache construction ledger plausible; actual ownership
+implementation still needs checks. Raw WMO parser5dbc64c is root approved for
+facts only. Actual small exterior and all eight Onyxia groups parse, without any
+claim that buildings/instances are visible yet. Private assets remain outside Git.
+
+Native selected-table preparatione181fa2 proves actual legacy UiMap/Assignment
+overlay upgrade with original stores read-only and old artifacts/captures unchanged;
+independent review and definition/key-mutation fixtures8e9458c pass. PR156 integrates
+this backend on branch feature/native-preparation-integration through53ba9aa,
+combined table/comparison/location/World/GUI157tasks pass; hosted checks pending.
+Maps facade3230c45+6da76c6 review found missing certificate bindings/full stamps/strict
+EOF probes; author is correcting all three before promotion. Off-caller close fix
+25492f5 independently approved with held-source cancellation/drain proof. Packed planner
+acceptance7a2ef0b has independent approval ONLY for authored test/emitter scope:
+1344 boundary MCNK segments across84 adjacent whole-tile edges, not1344 tile pairs.
+Multi-source geometry/material representation and native integration remain open.
+Streaming command codec92fd43f+mailboxa8f3c65 independently approved and integrated
+as70c9d5f+b0c9510. Tile packet exact mapping17da3e8 approved for implementation;
+codec/native runtime not delivered. Root WDT scene-facts parser is separate in
+/tmp/vimi-wdt-scene-facts, authored tests pass, review not yet requested.
+
+Character profiles currently Human/Orc/Dwarf/Tauren only; appearance catalog and
+choice vector plus remaining race/sex support remain queued after current World
+milestones. Expanded user requests stay in docs/world-experience-roadmap.md.
+
+
+
+## Verified alpha.18 publication
+
+Alpha.18 is verified published atc9cd4f3 by run41760647382: explicit prerelease,
+not draft,18assets and all five platform packages passed. The Intel Mac timing-test
+failure passed on unchanged-tag rerun. Release:
+https://github.com/aircan80/vimi/releases/tag/v0.1.0-alpha.18
+PR150 is FF-merged. Main additionally includes independently reviewed PR152
+watchdog cleanup-test scheduling seam09d922e after all hosted gates passed;
+production default still uses Thread.sleep. This test-only follow-up is not in
+alpha.18 and does not justify another release alone. Keep tag/distributions immutable.
+
+Alpha.18 delivers BASIC GPU/CPU terrain textures with atomic prepared-bundle
+publication, current terrain zone/subzone, wheel zoom/X descent/minimap orientation,
+HTTP mining activity with rate/sessionbytes, Talent Source details and item286556
+static-token resolution. One cold renderer handoff per changed neighborhood still
+remains; no wider distance/scenery/water/Maps browser is delivered.
+
+Frozen local development preview `.local/apps/preview-ddcc4c7/bin/vimi-gui-prototype`
+passed UI/native24-shader startup smoke. Its application source matches alpha.18;
+subsequent pre-tag changes were docs. Existing frozen alpha.17 launcher stays intact.
+
+Future source-owned hot streaming scope engine is being implemented in
+`/tmp/vimi-world-hot-protocol`; private factory design approved throughdeeece7 and
+heavy-proof-token refinement58f16ec. Pure state/frame/envelope through3133f29 has
+independent approval. Source authority must use bounded prepared CapturedRows,
+registry-owned proof arrays and independent callback pins; no renderer wiring yet.
+Pure Maps351aa76+8e4a224 independently approved; source facade/API investigation is
+next. Test-only steady GPU bridge cadence proof is underway separately. Earlier
+sections below are historical checkpoints and may describe now-completed gates.
+
+
+## Latest delivery and future-work checkpoint
+
+PR150 is FF-merged on main atc9cd4f3. Combined local check/assemble and World,
+minimap/network/Talent FX passes474tasks; actual Vulkan World proof passes91tasks.
+All hosted PR gates passed. Five-platform packaging dry run41759415353 passed.
+Immutable alpha.18 tag now points toc9cd4f3; do not move or overwrite it.
+Publication run41760647382 passed Linux x64/ARM64, Windows and Apple Silicon;
+Intel Mac failed only the existing100ms watchdog cleanup test (0 expected/1
+observed). Full logs `/tmp/vimi-alpha18-macos-x64.log` identify the timing-sensitive
+assertion atGpuParentWatchdogTest:60. Unchanged-tag failed-job rerun is queued.
+Do not claim alpha.18 published until release metadata/assets are verified.
+Frozen new development launcher `.local/apps/preview-ddcc4c7/bin/vimi-gui-prototype`
+passes packaged UI/native24-shader smoke; code matches alpha.18 (later changes
+were documentation). Alpha.17 remains latest verified published release for now.
+
+Future work is separate and not part of alpha.18:
+- `spike/world-persistent-gpu` through716b1ad: all four offline shader profiles,
+  scoped root-reviewed Vulkan precision,99frames/2,085,944 analytic samples
+  including sloped UV surfaces. Feasibility only, no production hot renderer.
+- `feature/world-hot-protocol` throughdeeece7: pure slot/credit/frame gate and
+  fixed session/commit codecs independently approved through3133f29. Source-owned
+  preparation API design is under review; no source factory/renderer wiring yet.
+- `feature/maps-navigation-model` through8e4a224: bounded pure hierarchy/history,
+  assignment hit choices and resource evidence;14authored tests pass. Root reviewed
+  API/classes and requested/fixed missing-vs-mismatched system reasons. No facade/UI.
+- `review/terrain-packed-planner` docsda5efd3 preserves source-free49tile findings:
+  flat49fits caps but~2.4s/~82M work; holes omit far tiles at geometry cap; rough
+  terrain refuses at100M work. Full stitched-plan acceptance/test emitter and a
+  separate multi-source batch/material design must precede view-distance wiring.
+
+
 ## Current Linux continuation — alpha.18 integration
 
 Latest published release remains alpha.17 at c70e88d; its frozen launcher is
