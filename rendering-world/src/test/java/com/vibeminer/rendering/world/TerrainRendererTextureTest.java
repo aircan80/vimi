@@ -13,7 +13,8 @@ class TerrainRendererTextureTest {
     private record Fixture(
             TerrainRenderer.Scene scene,
             TerrainTextureBinding texture,
-            WorldFormats.Terrain terrain) {}
+            WorldFormats.Terrain terrain,
+            TerrainScene.Tile tile) {}
 
     @Test
     void texturedGroundMatchesIndependentRayPlaneIntersectionAndPartialCoverage() {
@@ -29,8 +30,13 @@ class TerrainRendererTextureTest {
                     TerrainRenderer.render(f.scene, camera, 160, 120, List.of(), () -> false)
                             .pixels());
             var frame =
+                    TerrainRenderer.renderBorrowed(
+                            List.of(f.tile), camera, 160, 120, List.of(f.texture), () -> false);
+            assertArrayEquals(
                     TerrainRenderer.render(
-                            f.scene, camera, 160, 120, List.of(f.texture), () -> false);
+                                    f.scene, camera, 160, 120, List.of(f.texture), () -> false)
+                            .pixels(),
+                    frame.pixels());
             // Ground is z=50. Intersect each independently constructed eye ray with that plane.
             for (int y = 0; y < 120; y++) {
                 for (int x = 0; x < 160; x++) {
@@ -76,7 +82,8 @@ class TerrainRendererTextureTest {
         var f = fixture();
         var camera = new TerrainRenderer.Camera(-1100, -266, 150, 0, -.1);
         var frame =
-                TerrainRenderer.render(f.scene, camera, 160, 120, List.of(f.texture), () -> false);
+                TerrainRenderer.renderBorrowed(
+                        List.of(f.tile), camera, 160, 120, List.of(f.texture), () -> false);
         var overlap =
                 TerrainRenderer.render(
                         new TerrainRenderer.Scene(List.of(f.terrain, f.terrain)),
@@ -141,6 +148,7 @@ class TerrainRendererTextureTest {
         return new Fixture(
                 new TerrainRenderer.Scene(List.of(terrain)),
                 TerrainTextureBinding.borrow(metadata, rgba.asReadOnlyBuffer()),
-                terrain);
+                terrain,
+                tile);
     }
 }
