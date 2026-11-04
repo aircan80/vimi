@@ -401,3 +401,23 @@ writer cancellation, same-tile replacement, moving and stationary presentation,
 ACK/frame reordering and close. File codecs, actual mapped-memory fences, bounded
 pipe queues/watchdog, worker integration and native renderer remain later work;
 passing these models does not establish their implementation or performance.
+
+## Implementation checkpoint: fixed metadata envelopes
+
+`WorldStreamEnvelope` now encodes/decodes only the exact256-byte session and
+commit envelopes, with whole-file SHA-256, mode/version/caps, reserved-zero,
+nonce, count, duplicate-slot and integer checks. It owns no paths or source
+receipts and cannot create a positive material candidate. Nonce byte encoding is
+the high64-bit word followed by the low64-bit word, both little-endian; control
+nonce hex must represent those same16 bytes. Scope digest remains its raw32 bytes.
+
+Additional state fixtures cover a commit excluding STAGED, a commit dropping an
+active member during COMMITTED_DRAIN, reference underflow/stale callbacks and
+transaction exhaustion without wrap. The last positive signed transaction value
+is reserved for termination: the host closes before emitting it, envelope creation
+rejects it, and a direct state invocation drains/closes instead of granting more
+credit. Four envelope fixtures cover nine-member explicit order, all reserved
+padding, corrupt checksums, unsafe counts, truncation/trailing bytes, incompatible
+modes, wrong nonce and immutable member ownership. Tile/source packet codec,
+file publication/IO lifecycle, mapped-frame fences and pipe/watchdog implementation
+remain separate unimplemented checkpoints.

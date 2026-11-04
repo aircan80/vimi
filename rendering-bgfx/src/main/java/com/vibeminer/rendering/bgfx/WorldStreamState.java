@@ -262,6 +262,10 @@ final class WorldStreamState {
         if (tx <= highWater || tx <= 0) {
             return Result.STALE;
         }
+        if (tx == Long.MAX_VALUE) {
+            close();
+            return Result.CLOSED;
+        }
         highWater = tx;
         return Result.OK;
     }

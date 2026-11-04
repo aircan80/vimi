@@ -191,6 +191,43 @@ final class WorldStreamStateTest {
         assertNull(uploads.credit());
     }
 
+    @Test
+    void commitsMayExcludeStagedAndAdvanceDuringCommittedDrainWithoutReturningExtraCredit() {
+        var state = new WorldStreamState(NONCE);
+        var lease = state.credit();
+        state.offer(NONCE, 1, lease, 17, 21);
+        state.decoded(lease, true);
+        state.submittedReference(lease);
+        state.staged(lease);
+        assertEquals(OK, state.commit(NONCE, 2, 0, 1, List.of()));
+        assertEquals(WorldStreamState.Phase.STAGED, state.phase());
+        assertNull(state.credit());
+        assertEquals(OK, state.commit(NONCE, 3, 1, 2, List.of(lease)));
+        assertEquals(WorldStreamState.Phase.COMMITTED_DRAIN, state.phase());
+        assertEquals(OK, state.commit(NONCE, 4, 2, 3, List.of()));
+        assertTrue(state.active().isEmpty());
+        assertNull(
+                state.credit(), "Dropped active member does not free incoming source references");
+        assertEquals(OK, state.consumedReference(lease));
+        assertNotNull(state.credit());
+        assertNotEquals(lease, state.credit());
+        assertEquals(0, state.references());
+    }
+
+    @Test
+    void transactionExhaustionClosesWithoutWrappingAndDrainsAnExistingDecoder() {
+        var state = new WorldStreamState(NONCE);
+        var lease = state.credit();
+        assertEquals(OK, state.offer(NONCE, Long.MAX_VALUE - 1, lease, 17, 21));
+        assertEquals(STALE, state.commit(NONCE, Long.MIN_VALUE, 0, 1, List.of()));
+        assertEquals(CLOSED, state.commit(NONCE, Long.MAX_VALUE, 0, 1, List.of()));
+        assertNull(state.credit());
+        assertFalse(state.drained());
+        assertEquals(OK, state.decoded(lease, true));
+        assertTrue(state.drained());
+        assertEquals(BAD_LEASE, state.consumedReference(lease));
+    }
+
     private static final class AuthoredWriter {
         private final WorldStreamState.Lease lease;
         private boolean canceled, owned = true;
