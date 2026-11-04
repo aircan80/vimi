@@ -91,6 +91,35 @@ public final class GeneratedTable {
                                                         .toList()));
     }
 
+    public CompletableFuture<List<Db2Types.Row>> readPage(
+            long first,
+            int count,
+            RecordFile.ReadLimits readLimits,
+            RowCodec.DecodeLimits decodeLimits,
+            Cancellation token) {
+        java.util.Objects.requireNonNull(readLimits);
+        java.util.Objects.requireNonNull(decodeLimits);
+        var effective =
+                new RecordFile.ReadLimits(
+                        readLimits.maxCompressedBlockBytes(),
+                        readLimits.maxDecodedBlockBytes(),
+                        Math.min(readLimits.maxRecordBytes(), decodeLimits.maxRecordBytes()));
+        return operation(
+                token,
+                t ->
+                        file.read(first, count, effective, t)
+                                .thenApply(
+                                        records ->
+                                                records.stream()
+                                                        .map(
+                                                                r ->
+                                                                        RowCodec.decode(
+                                                                                r.id(),
+                                                                                r.bytes(),
+                                                                                decodeLimits))
+                                                        .toList()));
+    }
+
     public CompletableFuture<Db2Types.Row> find(long id, Cancellation token) {
         return operation(
                 token,

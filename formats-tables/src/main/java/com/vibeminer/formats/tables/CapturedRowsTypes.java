@@ -10,6 +10,31 @@ import java.util.Objects;
 public final class CapturedRowsTypes {
     private CapturedRowsTypes() {}
 
+    /** Optional post-open row-read ceilings; prepared graph metadata is a separate owner. */
+    public record ReadLimits(
+            int maxCompressedBlockBytes,
+            int maxDecodedBlockBytes,
+            int maxRecordBytes,
+            int maxColumns,
+            int maxIssues,
+            int maxCellUtf8Bytes) {
+        public ReadLimits {
+            int ceiling = com.vibeminer.generated.GeneratedTypes.MAX_OBJECT_BYTES;
+            if (maxCompressedBlockBytes < 1
+                    || maxCompressedBlockBytes > ceiling
+                    || maxDecodedBlockBytes < 1
+                    || maxDecodedBlockBytes > ceiling
+                    || maxRecordBytes < 1
+                    || maxRecordBytes > ceiling
+                    || maxColumns < 1
+                    || maxIssues < 1
+                    || maxCellUtf8Bytes < 1
+                    || maxCellUtf8Bytes > ceiling) {
+                throw new IllegalArgumentException("Invalid captured row read limits");
+            }
+        }
+    }
+
     public enum CaptureState {
         CAPTURED,
         UNSUPPORTED,
@@ -25,7 +50,8 @@ public final class CapturedRowsTypes {
         CORRUPT,
         CANCELED,
         CLOSED,
-        INVALIDATED
+        INVALIDATED,
+        LIMIT_EXCEEDED
     }
 
     public enum Retention {

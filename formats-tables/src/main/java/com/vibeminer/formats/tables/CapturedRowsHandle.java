@@ -62,6 +62,17 @@ final class CapturedRowsHandle implements CapturedRows {
     @Override
     public CompletableFuture<CapturedRowsTypes.Page> readOrdinalPage(
             long first, int maxRows, Cancellation token) {
+        return readPage(first, maxRows, null, token);
+    }
+
+    @Override
+    public CompletableFuture<CapturedRowsTypes.Page> readOrdinalPage(
+            long first, int maxRows, CapturedRowsTypes.ReadLimits limits, Cancellation token) {
+        return readPage(first, maxRows, java.util.Objects.requireNonNull(limits), token);
+    }
+
+    private CompletableFuture<CapturedRowsTypes.Page> readPage(
+            long first, int maxRows, CapturedRowsTypes.ReadLimits limits, Cancellation token) {
         java.util.Objects.requireNonNull(token);
         if (first < 0 || first > receipt.rowCount() || maxRows < 1 || maxRows > MAX_PAGE_ROWS) {
             throw new IllegalArgumentException("Invalid captured ordinal page");
@@ -91,7 +102,7 @@ final class CapturedRowsHandle implements CapturedRows {
             Thread.startVirtualThread(
                     () -> {
                         try {
-                            future.complete(read(reader, first, token));
+                            future.complete(read(reader, first, limits, token));
                         } catch (Throwable failure) {
                             future.completeExceptionally(failure);
                         }
@@ -103,13 +114,34 @@ final class CapturedRowsHandle implements CapturedRows {
         return future;
     }
 
-    private CapturedRowsTypes.Page read(GeneratedTable reader, long first, Cancellation token) {
+    private CapturedRowsTypes.Page read(
+            GeneratedTable reader,
+            long first,
+            CapturedRowsTypes.ReadLimits limits,
+            Cancellation token) {
         var request = new Cancellation();
         try (var caller = token.onCancel(request::cancel);
                 var owner = lifetime.onCancel(request::cancel)) {
             request.check();
             int count = (int) Math.min(1, receipt.rowCount() - first);
-            var rows = reader.readPage(first, count, request).join();
+            var rows =
+                    (limits == null
+                                    ? reader.readPage(first, count, request)
+                                    : reader.readPage(
+                                            first,
+                                            count,
+                                            new com.vibeminer.generated.RecordFile.ReadLimits(
+                                                    limits.maxCompressedBlockBytes(),
+                                                    limits.maxDecodedBlockBytes(),
+                                                    limits.maxRecordBytes()),
+                                            new com.vibeminer.formats.generated.RowCodec
+                                                    .DecodeLimits(
+                                                    limits.maxRecordBytes(),
+                                                    limits.maxColumns(),
+                                                    limits.maxIssues(),
+                                                    limits.maxCellUtf8Bytes()),
+                                            request))
+                            .join();
             request.check();
             if (rows.size() != count) {
                 throw new IllegalStateException("Captured row count disagrees");
@@ -158,6 +190,12 @@ final class CapturedRowsHandle implements CapturedRows {
             if (cause instanceof java.util.concurrent.CancellationException
                     || request.isCanceled()) {
                 return failed(first, CapturedRowsTypes.ReadState.CANCELED, "CAPTURE_CANCELED");
+            }
+            if (limits != null
+                    && cause instanceof com.vibeminer.generated.GeneratedStoreException e
+                    && e.code().equals(com.vibeminer.generated.GeneratedTypes.LIMIT)) {
+                return failed(
+                        first, CapturedRowsTypes.ReadState.LIMIT_EXCEEDED, "CAPTURE_READ_LIMIT");
             }
             synchronized (this) {
                 invalidated = true;
