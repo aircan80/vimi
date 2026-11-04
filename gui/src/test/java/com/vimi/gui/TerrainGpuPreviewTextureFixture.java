@@ -30,6 +30,8 @@ final class TerrainGpuPreviewTextureFixture implements AutoCloseable {
     private final List<WorldTextureSnapshot> snapshots = new ArrayList<>();
     final TerrainScene scene;
     final WorldFormats.Terrain terrain;
+    final List<WorldFormats.Tile> tiles;
+    private final Map<String, WorldFormats.Terrain> terrains = new java.util.HashMap<>();
     private final int expectedChunks;
 
     TerrainGpuPreviewTextureFixture() {
@@ -37,15 +39,34 @@ final class TerrainGpuPreviewTextureFixture implements AutoCloseable {
     }
 
     TerrainGpuPreviewTextureFixture(boolean partial) {
-        expectedChunks = partial ? 128 : 256;
-        byte[] root = root();
-        terrain = WorldFormats.adt(root, () -> false);
-        scene =
-                new TerrainScene(
-                        List.of(
-                                new TerrainScene.Tile(
-                                        TILE.x(), TILE.y(), terrain)));
-        Map<Long, byte[]> bytes = Map.of(1L, wdt(), 2L, root, 3L, texture(partial), 10L, blp());
+        this(partial, List.of(TILE));
+    }
+
+    static TerrainGpuPreviewTextureFixture neighborhood() { return neighborhood(false); }
+
+    static TerrainGpuPreviewTextureFixture neighborhood(boolean partial) {
+        return new TerrainGpuPreviewTextureFixture(partial, List.of(TILE,
+                new WorldFormats.Tile(18, 21, 101, 0, 0, 0, 0, 3, 0, 0),
+                new WorldFormats.Tile(20, 21, 103, 0, 0, 0, 0, 3, 0, 0)));
+    }
+
+    private TerrainGpuPreviewTextureFixture(boolean partial, List<WorldFormats.Tile> tiles) {
+        this.tiles = List.copyOf(tiles);
+        expectedChunks = (partial ? 128 : 256) * tiles.size();
+        Map<Long, byte[]> bytes = new java.util.HashMap<>();
+        var geometry = new ArrayList<TerrainScene.Tile>();
+        for (var tile : tiles) {
+            byte[] root = root(tile);
+            var parsed = WorldFormats.adt(root, () -> false);
+            terrains.put(tile.key(), parsed);
+            geometry.add(new TerrainScene.Tile(tile.x(), tile.y(), parsed));
+            bytes.put(tile.rootId(), root);
+        }
+        terrain = terrains.get(tiles.getFirst().key());
+        scene = new TerrainScene(geometry);
+        bytes.put(1L, wdt(tiles));
+        bytes.put(3L, texture(partial));
+        bytes.put(10L, blp());
         var files =
                 (BuildFiles)
                         Proxy.newProxyInstance(
@@ -157,23 +178,31 @@ final class TerrainGpuPreviewTextureFixture implements AutoCloseable {
     CompletableFuture<WorldTerrainTextureSource.BatchResult> batch(Cancellation token,
             java.util.function.Consumer<WorldTerrainTextureSource.Progress> progress) {
         if (javafx.application.Platform.isFxApplicationThread()) throw new AssertionError("Source on FX");
-        return source.read(mapInfo(), List.of(TILE), token, progress);
+        return batch(tiles, token, progress);
     }
 
     TerrainAtlasPool.Stats stats() {
         return pool.stats();
     }
 
+    CompletableFuture<WorldTerrainTextureSource.BatchResult> batch(
+            List<WorldFormats.Tile> requested, Cancellation token,
+            java.util.function.Consumer<WorldTerrainTextureSource.Progress> progress) {
+        return source.read(mapInfo(), requested, token, progress);
+    }
+
+    WorldFormats.Terrain terrain(WorldFormats.Tile tile) { return terrains.get(tile.key()); }
+
     WorldTextureSnapshot snapshot() throws Exception {
         var batch =
                 source.read(
                                 new WorldService.MapInfo(7, "Authored", null, 0, 1L),
-                                List.of(TILE),
+                                tiles,
                                 Cancellation.NONE,
                                 p -> {})
                         .get(5, TimeUnit.SECONDS);
         var snapshot = WorldTextureSnapshot.prepare(scene, batch, () -> false);
-        if (snapshot.atlasCount() != 1 || snapshot.coveredChunks() != expectedChunks) {
+        if (snapshot.atlasCount() != tiles.size() || snapshot.coveredChunks() != expectedChunks) {
             throw new AssertionError("Authored source did not qualify");
         }
         snapshots.add(snapshot);
@@ -199,7 +228,7 @@ final class TerrainGpuPreviewTextureFixture implements AutoCloseable {
         return out.toByteArray();
     }
 
-    private static byte[] wdt() {
+    private static byte[] wdt(List<WorldFormats.Tile> tiles) {
         var out = new ByteArrayOutputStream();
         out.writeBytes(part("MVER", ints(18)));
         out.writeBytes(
@@ -210,16 +239,18 @@ final class TerrainGpuPreviewTextureFixture implements AutoCloseable {
                                 .putInt(0x3ca)
                                 .array()));
         var main = ByteBuffer.allocate(4096 * 8).order(ByteOrder.LITTLE_ENDIAN);
-        int ordinal = TILE.x() * 64 + TILE.y();
-        main.putInt(ordinal * 8, 1);
-        out.writeBytes(part("MAIN", main.array()));
         var maid = ByteBuffer.allocate(4096 * 32).order(ByteOrder.LITTLE_ENDIAN);
-        maid.putInt(ordinal * 32, 2).putInt(ordinal * 32 + 12, 3);
+        for (var tile : tiles) {
+            int ordinal = tile.x() * 64 + tile.y();
+            main.putInt(ordinal * 8, 1);
+            maid.putInt(ordinal * 32, (int) tile.rootId()).putInt(ordinal * 32 + 12, 3);
+        }
+        out.writeBytes(part("MAIN", main.array()));
         out.writeBytes(part("MAID", maid.array()));
         return out.toByteArray();
     }
 
-    private static byte[] root() {
+    private static byte[] root(WorldFormats.Tile tile) {
         var out = new ByteArrayOutputStream();
         out.writeBytes(part("MVER", ints(18)));
         for (int ordinal = 0; ordinal < 256; ordinal++) {
@@ -227,8 +258,8 @@ final class TerrainGpuPreviewTextureFixture implements AutoCloseable {
             int x = ordinal % 16, y = ordinal / 16;
             header.putInt(4, x)
                     .putInt(8, y)
-                    .putFloat(104, (float) (-y * WorldFormats.TILE_SIZE / 16))
-                    .putFloat(108, (float) (-x * WorldFormats.TILE_SIZE / 16))
+                    .putFloat(104, (float) (-(tile.x() - TILE.x()) * WorldFormats.TILE_SIZE - y * WorldFormats.TILE_SIZE / 16))
+                    .putFloat(108, (float) (-(tile.y() - TILE.y()) * WorldFormats.TILE_SIZE - x * WorldFormats.TILE_SIZE / 16))
                     .putFloat(112, 10);
             var chunk = new ByteArrayOutputStream();
             chunk.writeBytes(header.array());

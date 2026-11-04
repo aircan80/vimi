@@ -96,6 +96,12 @@ scene. On stable completion, only the newest eligible candidate may transfer its
 snapshot. Every replace, hide, deactivate, map change, failed callback, rejected
 work submission and close explicitly closes candidate ownership. A completed
 future or queued FX callback must not retain a live lease after retirement.
+Geometry preparation uses a `Void` completion future plus an explicitly cleared
+result mailbox; queued FX callbacks carry the job metadata, not a captured
+`Prepared` value. Canceling clears that mailbox before another geometry candidate
+can allocate. The single preparation worker drains a canceled computation before
+starting the next one. A raw revision already represented by a pending candidate
+does not create a duplicate candidate after its first frame.
 
 On restore, reconstruct/requalify the desired bundle if needed without requiring
 camera movement. A desired-neighborhood dirty flag survives canceled preparation;

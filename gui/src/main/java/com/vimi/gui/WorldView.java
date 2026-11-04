@@ -112,6 +112,23 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private long sceneGeneration;
     private boolean scenePreparing, waveActive, waveDirty;
     private PendingPrepared pendingPrepared;
+    private GeometryJob geometryJob;
+    private static final class GeometryJob {
+        final long scene, request, loadedRevision;
+        final int anchorX, anchorY;
+        final boolean initialSeed;
+        final Runnable ready;
+        final AtomicReference<Prepared> result = new AtomicReference<>();
+        volatile boolean canceled;
+        volatile Throwable failure;
+        GeometryJob(long scene, long request, long loadedRevision, int anchorX, int anchorY,
+                boolean initialSeed, Runnable ready) {
+            this.scene = scene; this.request = request; this.loadedRevision = loadedRevision;
+            this.anchorX = anchorX; this.anchorY = anchorY;
+            this.initialSeed = initialSeed; this.ready = ready;
+        }
+        void cancel() { canceled = true; result.set(null); }
+    }
     private static final class PendingPrepared implements AutoCloseable {
         final Prepared value;
         final long scene, request, loadedRevision;
@@ -512,6 +529,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                             camera.yaw(), camera.pitch());
                     if (!zoomed.equals(camera)) {
                         camera = zoomed;
+                        abandonUnusableCandidate();
                         requestFrame();
                         loadNext();
                     }
@@ -1213,7 +1231,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (pendingPrepared != null) pendingPrepared.close();
         pendingPrepared = null;
         scenePreparing = false;
-        if (sceneTask != null) sceneTask.cancel(false);
+        if (geometryJob != null) geometryJob.cancel();
+        geometryJob = null;
+        var task = sceneTask;
+        sceneTask = null;
+        if (task != null) task.cancel(false);
         preparation.getQueue().clear();
         textureLoading.hide();
         textureSourceBusy = false;
@@ -1274,52 +1296,76 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     private void prepareScene(WorldFormats.Terrain initial, Runnable ready) {
         cancelCandidate();
-        long scene = sceneGeneration, request = selection, sourceRevision = loadedRevision;
         scenePreparing = true;
         preparingAnchorX = camera == null ? origin.x() : tileX();
         preparingAnchorY = camera == null ? origin.y() : tileY();
-        int anchorX = preparingAnchorX, anchorY = preparingAnchorY;
+        var job = new GeometryJob(sceneGeneration, selection, loadedRevision,
+                preparingAnchorX, preparingAnchorY, initial != null && gpu != null, ready);
+        geometryJob = job;
         var snapshot = java.util.List.copyOf(loaded.values());
         var areaPoint = initial != null && areaEntry != null && areaEntry.entryChunk() != null
                 ? areaEntry.entryChunk().entryReference() : null;
-        CompletableFuture<Prepared> result;
         try {
-            result = CompletableFuture.supplyAsync(
-                    () -> prepare(snapshot, initial, gpu != null, areaPoint), preparation);
-        } catch (RuntimeException error) {
-            result = CompletableFuture.failedFuture(error);
+            // Completed futures carry no full Prepared object. Retiring the mailbox also releases
+            // geometry held by a queued FX delivery, without waiting for that callback or GC.
+            sceneTask = CompletableFuture.runAsync(() -> {
+                try {
+                    job.result.set(prepare(snapshot, initial, gpu != null, areaPoint));
+                    if (closed || job.canceled) job.result.set(null);
+                } catch (Throwable failure) {
+                    job.failure = failure;
+                } finally {
+                    if (closed || job.canceled) job.result.set(null);
+                    try { Platform.runLater(() -> completedGeometry(job)); }
+                    catch (IllegalStateException stopped) { job.result.set(null); }
+                }
+            }, preparation);
+        } catch (RuntimeException rejected) {
+            job.failure = rejected;
+            completedGeometry(job);
         }
-        sceneTask = result;
-        result.whenComplete((prepared, error) -> Platform.runLater(() -> {
-            if (stale(request) || scene != sceneGeneration || !explorer) return;
-            if (error != null) {
-                scenePreparing = false;
-                loadingTile = false;
-                busy(null);
-                show(firstFrameActivity, false);
-                status.setText("Terrain preview preparation unavailable; readable terrain retained.");
-                return;
-            }
-            if (initial != null && gpu != null) {
-                // Seed only navigation, then gather the full available first neighborhood. No
-                // height-only child is launched while its material bundle is still incomplete.
-                camera = prepared.camera();
-                originX = prepared.x();
-                originY = prepared.y();
-                scenePreparing = false;
-                loadingTile = false;
-                waveActive = true;
-                waveDirty = true;
-                ready.run();
-                return;
-            }
-            pendingPrepared = new PendingPrepared(prepared, scene, request, sourceRevision, anchorX, anchorY, ready);
-            if (prepared.gpuScene() == null) {
-                pendingPrepared.materialsReady = true;
-            }
-            startCandidateMaterials();
-            publishPrepared();
-        }));
+    }
+
+    private void completedGeometry(GeometryJob job) {
+        if (closed || job.canceled || geometryJob != job || stale(job.request)
+                || job.scene != sceneGeneration || !explorer) {
+            job.cancel();
+            return;
+        }
+        if (!candidateUseful(job.anchorX, job.anchorY)) {
+            cancelCandidate();
+            loadNext();
+            return;
+        }
+        geometryJob = null;
+        sceneTask = null;
+        var prepared = job.result.getAndSet(null);
+        if (job.failure != null || prepared == null) {
+            scenePreparing = false;
+            loadingTile = false;
+            busy(null);
+            show(firstFrameActivity, false);
+            status.setText("Terrain preview preparation unavailable; readable terrain retained.");
+            return;
+        }
+        if (job.initialSeed) {
+            // Seed only navigation, then gather the full available first neighborhood. No
+            // height-only child is launched while its material bundle is still incomplete.
+            camera = prepared.camera();
+            originX = prepared.x();
+            originY = prepared.y();
+            scenePreparing = false;
+            loadingTile = false;
+            waveActive = true;
+            waveDirty = true;
+            job.ready.run();
+            return;
+        }
+        pendingPrepared = new PendingPrepared(prepared, job.scene, job.request,
+                job.loadedRevision, job.anchorX, job.anchorY, job.ready);
+        if (prepared.gpuScene() == null) pendingPrepared.materialsReady = true;
+        startCandidateMaterials();
+        publishPrepared();
     }
 
     private boolean publishPrepared() {
@@ -1345,6 +1391,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         currentMaterialsReady = true;
         currentMaterialIssue = pending.issue;
         publishedLoadedRevision = pending.loadedRevision;
+        geometryPreparationWaiting = loadedRevision != publishedLoadedRevision;
         texturePendingFrame = gpuScene != null;
         show(textureActivity, texturePendingFrame);
         textureStatus.setText(texturePendingFrame ? "Presenting prepared terrain…"
@@ -1402,14 +1449,21 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     Math.abs(t.tile().x() - x) <= 1 && Math.abs(t.tile().y() - y) <= 1);
             if (!useful && !loaded.isEmpty()) {
                 loaded.clear();
-        loadedRevision++;
+                loadedRevision++;
                 updateCurrentArea();
                 waveDirty = true;
             }
             if (waveDirty) {
                 waveDirty = false;
                 busy("Preparing nearby terrain and textures…");
-                geometryPreparationWaiting = true;
+                boolean represented = pendingPrepared != null && pendingPrepared.loadedRevision == loadedRevision
+                        || geometryJob != null && geometryJob.loadedRevision == loadedRevision;
+                geometryPreparationWaiting = !represented;
+                scenePreparing = true;
+                if (geometryJob == null && pendingPrepared == null) {
+                    preparingAnchorX = tileX();
+                    preparingAnchorY = tileY();
+                }
                 prepareStableCandidate();
             } else {
                 busy(null);
@@ -1484,7 +1538,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void prepareStableCandidate() {
-        if (!geometryPreparationWaiting || scenePreparing || loadingTile || waveActive
+        if (!geometryPreparationWaiting || geometryJob != null || pendingPrepared != null || loadingTile || waveActive
                 || closed || !active || !explorer || !viewportActive()) return;
         if (textureLoading.hasActiveWork() || !materialAdmission()) return;
         geometryPreparationWaiting = false;

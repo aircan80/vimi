@@ -62,11 +62,20 @@ public final class WorldTextureLoadingTest {
             require(delivered.getFirst().snapshot().atlasCount() == 0, "Unsupported provider retains honest height fallback");
             delivered.removeFirst().snapshot().close();
             require(status.stream().anyMatch(WorldTextureLoading.Status::busy), "Loading is visible");
-            loader.request(source, map(4), TILES, scene());
-            await(ui, () -> calls.size() == 3, "last pending read");
+            var failedScene = scene();
+            loader.request(source, map(4), TILES, failedScene);
+            await(ui, () -> calls.size() == 3, "failing request");
+            calls.stream().skip(2).findFirst().orElseThrow().result()
+                    .completeExceptionally(new IllegalStateException("Authored source failure"));
+            await(ui, () -> delivered.size() == 1, "terminal failure outcome");
+            var failure = delivered.removeFirst();
+            require(failure.scene() == failedScene && failure.snapshot() == null && failure.issue() != null,
+                    "Failure carries its exact candidate identity and resolves without an atlas");
+            loader.request(source, map(5), TILES, scene());
+            await(ui, () -> calls.size() == 4, "last pending read");
             loader.close();
             var afterClose = WorldTerrainTextureSource.BatchResult.unsupported(TILES);
-            calls.stream().skip(2).findFirst().orElseThrow().result().complete(afterClose);
+            calls.stream().skip(3).findFirst().orElseThrow().result().complete(afterClose);
             await(ui, () -> isClosed(afterClose), "Close consumes late batch even before UI publication");
             pump(ui);
             require(delivered.isEmpty(), "Closed loader never publishes late work");

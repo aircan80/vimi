@@ -81,24 +81,26 @@ public final class WorldTextureUiTest {
             fx(() -> { ((ListView<?>)ownedView.lookup("#world-maps")).getSelectionModel().selectFirst(); return null; });
             await(() -> fx(() -> !((Button)ownedView.lookup("#world-open")).isDisabled()),"inventory");
             fx(() -> { ((Button)ownedView.lookup("#world-open")).fire(); return null; });
-            await(() -> children.size()==1 && fx(() -> get(ownedView,"textureSnapshot") != null),"warm source before first height frame");
+            await(() -> children.size()==1 && fx(() -> get(ownedView,"textureSnapshot") != null),"combined initial source before first child frame");
             require(fx(() -> ownedView.lookup("#world-texture-activity").isVisible()),"Texture activity while awaiting presentation");
-            require(children.size()==1,"Warm textures cannot replace unpresented height child");
-            ready(children,0,false);
-            publish(children,frames,0,1);
-            await(() -> children.size()==2,"First height frame alone automatically promotes textures");
-            require(reads.get()==1,"Promotion does not reread source");
-            ready(children,1,true);
+            require(children.size()==1,"Initial materials launch one combined child, with no height-only predecessor");
+            ready(children,0,true);
             await(() -> fx(() -> ((Label)ownedView.lookup("#world-gpu-status")).getText().contains("Waiting for the first")),"typed ACK processed");
             require(fx(() -> ownedView.lookup("#world-texture-activity").isVisible()),"Typed texture ACK alone cannot end activity");
-            publish(children,frames,1,1);
-            await(() -> fx(() -> !ownedView.lookup("#world-texture-activity").isVisible()),"accepted texture target frame");
+            presentUntil(children, frames, 0,
+                    () -> fx(() -> !ownedView.lookup("#world-texture-activity").isVisible()),
+                    "accepted texture target frame");
+            require(reads.get()==1,"Initial combined publication does not reread source");
             require(fx(() -> ((Label)ownedView.lookup("#world-texture-status")).getText().equals("Basic terrain textures · 256/256 regions")),"Accepted coverage label");
             require(fx(() -> ((ImageView)ownedView.lookup("#world-frame")).getImage().getPixelReader().getArgb(0,0)==COLOR),"Accepted bulk pixel reaches FX image");
             unsupported.set(true);
             fx(() -> { ((Button)ownedView.lookup("#world-texture-retry")).fire(); return null; });
-            await(() -> fx(() -> ((Label)ownedView.lookup("#world-texture-status")).getText().startsWith("Terrain textures unavailable")),"zero atlas outcome");
-            require(fx(() -> !ownedView.lookup("#world-texture-activity").isVisible()),"Zero-atlas fallback terminates activity");
+            await(() -> children.size()==2,"explicit zero-atlas fallback child");
+            ready(children,1,false);
+            presentUntil(children, frames, 1,
+                    () -> fx(() -> ((Label)ownedView.lookup("#world-texture-status")).getText().startsWith("Terrain textures unavailable")),
+                    "accepted zero-atlas outcome");
+            require(fx(() -> !ownedView.lookup("#world-texture-activity").isVisible()),"Accepted zero-atlas fallback terminates activity");
             await(() -> fixture.stats().leaseClaims()==0,"zero atlas retires previous snapshot");
             unsupported.set(false);
             fx(() -> { ((Button)ownedView.lookup("#world-texture-retry")).fire(); return null; });
@@ -132,7 +134,18 @@ public final class WorldTextureUiTest {
             service.closeAsync().get(10,TimeUnit.SECONDS);
             Platform.exit();
         }
-        System.out.println("World texture FX PASS: warm-before-height, automatic promotion, ACK barrier, pixels, stationary hide/restore and ownership");
+        System.out.println("World texture FX PASS: atomic initial bundle, terminal fallback, ACK barrier, pixels, stationary hide/restore and ownership");
+    }
+
+    private static void presentUntil(List<GpuPreviewServiceTest.FakeProcess> children,
+            List<Frames> frames, int index, BooleanSupplier accepted, String stage) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(12), sequence = 1;
+        while (System.nanoTime() < deadline) {
+            publish(children, frames, index, sequence++);
+            if (accepted.getAsBoolean()) return;
+            Thread.sleep(20);
+        }
+        throw new AssertionError("Timed out: " + stage);
     }
 
     private static void ready(List<GpuPreviewServiceTest.FakeProcess> children,int index,boolean textured) throws Exception {
