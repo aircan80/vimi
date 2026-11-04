@@ -19,7 +19,9 @@ approval and focused FX/loader acceptance. Canceled CPU borrows retire before
 another material candidate is admitted; queued CPU deliveries retain pixels and
 primitive epochs only. Network indicator has independent approval and corrected
 actual-header/minimize/disposal acceptance70117bd. Combined root check/assemble
-and World/network/Talent FX gate is running; do not treat it as passed yet.
+and World/network/Talent FX gate passes474 tasks. Actual authored World Vulkan
+proof passes91 tasks: accepted pixels, same-process camera/resize, hide/resume,
+software toggle and final owner drain. Hosted cross-platform checks are running.
 
 This still uses one cold native renderer handoff per changed neighborhood.
 Initial display waits for geometry and a terminal material result together;
