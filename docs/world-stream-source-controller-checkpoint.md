@@ -242,3 +242,13 @@ then stops new neighbor admission while keeping last-readable pixels. This avoid
 unpresentable neighbors until the twelve-owner union stalls. Moving back to a readable requested
 center resumes normally. A thirteen-tile causal fixture proves missing-nearest SOURCE_INPUT keeps
 nine old owners, does not open the other three new neighbors, and recovers on readable demand.
+
+Nearest fairness correction removes the historical-presented restriction on relief. At twelve
+owners, ANY missing requested nearest tile must make progress, including a new tile never
+presented. Prefer releasing unwanted current owners not pinned by last presentation. If every
+such owner remains wanted, drop the farthest non-nearest never-presented current neighbor from
+the exact subset. After its actual subset commit releases credit, freshly qualify/upload the
+center. Accepting useful center pixels then releases old presentation pins and allows the dropped
+neighbor to be reacquired. The same twelve-output/source and native-slot caps remain unchanged.
+Both independently authored RED cases (returning center1 and never-presented center12 while all
+new neighbors remain wanted) now pass through actual source/packet/parent/frame fixtures.

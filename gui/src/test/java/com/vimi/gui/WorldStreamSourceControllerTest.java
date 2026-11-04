@@ -29,6 +29,8 @@ public final class WorldStreamSourceControllerTest {
 
     public static void main(String[] args) throws Exception {
         failedFxWakeStillCancelsHeldInitialSourceQualification();
+        returningNearestCanProgressWhenAllNeverPresentedNeighborsRemainWanted();
+        newNearestCanProgressWhenAllNeverPresentedNeighborsRemainWanted();
         explicitUnsupportedSourceHasCleanNoOwnerDrain();
         fullPresentationUnionRecoversBackDemandWithoutAcceptingUnwantedPixels(false);
         fullPresentationUnionRecoversBackDemandWithoutAcceptingUnwantedPixels(true);
@@ -43,6 +45,52 @@ public final class WorldStreamSourceControllerTest {
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
         queuedGpuOwnerLateCloseIsPartOfControllerDrain();
         closeDuringActualInitialWdtQualificationIsCleanAndWaitsSourceDrain();
+    }
+
+    private static void returningNearestCanProgressWhenAllNeverPresentedNeighborsRemainWanted() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 13);
+        try {
+            fixture.start();fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);fixture.controller.neighborhood(fixture.tiles.subList(0, 9));
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase() == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 9);
+            fixture.controller.neighborhood(fixture.tiles.subList(4, 13));
+            fixture.until(() -> fixture.pool.stats().leaseClaims() == 12
+                    && fixture.controller.snapshot().phase() == WorldStreamSourceController.Phase.WAITING_CAPACITY);
+            check(fixture.commitLines().size() == 12, "Three new native residents and nine historical source owners reach the fixed union");
+            var desired = new ArrayList<WorldFormats.Tile>();desired.add(fixture.tiles.get(1));
+            desired.addAll(fixture.tiles.subList(4, 12));
+            fixture.controller.neighborhood(desired);
+            fixture.controller.camera(new WorldStreamTransport.Camera(2,1,80,50,
+                    new TerrainCamera(-266,-800,110,Math.PI,-.8)));
+            // Current-only new9/10/11 remain wanted; the only unwanted current0 is also
+            // last-presented. Drop/reload one non-nearest neighbor rather than deadlock.
+            fixture.until(() -> fixture.commitLines().size() >= 14);
+            check(fixture.pool.stats().leaseClaims() <= 12, "No thirteenth source owner while useful nearest is restored");
+        } finally { fixture.close(); }
+    }
+
+    private static void newNearestCanProgressWhenAllNeverPresentedNeighborsRemainWanted() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 13);
+        try {
+            fixture.start();fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);fixture.controller.neighborhood(fixture.tiles.subList(0, 9));
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase() == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 9);
+            fixture.controller.neighborhood(fixture.tiles.subList(4, 13));
+            fixture.until(() -> fixture.pool.stats().leaseClaims() == 12
+                    && fixture.controller.snapshot().phase() == WorldStreamSourceController.Phase.WAITING_CAPACITY);
+            check(fixture.commitLines().size() == 12, "Three new native residents and nine historical source owners reach the fixed union");
+            var desired = new ArrayList<WorldFormats.Tile>();
+            for (int index = 12; index >= 4; index--) desired.add(fixture.tiles.get(index));
+            fixture.controller.neighborhood(desired);
+            fixture.controller.camera(new WorldStreamTransport.Camera(2,1,80,50,
+                    new TerrainCamera(-266,-6666,110,Math.PI,-.8)));
+            // Latest nearest12 was NEVER presented; all three newly loaded fringe tiles
+            // remain wanted after fast camera motion. Prior-presentation restoration is insufficient.
+            fixture.until(() -> fixture.commitLines().size() >= 14);
+            check(fixture.pool.stats().leaseClaims() <= 12, "No thirteenth source owner while useful nearest is restored");
+        } finally { fixture.close(); }
     }
 
     private static void explicitUnsupportedSourceHasCleanNoOwnerDrain() throws Exception {

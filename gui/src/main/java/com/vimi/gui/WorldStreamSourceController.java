@@ -591,19 +591,29 @@ final class WorldStreamSourceController {
         boolean needsSource=wanted.stream().anyMatch(tile->!unavailable.containsKey(key(tile))
                 && current.stream().noneMatch(entry->same(tile,entry.resident())));
         if (entries.size() >= 12 && needsSource) {
-            // Historical source pins cannot be recommitted after their native resident retired.
-            // Free only never-presented, unwanted current owners before reuploading old demand.
-            boolean restoring=wanted.stream().anyMatch(tile->
-                    current.stream().noneMatch(entry->same(tile,entry.resident()))
-                            && presented.stream().anyMatch(entry->same(tile,entry.resident())));
-            var subset=current.stream().filter(entry->containsResident(wanted,entry.resident())).toList();
-            boolean releasable=current.stream().anyMatch(entry->!subset.contains(entry) && !presented.contains(entry));
-            if(restoring && releasable && camera!=null) {
+            // Any missing center needs a source credit, even if never previously presented.
+            boolean missingCenter=!wanted.isEmpty() && current.stream().noneMatch(
+                    entry->same(wanted.getFirst(),entry.resident()));
+            var subset=new ArrayList<>(current.stream().filter(
+                    entry->containsResident(wanted,entry.resident())).toList());
+            boolean releases=current.stream().anyMatch(entry->!subset.contains(entry) && !presented.contains(entry));
+            if(missingCenter && !releases) {
+                Entry victim=null;
+                int farthest=-1;
+                for(var entry:current) {
+                    if(presented.contains(entry)) continue;
+                    int rank=wanted.size();
+                    for(int i=0;i<wanted.size();i++) if(same(wanted.get(i),entry.resident())) { rank=i; break; }
+                    if(rank>farthest) { farthest=rank; victim=entry; }
+                }
+                if(victim!=null) { subset.remove(victim); releases=true; }
+            }
+            if(missingCenter && releases && camera!=null) {
                 committing=List.copyOf(subset);
                 commit=session.commit(camera.policy(),subset.stream().map(Entry::resident)
                         .toArray(WorldStreamTransport.Resident[]::new));
                 commit.whenComplete((ignored,failure)->kick());
-                publish(Phase.COMMITTING,"Recovering requested terrain residency");
+                publish(Phase.COMMITTING,"Making room for nearest terrain");
                 return;
             }
             publish(Phase.WAITING_CAPACITY, "Waiting for accepted viewport pixels");
