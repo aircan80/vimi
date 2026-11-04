@@ -73,22 +73,31 @@ final class WorldStreamStatus {
         for (int i = 0; i < line.length; i++) {
             int value = input.read();
             if (value == -1) {
-                if (i == 0) return null;
+                if (i == 0) {
+                    return null;
+                }
                 throw new EOFException("Truncated World status");
             }
             line[i] = (byte) value;
-            if (value == '\n') return decode(line, i + 1);
-            if (value < 32 || value > 126) throw new IOException("Non-ASCII World status");
+            if (value == '\n') {
+                return decode(line, i + 1);
+            }
+            if (value < 32 || value > 126) {
+                throw new IOException("Non-ASCII World status");
+            }
         }
         throw new IOException("World status exceeds line limit");
     }
 
     static Message decode(byte[] bytes, int length) throws IOException {
         Objects.requireNonNull(bytes);
-        if (length < 1 || length > 256 || length > bytes.length || bytes[length - 1] != '\n')
+        if (length < 1 || length > 256 || length > bytes.length || bytes[length - 1] != '\n') {
             throw new IOException("Invalid World status length");
+        }
         for (int i = 0; i < length - 1; i++) {
-            if (bytes[i] < 32 || bytes[i] > 126) throw new IOException("Non-ASCII World status");
+            if (bytes[i] < 32 || bytes[i] > 126) {
+                throw new IOException("Non-ASCII World status");
+            }
         }
         String[] p = new String(bytes, 0, length - 1, StandardCharsets.US_ASCII).split(" ", -1);
         try {
@@ -196,6 +205,8 @@ final class WorldStreamStatus {
     }
 
     private static void require(boolean condition) {
-        if (!condition) throw new IllegalArgumentException("Invalid status field");
+        if (!condition) {
+            throw new IllegalArgumentException("Invalid status field");
+        }
     }
 }
