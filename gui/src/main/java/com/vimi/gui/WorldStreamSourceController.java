@@ -195,6 +195,7 @@ final class WorldStreamSourceController {
     private CompletableFuture<Void> physicalClosing;
     private boolean initialized;
     private boolean skySuppressed;
+    private boolean historicalRaster;
     private WorldFormats.Tile creditTarget;
     private boolean retryCommit;
     private long commitRetryAt, commitRetryCapacity;
@@ -292,6 +293,7 @@ final class WorldStreamSourceController {
                 borrowed = null;
                 validated = false;
                 if (accepted) {
+                    historicalRaster=false;
                     acceptedSequence = value.sequence();
                     acceptedReceipt = currentReceipt;
                     presented = List.copyOf(current);
@@ -751,6 +753,15 @@ final class WorldStreamSourceController {
                     && WorldStreamBackground.matchesBasicSky(candidate.pixels(),candidate.width(),
                             candidate.height(),()->closing)) {
                 skySuppressed=true;
+                synchronized(lock) {
+                    if(!closing && borrowed==null && queued==null && entries.size()>=12
+                            && !presented.isEmpty() && candidate.content()==currentReceipt) {
+                        // Detached old GUI pixels remain a historical raster, not a live Source borrow.
+                        // No new receipt/sequence is acknowledged and no new pixels are displayed.
+                        presented=List.of();
+                        historicalRaster=true;
+                    }
+                }
                 publish(Phase.PREPARING,"Loading terrain in viewing direction");
                 return;
             }
@@ -872,6 +883,9 @@ final class WorldStreamSourceController {
 
     private void publish(Phase phase, String detail) {
         synchronized (lock) {
+            if(historicalRaster && phase!=Phase.FAILED && phase!=Phase.CLOSED
+                    && phase!=Phase.UNAVAILABLE) detail="Loading terrain; showing previous view";
+            else if(historicalRaster && phase==Phase.UNAVAILABLE) detail+="; previous view retained";
             int available=0;
             for(var tile:desired) {
                 for(var entry:current) {

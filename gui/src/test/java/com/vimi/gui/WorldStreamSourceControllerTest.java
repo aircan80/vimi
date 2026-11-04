@@ -33,6 +33,7 @@ public final class WorldStreamSourceControllerTest {
         newNearestCanProgressWhenAllNeverPresentedNeighborsRemainWanted();
         skyOnlyFeedbackPreservesPixelsWithoutSuppressingForegroundOrUserSky();
         skyOnlyFullUnionAdmitsMissingLookaheadBeforeReacquiringVictim();
+        permanentSkyDisjointDemandRetiresPinsWithoutFakePresentation();
         explicitUnsupportedSourceHasCleanNoOwnerDrain();
         fullPresentationUnionRecoversBackDemandWithoutAcceptingUnwantedPixels(false);
         fullPresentationUnionRecoversBackDemandWithoutAcceptingUnwantedPixels(true);
@@ -92,6 +93,38 @@ public final class WorldStreamSourceControllerTest {
             // remain wanted after fast camera motion. Prior-presentation restoration is insufficient.
             fixture.until(() -> fixture.commitLines().size() >= 14);
             check(fixture.pool.stats().leaseClaims() <= 12, "No thirteenth source owner while useful nearest is restored");
+        } finally { fixture.close(); }
+    }
+
+    private static void permanentSkyDisjointDemandRetiresPinsWithoutFakePresentation() throws Exception {
+        var fixture=new Fixture(new AuthoredTerrainSource.Files(),18);
+        try {
+            fixture.start();
+            fixture.until(()->fixture.controller.snapshot().seed()!=null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0,9));
+            fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared()==9);
+            var sequence=WorldStreamSourceController.class.getDeclaredField("acceptedSequence");
+            var receipt=WorldStreamSourceController.class.getDeclaredField("acceptedReceipt");
+            var pins=WorldStreamSourceController.class.getDeclaredField("presented");
+            sequence.setAccessible(true); receipt.setAccessible(true); pins.setAccessible(true);
+            long previousSequence=sequence.getLong(fixture.controller);
+            Object previousReceipt=receipt.get(fixture.controller);
+            Files.write(fixture.directory.resolve("authored-sky"),new byte[0]);
+            fixture.controller.neighborhood(fixture.tiles.subList(9,18));
+            fixture.until(()->fixture.controller.snapshot().detail().contains("showing previous view"));
+            check(((List<?>)pins.get(fixture.controller)).isEmpty(),"Old Source pins explicitly retire for historical detached raster");
+            check(sequence.getLong(fixture.controller)==previousSequence && receipt.get(fixture.controller)==previousReceipt,
+                    "Historical raster transition never fabricates pixel ACK or new presentation receipt");
+            fixture.until(()->fixture.controller.snapshot().prepared()==9);
+            check(sequence.getLong(fixture.controller)==previousSequence,
+                    "No new pixels acknowledged while complete disjoint demand loads behind retained raster");
+            check(fixture.commitLines().size()==18,"Permanent sky cannot recycle only first three new tiles forever");
+            fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
+            check(sequence.getLong(fixture.controller)>previousSequence && receipt.get(fixture.controller)!=previousReceipt,
+                    "Only actual full-ready sky upload advances presentation ACK");
+            check(fixture.pool.stats().leaseClaims()==9,"Old historical image holds no obsolete Source owners");
         } finally { fixture.close(); }
     }
 

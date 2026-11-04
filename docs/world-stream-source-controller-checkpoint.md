@@ -270,3 +270,17 @@ commit receives the exact clean parent RETRY_LATER refusal, the controller retai
 committing target and retries only on capacity revision or the existing 500ms cadence. It neither
 turns pressure into source failure nor spins/reuses retired residents. Physical stopped-commit
 normalization dependency051e99 is included separately.
+
+Permanent-background liveness policy explicitly converts the last visible image to a detached
+historical raster when a background-only pending full-twelve-owner union otherwise cannot progress.
+Under the metadata gate, with no borrowed/queued Presentation and the same current receipt, clear
+ONLY presented Source-pin aliases. acceptedReceipt and acceptedSequence remain unchanged: no new
+pixels are acknowledged or claimed displayed. The existing GUI raster remains untouched and status
+says “Loading terrain; showing previous view”. Only retireUnused closes source owners no longer in
+current/committing/staged tables after actual native commit; current-only native lookup remains.
+This permits the complete new nine-tile demand to load. Once all wanted tiles are ready, legitimate
+sky may actually be uploaded and acknowledged normally. This is an explicit historical-image
+ownership policy, not a timeout that flashes sky and not source authority derived from pixels.
+The permanent-sky disjoint eighteen-tile authored regression proves unchanged ACK/receipt throughout
+transition/loading, no repeated three-tile cycle (exact eighteen commits), full new nine and real
+final presentation with nine owners.
