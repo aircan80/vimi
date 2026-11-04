@@ -297,7 +297,7 @@ class WorldStreamLaunchOwnerTest {
         }
     }
 
-    private static final class Child extends Process {
+    static final class Child extends Process {
         private final CompletableFuture<Process> exited = new CompletableFuture<>();
         private final AtomicBoolean alive = new AtomicBoolean(true);
         private volatile int code;
