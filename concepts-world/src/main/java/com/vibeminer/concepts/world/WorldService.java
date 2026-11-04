@@ -161,6 +161,40 @@ public final class WorldService implements BuildWorld {
         return java.util.Optional.of(waterFacade);
     }
 
+    /**
+     * Prepares native evidence for the two small tables the water preview qualifies indirect layers
+     * against (LiquidType, LiquidMaterial) using the configured source. Completes true only if both
+     * are READY; any other outcome leaves water honestly unresolved, never terrain.
+     */
+    @Override
+    public CompletableFuture<Boolean> prepareWaterTables(Cancellation token) {
+        java.util.Objects.requireNonNull(token);
+        CompletableFuture<Boolean> result = CompletableFuture.completedFuture(true);
+        for (String name : List.of("LiquidType", "LiquidMaterial")) {
+            result =
+                    result.thenCompose(
+                            ready ->
+                                    !ready
+                                            ? CompletableFuture.completedFuture(false)
+                                            : tables.prepareNativeEvidence(
+                                                            TableTypes.Ref.forName(name),
+                                                            TableTypes.Priority.BACKGROUND,
+                                                            com.vibeminer.formats.tables
+                                                                    .NativePreparationTypes
+                                                                    .SourceAccess.CONFIGURED_SOURCE,
+                                                            progress -> {},
+                                                            token)
+                                                    .thenApply(
+                                                            prepared ->
+                                                                    prepared.state()
+                                                                            == com.vibeminer.formats
+                                                                                    .tables
+                                                                                    .NativePreparationTypes
+                                                                                    .State.READY));
+        }
+        return result;
+    }
+
     @Override
     public synchronized java.util.Optional<WorldGlobalScenes> globalScenes() {
         if (closing != null) {

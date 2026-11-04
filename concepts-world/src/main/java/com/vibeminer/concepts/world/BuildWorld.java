@@ -64,6 +64,11 @@ public interface BuildWorld extends AutoCloseable {
         return java.util.Optional.empty();
     }
 
+    /** Prepares the native tables water qualification reads; true only when both are ready. */
+    default CompletableFuture<Boolean> prepareWaterTables(Cancellation token) {
+        return CompletableFuture.completedFuture(false);
+    }
+
     /** Optional actual-source global scene capability; custom providers perform no fallback IO. */
     default java.util.Optional<WorldGlobalScenes> globalScenes() {
         return java.util.Optional.empty();
