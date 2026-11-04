@@ -23,3 +23,17 @@ One control reader handles bounded command parsing/mailboxes only. One decoder w
 One status writer owns the potentially blocking OutputStream. Reliable16includesinflight; CAMERA_APPLIED is one coalesced metadata slot. No native-owner IO/join on that writer. The independent live-clock watchdog requests close after5swithreliableoutstanding/no completedwrite, and terminates after5sfurther without full drain. EOF/CLOSE/parentdeath initiate the existing separate5sgrace. Full drain includes decoder/native owners AND status writer; a blocked writer cannot disarm termination merely because GPUcleanup completed. Completed writes only advance status progress; enqueueing/partialoutput do not.
 
 Authored process acceptance will use actual production packets/nativeowner/v2mapping acrosssamechild CAM/replacement/resize/stationarycontent/cancel/replay/close. A separate ownedchild fills its real stdoutpipe while its parent stops reading; an independent stderr/testmetadata progress channel may help stop production before queueoverflow, but no protocol/runtimebounds are relaxed. Assert independent status-stall termination and confirm process exit before deleting its scratch. No user app/process/library is touched.
+
+## Bounded writer checkpoint
+
+`WorldStreamStatusWriter` owns the potentially blocking output exclusively on a named virtual
+thread. `reliable` reserves the existing deadline's capacity before enqueueing, including the
+one line in flight; camera acknowledgements retain at most one pending replacement independently
+of that reliable capacity. Native-owner calls only validate/copy at most 256 ASCII bytes and
+briefly update metadata. No write, flush, close, join or callback occurs under its monitor.
+`finish()` rejects new statuses, drops the optional camera acknowledgement, and returns a detached
+future for the remaining reliable writes. It never closes the borrowed output stream. Its finished
+state includes exceptional pipe completion; the session must inspect `failure()` and cannot emit
+successful CLOSED after that failure. The external watchdog remains responsible for a writer
+that cannot drain, even after native resources finish closing. This checkpoint is not a running
+session or watchdog qualification.
