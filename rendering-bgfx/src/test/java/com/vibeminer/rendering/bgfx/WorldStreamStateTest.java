@@ -23,6 +23,59 @@ final class WorldStreamStateTest {
     private static final WorldStreamState.Nonce NONCE = new WorldStreamState.Nonce(41, 77);
 
     @Test
+    void unknownCoordinatesHoldReadOwnershipWhileCameraAndCancelRemainResponsive() {
+        var state = new WorldStreamState(NONCE);
+        var lease = state.credit();
+        assertEquals(OK, state.offer(NONCE, 1, lease));
+        assertEquals(WorldStreamState.Phase.READING, state.phase());
+        assertEquals(INVALID_TABLE, state.decoded(lease, true));
+        assertFalse(state.inputConsumed());
+        assertEquals(BUSY, state.staged(lease));
+        assertEquals(INVALID_TABLE, state.commit(NONCE, 2, 0, 1, List.of(lease)));
+        var mailbox = new WorldControlMailbox(NONCE);
+        assertEquals(
+                WorldControlMailbox.Result.ACCEPTED,
+                mailbox.offer(
+                        new WorldStreamControl.Camera(
+                                NONCE,
+                                1,
+                                1,
+                                800,
+                                500,
+                                new com.vibeminer.rendering.world.TerrainCamera(0, 0, 0, 0, 0))));
+        assertNotNull(mailbox.takeCamera());
+        assertEquals(OK, state.cancel(NONCE, 1, lease));
+        assertNull(state.credit());
+        assertEquals(OK, state.decoded(lease, false));
+        assertNotEquals(lease, state.credit());
+        assertEquals(BAD_LEASE, state.decoded(lease, true, 7, 19));
+        var next = state.credit();
+        assertEquals(OK, state.offer(NONCE, 3, next));
+        assertEquals(INVALID_TABLE, state.decoded(next, true));
+    }
+
+    @Test
+    void decodedCoordinatesValidateBeforeConsumptionAndCannotBeReplayedOrChanged() {
+        var state = new WorldStreamState(NONCE);
+        var lease = state.credit();
+        assertEquals(OK, state.offer(NONCE, 1, lease));
+        assertEquals(BAD_LEASE, state.decoded(new WorldStreamState.Lease(1, 1, 2), true, 7, 19));
+        assertEquals(INVALID_TABLE, state.decoded(lease, true, -1, 19));
+        assertEquals(INVALID_TABLE, state.decoded(lease, true, 7, 64));
+        assertFalse(state.inputConsumed());
+        assertEquals(OK, state.decoded(lease, true, 7, 19));
+        assertEquals(BAD_LEASE, state.decoded(lease, true, 8, 19));
+        assertEquals(OK, state.staged(lease));
+        assertEquals(OK, state.commit(NONCE, 2, 0, 1, List.of(lease)));
+        var replacement = state.credit();
+        assertEquals(OK, state.offer(NONCE, 3, replacement));
+        assertEquals(OK, state.decoded(replacement, true, 7, 19));
+        assertEquals(OK, state.staged(replacement));
+        assertEquals(INVALID_TABLE, state.commit(NONCE, 4, 1, 2, List.of(lease, replacement)));
+        assertEquals(OK, state.commit(NONCE, 5, 1, 2, List.of(replacement)));
+    }
+
+    @Test
     void reusesTenSlotsForHundredsOfOrderedAtomicCommitsWithoutReplayOrAba() {
         var state = new WorldStreamState(NONCE);
         long tx = 0;
@@ -226,6 +279,43 @@ final class WorldStreamStateTest {
         assertEquals(OK, state.decoded(lease, true));
         assertTrue(state.drained());
         assertEquals(BAD_LEASE, state.consumedReference(lease));
+    }
+
+    @org.junit.jupiter.api.Test
+    void commitReservationConsumesReplayBeforeIoAndCompletionSurvivesLaterHighwater() {
+        var state = new WorldStreamState(NONCE);
+        var lease = state.credit();
+        assertEquals(OK, state.offer(NONCE, 1, lease, 7, 19));
+        assertEquals(OK, state.reserveCommit(NONCE, 2));
+        assertEquals(BUSY, state.reserveCommit(NONCE, 3));
+        assertEquals(3, state.highWater());
+        assertEquals(STALE, state.reserveCommit(NONCE, 2));
+        assertEquals(STALE, state.rejectReserved(NONCE, 3));
+        assertEquals(OK, state.cancel(NONCE, 1, lease));
+        assertEquals(OK, state.decoded(lease, false));
+        assertEquals(OK, state.commitReserved(NONCE, 2, 0, 1, java.util.List.of()));
+        assertEquals(1, state.contentRevision());
+        assertEquals(STALE, state.commitReserved(NONCE, 2, 1, 2, java.util.List.of()));
+        assertEquals(OK, state.reserveCommit(NONCE, 4));
+        assertEquals(OK, state.rejectReserved(NONCE, 4));
+        assertEquals(STALE, state.reserveCommit(NONCE, 4));
+        assertEquals(1, state.contentRevision());
+    }
+
+    @org.junit.jupiter.api.Test
+    void commitReservationKeepsCloseUndrainedUntilExactDecoderCompletion() {
+        var state = new WorldStreamState(NONCE);
+        assertEquals(OK, state.reserveCommit(NONCE, 1));
+        var wrong = new WorldStreamState.Nonce(99, 88);
+        assertEquals(WRONG_SESSION, state.rejectReserved(wrong, 1));
+        assertEquals(WRONG_SESSION, state.commitReserved(wrong, 1, 0, 1, java.util.List.of()));
+        state.close();
+        assertFalse(state.drained());
+        assertEquals(STALE, state.rejectReserved(NONCE, 2));
+        assertFalse(state.drained());
+        assertEquals(CLOSED, state.commitReserved(NONCE, 1, 0, 1, java.util.List.of()));
+        assertTrue(state.drained());
+        assertEquals(0, state.contentRevision());
     }
 
     private static final class AuthoredWriter {

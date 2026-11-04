@@ -32,6 +32,13 @@ public final class GpuViewerMain {
     private GpuViewerMain() {}
 
     public static void main(String[] args) {
+        if (WorldStreamMain.requested(args)) {
+            int result = WorldStreamMain.execute(args);
+            if (result != 0) {
+                System.exit(result);
+            }
+            return;
+        }
         try {
             var options = options(args);
             if (options.containsKey("--headless-smoke")) {

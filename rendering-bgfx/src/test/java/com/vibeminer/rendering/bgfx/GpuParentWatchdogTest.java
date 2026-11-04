@@ -10,6 +10,7 @@ import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
@@ -41,21 +42,28 @@ final class GpuParentWatchdogTest {
     @Test
     void controlLossRequestsExitButNormalCleanupPreventsForcedTermination() throws Exception {
         var forced = new AtomicInteger();
+        var graceStarted = new CountDownLatch(1);
+        var releaseGrace = new CountDownLatch(1);
         var watchdog =
                 new GpuParentWatchdog(
                         new CompletableFuture<>(),
                         new ByteArrayInputStream(
                                 "CLOSE\n".getBytes(java.nio.charset.StandardCharsets.US_ASCII)),
                         Duration.ofMillis(100),
-                        forced::incrementAndGet);
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
-        while (!watchdog.stopping()) {
-            if (System.nanoTime() > deadline) {
-                throw new AssertionError("Control stop was not observed");
-            }
-            Thread.sleep(1);
+                        forced::incrementAndGet,
+                        ignored -> {},
+                        millis -> {
+                            assertEquals(100, millis);
+                            graceStarted.countDown();
+                            releaseGrace.await();
+                        });
+        try (watchdog) {
+            assertTrue(graceStarted.await(1, TimeUnit.SECONDS));
+            assertTrue(watchdog.stopping());
+            watchdog.close();
+        } finally {
+            releaseGrace.countDown();
         }
-        watchdog.close();
         watchdog.deadlineDrained().get(1, TimeUnit.SECONDS);
         assertEquals(0, forced.get());
     }

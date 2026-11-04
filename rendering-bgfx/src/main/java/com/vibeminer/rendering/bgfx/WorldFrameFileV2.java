@@ -1,0 +1,370 @@
+package com.vibeminer.rendering.bgfx;
+
+import java.io.IOException;
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
+import java.lang.invoke.VarHandle;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.IntBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.HexFormat;
+import java.util.Objects;
+import java.util.zip.CRC32C;
+
+/** Separate World v2 mapping codec. No renderer, control channel or GUI is wired to it. */
+final class WorldFrameFileV2 implements AutoCloseable {
+    static final int WIDTH = 800, HEIGHT = 500, SLOTS = 3, HEADER_BYTES = 64;
+    static final int PAYLOAD_BYTES = WIDTH * HEIGHT * 4;
+    static final int SLOT_BYTES = HEADER_BYTES + PAYLOAD_BYTES;
+    static final long FILE_BYTES = HEADER_BYTES + (long) SLOTS * SLOT_BYTES;
+    static final long MAX_SEQUENCE = Long.MAX_VALUE >>> 1;
+    private static final byte[] MAGIC =
+            "VIMIWSF2".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    private static final ValueLayout.OfLong LONG =
+            ValueLayout.JAVA_LONG.withOrder(ByteOrder.LITTLE_ENDIAN);
+    private static final ValueLayout.OfInt INT =
+            ValueLayout.JAVA_INT.withOrder(ByteOrder.LITTLE_ENDIAN);
+    private static final VarHandle STAMP = LONG.varHandle();
+
+    /** Immutable acknowledged presentation bounds; checked before any detached pixel allocation. */
+    record Barrier(
+            long policy,
+            int width,
+            int height,
+            long cameraFloor,
+            long cameraCeiling,
+            long contentFloor,
+            long contentCeiling) {
+        Barrier {
+            dimensions(width, height);
+            if (policy <= 0
+                    || cameraFloor < 1
+                    || cameraCeiling < cameraFloor
+                    || contentFloor < 0
+                    || contentCeiling < contentFloor) {
+                throw new IllegalArgumentException("Invalid World frame barrier");
+            }
+        }
+
+        boolean accepts(WorldStreamFrameGate.Frame frame) {
+            return frame.policy() == policy
+                    && frame.width() == width
+                    && frame.height() == height
+                    && frame.camera() >= cameraFloor
+                    && frame.camera() <= cameraCeiling
+                    && frame.content() >= contentFloor
+                    && frame.content() <= contentCeiling;
+        }
+    }
+
+    /** Detached owned pixels survive unmapping; consumers get a read-only view without a clone. */
+    static final class Frame {
+        private final WorldStreamFrameGate.Frame metadata;
+        private final int[] pixels;
+
+        private Frame(WorldStreamFrameGate.Frame metadata, int[] pixels) {
+            this.metadata = metadata;
+            this.pixels = pixels;
+        }
+
+        WorldStreamFrameGate.Frame metadata() {
+            return metadata;
+        }
+
+        IntBuffer pixels() {
+            return IntBuffer.wrap(pixels).asReadOnlyBuffer();
+        }
+    }
+
+    private record Candidate(long offset, long stamp) {}
+
+    private final FileChannel channel;
+    private final Arena arena;
+    private final MemorySegment mapping;
+    private final WorldStreamState.Nonce nonce;
+    private final byte[] scope;
+    private final ByteBuffer scratch = ByteBuffer.allocate(64 << 10).order(ByteOrder.LITTLE_ENDIAN);
+    private boolean closed;
+    private long lastSequence;
+
+    private WorldFrameFileV2(
+            FileChannel channel,
+            Arena arena,
+            MemorySegment mapping,
+            WorldStreamState.Nonce nonce,
+            byte[] scope) {
+        this.channel = channel;
+        this.arena = arena;
+        this.mapping = mapping;
+        this.nonce = nonce;
+        this.scope = scope;
+        lastSequence = highestReserved();
+    }
+
+    static WorldFrameFileV2 create(Path path, WorldStreamState.Nonce nonce, String scope)
+            throws IOException {
+        return open(path, nonce, scope, true);
+    }
+
+    static WorldFrameFileV2 open(Path path, WorldStreamState.Nonce nonce, String scope)
+            throws IOException {
+        return open(path, nonce, scope, false);
+    }
+
+    private static WorldFrameFileV2 open(
+            Path path, WorldStreamState.Nonce nonce, String scope, boolean create)
+            throws IOException {
+        Objects.requireNonNull(nonce);
+        if (scope == null || !scope.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("Invalid World scope digest");
+        }
+        byte[] digest = HexFormat.of().parseHex(scope);
+        var channel =
+                create
+                        ? FileChannel.open(
+                                path,
+                                StandardOpenOption.CREATE_NEW,
+                                StandardOpenOption.READ,
+                                StandardOpenOption.WRITE,
+                                LinkOption.NOFOLLOW_LINKS)
+                        : FileChannel.open(
+                                path,
+                                StandardOpenOption.READ,
+                                StandardOpenOption.WRITE,
+                                LinkOption.NOFOLLOW_LINKS);
+        var arena = Arena.ofShared();
+        try {
+            if (create) {
+                channel.position(FILE_BYTES - 1).write(ByteBuffer.wrap(new byte[1]));
+            }
+            if (channel.size() != FILE_BYTES) {
+                throw new IOException("Invalid World frame file size");
+            }
+            var mapping = channel.map(FileChannel.MapMode.READ_WRITE, 0, FILE_BYTES, arena);
+            if (create) {
+                var header = ByteBuffer.allocate(HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN);
+                header.put(MAGIC)
+                        .putInt(2)
+                        .putInt(HEADER_BYTES)
+                        .putLong(nonce.high())
+                        .putLong(nonce.low())
+                        .put(digest);
+                mapping.asSlice(0, HEADER_BYTES).copyFrom(MemorySegment.ofArray(header.array()));
+            }
+            var result = new WorldFrameFileV2(channel, arena, mapping, nonce, digest);
+            result.checkOpen();
+            return result;
+        } catch (IOException | RuntimeException | Error error) {
+            try {
+                arena.close();
+            } catch (Throwable close) {
+                error.addSuppressed(close);
+            }
+            try {
+                channel.close();
+            } catch (Throwable close) {
+                error.addSuppressed(close);
+            }
+            throw error;
+        }
+    }
+
+    synchronized boolean freshFor(WorldStreamEnvelope.Session session) throws IOException {
+        checkOpen();
+        return nonce.equals(session.nonce())
+                && Arrays.equals(scope, HexFormat.of().parseHex(session.scope()))
+                && highestReserved() == 0;
+    }
+
+    private void checkOpen() throws IOException {
+        if (closed) {
+            throw new IllegalStateException("World frame file closed");
+        }
+        if (channel.size() != FILE_BYTES
+                || mapping.get(INT, 8) != 2
+                || mapping.get(INT, 12) != HEADER_BYTES
+                || mapping.get(LONG, 16) != nonce.high()
+                || mapping.get(LONG, 24) != nonce.low()
+                || !Arrays.equals(MAGIC, mapping.asSlice(0, 8).toArray(ValueLayout.JAVA_BYTE))
+                || !Arrays.equals(scope, mapping.asSlice(32, 32).toArray(ValueLayout.JAVA_BYTE))) {
+            throw new IOException("World frame session changed");
+        }
+    }
+
+    /**
+     * Caller owns a stable completed BGRA readback until this returns; its position is unchanged.
+     */
+    synchronized void write(WorldStreamFrameGate.Frame ticket, ByteBuffer bgra) throws IOException {
+        checkOpen();
+        Objects.requireNonNull(ticket);
+        dimensions(ticket.width(), ticket.height());
+        int length = ticket.width() * ticket.height() * 4;
+        if (!nonce.equals(ticket.nonce())
+                || ticket.sequence() < 1
+                || ticket.sequence() > MAX_SEQUENCE
+                || ticket.sequence() <= Math.max(lastSequence, highestReserved())
+                || ticket.camera() < 1
+                || ticket.content() < 0
+                || ticket.policy() < 1
+                || bgra == null
+                || bgra.remaining() != length) {
+            throw new IllegalArgumentException("Invalid World frame publication");
+        }
+        for (int i = bgra.position() + 3; i < bgra.limit(); i += 4) {
+            if (bgra.get(i) != (byte) 255) {
+                throw new IllegalArgumentException("Nonopaque World pixels");
+            }
+        }
+        long stamp = ticket.sequence() << 1;
+        long offset = HEADER_BYTES + ((ticket.sequence() - 1) % SLOTS) * SLOT_BYTES;
+        var header = ByteBuffer.allocate(HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN);
+        header.putLong(stamp)
+                .putLong(nonce.high())
+                .putLong(nonce.low())
+                .putLong(ticket.camera())
+                .putLong(ticket.content())
+                .putLong(ticket.policy())
+                .putInt(ticket.width())
+                .putInt(ticket.height())
+                .putInt(0)
+                .putInt(length);
+        var crc = metadataCrc(header.array());
+        crc.update(bgra.duplicate());
+        header.putInt(56, (int) crc.getValue());
+        lastSequence = ticket.sequence();
+        STAMP.setRelease(mapping, offset, stamp | 1);
+        VarHandle.fullFence();
+        mapping.asSlice(offset + 8, HEADER_BYTES - 8)
+                .copyFrom(MemorySegment.ofArray(header.array()).asSlice(8));
+        mapping.asSlice(offset + HEADER_BYTES, length)
+                .copyFrom(MemorySegment.ofBuffer(bgra.duplicate()));
+        STAMP.setRelease(mapping, offset, stamp);
+    }
+
+    synchronized Frame readLatest(long afterSequence, Barrier barrier) throws IOException {
+        checkOpen();
+        Objects.requireNonNull(barrier);
+        if (afterSequence < 0 || afterSequence > MAX_SEQUENCE) {
+            throw new IllegalArgumentException("Invalid World frame sequence");
+        }
+        var candidates = new ArrayList<Candidate>(SLOTS);
+        for (int slot = 0; slot < SLOTS; slot++) {
+            long offset = HEADER_BYTES + (long) slot * SLOT_BYTES;
+            long stamp = (long) STAMP.getAcquire(mapping, offset);
+            if (stamp > 0 && (stamp & 1) == 0 && (stamp >>> 1) > afterSequence) {
+                candidates.add(new Candidate(offset, stamp));
+            }
+        }
+        candidates.sort(Comparator.comparingLong(Candidate::stamp).reversed());
+        for (var candidate : candidates) {
+            var frame = read(candidate, barrier);
+            if (frame != null) {
+                return frame;
+            }
+        }
+        return null;
+    }
+
+    private Frame read(Candidate candidate, Barrier barrier) {
+        long offset = candidate.offset();
+        byte[] bytes = mapping.asSlice(offset, HEADER_BYTES).toArray(ValueLayout.JAVA_BYTE);
+        var header = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+        if (header.getLong(0) != candidate.stamp()
+                || header.getLong(8) != nonce.high()
+                || header.getLong(16) != nonce.low()) {
+            return null;
+        }
+        int width = header.getInt(48), height = header.getInt(52), length = header.getInt(60);
+        if (width < 1
+                || width > WIDTH
+                || height < 1
+                || height > HEIGHT
+                || length != width * height * 4) {
+            return null;
+        }
+        var metadata =
+                new WorldStreamFrameGate.Frame(
+                        nonce,
+                        candidate.stamp() >>> 1,
+                        header.getLong(24),
+                        header.getLong(32),
+                        header.getLong(40),
+                        width,
+                        height);
+        if (!barrier.accepts(metadata)) {
+            return null;
+        }
+        int[] pixels = new int[width * height];
+        mapping.asSlice(offset + HEADER_BYTES, length)
+                .asByteBuffer()
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .asIntBuffer()
+                .get(pixels);
+        var crc = metadataCrc(bytes);
+        scratch.clear();
+        var ints = scratch.asIntBuffer();
+        for (int first = 0; first < pixels.length; ) {
+            int count = Math.min(ints.capacity(), pixels.length - first);
+            for (int i = first; i < first + count; i++) {
+                if ((pixels[i] >>> 24) != 255) {
+                    return null;
+                }
+            }
+            ints.clear().put(pixels, first, count);
+            scratch.clear().limit(count * 4);
+            crc.update(scratch);
+            first += count;
+        }
+        VarHandle.fullFence();
+        if ((long) STAMP.getAcquire(mapping, offset) != candidate.stamp()
+                || (int) crc.getValue() != header.getInt(56)) {
+            return null;
+        }
+        return new Frame(metadata, pixels);
+    }
+
+    private static CRC32C metadataCrc(byte[] header) {
+        var crc = new CRC32C();
+        crc.update(header, 8, 48);
+        crc.update(header, 60, 4);
+        return crc;
+    }
+
+    private long highestReserved() {
+        long result = 0;
+        for (int slot = 0; slot < SLOTS; slot++) {
+            long stamp = (long) STAMP.getAcquire(mapping, HEADER_BYTES + (long) slot * SLOT_BYTES);
+            if (stamp > 0) {
+                result = Math.max(result, stamp >>> 1);
+            }
+        }
+        return result;
+    }
+
+    private static void dimensions(int width, int height) {
+        if (width < 1 || width > WIDTH || height < 1 || height > HEIGHT) {
+            throw new IllegalArgumentException("World frame dimensions exceed fixed caps");
+        }
+    }
+
+    @Override
+    public synchronized void close() throws IOException {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        try {
+            arena.close();
+        } finally {
+            channel.close();
+        }
+    }
+}
