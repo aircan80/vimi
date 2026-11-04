@@ -23,7 +23,7 @@ height grids. Caller source lists are deliberately reversed. Source association 
   sources survive; farthest rings are omitted first. Actual emitted counts/partition sizes fit
   unchanged aggregate334080-vertex/1769472-index/nine-partition limits. Extra already-certified
   midpoints after omission remain permissible; required retained-neighbor midpoints cannot vanish.
-- Source-domain seams are checked across every MCNK boundary and all1344 neighboring source-tile
+- Source-domain seams are checked across every MCNK boundary and all1,344 boundary-MCNK segments across84 neighboring source-tile
   edge pairs in the7×7 window. Both sides choose the same logical seam samples. Existing native
   float XY gaps remain observable, and positions match each side's full-resolution source bits.
   This deliberately does not weld files or claim universally watertight real-source seams.
