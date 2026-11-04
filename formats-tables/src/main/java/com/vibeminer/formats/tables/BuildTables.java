@@ -64,6 +64,18 @@ public interface BuildTables extends AutoCloseable {
         return CompletableFuture.completedFuture(CapturedRowsTypes.Capture.unsupported());
     }
 
+    /** Explicit one-table decode/preparation; configured source access may acquire data. */
+    default CompletableFuture<NativePreparationTypes.Result> prepareNativeEvidence(
+            TableTypes.Ref table,
+            TableTypes.Priority priority,
+            NativePreparationTypes.SourceAccess access,
+            Consumer<NativePreparationTypes.Progress> progress,
+            Cancellation token) {
+        return CompletableFuture.completedFuture(
+                new NativePreparationTypes.Result(
+                        NativePreparationTypes.State.UNSUPPORTED, access, null, null));
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override
