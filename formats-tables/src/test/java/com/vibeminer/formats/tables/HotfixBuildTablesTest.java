@@ -682,6 +682,8 @@ class HotfixBuildTablesTest {
             assertFalse(closing.isDone());
             source.releaseCancel.complete(null);
             closing.get(3, java.util.concurrent.TimeUnit.SECONDS);
+            // Delivery to the caller is asynchronous after the drain by design.
+            read.handle((value, failure) -> null).get(3, java.util.concurrent.TimeUnit.SECONDS);
             assertTrue(read.isCompletedExceptionally());
             org.junit.jupiter.api.Assertions.assertThrows(
                     IllegalStateException.class,
