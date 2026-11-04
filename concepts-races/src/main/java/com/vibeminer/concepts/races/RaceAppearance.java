@@ -64,14 +64,16 @@ final class RaceAppearance {
                 return prepareFailure(
                         issues, "Texture preparation is unavailable for this workspace.");
             }
-            var base = media.preview(raceId, classId, modelId, token);
+            var selection =
+                    new RaceCustomization(media).select(raceId, classId, modelId, token, issues);
+            var base = media.preview(raceId, classId, modelId, token, selection);
             base.issues().stream()
                     .filter(issue -> !issue.startsWith("Static native rest positions"))
                     .forEach(issues::add);
             if (base.mesh() == null || base.variant() == null) {
                 return prepareFailure(issues, base.message());
             }
-            var plan = plans.build(raceId, classId, base.variant(), token, issues);
+            var plan = plans.build(raceId, classId, base.variant(), token, issues, selection);
             base =
                     new RaceMediaTypes.Preview(
                             base.state(),
@@ -102,6 +104,9 @@ final class RaceAppearance {
                             .append(files.locale())
                             .append('\n')
                             .append(stat.file().contentKey())
+                            .append('\n')
+                            .append("choice-vector-v1\n")
+                            .append(selection.byOption())
                             .append('\n')
                             .append(plan)
                             .append('\n')

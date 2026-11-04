@@ -107,6 +107,18 @@ final class RaceMedia {
     }
 
     RaceMediaTypes.Preview preview(long raceId, long classId, long chrModelId, Cancellation token) {
+        return preview(raceId, classId, chrModelId, token, null);
+    }
+
+    RaceMediaTypes.Preview preview(
+            long raceId,
+            long classId,
+            long chrModelId,
+            Cancellation token,
+            RaceCustomization.Selection selection) {
+        if (selection != null) {
+            selection.requireContext(this, raceId, classId, chrModelId);
+        }
         var variants = variants(raceId, token);
         var variant =
                 variants.variants().stream()
@@ -192,7 +204,7 @@ final class RaceMedia {
                     token,
                     issues);
         }
-        var parts = visibleParts(raceId, chrModelId, classId, mesh, token, issues);
+        var parts = visibleParts(raceId, chrModelId, classId, mesh, token, issues, selection);
         issue(
                 issues,
                 "Static native rest positions are shown. Animation, texture compositing and starting equipment are not evaluated.");
@@ -206,7 +218,8 @@ final class RaceMedia {
             long classId,
             PreviewMesh mesh,
             Cancellation token,
-            List<String> issues) {
+            List<String> issues,
+            RaceCustomization.Selection selection) {
         var visible = new HashSet<Integer>();
         // Reviewed character default surface convention, overridden only by recorded customization
         // choices.
@@ -236,7 +249,10 @@ final class RaceMedia {
             geosets.field("GeosetType", true);
             geosets.field("GeosetID", true);
             var sample =
-                    new RaceCustomization(this).select(raceId, classId, chrModelId, token, issues);
+                    selection != null
+                            ? selection
+                            : new RaceCustomization(this)
+                                    .select(raceId, classId, chrModelId, token, issues);
             var selected = sample.choices();
             var byId = new HashMap<Long, com.vibeminer.formats.db2.Db2Types.Row>();
             geosets.rows.forEach(row -> byId.put(row.id(), row));

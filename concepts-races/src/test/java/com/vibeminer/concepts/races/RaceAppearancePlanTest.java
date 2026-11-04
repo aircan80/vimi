@@ -1071,6 +1071,72 @@ final class RaceAppearancePlanTest {
     }
 
     @Test
+    void selectedOptionVectorIsDetachedAndBoundToTheRenderingContext() {
+        var seed = new ArrayList<>(fixture(false, 9));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationOption",
+                        "DCC2A86E",
+                        "ChrModelID,Requirement",
+                        row(10, "1", "0")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationChoice",
+                        "9559C358",
+                        "ChrCustomizationOptionID->ChrCustomizationOption,UiOrderIndex,ChrCustomizationReqID,ChrCustomizationVisReqID",
+                        row(20, "10", "0", "0", "0")));
+        var tables =
+                new MemoryTables()
+                        .add(BUILD, "enUS", seed)
+                        .forBuild(BUILD, "enUS", Cancellation.NONE)
+                        .join()
+                        .tables();
+        var service = new RacesService(tables);
+        try {
+            var media = new RaceMedia(service, tables, null, null);
+            var selection =
+                    new RaceCustomization(media)
+                            .select(1, 1, 1, Cancellation.NONE, new ArrayList<>());
+            assertEquals(selection.choices(), java.util.Set.copyOf(selection.byOption().values()));
+            assertTrue(!selection.byOption().isEmpty());
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    UnsupportedOperationException.class, () -> selection.byOption().clear());
+            selection.requireContext(media, 1, 1, 1);
+            for (long[] context : new long[][] {{2, 1, 1}, {1, 2, 1}, {1, 1, 2}}) {
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        IllegalArgumentException.class,
+                        () -> selection.requireContext(media, context[0], context[1], context[2]));
+            }
+            var other = new RaceMedia(service, tables, null, null);
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalArgumentException.class, () -> selection.requireContext(other, 1, 1, 1));
+            var plan = new RaceAppearancePlan(service, media, tables);
+            var variant = new RaceMediaTypes.Variant(1, 0, 1, 1, 1);
+            assertEquals(
+                    plan.build(1, 1, variant, Cancellation.NONE, new ArrayList<>()),
+                    plan.build(1, 1, variant, Cancellation.NONE, new ArrayList<>(), selection));
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            plan.build(
+                                    1,
+                                    2,
+                                    variant,
+                                    Cancellation.NONE,
+                                    new ArrayList<>(),
+                                    selection));
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalArgumentException.class,
+                    () -> media.preview(1, 2, 1, Cancellation.NONE, selection));
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
+
+    @Test
     void stableSampleUsesRecordedIdsWithoutAdmittingRawUiOrderSemantics() {
         var seed = new ArrayList<>(fixture(false, 9));
         replace(
