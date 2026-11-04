@@ -147,13 +147,19 @@ public final class TerrainAtlasPool {
     synchronized Optional<Reservation> reserve() {
         requireOpen();
         int free = freeSlot();
-        while (free < 0 && !cache.isEmpty()) {
+        if (free < 0) {
             var oldest = cache.entrySet().iterator();
-            Entry retired = oldest.next().getValue();
-            oldest.remove();
-            retired.cached = false;
-            releaseIfUnused(retired);
-            free = freeSlot();
+            while (oldest.hasNext()) {
+                Entry candidate = oldest.next().getValue();
+                // Removing pinned cache claims cannot free a slot and destroys useful overlap.
+                if (candidate.claims == 0 && candidate.borrows == 0) {
+                    oldest.remove();
+                    candidate.cached = false;
+                    releaseIfUnused(candidate);
+                    free = candidate.slot;
+                    break;
+                }
+            }
         }
         if (free < 0) {
             return Optional.empty();

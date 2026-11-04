@@ -75,16 +75,28 @@ class TerrainAtlasPoolTest {
     void reservationPrecedesEveryOutputAndNineteenthIsRefused() throws Exception {
         var pool = new TerrainAtlasPool();
         var leases = new ArrayList<TerrainAtlasPool.Lease>();
+        var identities = new ArrayList<Integer>();
         for (int i = 0; i < 18; i++) {
             try (var reservation = pool.reserve().orElseThrow()) {
                 assertEquals(i + 1, pool.stats().entries());
                 assertEquals(1, pool.stats().reservedEntries());
-                leases.add(reservation.publish(atlas(), null));
+                var value = atlas();
+                identities.add(System.identityHashCode(value));
+                leases.add(reservation.publish(value, String.format("%064x", i)));
             }
         }
         assertEquals(18, pool.stats().entries());
         assertEquals(18 * TerrainAtlasPool.ENTRY_BYTES, pool.stats().chargedBytes());
         assertTrue(pool.reserve().isEmpty());
+        assertEquals(18, pool.stats().cachedEntries());
+        for (int i = 0; i < 18; i++) {
+            int expectedIdentity = identities.get(i);
+            try (var hit = pool.cached(String.format("%064x", i)).orElseThrow()) {
+                hit.withAtlas(
+                        value -> assertEquals(expectedIdentity, System.identityHashCode(value)));
+            }
+        }
+        assertEquals(18, pool.stats().cachedEntries());
         var closing = pool.closeAsync();
         assertFalse(closing.isDone());
         assertThrows(IllegalStateException.class, pool::reserve);
@@ -103,7 +115,7 @@ class TerrainAtlasPoolTest {
         var leases = new ArrayList<TerrainAtlasPool.Lease>();
         for (int i = 0; i < 18; i++) {
             try (var reservation = pool.reserve().orElseThrow()) {
-                leases.add(reservation.publish(atlas(), null));
+                leases.add(reservation.publish(atlas(), i == 0 ? KEY : null));
             }
         }
         var entered = new CountDownLatch(1);
@@ -136,10 +148,12 @@ class TerrainAtlasPoolTest {
             assertEquals(1, pool.stats().borrowPins());
             assertEquals(18, pool.stats().entries());
             assertTrue(pool.reserve().isEmpty());
+            assertEquals(1, pool.stats().cachedEntries());
             assertThrows(IllegalStateException.class, leases.getFirst()::retain);
             release.countDown();
             finished.get(5, TimeUnit.SECONDS);
-            assertEquals(17, pool.stats().entries());
+            assertEquals(18, pool.stats().entries());
+            assertEquals(1, pool.stats().cachedEntries());
             var replacement = pool.reserve().orElseThrow();
             try {
                 assertEquals(18, pool.stats().entries());
@@ -185,12 +199,15 @@ class TerrainAtlasPoolTest {
                 lease.close();
             }
         }
-        // Oldest KEY loses cache claim, but external retained handle keeps its slot alive.
+        // Oldest KEY is pinned: skip it and evict the oldest cache-only key1 instead.
         var replacement = pool.reserve().orElseThrow();
         try {
-            assertTrue(pool.cached(KEY).isEmpty());
+            assertTrue(pool.cached(String.format("%064x", 1)).isEmpty());
+            try (var preserved = pool.cached(KEY).orElseThrow()) {
+                preserved.withAtlas(value -> assertEquals(125, value.pixels().get(0) & 255));
+            }
             assertEquals(18, pool.stats().entries());
-            assertEquals(16, pool.stats().cachedEntries());
+            assertEquals(17, pool.stats().cachedEntries());
             assertEquals(1, pool.stats().leaseClaims());
             replacement.close();
             assertEquals(17, pool.stats().entries());
