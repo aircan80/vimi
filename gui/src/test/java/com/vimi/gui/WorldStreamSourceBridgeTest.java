@@ -19,9 +19,10 @@ public final class WorldStreamSourceBridgeTest {
             new WorldFormats.Tile(7, 19, 2, 0, 0, 0, 0, 3, 0, 0);
 
     public static void main(String[] args) throws Exception {
-        successfulMove(false, false);
-        successfulMove(false, true);
-        successfulMove(true, false);
+        successfulMove(false, false, false);
+        successfulMove(true, false, true);
+        successfulMove(false, true, false);
+        successfulMove(true, false, false);
         rejectLateView(2);
         rejectLateView(3);
         fatalCleanupAfterMove();
@@ -29,11 +30,17 @@ public final class WorldStreamSourceBridgeTest {
         cleanSourceRetirementMapsButProviderFailureStaysFatal();
     }
 
-    private static void successfulMove(boolean height, boolean partial) throws Exception {
+    private static void successfulMove(boolean height, boolean partial, boolean rejectedBinding) throws Exception {
         var fixture = new Fixture();
         var path = Files.createTempDirectory("bridge-source-").resolve("tile-1.wst");
         try {
-            if (height) {
+            if (rejectedBinding) {
+                // Actual root coordinates no longer match the atlas header grid.
+                var root = fixture.files.sources.get(2L).clone();
+                java.nio.ByteBuffer.wrap(root).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                        .putFloat(12 + 8 + 104, 1000);
+                fixture.files.sources.put(2L, root);
+            } else if (height) {
                 fixture.files.sources.remove(3L);
             }
             if (partial) {
@@ -49,6 +56,10 @@ public final class WorldStreamSourceBridgeTest {
                     check(resident.facts().outcome() == (height
                             ? WorldTerrainStreaming.Outcome.HEIGHT_FALLBACK
                             : WorldTerrainStreaming.Outcome.TEXTURED), "Actual source outcome");
+                    if (rejectedBinding) {
+                        check(resident.facts().fallback() == WorldTerrainStreaming.Fallback.QUALIFIED_BINDING_REJECTED,
+                                "Actual qualified atlas rejected by geometry binding");
+                    }
                     resident.withPayload(borrow -> {
                         check(borrow.geometry().vertexCount() > 0, "Checked source geometry");
                         check((borrow.texture() == null) == height, "Checked material binding");

@@ -203,7 +203,7 @@ final class WorldStreamSourceBridge {
             error = metadata.maxSourceUvErrorTexels();
         }
         var diffuse = new ArrayList<WorldStreamTileWriter.Source>();
-        if (material != null) {
+        if (material != null && texture != null) {
             for (int i = 0; i < material.diffuseCount(); i++) {
                 var mip = material.diffuse(i);
                 var input = mip.source();
