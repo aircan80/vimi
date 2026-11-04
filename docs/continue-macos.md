@@ -37,6 +37,46 @@ java -version
 uname -m
 ```
 
+### Select Java 25 for Gradle
+
+`openjdk@25` is keg-only, so Homebrew does not link it into `PATH`. If `java -version`
+reports a newer JDK (for example the unversioned `openjdk` formula at Java 26), the
+Gradle 9.1 wrapper fails while compiling build scripts:
+
+```text
+BUG! exception in phase 'semantic analysis' in source unit '_BuildScript_' Unsupported class file major version 70
+```
+
+Gradle 9.1 runs on Java 25 at most. Choose one of these per-shell or per-command
+options; none of them changes the system Java or Homebrew links:
+
+```sh
+# Option 1: the exports above, in each terminal (or a shell profile you edit yourself).
+export JAVA_HOME="$(brew --prefix openjdk@25)/libexec/openjdk.jdk/Contents/Home"
+
+# Option 2: keep the current JAVA_HOME and run only the Gradle daemon on Java 25.
+./gradlew help \
+  "-Dorg.gradle.java.home=$(brew --prefix openjdk@25)/libexec/openjdk.jdk/Contents/Home"
+```
+
+A `-Porg.gradle.java.home=...` project property does not work; use `-D`. You may
+instead put `org.gradle.java.home=<path>` in your own `~/.gradle/gradle.properties`,
+which applies to every Gradle build for your account, so only do that deliberately.
+Do not add a machine-specific path to the repository `gradle.properties`.
+Compilation itself already targets Java 25 through Gradle toolchains.
+
+### Python for shader verification
+
+`processResources` and `check` in `rendering-bgfx` verify committed shader binaries
+with Python. The Gradle tasks run `python3` on macOS/Linux and `python` on Windows.
+macOS Command Line Tools provide `/usr/bin/python3`; `brew install python` also
+works. To use a specific interpreter, pass `-Ppython=<path-or-name>`:
+
+```sh
+python3 --version
+./gradlew :rendering-bgfx:check -Ppython="$(brew --prefix python)/bin/python3"
+```
+
 From `vimi`, install the reference's pinned SDK using Microsoft's
 [official .NET installation script](https://learn.microsoft.com/en-us/dotnet/core/tools/dotnet-install-script):
 
