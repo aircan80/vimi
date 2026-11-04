@@ -44,6 +44,16 @@ public final class WorldStreamImagePresentationTest {
                     && previous.getPixelReader().getArgb(0, 0) == 0xff00ff00,
                     "Throwing acceptance cannot modify the visible image");
         }
+        check(!presentation.present(3, 1,
+                IntBuffer.wrap(new int[] {0xffff0000, 0xffff0000, 0xffff0000}),
+                () -> true, () -> false), "Resized rejected upload remains non-visible");
+        check(image.getImage() == previous, "Resize rejection retains the exact old front image");
+        check(presentation.present(3, 1,
+                IntBuffer.wrap(new int[] {0xff0000ff, 0xff0000ff, 0xff0000ff}),
+                () -> true, () -> true), "Accepted resized image publishes");
+        check(image.getImage().getWidth() == 3
+                && image.getImage().getPixelReader().getArgb(2, 0) == 0xff0000ff,
+                "Resized image has exact accepted dimensions and pixels");
         try {
             presentation.present(Integer.MAX_VALUE, 1, pixels(0), () -> true, () -> true);
             throw new AssertionError("Oversized bitmap must be rejected before allocation");

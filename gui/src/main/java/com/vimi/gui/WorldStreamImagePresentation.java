@@ -26,6 +26,8 @@ final class WorldStreamImagePresentation {
             throw new IllegalArgumentException("World presentation pixel bounds");
         }
         if (back == null || back.getWidth() != width || back.getHeight() != height) {
+            // Release the obsolete non-visible owner before replacement allocation at resize.
+            back = null;
             back = new WritableImage(width, height);
         }
         back.getPixelWriter().setPixels(0, 0, width, height,
