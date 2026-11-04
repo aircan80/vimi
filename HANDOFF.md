@@ -1,5 +1,42 @@
 # vimi development handoff
 
+## Newest Linux checkpoint — actual three-tile persistent textured GPU proof
+
+Integration `feature/world-streaming-integration` reaches51f4fc7. Public Tile
+transport579ad70 +823/95/ff/565 +atomic OFFER/cancel59eae0a and public Commit/Frame
+df8c3c0 +persistent cleanup fix7234325 are root/independently approved. Root isolated
+combined bgfx/closed-source bridge checks PASS104tasks:
+`/home/aircan/.cache/vimi-tmp/world-public-commit-cleanup-integration-check.log`.
+The earlier complete formats/concepts/rendering/bgfx/GUI gate remains156tasks atb50ffae.
+
+Actual source→closed bridge→fixed writer→COMMIT→Vulkan frames PASS for Map0 tiles
+32,32 (256covered),32,31 (223partial),33,32 (256), onePID774942/one launch, content1/2/3,
+sequence9, clean actual drain and atlas claims0. Root inspected images. Evidence
+`/home/aircan/.cache/vimi-tmp/world-stream-real-proof/actual-network.log` and
+[actual proof details](docs/world-stream-real-source-packet-proof.md). Original/prior
+libraries READONLY, new writable proof cache297MiB. This is not GUI/FPS acceptance.
+
+Pure area resolvera512700 and GPU owner adapter34145a6+sticky failure0e690f0 are
+root/independently approved/integrated18ba4b7/4a771a1/f5b91b8. Adapter remembers the
+original request even after service lookup forgets it; repeated close cannot launder
+a failed/unknown lifetime into success. New bridge typed originbaafbec is integrated
+51f4fc7: consumers must require an actual clean PreparationRefusal before using its
+descriptive metadata, never reinterpret an unknown cleanup error as per-tile absence.
+
+Active source controller is UNFROZEN WIP at
+`/home/aircan/.cache/vimi-worktrees/vimi-world-stream-source-controller`; actual API
+compiles, source actor/tests still active. Root WorldView is UNCOMMITTED WIP at
+`/home/aircan/.cache/vimi-worktrees/vimi-world-stream-view-integration`, branch
+feature/world-stream-view-integration. Private API-only javac check passes against
+the actual controller; no full GUI acceptance yet. Architect reviews view lifetime,
+visibility/seed, GPU toggle and staged nonvisible bitmap publication. Root fixes those
+before enabling. New World source acquisition must not overlap legacy acquisition.
+Maps agent implements the separately approved narrow global declaration source engine
+(newWorldGlobalScopes, no WMO/root/image/companion reads, no public/native scene).
+
+All new worktrees and Java tmp files use HOME cache as below. Alpha20 remains the
+published baseline; no new prerelease until actual inline movement/ownership gates.
+
 ## Latest integration — reviewed source-to-packet bridge, inline controller next
 
 Integration branch `feature/world-streaming-integration` (draft PR153) now reaches
