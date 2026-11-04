@@ -94,12 +94,32 @@ public final class TerrainRenderer {
             }
             surfaces.add(new Surface(tile.vertices(), tile.indices()));
         }
-        return render(
+        var bindings = new TerrainTextureBinding[tiles.size()];
+        for (var binding : textures) {
+            check(canceled);
+            var metadata = binding.metadata();
+            int selected = -1;
+            for (int i = 0; i < tiles.size(); i++) {
+                var tile = tiles.get(i);
+                if (tile.x() == metadata.tileX() && tile.y() == metadata.tileY()) {
+                    selected = i;
+                }
+            }
+            if (selected < 0
+                    || bindings[selected] != null
+                    || !metadata.rootGeometrySha256()
+                            .equals(TerrainGeometryFingerprint.sha256(tiles.get(selected)))) {
+                throw new IllegalArgumentException("Borrowed terrain texture identity differs");
+            }
+            check(canceled);
+            bindings[selected] = binding;
+        }
+        return renderBound(
                 new Scene(surfaces.toArray(Surface[]::new)),
                 camera,
                 width,
                 height,
-                textures,
+                bindings,
                 canceled);
     }
 
@@ -127,6 +147,16 @@ public final class TerrainRenderer {
             }
             bindings[ordinal] = binding;
         }
+        return renderBound(scene, camera, width, height, bindings, canceled);
+    }
+
+    private static Frame renderBound(
+            Scene scene,
+            Camera camera,
+            int width,
+            int height,
+            TerrainTextureBinding[] bindings,
+            BooleanSupplier canceled) {
         if (width < 1 || height < 1 || width > 1200 || height > 800) {
             throw new IllegalArgumentException("Frame exceeds world preview bounds");
         }

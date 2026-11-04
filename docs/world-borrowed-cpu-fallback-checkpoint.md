@@ -37,3 +37,22 @@ qualification. No user/game data or native context is used by the probe.
 No GUI path is switched here. The future source-owned controller must call this
 inside actual payload/material borrows; it cannot retain nine additional geometry
 or atlas claims on each commit or treat these authorable tile objects as verified.
+
+## Independent resident packet bindings
+
+A source-qualified one-tile packet legitimately uses material ordinal0. Combining
+several resident tiles must not require reminting metadata to give each an aggregate
+ordinal. renderBorrowed now resolves each existing binding by unique filename XY and
+compares its native geometry SHA to the actual immutable tile before pixel allocation.
+It passes only a bounded resolved binding-reference array to the shared kernel; legacy
+Scene rendering still uses its original ordinal contract. Source IDs/CK and actual
+atlas qualification remain checked source-factory preconditions, not a renderer claim.
+No geometry or RGBA is copied or requalified merely to change an ordinal. The bounded
+geometry digest is recomputed for supplied textured tiles; this CPU-only validation
+cost has not been promoted as a performance improvement.
+
+A two-resident regression uses two different source identities and colors, both
+packet-local ordinal0, delivered in reverse binding order; the output matches the
+legacy correctly-indexed composite while both packet ordinals remain0. Wrong XY,
+same XY/different geometry and duplicate bindings reject. Full rendering-world checks
+pass10tasks in `/tmp/vimi-world-borrowed-cpu-packet-bindings-check.log`.

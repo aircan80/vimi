@@ -2,6 +2,7 @@ package com.vibeminer.rendering.world;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.formats.world.WorldFormats;
@@ -105,6 +106,120 @@ class TerrainRendererTextureTest {
         int g = (int) ((ty & 255) * (1 - fog) + 184 * fog);
         int b = (int) (31 * (1 - fog) + 196 * fog);
         assertEquals(0xff000000 | r << 16 | g << 8 | b, frame.pixels()[60 * 160 + 80]);
+    }
+
+    @Test
+    void independentSingleTilePacketOrdinalsMatchResidentCoordinatesAndExactGeometry() {
+        var first = fixture();
+        var shifted = first.terrain.vertices();
+        for (int at = 0; at < shifted.length; at += 3) {
+            shifted[at] -= (float) WorldFormats.TILE_SIZE;
+        }
+        var secondTerrain = new WorldFormats.Terrain(shifted, first.terrain.triangles(), 256);
+        var second = new TerrainScene.Tile(8, 19, secondTerrain);
+        var red = solid(first.tile, 0, true);
+        var green = solid(second, 0, false);
+        var greenOrdinalOne = withOrdinal(second, green, 1);
+        var camera = new TerrainRenderer.Camera(-1100, -266, 150, 0, -.1);
+        var expected =
+                TerrainRenderer.render(
+                        new TerrainRenderer.Scene(List.of(first.terrain, secondTerrain)),
+                        camera,
+                        160,
+                        120,
+                        List.of(red, greenOrdinalOne),
+                        () -> false);
+        var actual =
+                TerrainRenderer.renderBorrowed(
+                        List.of(first.tile, second),
+                        camera,
+                        160,
+                        120,
+                        List.of(green, red),
+                        () -> false);
+        assertArrayEquals(expected.pixels(), actual.pixels());
+        assertEquals(0, red.metadata().tileOrdinal());
+        assertEquals(0, green.metadata().tileOrdinal());
+        int redPixels = 0, greenPixels = 0;
+        for (int pixel : actual.pixels()) {
+            int r = pixel >>> 16 & 255, g = pixel >>> 8 & 255;
+            if (r > g + 10) {
+                redPixels++;
+            }
+            if (g > r + 10) {
+                greenPixels++;
+            }
+        }
+        assertTrue(redPixels > 10 && greenPixels > 10);
+        var changed = first.terrain.vertices();
+        changed[2] += 1;
+        var wrongGeometry =
+                TerrainScene.Tile.copyOf(7, 19, changed, first.terrain.triangles(), 256);
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        TerrainRenderer.renderBorrowed(
+                                List.of(wrongGeometry),
+                                camera,
+                                160,
+                                120,
+                                List.of(red),
+                                () -> false));
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        TerrainRenderer.renderBorrowed(
+                                List.of(first.tile),
+                                camera,
+                                160,
+                                120,
+                                List.of(green),
+                                () -> false));
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        TerrainRenderer.renderBorrowed(
+                                List.of(first.tile),
+                                camera,
+                                160,
+                                120,
+                                List.of(red, red),
+                                () -> false));
+    }
+
+    private static TerrainTextureBinding withOrdinal(
+            TerrainScene.Tile tile, TerrainTextureBinding original, int ordinal) {
+        var m = original.metadata();
+        return TerrainTextureBinding.borrow(
+                TerrainTextureBinding.fromSnapshot(
+                        ordinal,
+                        tile,
+                        m.nativeMaxX(),
+                        m.nativeMaxY(),
+                        new long[] {-1, -1, -1, -1},
+                        m.sources(),
+                        () -> false),
+                original.pixels());
+    }
+
+    private static TerrainTextureBinding solid(TerrainScene.Tile tile, int ordinal, boolean red) {
+        var metadata =
+                TerrainTextureBinding.fromSnapshot(
+                        ordinal,
+                        tile,
+                        tile.vertices().get(0),
+                        tile.vertices().get(1),
+                        new long[] {-1, -1, -1, -1},
+                        new TerrainTextureBinding.Sources(
+                                red ? 1 : 3, "a".repeat(32), red ? 2 : 4, "b".repeat(32)),
+                        () -> false);
+        var rgba = ByteBuffer.allocate(TerrainTextureBinding.PIXEL_BYTES);
+        for (int at = 0; at < rgba.capacity(); at += 4) {
+            rgba.put(at, (byte) (red ? 255 : 0))
+                    .put(at + 1, (byte) (red ? 0 : 255))
+                    .put(at + 3, (byte) 255);
+        }
+        return TerrainTextureBinding.borrow(metadata, rgba.asReadOnlyBuffer());
     }
 
     private static Fixture fixture() {
