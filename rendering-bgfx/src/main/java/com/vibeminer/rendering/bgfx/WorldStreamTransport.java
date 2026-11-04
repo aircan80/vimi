@@ -9,8 +9,6 @@ import java.util.Objects;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.LockSupport;
 
 /**
  * Source-neutral World process lifetime. The application's existing GPU arbiter supplies Starter
@@ -77,7 +75,9 @@ public final class WorldStreamTransport {
         public Session launch(Starter starter) {
             Objects.requireNonNull(starter);
             var session = new Session(descriptor);
-            var owner = WorldStreamLaunchOwner.launch(files, starter::start, session::attach);
+            var owner =
+                    WorldStreamLaunchOwner.launch(
+                            files, starter::start, session::attach, 250, 5000, 10000);
             session.launched(owner);
             return session;
         }
@@ -129,7 +129,6 @@ public final class WorldStreamTransport {
         private volatile IOException failure;
         private WorldStreamControl.Camera pendingCamera;
         private boolean closeWritten;
-        private final long startupDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
 
         private Session(WorldStreamEnvelope.Session descriptor) {
             this.descriptor = descriptor;
@@ -171,18 +170,6 @@ public final class WorldStreamTransport {
             handle.runWorker("commands", () -> writeCommands(process, handle));
             handle.runWorker("statuses", () -> readStatuses(process, handle));
             handle.runWorker("stderr", () -> drainErrors(process));
-            // This becomes the mapped-frame poll lane once content publication is installed.
-            handle.runWorker(
-                    "frames",
-                    () -> {
-                        while (!handle.stopping()) {
-                            if (!initialized.isDone() && System.nanoTime() - startupDeadline >= 0) {
-                                fail(new IOException("World initialization deadline exceeded"));
-                                return;
-                            }
-                            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));
-                        }
-                    });
         }
 
         public CompletableFuture<Void> initialized() {
@@ -270,7 +257,10 @@ public final class WorldStreamTransport {
                     }
                     var change = state.status(message);
                     switch (change) {
-                        case SESSION -> initialized.complete(null);
+                        case SESSION -> {
+                            handle.initialized();
+                            initialized.complete(null);
+                        }
                         case CAMERA -> frames.applied((WorldStreamStatus.CameraApplied) message);
                         case CLOSED -> {
                             closedStatus = true;
