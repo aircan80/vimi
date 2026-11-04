@@ -15,3 +15,10 @@ invalid completion. Full rendering-bgfx checks pass38tasks. This is an oracle,
 not a running watchdog: the independent timer, bounded status writer, close action
 and process-termination callback still need runtime integration and blocked-pipe
 proof. It does not make existing production watchdogs status-aware by itself.
+
+Independent review approves99b87e7 as a pure oracle; all five focused fixtures
+executed separately. Runtime overloads now sample System.nanoTime INSIDE the
+short oracle monitor, preventing concurrent writer/watchdog timestamps from
+arriving out of call order. Explicit-time overloads are deterministic ordered-time
+seams; runtime must use the live-clock overloads. No IO or user callback runs
+under the oracle lock. Runtime transport/watchdog proof remains pending.

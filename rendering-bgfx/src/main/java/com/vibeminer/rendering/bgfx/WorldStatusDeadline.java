@@ -18,6 +18,19 @@ final class WorldStatusDeadline {
     private long observed, progress, closeRequested;
     private boolean observedTime, closing, terminated, drained;
 
+    /** Runtime clock is sampled AFTER acquiring the oracle monitor. */
+    synchronized boolean enqueue() {
+        return enqueue(System.nanoTime());
+    }
+
+    synchronized void written() {
+        written(System.nanoTime());
+    }
+
+    synchronized Action poll(boolean ownershipDrained) {
+        return poll(System.nanoTime(), ownershipDrained);
+    }
+
     /** Reserve before enqueueing; the bound includes a reliable status already being written. */
     synchronized boolean enqueue(long now) {
         time(now);
