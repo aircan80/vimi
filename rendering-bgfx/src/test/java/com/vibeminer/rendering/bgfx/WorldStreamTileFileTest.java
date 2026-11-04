@@ -43,7 +43,7 @@ final class WorldStreamTileFileTest {
                 7, 19, new float[] {1, 2, 3, 4, 5, 6, 7, 8, 9}, new int[] {0, 1, 2}, 1);
     }
 
-    private static TerrainScene.Tile full(boolean maximumIndices) {
+    static TerrainScene.Tile full(boolean maximumIndices) {
         float[] vertices = new float[37120 * 3];
         int at = 0;
         for (int chunk = 0; chunk < 256; chunk++) {
@@ -61,7 +61,7 @@ final class WorldStreamTileFileTest {
                 7, 19, vertices, maximumIndices ? new int[196608] : new int[] {0, 1, 2}, 256);
     }
 
-    private static WorldStreamTileFile.Header header(TerrainScene.Tile tile, boolean textured) {
+    static WorldStreamTileFile.Header header(TerrainScene.Tile tile, boolean textured) {
         var diffuse =
                 new WorldStreamTileFile.Source(
                         4,
@@ -103,7 +103,7 @@ final class WorldStreamTileFileTest {
                 textured ? List.of(diffuse) : List.of());
     }
 
-    private static ByteBuffer atlas() {
+    static ByteBuffer atlas() {
         byte[] bytes = new byte[WorldStreamTileFile.ATLAS_BYTES];
         for (int i = 0; i < bytes.length; i += 4) {
             bytes[i] = 17;

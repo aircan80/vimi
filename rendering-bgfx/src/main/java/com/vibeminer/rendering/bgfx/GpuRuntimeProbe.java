@@ -25,7 +25,7 @@ import org.lwjgl.system.MemoryStack;
 
 /** Native linkage and packaged-resource proof; deliberately does not initialize a GPU. */
 public final class GpuRuntimeProbe {
-    public static final int PACKAGED_SHADER_BLOBS = 24;
+    public static final int PACKAGED_SHADER_BLOBS = 32;
     private static final String SHADERS = "/com/vibeminer/rendering/bgfx/shaders/";
 
     private GpuRuntimeProbe() {}
@@ -60,6 +60,7 @@ public final class GpuRuntimeProbe {
         verifyShaders("");
         verifyShaders("terrain/");
         verifyShaders("terrain/sky/");
+        verifyShaders("world-stream/");
         System.out.println(
                 "Native runtime: LWJGL "
                         + Version.getVersion()
@@ -90,7 +91,7 @@ public final class GpuRuntimeProbe {
         }
     }
 
-    private static void verifyShaders(String prefix) throws IOException, NoSuchAlgorithmException {
+    static void verifyShaders(String prefix) throws IOException, NoSuchAlgorithmException {
         String manifest = new String(resource(prefix + "manifest.json"), StandardCharsets.UTF_8);
         if (!Pattern.compile("\\\"bgfxApi\\\"\\s*:\\s*156\\s*,").matcher(manifest).find()) {
             throw new IllegalStateException("Shader manifest API mismatch");

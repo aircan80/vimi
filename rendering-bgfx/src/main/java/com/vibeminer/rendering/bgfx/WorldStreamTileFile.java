@@ -254,10 +254,10 @@ final class WorldStreamTileFile {
         }
     }
 
-    static final class Payload {
+    static final class Payload implements AutoCloseable {
         private final Header header;
-        private final TerrainScene.Tile tile;
-        private final byte[] atlas;
+        private TerrainScene.Tile tile;
+        private byte[] atlas;
 
         private Payload(Header header, TerrainScene.Tile tile, byte[] atlas) {
             this.header = header;
@@ -270,11 +270,21 @@ final class WorldStreamTileFile {
         }
 
         TerrainScene.Tile tile() {
+            if (tile == null) {
+                throw new IllegalStateException("Decoded packet closed");
+            }
             return tile;
         }
 
         ByteBuffer atlas() {
+            tile();
             return atlas == null ? null : ByteBuffer.wrap(atlas).asReadOnlyBuffer();
+        }
+
+        @Override
+        public void close() {
+            tile = null;
+            atlas = null;
         }
     }
 

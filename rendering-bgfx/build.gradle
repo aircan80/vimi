@@ -285,3 +285,16 @@ tasks.register('nativeGpuWorldStreamAcceptance', JavaExec) {
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args layout.buildDirectory.dir('native-world-stream-acceptance').get().asFile.absolutePath
 }
+
+
+tasks.register('verifyWorldStreamShaders', Exec) {
+    group = 'verification'
+    description = 'Verifies separate production persistent-World shader profiles.'
+    inputs.files(shaderHelper, rootProject.file('scripts/rendering/compile_bgfx_world_stream_shaders.py'))
+    inputs.dir(layout.projectDirectory.dir('src/main/shaders/world-stream'))
+    inputs.dir(layout.projectDirectory.dir('src/main/resources/com/vibeminer/rendering/bgfx/shaders/world-stream'))
+    workingDir rootProject.layout.projectDirectory
+    commandLine pythonExecutable.get(), rootProject.file('scripts/rendering/compile_bgfx_world_stream_shaders.py').absolutePath, '--verify'
+}
+tasks.named('processResources') { dependsOn tasks.named('verifyWorldStreamShaders') }
+tasks.named('check') { dependsOn tasks.named('verifyWorldStreamShaders') }
