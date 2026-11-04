@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.access.Cancellation;
+import com.vibeminer.files.FileReadStream;
+import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.tables.AuthoredNativeMap;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.rendering.world.TerrainScene;
@@ -13,7 +15,9 @@ import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 class WorldBasicWmoTest {
@@ -130,13 +134,18 @@ class WorldBasicWmoTest {
     }
 
     private static final class Fixture implements AutoCloseable {
-        final WorldTerrainTextureSourceTest.Files files = new WorldTerrainTextureSourceTest.Files();
+        final WorldTerrainTextureSourceTest.Files files;
         final AuthoredNativeMap nativeMap;
         final WorldStreamScopes engine;
         final WorldStreamScopes.Scope scope;
         final TerrainScene scene;
 
         Fixture() {
+            this(new WorldTerrainTextureSourceTest.Files());
+        }
+
+        Fixture(WorldTerrainTextureSourceTest.Files files) {
+            this.files = files;
             int offset = 12 + 40 + 8 + 32768 + 8 + (7 * 64 + 19) * 32;
             ByteBuffer.wrap(files.sources.get(1L))
                     .order(ByteOrder.LITTLE_ENDIAN)
@@ -482,6 +491,106 @@ class WorldBasicWmoTest {
                                 return (AutoCloseable) () -> {};
                             })
                     .close();
+        }
+    }
+
+    private static final class UnknownSizes extends WorldTerrainTextureSourceTest.Files {
+        final AtomicInteger derivedReads = new AtomicInteger();
+
+        @Override
+        FileTypes.FileStat stat(long id, Cancellation token) {
+            var result = super.stat(id, token);
+            if (id != 5 && id != 6 && id != 10) {
+                return result;
+            }
+            var f = result.file();
+            return new FileTypes.FileStat(
+                    result.state(),
+                    new FileTypes.BuildFile(
+                            f.fileDataId(),
+                            f.path(),
+                            f.pathSource(),
+                            null,
+                            f.contentKey(),
+                            f.format(),
+                            f.formatSource(),
+                            f.storage(),
+                            f.encrypted()));
+        }
+
+        @Override
+        FileReadStream open(long id, Cancellation token) {
+            var actual = super.open(id, token);
+            if (id != 5 && id != 6 && id != 10) {
+                return actual;
+            }
+            return new FileReadStream() {
+                public long length() {
+                    return actual.length();
+                }
+
+                public long position() {
+                    return actual.position();
+                }
+
+                public void seek(long position) {
+                    actual.seek(position);
+                }
+
+                public List<FileTypes.FileHole> holes() {
+                    return actual.holes();
+                }
+
+                public CompletableFuture<Integer> read(
+                        ByteBuffer destination, Cancellation cancel) {
+                    derivedReads.incrementAndGet();
+                    return actual.read(destination, cancel);
+                }
+
+                public void close() {
+                    actual.close();
+                }
+            };
+        }
+    }
+
+    @Test
+    void unknownBeforeReadSizesStayUnknownAndOversizeStreamDeclinesBeforeReading()
+            throws Exception {
+        var files = new UnknownSizes();
+        try (var f = new Fixture(files)) {
+            f.run(
+                            (borrow, scene, token) -> {
+                                for (var b : borrow.bindings()) {
+                                    if (b.fileDataId() == 5
+                                            || b.fileDataId() == 6
+                                            || b.fileDataId() == 10) {
+                                        assertEquals(null, b.declaredLength());
+                                        assertEquals(
+                                                files.sources.get(b.fileDataId()).length,
+                                                b.length());
+                                        assertEquals(
+                                                b.fileDataId() == 5
+                                                        ? 1024
+                                                        : b.fileDataId() == 6 ? 32768 : 65536,
+                                                b.limit());
+                                    }
+                                }
+                                return (AutoCloseable) () -> {};
+                            })
+                    .close();
+            assertTrue(files.derivedReads.get() > 0);
+            files.derivedReads.set(0);
+            files.sources.put(5L, new byte[1025]);
+            int before = files.opens.get(5L).get();
+            assertThrows(
+                    RuntimeException.class,
+                    () -> f.run((borrow, scene, token) -> (AutoCloseable) () -> {}));
+            assertEquals(before + 1, files.opens.get(5L).get());
+            assertEquals(
+                    0,
+                    files.derivedReads.get(),
+                    "Unknown oversized stream length rejects before buffer read");
         }
     }
 }
