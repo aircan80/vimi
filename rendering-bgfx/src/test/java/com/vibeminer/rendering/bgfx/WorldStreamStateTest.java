@@ -23,6 +23,59 @@ final class WorldStreamStateTest {
     private static final WorldStreamState.Nonce NONCE = new WorldStreamState.Nonce(41, 77);
 
     @Test
+    void unknownCoordinatesHoldReadOwnershipWhileCameraAndCancelRemainResponsive() {
+        var state = new WorldStreamState(NONCE);
+        var lease = state.credit();
+        assertEquals(OK, state.offer(NONCE, 1, lease));
+        assertEquals(WorldStreamState.Phase.READING, state.phase());
+        assertEquals(INVALID_TABLE, state.decoded(lease, true));
+        assertFalse(state.inputConsumed());
+        assertEquals(BUSY, state.staged(lease));
+        assertEquals(INVALID_TABLE, state.commit(NONCE, 2, 0, 1, List.of(lease)));
+        var mailbox = new WorldControlMailbox(NONCE);
+        assertEquals(
+                WorldControlMailbox.Result.ACCEPTED,
+                mailbox.offer(
+                        new WorldStreamControl.Camera(
+                                NONCE,
+                                1,
+                                1,
+                                800,
+                                500,
+                                new com.vibeminer.rendering.world.TerrainCamera(0, 0, 0, 0, 0))));
+        assertNotNull(mailbox.takeCamera());
+        assertEquals(OK, state.cancel(NONCE, 1, lease));
+        assertNull(state.credit());
+        assertEquals(OK, state.decoded(lease, false));
+        assertNotEquals(lease, state.credit());
+        assertEquals(BAD_LEASE, state.decoded(lease, true, 7, 19));
+        var next = state.credit();
+        assertEquals(OK, state.offer(NONCE, 3, next));
+        assertEquals(INVALID_TABLE, state.decoded(next, true));
+    }
+
+    @Test
+    void decodedCoordinatesValidateBeforeConsumptionAndCannotBeReplayedOrChanged() {
+        var state = new WorldStreamState(NONCE);
+        var lease = state.credit();
+        assertEquals(OK, state.offer(NONCE, 1, lease));
+        assertEquals(BAD_LEASE, state.decoded(new WorldStreamState.Lease(1, 1, 2), true, 7, 19));
+        assertEquals(INVALID_TABLE, state.decoded(lease, true, -1, 19));
+        assertEquals(INVALID_TABLE, state.decoded(lease, true, 7, 64));
+        assertFalse(state.inputConsumed());
+        assertEquals(OK, state.decoded(lease, true, 7, 19));
+        assertEquals(BAD_LEASE, state.decoded(lease, true, 8, 19));
+        assertEquals(OK, state.staged(lease));
+        assertEquals(OK, state.commit(NONCE, 2, 0, 1, List.of(lease)));
+        var replacement = state.credit();
+        assertEquals(OK, state.offer(NONCE, 3, replacement));
+        assertEquals(OK, state.decoded(replacement, true, 7, 19));
+        assertEquals(OK, state.staged(replacement));
+        assertEquals(INVALID_TABLE, state.commit(NONCE, 4, 1, 2, List.of(lease, replacement)));
+        assertEquals(OK, state.commit(NONCE, 5, 1, 2, List.of(replacement)));
+    }
+
+    @Test
     void reusesTenSlotsForHundredsOfOrderedAtomicCommitsWithoutReplayOrAba() {
         var state = new WorldStreamState(NONCE);
         long tx = 0;

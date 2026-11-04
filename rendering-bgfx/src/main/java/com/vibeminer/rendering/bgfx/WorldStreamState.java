@@ -93,7 +93,15 @@ final class WorldStreamState {
         return phase == Phase.CLOSED;
     }
 
+    Result offer(Nonce session, long tx, Lease lease) {
+        return offer(session, tx, lease, -1, -1, false);
+    }
+
     Result offer(Nonce session, long tx, Lease lease, int tileX, int tileY) {
+        return offer(session, tx, lease, tileX, tileY, true);
+    }
+
+    private Result offer(Nonce session, long tx, Lease lease, int tileX, int tileY, boolean known) {
         var result = newTransaction(session, tx);
         if (result != Result.OK) {
             return result;
@@ -104,21 +112,42 @@ final class WorldStreamState {
         if (!Objects.equals(incoming, lease)) {
             return Result.BAD_LEASE;
         }
-        if (tileX < 0 || tileX > 63 || tileY < 0 || tileY > 63) {
+        if (known && (tileX < 0 || tileX > 63 || tileY < 0 || tileY > 63)) {
             return Result.INVALID_TABLE;
         }
         offerTransaction = tx;
-        coordinates[lease.slot()] = tileY * 64 + tileX;
+        coordinates[lease.slot()] = known ? tileY * 64 + tileX : -1;
         decoderOwned = true;
         inputConsumed = false;
         phase = Phase.READING;
         return Result.OK;
     }
 
+    Result decoded(Lease lease, boolean valid, int tileX, int tileY) {
+        if (!Objects.equals(incoming, lease) || !decoderOwned) {
+            return Result.BAD_LEASE;
+        }
+        if (valid) {
+            if (tileX < 0
+                    || tileX > 63
+                    || tileY < 0
+                    || tileY > 63
+                    || coordinates[lease.slot()] != -1
+                            && coordinates[lease.slot()] != tileY * 64 + tileX) {
+                return Result.INVALID_TABLE;
+            }
+            coordinates[lease.slot()] = tileY * 64 + tileX;
+        }
+        return decoded(lease, valid);
+    }
+
     // Invoked only after decoder closes the actual input and drops all raw/output aliases.
     Result decoded(Lease lease, boolean valid) {
         if (!Objects.equals(incoming, lease) || !decoderOwned) {
             return Result.BAD_LEASE;
+        }
+        if (valid && coordinates[lease.slot()] == -1) {
+            return Result.INVALID_TABLE;
         }
         decoderOwned = false;
         inputConsumed = true;
@@ -300,6 +329,7 @@ final class WorldStreamState {
             throw new IllegalStateException("Session slot exhausted");
         }
         incoming = new Lease(free, ++generations[free], ++serial);
+        coordinates[free] = -1;
         offerTransaction = 0;
         inputConsumed = false;
         phase = Phase.CREDIT;
