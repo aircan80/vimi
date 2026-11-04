@@ -7,6 +7,7 @@ import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.AssetSources;
 import com.vibeminer.formats.images.Blp2Decoder;
 import com.vibeminer.formats.images.Blp2Types;
+import com.vibeminer.formats.images.BlpFormatException;
 import com.vibeminer.formats.world.TerrainGrid;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.formats.world.WorldTextureFormats;
@@ -326,8 +327,11 @@ public final class WorldTerrainTextureSource {
         final Cancellation caller, token = new Cancellation();
         final Consumer<Progress> progress;
         final CompletableFuture<BatchResult> future = new CompletableFuture<>();
+        final CompletableFuture<Void> drained = new CompletableFuture<>();
+        final boolean strictFailures;
         Cancellation.Registration registration;
         volatile boolean canceled;
+        volatile Throwable cancellationFailure;
         boolean cancelQueued;
 
         Request(
@@ -335,12 +339,14 @@ public final class WorldTerrainTextureSource {
                 WorldService.MapInfo map,
                 List<WorldFormats.Tile> tiles,
                 Cancellation caller,
-                Consumer<Progress> progress) {
+                Consumer<Progress> progress,
+                boolean strictFailures) {
             this.source = source;
             this.map = map;
             this.tiles = tiles;
             this.caller = caller;
             this.progress = progress;
+            this.strictFailures = strictFailures;
         }
 
         void check() {
@@ -399,11 +405,51 @@ public final class WorldTerrainTextureSource {
         tasks = pool.tasks();
     }
 
+    /** Owned result and actual worker/cancellation retirement are deliberately separate. */
+    static final class Operation {
+        private final CompletableFuture<BatchResult> result;
+        private final CompletableFuture<Void> drained;
+
+        private Operation(Request request) {
+            result = request.future;
+            drained = request.drained;
+        }
+
+        CompletableFuture<BatchResult> result() {
+            return result;
+        }
+
+        boolean isDrained() {
+            return drained.isDone();
+        }
+
+        void awaitDrained() {
+            drained.join();
+        }
+    }
+
+    Operation readOwned(
+            WorldService.MapInfo map,
+            List<WorldFormats.Tile> tiles,
+            Cancellation token,
+            Consumer<Progress> progress) {
+        return beginRead(map, tiles, token, progress, true);
+    }
+
     public CompletableFuture<BatchResult> read(
             WorldService.MapInfo map,
             List<WorldFormats.Tile> tiles,
             Cancellation token,
             Consumer<Progress> progress) {
+        return beginRead(map, tiles, token, progress, false).result();
+    }
+
+    private Operation beginRead(
+            WorldService.MapInfo map,
+            List<WorldFormats.Tile> tiles,
+            Cancellation token,
+            Consumer<Progress> progress,
+            boolean strictFailures) {
         Objects.requireNonNull(map);
         Objects.requireNonNull(tiles);
         Objects.requireNonNull(token);
@@ -420,7 +466,7 @@ public final class WorldTerrainTextureSource {
             }
             seen[key] = true;
         }
-        var request = new Request(this, map, snapshot, token, progress);
+        var request = new Request(this, map, snapshot, token, progress, strictFailures);
         request.registration = token.onCancel(() -> tasks.cancel(request));
         request.future.whenComplete(
                 (result, failure) -> {
@@ -429,7 +475,7 @@ public final class WorldTerrainTextureSource {
                     }
                 });
         tasks.submit(request);
-        return request.future;
+        return new Operation(request);
     }
 
     public CompletableFuture<Void> closeAsync() {
@@ -458,7 +504,7 @@ public final class WorldTerrainTextureSource {
                 }
             } catch (RuntimeException unavailable) {
                 propagateCancellation(request, unavailable);
-                Reason reason = reason(unavailable, Reason.INVENTORY_PROFILE);
+                Reason reason = reason(request, unavailable, Reason.INVENTORY_PROFILE);
                 for (var tile : request.tiles) {
                     results.add(unavailable(tile, reason));
                 }
@@ -482,7 +528,9 @@ public final class WorldTerrainTextureSource {
                     propagateCancellation(request, unavailable);
                     loaded =
                             new Outcome(
-                                    unavailable(tile, reason(unavailable, Reason.TEXTURE_PROFILE)),
+                                    unavailable(
+                                            tile,
+                                            reason(request, unavailable, Reason.TEXTURE_PROFILE)),
                                     null);
                 }
                 results.add(loaded.metadata());
@@ -497,6 +545,9 @@ public final class WorldTerrainTextureSource {
                         revalidate(receipt.bindings(), request);
                     } catch (RuntimeException changed) {
                         propagateCancellation(request, changed);
+                        if (request.strictFailures) {
+                            throw changed;
+                        }
                         if (leases[i] != null) {
                             leases[i].close();
                             leases[i] = null;
@@ -536,7 +587,7 @@ public final class WorldTerrainTextureSource {
         }
         request.report(Stage.TEXTURES, tileIndex, 0);
         var texture = readBytes(tile.tex0Id(), WorldTextureFormats.MAX_SOURCE_BYTES, request);
-        try (var data = WorldTextureFormats.read(texture.bytes(), request::canceled)) {
+        try (var data = readTextureData(texture.bytes(), request)) {
             boolean[] used = new boolean[data.diffuseIds().size()];
             for (var chunk : data.chunks()) {
                 if (chunk.issue() == WorldTextureFormats.ChunkIssue.NONE) {
@@ -557,7 +608,9 @@ public final class WorldTerrainTextureSource {
                         stats.put(id, stat(id, 1 << 20, request));
                     } catch (RuntimeException missing) {
                         propagateCancellation(request, missing);
-                        issues.add(new Issue(reason(missing, Reason.DIFFUSE_PROFILE), -1, id));
+                        issues.add(
+                                new Issue(
+                                        reason(request, missing, Reason.DIFFUSE_PROFILE), -1, id));
                     }
                 }
             }
@@ -612,7 +665,7 @@ public final class WorldTerrainTextureSource {
                         propagateCancellation(request, missing);
                         issues.add(
                                 new Issue(
-                                        reason(missing, Reason.DIFFUSE_PROFILE),
+                                        reason(request, missing, Reason.DIFFUSE_PROFILE),
                                         -1,
                                         binding.fileId()));
                     }
@@ -662,6 +715,14 @@ public final class WorldTerrainTextureSource {
                                 issues),
                         lease);
             }
+        }
+    }
+
+    private static WorldTextureFormats.TextureData readTextureData(byte[] bytes, Request request) {
+        try {
+            return WorldTextureFormats.read(bytes, request::canceled);
+        } catch (IllegalArgumentException invalid) {
+            throw new SourceFailure(Reason.TEXTURE_PROFILE);
         }
     }
 
@@ -856,12 +917,21 @@ public final class WorldTerrainTextureSource {
         return new TileResult(tile, State.UNAVAILABLE, null, 0, List.of(new Issue(reason, -1, 0)));
     }
 
-    private static Reason reason(RuntimeException failure, Reason fallback) {
+    private static Reason reason(Request request, RuntimeException failure, Reason fallback) {
         Throwable value = failure;
         for (int i = 0; i < 16 && value.getCause() != null; i++) {
             value = value.getCause();
         }
-        return value instanceof SourceFailure known ? known.reason : fallback;
+        if (value instanceof SourceFailure known) {
+            if (request.strictFailures && known.reason == Reason.CHANGED) {
+                throw failure;
+            }
+            return known.reason;
+        }
+        if (request.strictFailures && !(value instanceof BlpFormatException)) {
+            throw failure;
+        }
+        return fallback;
     }
 
     private static void propagateCancellation(Request request, RuntimeException failure) {

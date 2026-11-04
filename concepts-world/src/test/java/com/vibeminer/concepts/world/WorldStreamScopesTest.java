@@ -35,6 +35,109 @@ final class WorldStreamScopesTest {
             new WorldFormats.Tile(7, 19, 2, 0, 0, 0, 0, 3, 0, 0);
 
     @Test
+    void ownedMaterialDrainKeepsAdmissionBusyAfterResultFailsAndBeforeLowerCallbacksRetire()
+            throws Exception {
+        var entered = new CountDownLatch(1);
+        var lowerEntered = new CountDownLatch(1);
+        var releaseRead = new CompletableFuture<Void>();
+        var releaseLower = new CompletableFuture<Void>();
+        var attached = new java.util.concurrent.atomic.AtomicBoolean();
+        var files =
+                new WorldTerrainTextureSourceTest.Files() {
+                    @Override
+                    FileTypes.FileStat stat(long id, Cancellation token) {
+                        if (id == 10 && attached.compareAndSet(false, true)) {
+                            token.onCancel(
+                                    () -> {
+                                        lowerEntered.countDown();
+                                        releaseLower.join();
+                                    });
+                            entered.countDown();
+                            releaseRead.join();
+                            token.check();
+                        }
+                        return super.stat(id, token);
+                    }
+                };
+        var tables = new Tables(files);
+        var scopes = new WorldStreamScopes(tables.handle(), files.files());
+        var pool = new TerrainAtlasPool();
+        var helper = new WorldTerrainTextureSource(files.files(), pool);
+        var external = new Cancellation();
+        var operation =
+                new java.util.concurrent.atomic.AtomicReference<
+                        WorldTerrainTextureSource.Operation>();
+        try {
+            var scope = scopes.create(REQUEST, Cancellation.NONE);
+            var work =
+                    CompletableFuture.supplyAsync(
+                            () ->
+                                    scopes.withRecordedTile(
+                                            scope,
+                                            TILE,
+                                            WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                                            external,
+                                            admission -> {
+                                                var actual =
+                                                        helper.readOwned(
+                                                                new WorldService.MapInfo(
+                                                                        7,
+                                                                        "Authored",
+                                                                        "Authored",
+                                                                        0,
+                                                                        1L),
+                                                                List.of(TILE),
+                                                                admission.cancellation(),
+                                                                p -> {});
+                                                operation.set(actual);
+                                                try (var batch = actual.result().join()) {
+                                                    assertTrue(batch.tiles().size() == 1);
+                                                    return (AutoCloseable) () -> {};
+                                                } finally {
+                                                    actual.awaitDrained();
+                                                }
+                                            }));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            external.cancel();
+            assertTrue(lowerEntered.await(5, TimeUnit.SECONDS));
+            releaseRead.complete(null);
+            assertThrows(
+                    java.util.concurrent.CancellationException.class,
+                    () -> operation.get().result().get(5, TimeUnit.SECONDS));
+            assertFalse(operation.get().isDrained());
+            assertFalse(work.isDone());
+            int rootReads = files.opens(2);
+            assertThrows(
+                    IllegalStateException.class,
+                    () ->
+                            scopes.withRecordedTile(
+                                    scope,
+                                    TILE,
+                                    WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                                    Cancellation.NONE,
+                                    admission -> {
+                                        admission.readRecorded(
+                                                WorldStreamScopes.RecordedInput.ROOT);
+                                        return (AutoCloseable) () -> {};
+                                    }));
+            assertEquals(
+                    rootReads,
+                    files.opens(2),
+                    "Next geometry cannot read before actual helper drain");
+            releaseLower.complete(null);
+            assertThrows(java.util.concurrent.CompletionException.class, work::join);
+            assertTrue(operation.get().isDrained());
+        } finally {
+            releaseRead.complete(null);
+            releaseLower.complete(null);
+            scopes.closeAsync().join();
+            helper.closeAsync().join();
+            pool.closeAsync().join();
+            tables.close();
+        }
+    }
+
+    @Test
     void admissionMetadataIsDetachedActualNamespaceAndWdtReadObservation() throws Exception {
         var files = new WorldTerrainTextureSourceTest.Files();
         var tables = new Tables(files);
