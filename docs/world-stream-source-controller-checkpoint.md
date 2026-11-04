@@ -227,3 +227,18 @@ Presented-only source pins do not count as live GPU membership or prepared deman
 such a tile requalifies/reuploads a separately charged actual source owner rather than attempting
 to recommit its retired opaque Resident. Causal authored cases cover the previously RED returning
 9-tile demand and held nearest-tile motion with rejected uncovered pixels before any upload.
+
+At a full twelve-owner union, returning demand can need a fresh native resident for a tile retained
+only by last-presented source pins. The relief path commits the exact live wanted subset (including
+empty), keeps the old presented image/table, and retires only source owners with no current,
+committing or presented use after COMMITTED. Freed credit permits actual source requalification and
+upload; no retired Resident is reused and no cap is raised. Authored full-union cases prove both
+six-member and empty subsets, pending stale-frame discard, fresh restoration and final readiness.
+The child fixture now preserves an already-unconsumed input lease across a metadata-only commit.
+
+A known unavailable nearest recorded tile is a finite UNAVAILABLE state, never READY from an older
+receipt or indefinite capacity activity. The controller finishes an already-admitted useful bundle,
+then stops new neighbor admission while keeping last-readable pixels. This avoids accumulating
+unpresentable neighbors until the twelve-owner union stalls. Moving back to a readable requested
+center resumes normally. A thirteen-tile causal fixture proves missing-nearest SOURCE_INPUT keeps
+nine old owners, does not open the other three new neighbors, and recovers on readable demand.

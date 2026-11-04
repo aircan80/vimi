@@ -577,13 +577,35 @@ final class WorldStreamSourceController {
         }
         retireUnused();
         updateArea();
+        if(!wanted.isEmpty() && unavailable.containsKey(key(wanted.getFirst()))
+                && current.stream().noneMatch(entry->same(wanted.getFirst(),entry.resident()))) {
+            publish(Phase.UNAVAILABLE,"Nearest terrain unavailable: "+unavailable.get(key(wanted.getFirst())).site());
+            return;
+        }
         synchronized (lock) {
             if (blockedCapacity == session.capacityRevision()
                     && blockedPresentation == presentationRevision
                     && blockedDemand == demandRevision
                     && clock.getAsLong() - blockedAt < RETRY_NANOS) return;
         }
-        if (entries.size() >= 12) {
+        boolean needsSource=wanted.stream().anyMatch(tile->!unavailable.containsKey(key(tile))
+                && current.stream().noneMatch(entry->same(tile,entry.resident())));
+        if (entries.size() >= 12 && needsSource) {
+            // Historical source pins cannot be recommitted after their native resident retired.
+            // Free only never-presented, unwanted current owners before reuploading old demand.
+            boolean restoring=wanted.stream().anyMatch(tile->
+                    current.stream().noneMatch(entry->same(tile,entry.resident()))
+                            && presented.stream().anyMatch(entry->same(tile,entry.resident())));
+            var subset=current.stream().filter(entry->containsResident(wanted,entry.resident())).toList();
+            boolean releasable=current.stream().anyMatch(entry->!subset.contains(entry) && !presented.contains(entry));
+            if(restoring && releasable && camera!=null) {
+                committing=List.copyOf(subset);
+                commit=session.commit(camera.policy(),subset.stream().map(Entry::resident)
+                        .toArray(WorldStreamTransport.Resident[]::new));
+                commit.whenComplete((ignored,failure)->kick());
+                publish(Phase.COMMITTING,"Recovering requested terrain residency");
+                return;
+            }
             publish(Phase.WAITING_CAPACITY, "Waiting for accepted viewport pixels");
             return;
         }

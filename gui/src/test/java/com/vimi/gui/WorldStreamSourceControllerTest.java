@@ -30,12 +30,15 @@ public final class WorldStreamSourceControllerTest {
     public static void main(String[] args) throws Exception {
         failedFxWakeStillCancelsHeldInitialSourceQualification();
         explicitUnsupportedSourceHasCleanNoOwnerDrain();
+        fullPresentationUnionRecoversBackDemandWithoutAcceptingUnwantedPixels(false);
+        fullPresentationUnionRecoversBackDemandWithoutAcceptingUnwantedPixels(true);
         backDemandDoesNotTreatPresentedOnlySourceAsLiveGpuResident();
         uncoveredCameraFrameKeepsOldPixelsWhileNearestTileLoads();
         cameraPublicationSerializesInitialAndFxForwarding();
         initialSeedHeldReplacementCameraAndPresentationDrain();
         supersededHeldSourceCancelsBeforeStalePredicateAndKeepsSession();
         missingRootIsFinitePerDemandAndDoesNotInvalidateCurrentScope();
+        missingNearestIsFiniteUnavailableWithoutFillingOutputUnion();
         heldPresentationBackpressuresTwelveUniqueOwnersAndKeepsFinalFrame();
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
         queuedGpuOwnerLateCloseIsPartOfControllerDrain();
@@ -113,6 +116,35 @@ public final class WorldStreamSourceControllerTest {
                 }
             }
         }
+    }
+
+    private static void fullPresentationUnionRecoversBackDemandWithoutAcceptingUnwantedPixels(boolean emptySubset) throws Exception {
+        var fixture=new Fixture(new AuthoredTerrainSource.Files(),13);
+        try {
+            fixture.start();
+            fixture.until(()->fixture.controller.snapshot().seed()!=null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0,9));
+            fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared()==9);
+            fixture.controller.neighborhood(fixture.tiles.subList(4,13));
+            fixture.until(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.WAITING_CAPACITY
+                    && fixture.pool.stats().leaseClaims()==12);
+            // A9 remains the visible/pinned table; B3 is current but never presented.
+            var returning=new ArrayList<WorldFormats.Tile>();
+            returning.add(fixture.tiles.get(1));
+            if(!emptySubset) for(int i=0;i<9;i++) if(i!=1) returning.add(fixture.tiles.get(i));
+            fixture.controller.neighborhood(returning);
+            fixture.controller.camera(new WorldStreamTransport.Camera(2,1,80,50,
+                    new TerrainCamera(-266,-800,110,Math.PI,-.8)));
+            fixture.until(()->fixture.commitLines().size()>=14);
+            check(fixture.commitLines().get(12).endsWith(emptySubset?" 0":" 6"),
+                    "Relief commit contains only exact live wanted subset, including legitimate empty subset");
+            check(fixture.pool.stats().leaseClaims()<=12,"Restoration never increases source owner cap");
+            fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
+            check(fixture.controller.snapshot().prepared()==(emptySubset?1:9),
+                    "Retired requested residents are freshly source-qualified/uploaded rather than skipped");
+        } finally { fixture.close(); }
     }
 
     private static void uncoveredCameraFrameKeepsOldPixelsWhileNearestTileLoads() throws Exception {
@@ -376,6 +408,33 @@ public final class WorldStreamSourceControllerTest {
             release.complete(null);
             fixture.close();
         }
+    }
+
+    private static void missingNearestIsFiniteUnavailableWithoutFillingOutputUnion() throws Exception {
+        var fixture=new Fixture(new AuthoredTerrainSource.Files(),13);
+        fixture.files.sources.remove(1018L);
+        try {
+            fixture.start();
+            fixture.until(()->fixture.controller.snapshot().seed()!=null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0,9));
+            fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared()==9);
+            var wanted=new ArrayList<WorldFormats.Tile>(fixture.tiles.subList(9,13));
+            wanted.addAll(fixture.tiles.subList(0,5));
+            fixture.controller.neighborhood(wanted);
+            fixture.controller.camera(new WorldStreamTransport.Camera(2,1,80,50,
+                    new TerrainCamera(-266,-5066,110,Math.PI,-.8)));
+            fixture.until(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.UNAVAILABLE
+                    && fixture.controller.snapshot().detail().contains("Nearest terrain unavailable"));
+            for(int i=0;i<30;i++) { fixture.pump(); Thread.sleep(2); }
+            check(fixture.files.opens(1020)==0 && fixture.files.opens(1022)==0 &&fixture.files.opens(1024)==0,
+                    "Known missing center does not fill twelve-owner union with unpresentable neighbors");
+            check(fixture.pool.stats().leaseClaims()==9,"Last readable table stays owned with finite unavailable state");
+            fixture.controller.neighborhood(fixture.tiles.subList(0,9));
+            fixture.camera(3);
+            fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
+        } finally { fixture.close(); }
     }
 
     private static void missingRootIsFinitePerDemandAndDoesNotInvalidateCurrentScope()

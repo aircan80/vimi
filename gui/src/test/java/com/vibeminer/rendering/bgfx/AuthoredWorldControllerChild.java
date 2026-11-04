@@ -51,8 +51,9 @@ public final class AuthoredWorldControllerChild {
                                         + camera.height());
                     }
                 } else if (command instanceof WorldStreamControl.Offer offer) {
-                    if (!offer.lease().equals(state.lease))
+                    if (!state.available || !offer.lease().equals(state.lease))
                         throw new AssertionError("Wrong input lease");
+                    state.available=false;
                     try (var payload =
                             WorldStreamTileFile.read(
                                     directory.resolve("tile-" + offer.transaction() + ".wst"),
@@ -108,7 +109,7 @@ public final class AuthoredWorldControllerChild {
                             java.nio.file.StandardOpenOption.CREATE,
                             java.nio.file.StandardOpenOption.APPEND);
                     content = commit.next();
-                    state.grant();
+                    if(!state.available) state.grant();
                 } else if (command instanceof WorldStreamControl.CancelUnused cancel) {
                     state.canceled(cancel.transaction(), cancel.lease());
                 } else if (command instanceof WorldStreamControl.Cancel cancel) {
@@ -143,6 +144,7 @@ public final class AuthoredWorldControllerChild {
         final Set<Integer> members = new HashSet<>();
         final long[] generations = new long[10];
         long serial;
+        boolean available;
         WorldStreamState.Lease lease;
 
         State(String prefix) {
@@ -157,11 +159,13 @@ public final class AuthoredWorldControllerChild {
         void grant() {
             int slot = 0;
             while (members.contains(slot)) slot++;
+            available=true;
             lease = new WorldStreamState.Lease(slot, ++generations[slot], ++serial);
             send("CREDIT " + lease.serial() + " " + lease.slot() + " " + lease.generation());
         }
 
         void canceled(long transaction, WorldStreamState.Lease canceled) {
+            available=false;
             send(
                     "CANCELED "
                             + transaction
