@@ -469,6 +469,14 @@ tasks.register('voicePlaybackTest', JavaExec) {
 }
 tasks.named('check') { dependsOn tasks.named('voicePlaybackTest') }
 
+// Authored PCM and controlled audio lines; no device, decoder process or game file.
+tasks.register('worldAudioPlaybackTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldAudioPlaybackTest'
+}
+tasks.named('check') { dependsOn tasks.named('worldAudioPlaybackTest') }
+
 // Authored physical terrain coordinates and deterministic keyboard/timer events; requires a display.
 tasks.register('worldNavigationUiTest', JavaExec) {
     dependsOn testClasses
