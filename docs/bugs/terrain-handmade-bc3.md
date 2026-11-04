@@ -43,7 +43,8 @@ tasks independently. Publication and platform package checks remain pending. Act
 Follow-up coverage (#169 verification): a synthetic non-square 16×4 handmade BC3
 chain checks exact 64/32/16/16/16-byte level sizes (one whole 16-byte block for
 the 4×1, 2×1 and 1×1 levels), interpolated eight-value alpha, per-level colour
-selectors and cropping of partial terminal blocks. BC3 payloads using BC1's
+selectors and alpha shifts that make every level and block byte-distinct, and
+cropping of partial terminal blocks. BC3 payloads using BC1's
 8-byte blocks, every terminal-block truncation, an 8-byte terminal descriptor and
 wrong strict-mode lengths remain BLP_INVALID. Handmade BC1 (alpha depth 0 or 1)
 and BC2 depth 4 remain BLP_UNSUPPORTED pending their own evidence; strict BC1 with

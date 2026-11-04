@@ -118,15 +118,16 @@ final class BlpHandmadeMipTest {
     };
 
     /**
-     * One BC3 block: alpha 200/40 eight-value ramp, pixel i alpha index i % 8, colour index (x +
-     * level) % 4.
+     * One BC3 block: alpha 200/40 eight-value ramp, pixel i alpha index (i + shift) % 8, colour
+     * index (x + level) % 4. Distinct shifts make every level and every block within a level
+     * byte-distinct, so a wrong level offset or block stride changes the decoded pixels.
      */
-    private static byte[] bc3Block(int level) {
+    private static byte[] bc3Block(int level, int shift) {
         var out = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN);
         long alphaSelectors = 0;
         int colorSelectors = 0;
         for (int i = 0; i < 16; i++) {
-            alphaSelectors |= (long) (i % 8) << (i * 3);
+            alphaSelectors |= (long) ((i + shift) % 8) << (i * 3);
             colorSelectors |= ((i % 4 + level) % 4) << (i * 2);
         }
         out.put((byte) 200).put((byte) 40);
@@ -146,7 +147,7 @@ final class BlpHandmadeMipTest {
             int blocks = ((w + 3) / 4) * ((h + 3) / 4);
             var out = ByteBuffer.allocate(blocks * blockBytes);
             for (int block = 0; block < blocks; block++) {
-                out.put(bc3Block(level), 0, blockBytes);
+                out.put(bc3Block(level, level + block), 0, blockBytes);
             }
             mips[level] = out.array();
         }
@@ -185,11 +186,12 @@ final class BlpHandmadeMipTest {
             for (int y = 0; y < h; y++) {
                 for (int x = 0; x < w; x++) {
                     int px = x % 4, py = y % 4, at = (y * w + x) * 4;
+                    int block = (y / 4) * ((w + 3) / 4) + x / 4;
                     int[] color = BC3_COLORS[(px + level) % 4];
                     expected[at] = (byte) color[0];
                     expected[at + 1] = (byte) color[1];
                     expected[at + 2] = (byte) color[2];
-                    expected[at + 3] = (byte) BC3_ALPHA[(py * 4 + px) % 8];
+                    expected[at + 3] = (byte) BC3_ALPHA[(py * 4 + px + level + block) % 8];
                 }
             }
             assertArrayEquals(expected, image.rgba(), "level " + level);
@@ -211,7 +213,7 @@ final class BlpHandmadeMipTest {
         put(shortTerminal, 84 + 4 * 4, 8);
         refused("BLP_INVALID", shortTerminal);
         // Strict (non-handmade) single-level BC3: every truncation and every wrong declared length.
-        var strict = Blp2DecoderTest.build(2, 8, 7, 4, 4, bc3Block(0));
+        var strict = Blp2DecoderTest.build(2, 8, 7, 4, 4, bc3Block(0, 0));
         assertEquals(16 * 4, Blp2Decoder.decode(AssetSource.bytes(strict)).join().rgba().length);
         for (int size = 0; size < strict.length; size++) {
             Blp2DecoderTest.code("BLP_INVALID", Arrays.copyOf(strict, size), 0);
