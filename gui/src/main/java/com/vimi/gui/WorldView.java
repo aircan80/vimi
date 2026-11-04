@@ -2099,12 +2099,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private void streamNeighborhood() {
         if (streaming == null || camera == null || inventory == null) return;
         int x = tileX(), y = tileY();
-        streaming.neighborhood(inventory.world().tiles().stream()
-                .filter(tile -> Math.abs(tile.x() - x) <= 1 && Math.abs(tile.y() - y) <= 1)
-                .sorted(Comparator.comparingInt((WorldFormats.Tile tile) ->
-                        Math.abs(tile.x() - x) + Math.abs(tile.y() - y))
-                        .thenComparingInt(WorldFormats.Tile::x).thenComparingInt(WorldFormats.Tile::y))
-                .limit(9).toList());
+        streaming.neighborhood(WorldStreamNeighborhood.select(
+                inventory.world().tiles(), x, y, camera.yaw()));
     }
 
     private void retireGpu() {
