@@ -52,3 +52,13 @@ credit state-machine, camera/input latency, frame-rate or asynchronous readback 
 mapped-frame World v2 content-revision contract is not implemented here. Vulkan results
 must not be reported as Metal, D3D11 or OpenGL runtime qualification. Cross-profile source
 compilation remains necessary and separate from hardware execution.
+
+## Root verification
+
+Root reviewed the complete acceptance and shader paths, then reran the opt-in
+acceptance with all spike shader verification enabled after importing the matching
+Windows artifacts22391a1. Vulkan passes71 frames and1,042,972 samples. Fog retains
+distinct source colors at the tested depth cases. The constant-X test plane holds
+one UV coordinate constant; these checks do not replace future sloped-surface
+precision coverage or universal UV-error bounds. This approval is for the authored
+feasibility scope, not a production hot-stream implementation.
