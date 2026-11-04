@@ -690,17 +690,38 @@ public final class WorldStreamTransport {
                                     descriptor.nonce(), metadata.transaction, sha));
                 }
             } catch (Throwable failed) {
-                if (operation != null && operation.created && !operation.advertised) {
-                    try {
-                        java.nio.file.Files.deleteIfExists(operation.path);
-                        operation.deleted = true;
-                    } catch (Throwable cleanup) {
-                        fail(cleanup);
-                    }
-                }
-                result.completeExceptionally(WorldStreamLaunchOwner.Handle.detached(failed));
-                fail(failed);
+                failedCommit(operation, result, failed);
             }
+        }
+
+        private void failedCommit(
+                CommitOperation operation,
+                CompletableFuture<CommitReceipt> result,
+                Throwable failed) {
+            Throwable cleanupFailure = null;
+            if (operation != null && operation.created && !operation.advertised) {
+                try {
+                    java.nio.file.Files.deleteIfExists(operation.path);
+                    operation.deleted = true;
+                } catch (Throwable cleanup) {
+                    cleanupFailure = cleanup;
+                }
+            }
+            result.completeExceptionally(
+                    WorldStreamLaunchOwner.Handle.detached(
+                            cleanupFailure == null ? failed : cleanupFailure));
+            if (cleanupFailure != null) {
+                fail(cleanupFailure);
+                return;
+            }
+            if ((closing || owner.stopping())
+                    && (operation == null || !operation.advertised)
+                    && WorldStreamProducerCancellation.cleanCancellation(failed, true)) {
+                // Our own stop checks may run after close queues this file task. All owned,
+                // unadvertised bytes have retired before treating that exact clean stop as normal.
+                return;
+            }
+            fail(failed);
         }
 
         /** Detached pixels only; no mapping IO or array allocation occurs on the caller. */
