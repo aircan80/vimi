@@ -25,24 +25,26 @@ placement, area music, sky/lighting/fog/time-of-day, ambient audio, walk/fly,
 inspection, search/travel/bookmarks, quest/vendor/trainer/flight overlays, idle
 animations and dungeon floor/group/entrance navigation are all authorized.
 
-Main is39a42bb after PR155 fast-forward merge. Alpha.19 is tagged at that
-immutable commit; publication run41775202595 is IN PROGRESS, not yet verified.
-All PR gates and five-platform packaging dry run41773635784 passed. Root full
-check/assemble/World UI/native evidence is recorded in the alpha19 checkpoint.
-The release reduces ADT parser allocation from about13.3MB to5.3–6.1MB on the
-three private real inputs with identical geometry/area fingerprints; it does
-not deliver persistent streaming or cities. Never move an existing tag.
+Main includes alpha19 source39a42bb and later handoff docs. Alpha.19 is VERIFIED
+published by run41775202595: all five platform jobs passed,18assets, explicitly
+prerelease and not draft. Release https://github.com/aircan80/vimi/releases/tag/v0.1.0-alpha.19
+Frozen Linux launcher `.local/apps/preview-39a42bb/bin/vimi-gui-prototype` passes
+packaged UI/native24shader smoke. Never move tags or overwrite frozen launchers.
+Parser allocations fall about13.3MB to5.3–6.1MB on three real inputs with identical
+geometry/area fingerprints; persistent streaming/cities remain future work.
 
 Future draft PR153/worktree `/tmp/vimi-world-streaming-integration` now merges
 alpha19. Combined concepts/formats/rendering/GUI check passes153tasks; actual
-World GPU/navigation proof is running separately. Framev2 codec05e1e1c is
+World GPU/navigation proof passes92tasks, with accepted Vulkan pixels, camera/resize,
+hide/resume, software toggle and drain. Framev2 codec05e1e1c is
 committed, independently approved and integrated; eight tests include mapping
 lifetime, CRC and presentation barriers. It is not wired into a hot renderer.
 
 World scope source engine througha9e17fe is independently approved and integrated.
-Cache/admission proposalsab05565/941833b/e2e171b and WMO factoryc2ec2ca need two
-explicit ownership fixes: enforce aggregate live input reservations before read,
-and factory cleanup of outputs when a callback throws before returning ownership.
+Cache/admission proposalsab05565/941833b/e2e171b+0e52788 and WMO
+factoryc2ec2ca+1378984 are approved for private implementation after explicit serial
+live input reservations and pre-return factory output cleanup. Admission0104600 is
+a tested intermediate, with derived edges/cache/pins still being implemented.
 Primitive parser makes the cache construction ledger plausible; actual ownership
 implementation still needs checks. Raw WMO parser5dbc64c is root approved for
 facts only. Actual small exterior and all eight Onyxia groups parse, without any
@@ -50,11 +52,19 @@ claim that buildings/instances are visible yet. Private assets remain outside Gi
 
 Native selected-table preparatione181fa2 proves actual legacy UiMap/Assignment
 overlay upgrade with original stores read-only and old artifacts/captures unchanged;
-independent review and direct definition/key-mutation fixtures remain pending.
-Maps strict source facade3230c45+6da76c6 is under independent review. Packed planner
+independent review and definition/key-mutation fixtures8e9458c pass. PR156 integrates
+this backend on branch feature/native-preparation-integration through53ba9aa,
+combined table/comparison/location/World/GUI157tasks pass; hosted checks pending.
+Maps facade3230c45+6da76c6 review found missing certificate bindings/full stamps/strict
+EOF probes; author is correcting all three before promotion. Off-caller close fix
+25492f5 independently approved with held-source cancellation/drain proof. Packed planner
 acceptance7a2ef0b has independent approval ONLY for authored test/emitter scope:
 1344 boundary MCNK segments across84 adjacent whole-tile edges, not1344 tile pairs.
 Multi-source geometry/material representation and native integration remain open.
+Streaming command codec92fd43f+mailboxa8f3c65 independently approved and integrated
+as70c9d5f+b0c9510. Tile packet exact mapping17da3e8 approved for implementation;
+codec/native runtime not delivered. Root WDT scene-facts parser is separate in
+/tmp/vimi-wdt-scene-facts, authored tests pass, review not yet requested.
 
 Character profiles currently Human/Orc/Dwarf/Tauren only; appearance catalog and
 choice vector plus remaining race/sex support remain queued after current World
