@@ -128,7 +128,7 @@ public final class WorldService implements BuildWorld {
     private WorldAreaNavigation areaNavigation;
     private WorldPlacementSource placements;
     private final TerrainAtlasPool atlasPool;
-    private WorldTerrainTextureSource terrainTextures;
+    private volatile WorldTerrainTextureSource terrainTextures;
     private WorldPreparedTerrain preparedTerrain;
     private WorldTerrainStreaming streamingFacade;
 
@@ -606,6 +606,13 @@ public final class WorldService implements BuildWorld {
         return terrainTextures.read(map, tiles, token, progress);
     }
 
+    /** Native-only transition fence; no new source, IO, worker or source close is performed. */
+    public CompletableFuture<Void> terrainActivityDrained() {
+        var source = terrainTextures;
+        return source == null ? CompletableFuture.completedFuture(null) : source.activityDrained();
+    }
+
+    @Override
     public CompletableFuture<Void> closeAsync() {
         CompletableFuture<Void> completion;
         WorldAreaNavigation navigation;
