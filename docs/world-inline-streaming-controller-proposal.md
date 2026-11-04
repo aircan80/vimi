@@ -56,6 +56,11 @@ nine retained geometry/atlas leases per commit. Fixed membership metadata determ
 when a holder has no users. Twelve total issued/construction outputs remain the
 source-service cap; at most nine active plus incoming/retiring holders are expected.
 No unbounded transaction history, discarded-neighborhood cache or GPU-frame history.
+Stalled FX presentation may grow the union of presented/current holders: backpressure
+BEFORE the twelve-output/construction cap, wait for actual presentation/borrow drain,
+and never reinterpret that pressure as a terminal material fallback. Accept genuine
+current receipt frames incrementally; do not wait for all requested neighbors before
+presentation can release outgoing holders and unblock preparation.
 
 Packet publication needs an explicit one-shot file move. Inside actual source
 admission, a local owner writes the private packet and returns R; the engine performs
@@ -68,11 +73,15 @@ closes the unadvertised source-owned file. The transport packet retains no sourc
 geometry, atlas or WrittenTile handle. The controller independently owns the payload.
 
 One private pending producer holder coordinates that split handoff: late cancellation
-must close an unreturned payload and any unmoved file; a returned transport file stays
-transport-owned until drain. If source close wins, no file move or positive holder
-handoff succeeds. If file move wins, source close retires its base owners but cannot
+must close an unreturned payload and any unmoved file. MOVE also creates a local
+OwnedPacket before the producer returns: if handoff then throws/cancels, local finally
+must close that MOVED-but-unreturned packet because source R is already inert. A
+successfully returned transport file stays transport-owned until drain. If source
+close wins, no file move or positive holder handoff succeeds. If file move wins, source close retires its base owners but cannot
 reclaim transport's file. Test both orders with real held writer/read cleanup. No
 public DTO/success boolean/checksum or arbitrary generic R mints source qualification.
+An unsupported custom provider/strict Map capability keeps the honest legacy route or
+an explicit preparation/unavailable state; never silently decode/repair captured tables.
 
 ## Commit and actual presentation
 
