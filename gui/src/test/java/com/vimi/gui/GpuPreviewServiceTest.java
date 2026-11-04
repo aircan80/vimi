@@ -46,6 +46,9 @@ public final class GpuPreviewServiceTest {
             latestFrameHandoffNeverRepublishesOlderWork();
             inlineFramesAndCoalescedControls(root);
             terrainAndModelsShareOwnerAndKeepControlsTyped(root);
+            streamingUsesTheSameOwnerAndWaitsHeldStarterDrain(root);
+            streamingAdapterSeparatesPendingSessionFromActualDrain(root);
+            statusListenerErrorCannotReleaseStreamingOwnership(root);
             emptyTexturesKeepNativeHeightFallbackAndRejectedBatchesClose(root);
             terrainTextureAcknowledgementsStayBoundToQualifiedSourceAndDrainClaims(root);
             terrainReplacementWaitsForAcceptedFrameButNotTerminalFailure(root);
@@ -94,6 +97,153 @@ public final class GpuPreviewServiceTest {
         require(
                 seen.equals(List.of(1, 3)) && scheduled.isEmpty(),
                 "Newer publication during handoff wins without older-value reinsertion");
+    }
+
+    private static void statusListenerErrorCannotReleaseStreamingOwnership(Path root) throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var modelEntered = new CountDownLatch(1);
+        var directory = new AtomicReference<Path>();
+        var service = new GpuPreviewService(root, GpuPreviewServiceTest::write,
+                (scene, frames) -> { modelEntered.countDown(); return new FakeProcess(true); },
+                path -> new GpuPreviewService.Frames() {
+                    public GpuPreviewService.Frame readLatest(long after) { return null; }
+                    public void close() {}
+                }, Duration.ofSeconds(2), Duration.ofMillis(200), arguments -> {
+                    directory.set(Path.of(arguments.get(1)));
+                    entered.countDown();
+                    release.await();
+                    throw new IOException("Authored late no-child failure");
+                });
+        var worldOwner = new Object();
+        try {
+            service.openStreaming(worldOwner,
+                    new com.vibeminer.rendering.bgfx.WorldStreamTransport.Spec("ab".repeat(32), 1,
+                            com.vibeminer.rendering.bgfx.WorldStreamTransport.Backend.DEFAULT),
+                    session -> {}, status -> {
+                        if (status.state() == GpuPreviewService.State.STOPPING) {
+                            throw new AssertionError("Authored status delivery error");
+                        }
+                    });
+            await(entered);
+            service.open(new Object(), mesh(), null, Set.of(), ignored -> {});
+            require(!modelEntered.await(1, TimeUnit.SECONDS),
+                    "Listener Error must not release GPU owner while prior Starter/mapping is held");
+        } finally {
+            release.countDown();
+            service.closeAsync().get(5, TimeUnit.SECONDS);
+            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (directory.get() != null && Files.exists(directory.get()) && System.nanoTime() < until) {
+                Thread.sleep(5);
+            }
+            require(directory.get() == null || !Files.exists(directory.get()), "Owned old startup eventually drains");
+        }
+    }
+
+    private static void streamingUsesTheSameOwnerAndWaitsHeldStarterDrain(Path root)
+            throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var directory = new AtomicReference<Path>();
+        var modelStarts = new AtomicInteger();
+        var model = new FakeProcess(true);
+        var service = new GpuPreviewService(root, GpuPreviewServiceTest::write,
+                (scene, frames) -> {
+                    require(!Files.exists(directory.get()),
+                            "Model must wait actual streaming preparation/process drain");
+                    modelStarts.incrementAndGet();
+                    return model;
+                }, path -> new GpuPreviewService.Frames() {
+                    public GpuPreviewService.Frame readLatest(long after) { return null; }
+                    public void close() {}
+                }, Duration.ofSeconds(2), Duration.ofMillis(200), arguments -> {
+                    directory.set(Path.of(arguments.get(1)));
+                    entered.countDown();
+                    release.await();
+                    throw new IOException("Authored late no-child start failure");
+                });
+        Object worldOwner = new Object(), modelOwner = new Object();
+        var states = new ConcurrentLinkedQueue<GpuPreviewService.State>();
+        var world = service.openStreaming(worldOwner,
+                new com.vibeminer.rendering.bgfx.WorldStreamTransport.Spec("ab".repeat(32), 1,
+                        com.vibeminer.rendering.bgfx.WorldStreamTransport.Backend.DEFAULT),
+                session -> { throw new AssertionError("Failed start cannot publish session"); },
+                status -> states.add(status.state()));
+        try {
+            await(entered);
+            require(Files.exists(directory.get().resolve("frames.wsf")),
+                    "Held Starter retains its owned mapping");
+            service.closeOwner(new Object()).get(1, TimeUnit.SECONDS);
+            require(!world.isDone(), "An unrelated owner cannot retire active streaming work");
+            var next = service.open(modelOwner, mesh(), null, Set.of(), ignored -> {});
+            require(modelStarts.get() == 0, "No second renderer starts beside a held Starter");
+            require(!next.isDone(), "Successor remains pending while old ownership is held");
+            var closing = service.closeOwner(worldOwner);
+            require(!closing.isDone(), "Stop request is not an actual resource drain");
+            require(Files.exists(directory.get().resolve("frames.wsf")),
+                    "Superseding a source never deletes a held launch mapping");
+            release.countDown();
+            await(model.started);
+            require(modelStarts.get() == 1 && !Files.exists(directory.get()),
+                    "Exactly one successor starts after actual prior cleanup");
+            require(!states.contains(GpuPreviewService.State.READY),
+                    "Protocol initialization alone never claims a displayed World frame");
+            world.handle((value, error) -> null).get(2, TimeUnit.SECONDS);
+            service.closeOwner(modelOwner).get(2, TimeUnit.SECONDS);
+        } finally {
+            release.countDown();
+            service.closeAsync().get(3, TimeUnit.SECONDS);
+        }
+    }
+
+    private static void streamingAdapterSeparatesPendingSessionFromActualDrain(Path root)
+            throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var directory = new AtomicReference<Path>();
+        var service = new GpuPreviewService(root, GpuPreviewServiceTest::write,
+                (scene, frames) -> { throw new AssertionError("No model launch requested"); },
+                path -> new GpuPreviewService.Frames() {
+                    public GpuPreviewService.Frame readLatest(long after) { return null; }
+                    public void close() {}
+                }, Duration.ofSeconds(2), Duration.ofMillis(200), arguments -> {
+                    directory.set(Path.of(arguments.get(1)));
+                    entered.countDown();
+                    release.await();
+                    throw new IOException("Authored held start without a child");
+                });
+        try {
+            var first = new WorldStreamGpuOwner(service, "ab".repeat(32));
+            await(entered);
+            var second = new WorldStreamGpuOwner(service, "cd".repeat(32));
+            var queuedSession = second.session();
+            second.closeAsync().get(1, TimeUnit.SECONDS);
+            require(queuedSession.isCompletedExceptionally(),
+                    "Canceled queued owner cannot leave its Session future pending");
+            var actualDrain = first.closeAsync();
+            require(first.session().isCompletedExceptionally(),
+                    "Controller can observe stop before a held starter returns");
+            require(!actualDrain.isDone() && Files.exists(directory.get()),
+                    "Session failure does not forge held startup resource drain");
+            release.countDown();
+            expectFailure(actualDrain, "Actual close retains the late startup failure");
+            require(!Files.exists(directory.get()),
+                    "Actual adapter close waits for owned mapping retirement");
+            expectFailure(first.closeAsync(), "Retired owner retains its earlier failed lifetime");
+            var third = new WorldStreamGpuOwner(service, "ef".repeat(32));
+            try {
+                third.session().get(3, TimeUnit.SECONDS);
+                throw new AssertionError("Authored failed start cannot produce a Session");
+            } catch (java.util.concurrent.ExecutionException expected) {
+                // The request fails spontaneously, before the adapter receives any close call.
+            }
+            service.closeAsync().get(3, TimeUnit.SECONDS);
+            expectFailure(third.closeAsync(),
+                    "First close after service teardown preserves original failed request");
+        } finally {
+            release.countDown();
+            service.closeAsync().get(3, TimeUnit.SECONDS);
+        }
     }
 
     private static void terrainAndModelsShareOwnerAndKeepControlsTyped(Path root) throws Exception {

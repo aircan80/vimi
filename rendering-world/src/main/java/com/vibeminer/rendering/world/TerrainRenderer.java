@@ -1,9 +1,12 @@
 package com.vibeminer.rendering.world;
 
 import com.vibeminer.formats.world.WorldFormats;
+import java.nio.FloatBuffer;
+import java.nio.IntBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 import java.util.function.BooleanSupplier;
 
 /** Bounded perspective CPU fallback for terrain exploration, independent of JavaFX3D support. */
@@ -33,7 +36,7 @@ public final class TerrainRenderer {
         }
     }
 
-    private record Surface(float[] vertices, int[] triangles) {}
+    private record Surface(FloatBuffer vertices, IntBuffer triangles) {}
 
     public static final class Scene {
         private final List<Surface> surfaces;
@@ -44,14 +47,81 @@ public final class TerrainRenderer {
             }
             var data = new ArrayList<Surface>();
             for (var tile : tiles) {
-                data.add(new Surface(tile.vertices(), tile.triangles()));
+                data.add(
+                        new Surface(
+                                FloatBuffer.wrap(tile.vertices()).asReadOnlyBuffer(),
+                                IntBuffer.wrap(tile.triangles()).asReadOnlyBuffer()));
             }
             surfaces = List.copyOf(data);
+        }
+
+        private Scene(Surface[] borrowed) {
+            surfaces = List.of(borrowed);
         }
     }
 
     public record Frame(
             int width, int height, int[] pixels, long triangles, boolean budgetReached) {}
+
+    /**
+     * Synchronous CPU fallback over existing immutable native tile payloads. The caller keeps every
+     * tile/material source borrow pinned until return. No Scene or mesh/pixel view is retained;
+     * only the detached rendered Frame escapes. These structural tiles do not certify source
+     * provenance. Construction copies at most nine small buffer descriptors, never mesh arrays;
+     * existing render scratch and frame limits still apply.
+     */
+    public static Frame renderBorrowed(
+            List<TerrainScene.Tile> tiles,
+            Camera camera,
+            int width,
+            int height,
+            List<TerrainTextureBinding> textures,
+            BooleanSupplier canceled) {
+        Objects.requireNonNull(tiles);
+        Objects.requireNonNull(canceled);
+        if (tiles.size() > TerrainScene.MAX_TILES) {
+            throw new IllegalArgumentException("Too many active terrain tiles");
+        }
+        var surfaces = new ArrayList<Surface>(tiles.size());
+        for (var tile : tiles) {
+            check(canceled);
+            Objects.requireNonNull(tile);
+            for (int previous = 0; previous < surfaces.size(); previous++) {
+                var other = tiles.get(previous);
+                if (other.x() == tile.x() && other.y() == tile.y()) {
+                    throw new IllegalArgumentException("Duplicate terrain tile");
+                }
+            }
+            surfaces.add(new Surface(tile.vertices(), tile.indices()));
+        }
+        var bindings = new TerrainTextureBinding[tiles.size()];
+        for (var binding : textures) {
+            check(canceled);
+            var metadata = binding.metadata();
+            int selected = -1;
+            for (int i = 0; i < tiles.size(); i++) {
+                var tile = tiles.get(i);
+                if (tile.x() == metadata.tileX() && tile.y() == metadata.tileY()) {
+                    selected = i;
+                }
+            }
+            if (selected < 0
+                    || bindings[selected] != null
+                    || !metadata.rootGeometrySha256()
+                            .equals(TerrainGeometryFingerprint.sha256(tiles.get(selected)))) {
+                throw new IllegalArgumentException("Borrowed terrain texture identity differs");
+            }
+            check(canceled);
+            bindings[selected] = binding;
+        }
+        return renderBound(
+                new Scene(surfaces.toArray(Surface[]::new)),
+                camera,
+                width,
+                height,
+                bindings,
+                canceled);
+    }
 
     public static Frame render(
             Scene scene, Camera camera, int width, int height, BooleanSupplier canceled) {
@@ -77,6 +147,16 @@ public final class TerrainRenderer {
             }
             bindings[ordinal] = binding;
         }
+        return renderBound(scene, camera, width, height, bindings, canceled);
+    }
+
+    private static Frame renderBound(
+            Scene scene,
+            Camera camera,
+            int width,
+            int height,
+            TerrainTextureBinding[] bindings,
+            BooleanSupplier canceled) {
         if (width < 1 || height < 1 || width > 1200 || height > 800) {
             throw new IllegalArgumentException("Frame exceeds world preview bounds");
         }
@@ -99,24 +179,26 @@ public final class TerrainRenderer {
             var texture = bindings[surfaceOrdinal++];
             var vertices = surface.vertices;
             var indices = surface.triangles;
-            double[] transformed = new double[vertices.length];
-            for (int at = 0; at < vertices.length; at += 3) {
+            double[] transformed = new double[vertices.remaining()];
+            for (int at = 0; at < vertices.remaining(); at += 3) {
                 if ((at & 1023) == 0) {
                     check(canceled);
                 }
-                double dx = vertices[at] - camera.x(),
-                        dy = vertices[at + 1] - camera.y(),
-                        dz = vertices[at + 2] - camera.z(),
+                double dx = vertices.get(at) - camera.x(),
+                        dy = vertices.get(at + 1) - camera.y(),
+                        dz = vertices.get(at + 2) - camera.z(),
                         forward = cy * dx + sy * dy;
                 transformed[at] = -sy * dx + cy * dy;
                 transformed[at + 1] = cp * dz - sp * forward;
                 transformed[at + 2] = sp * dz + cp * forward;
             }
-            for (int at = 0; at < indices.length; at += 3) {
+            for (int at = 0; at < indices.remaining(); at += 3) {
                 if ((at & 1023) == 0) {
                     check(canceled);
                 }
-                int a = indices[at] * 3, b = indices[at + 1] * 3, c = indices[at + 2] * 3;
+                int a = indices.get(at) * 3,
+                        b = indices.get(at + 1) * 3,
+                        c = indices.get(at + 2) * 3;
                 double far =
                         Math.max(
                                 transformed[a + 2],
@@ -253,13 +335,13 @@ public final class TerrainRenderer {
         return (x - ax) * (by - ay) - (y - ay) * (bx - ax);
     }
 
-    private static int color(float[] v, int a, int b, int c, double distance) {
-        double ux = v[b] - v[a],
-                uy = v[b + 1] - v[a + 1],
-                uz = v[b + 2] - v[a + 2],
-                vx = v[c] - v[a],
-                vy = v[c + 1] - v[a + 1],
-                vz = v[c + 2] - v[a + 2];
+    private static int color(FloatBuffer v, int a, int b, int c, double distance) {
+        double ux = v.get(b) - v.get(a),
+                uy = v.get(b + 1) - v.get(a + 1),
+                uz = v.get(b + 2) - v.get(a + 2),
+                vx = v.get(c) - v.get(a),
+                vy = v.get(c + 1) - v.get(a + 1),
+                vz = v.get(c + 2) - v.get(a + 2);
         double nx = uy * vz - uz * vy,
                 ny = uz * vx - ux * vz,
                 nz = ux * vy - uy * vx,
@@ -269,7 +351,7 @@ public final class TerrainRenderer {
                         length == 0
                                 ? .7
                                 : .45 + .55 * Math.abs((nx * .3 + ny * .4 + nz * .866) / length),
-                altitude = (v[a + 2] + v[b + 2] + v[c + 2]) / 3.0;
+                altitude = (v.get(a + 2) + v.get(b + 2) + v.get(c + 2)) / 3.0;
         double rock = Math.clamp((altitude - 150) / 600, 0, 1),
                 fog = Math.clamp((distance - 600) / 1600, 0, .85);
         int r = (int) (((72 + rock * 65) * light) * (1 - fog) + 153 * fog),

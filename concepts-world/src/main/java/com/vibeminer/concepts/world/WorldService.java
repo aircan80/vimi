@@ -8,9 +8,7 @@ import com.vibeminer.formats.tables.BuildTables;
 import com.vibeminer.formats.tables.TableTypes;
 import com.vibeminer.formats.world.WorldFormats;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -125,12 +123,14 @@ public final class WorldService implements BuildWorld {
                     new ThreadPoolExecutor.AbortPolicy());
     private final Cancellation lifetime = new Cancellation();
     private CompletableFuture<Void> closing;
-    private final Map<String, LoadedTile> cache = new LinkedHashMap<>(16, .75f, true);
+    private final WorldGeometryCache cache = new WorldGeometryCache();
     private Catalog catalog;
     private WorldAreaNavigation areaNavigation;
     private WorldPlacementSource placements;
     private final TerrainAtlasPool atlasPool;
-    private WorldTerrainTextureSource terrainTextures;
+    private volatile WorldTerrainTextureSource terrainTextures;
+    private WorldPreparedTerrain preparedTerrain;
+    private WorldTerrainStreaming streamingFacade;
 
     public WorldService(BuildTables tables, BuildFiles files) {
         this(tables, files, null);
@@ -141,6 +141,39 @@ public final class WorldService implements BuildWorld {
         this.tables = java.util.Objects.requireNonNull(tables);
         this.files = files;
         this.minimaps = new WorldMinimaps(files);
+    }
+
+    @Override
+    public synchronized java.util.Optional<WorldTerrainStreaming> terrainStreaming() {
+        if (closing != null) {
+            throw new IllegalStateException("World workspace closed");
+        }
+        if (atlasPool == null || files == null) {
+            return java.util.Optional.empty();
+        }
+        if (streamingFacade == null) {
+            streamingFacade = WorldTerrainStreaming.owned(preparedTerrain());
+        }
+        return java.util.Optional.of(streamingFacade);
+    }
+
+    /** Internal source-worker factory; the public closed packet bridge is a separate checkpoint. */
+    synchronized WorldPreparedTerrain preparedTerrain() {
+        if (closing != null) {
+            throw new IllegalStateException("World workspace closed");
+        }
+        if (atlasPool == null || files == null) {
+            throw new UnsupportedOperationException("Configured terrain material source required");
+        }
+        if (preparedTerrain == null) {
+            if (terrainTextures == null) {
+                terrainTextures = new WorldTerrainTextureSource(files, atlasPool);
+            }
+            preparedTerrain =
+                    new WorldPreparedTerrain(
+                            this, new WorldStreamScopes(tables, files), terrainTextures);
+        }
+        return preparedTerrain;
     }
 
     public CompletableFuture<Catalog> catalog(Cancellation token) {
@@ -235,15 +268,8 @@ public final class WorldService implements BuildWorld {
         return submit(
                 token,
                 cancel -> {
-                    String key =
-                            map.id()
-                                    + ":"
-                                    + map.directory()
-                                    + ":"
-                                    + tile.key()
-                                    + ":"
-                                    + tile.rootId();
-                    var saved = cache.get(key);
+                    String key = WorldGeometryCache.key(map.id(), map.directory(), tile);
+                    var saved = cache.legacyGet(key);
                     if (saved != null) {
                         return saved;
                     }
@@ -268,10 +294,7 @@ public final class WorldService implements BuildWorld {
                         }
                         var parsed = WorldFormats.adtTile(bytes(ref, cancel), cancel::isCanceled);
                         var loaded = new LoadedTile(tile, parsed.terrain(), null, parsed.areas());
-                        cache.put(key, loaded);
-                        while (cache.size() > 12) {
-                            cache.remove(cache.keySet().iterator().next());
-                        }
+                        cache.legacyPut(key, loaded);
                         return loaded;
                     } catch (java.util.concurrent.CancellationException e) {
                         throw e;
@@ -281,6 +304,11 @@ public final class WorldService implements BuildWorld {
                                 tile, null, "Tile " + tile.key() + ": " + reason(failure));
                     }
                 });
+    }
+
+    /** Private source factories call this only inside withRecordedTile on their source worker. */
+    WorldGeometryCache.Prepared prepareGeometry(WorldStreamScopes.TileAdmission admission) {
+        return cache.prepare(admission);
     }
 
     @Override
@@ -299,7 +327,23 @@ public final class WorldService implements BuildWorld {
             }
             navigation = areaNavigation;
         }
-        return navigation.scan(request, token, progress);
+        return navigation
+                .scan(request, token, progress)
+                .thenApply(
+                        result -> {
+                            synchronized (this) {
+                                if (closing == null) {
+                                    return result;
+                                }
+                            }
+                            // The closing marker wins delivery even before off-caller lower
+                            // cancellation runs.
+                            return new WorldAreaNavigation.Result(
+                                    WorldAreaNavigation.State.CANCELED,
+                                    result.progress(),
+                                    result.matches(),
+                                    result.issues());
+                        });
     }
 
     @Override
@@ -407,7 +451,7 @@ public final class WorldService implements BuildWorld {
         }
     }
 
-    private static int column(TableTypes.SchemaResult schema, String field, boolean integer) {
+    static int column(TableTypes.SchemaResult schema, String field, boolean integer) {
         if (schema.schema() == null
                 || schema.columns() == null
                 || schema.schema().columns().stream()
@@ -472,7 +516,7 @@ public final class WorldService implements BuildWorld {
         return row.values().get(i);
     }
 
-    private static Long number(TableTypes.SchemaResult schema, Db2Types.Row row, String field) {
+    static Long number(TableTypes.SchemaResult schema, Db2Types.Row row, String field) {
         int i = column(schema, field, true);
         if (i < 0 || i >= row.values().size()) {
             return null;
@@ -520,6 +564,12 @@ public final class WorldService implements BuildWorld {
 
     @Override
     public CompletableFuture<Minimap> minimap(WorldFormats.Tile tile, Cancellation token) {
+        synchronized (this) {
+            if (closing != null) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("World workspace closed"));
+            }
+        }
         return minimaps.image(
                 java.util.Objects.requireNonNull(tile), java.util.Objects.requireNonNull(token));
     }
@@ -556,49 +606,108 @@ public final class WorldService implements BuildWorld {
         return terrainTextures.read(map, tiles, token, progress);
     }
 
-    public synchronized CompletableFuture<Void> closeAsync() {
-        if (closing != null) {
-            return closing.copy();
+    /** Native-only transition fence; no new source, IO, worker or source close is performed. */
+    public CompletableFuture<Void> terrainActivityDrained() {
+        var source = terrainTextures;
+        return source == null ? CompletableFuture.completedFuture(null) : source.activityDrained();
+    }
+
+    @Override
+    public CompletableFuture<Void> closeAsync() {
+        CompletableFuture<Void> completion;
+        WorldAreaNavigation navigation;
+        WorldPlacementSource placementSource;
+        WorldTerrainTextureSource textureSource;
+        WorldPreparedTerrain preparedSource;
+        synchronized (this) {
+            if (closing != null) {
+                return closing.copy();
+            }
+            closing = new CompletableFuture<>();
+            completion = closing;
+            cache.invalidate();
+            navigation = areaNavigation;
+            placementSource = placements;
+            textureSource = terrainTextures;
+            preparedSource = preparedTerrain;
+            if (preparedSource != null) {
+                preparedSource.invalidate();
+            }
+            if (streamingFacade != null) {
+                streamingFacade.invalidate();
+            }
         }
-        closing = new CompletableFuture<>();
-        lifetime.cancel();
-        worker.shutdown();
-        var areasClosed =
-                areaNavigation == null
-                        ? CompletableFuture.<Void>completedFuture(null)
-                        : areaNavigation.closeAsync();
-        var minimapsClosed = minimaps.closeAsync();
-        var placementsClosed =
-                placements == null
-                        ? CompletableFuture.<Void>completedFuture(null)
-                        : placements.closeAsync();
-        var texturesClosed =
-                terrainTextures == null
-                        ? CompletableFuture.<Void>completedFuture(null)
-                        : terrainTextures.closeAsync();
         Thread.startVirtualThread(
                 () -> {
+                    Throwable failure = null;
+                    worker.shutdown();
                     try {
-                        while (!worker.awaitTermination(1, TimeUnit.SECONDS)) {}
+                        lifetime.cancel();
+                    } catch (RuntimeException | Error error) {
+                        failure = error;
+                    }
+                    var drains = new ArrayList<CompletableFuture<Void>>();
+                    var closes =
+                            List.<java.util.function.Supplier<CompletableFuture<Void>>>of(
+                                    minimaps::closeAsync,
+                                    () ->
+                                            navigation == null
+                                                    ? CompletableFuture.completedFuture(null)
+                                                    : navigation.closeAsync(),
+                                    () ->
+                                            placementSource == null
+                                                    ? CompletableFuture.completedFuture(null)
+                                                    : placementSource.closeAsync(),
+                                    () ->
+                                            textureSource == null
+                                                    ? CompletableFuture.completedFuture(null)
+                                                    : textureSource.closeAsync(),
+                                    () ->
+                                            preparedSource == null
+                                                    ? CompletableFuture.completedFuture(null)
+                                                    : preparedSource.closeAsync(),
+                                    cache::closeAsync);
+                    for (var close : closes) {
                         try {
-                            CompletableFuture.allOf(
-                                            areasClosed,
-                                            minimapsClosed,
-                                            placementsClosed,
-                                            texturesClosed)
-                                    .join();
-                        } finally {
-                            cache.clear();
+                            drains.add(close.get());
+                        } catch (RuntimeException | Error error) {
+                            failure = appendCloseFailure(failure, error);
                         }
-                        closing.complete(null);
-                    } catch (InterruptedException e) {
+                    }
+                    boolean interrupted = false;
+                    while (!worker.isTerminated()) {
+                        try {
+                            worker.awaitTermination(1, TimeUnit.SECONDS);
+                        } catch (InterruptedException error) {
+                            interrupted = true;
+                            failure = appendCloseFailure(failure, error);
+                        }
+                    }
+                    try {
+                        CompletableFuture.allOf(drains.toArray(CompletableFuture[]::new)).join();
+                    } catch (RuntimeException | Error error) {
+                        failure = appendCloseFailure(failure, error);
+                    }
+                    if (interrupted) {
                         Thread.currentThread().interrupt();
-                        closing.completeExceptionally(e);
-                    } catch (RuntimeException failure) {
-                        closing.completeExceptionally(failure);
+                    }
+                    if (failure == null) {
+                        completion.complete(null);
+                    } else {
+                        completion.completeExceptionally(failure);
                     }
                 });
-        return closing.copy();
+        return completion.copy();
+    }
+
+    private static Throwable appendCloseFailure(Throwable first, Throwable next) {
+        if (first == null) {
+            return next;
+        }
+        if (first != next) {
+            first.addSuppressed(next);
+        }
+        return first;
     }
 
     @Override

@@ -9,6 +9,58 @@ import java.util.function.Consumer;
 /** Tracks one exact saved reader; source loss invalidates instead of selecting a new graph. */
 @SuppressWarnings("try")
 final class CapturedRowsHandle implements CapturedRows {
+    @FunctionalInterface
+    interface NativeInspector {
+        NativeIdDomainTypes.Result inspect(
+                long id, NativeIdDomainTypes.SourceAccess access, Cancellation token);
+    }
+
+    private static final class InspectionCancel {
+        final Cancellation token = new Cancellation();
+        final CompletableFuture<Void> drained = new CompletableFuture<>();
+        private boolean requested, sealed;
+        volatile Throwable failure;
+
+        void request() {
+            synchronized (this) {
+                if (requested || sealed) {
+                    return;
+                }
+                requested = true;
+            }
+            Thread.startVirtualThread(
+                    () -> {
+                        try {
+                            token.cancel();
+                        } catch (RuntimeException | Error error) {
+                            failure = error;
+                        } finally {
+                            drained.complete(null);
+                        }
+                    });
+        }
+
+        synchronized boolean canceled() {
+            return requested || token.isCanceled();
+        }
+
+        void sealAndDrain() {
+            synchronized (this) {
+                sealed = true;
+                if (!requested) {
+                    drained.complete(null);
+                }
+            }
+            drained.join();
+        }
+    }
+
+    // One process-wide native-ID inspection phase; no source-heavy backlog behind public captures.
+    private static final java.util.concurrent.atomic.AtomicBoolean ID_INSPECTING =
+            new java.util.concurrent.atomic.AtomicBoolean();
+    private NativeInspector inspector;
+    private boolean inspecting, inspectorCloseDispatched;
+    private Throwable inspectionFailure;
     private final CapturedRowsTypes.Receipt receipt;
     private GeneratedTable table;
     private final Consumer<CapturedRowsHandle> released;
@@ -21,7 +73,16 @@ final class CapturedRowsHandle implements CapturedRows {
             CapturedRowsTypes.Receipt receipt,
             GeneratedTable table,
             Consumer<CapturedRowsHandle> released) {
+        this(receipt, table, released, null);
+    }
+
+    CapturedRowsHandle(
+            CapturedRowsTypes.Receipt receipt,
+            GeneratedTable table,
+            Consumer<CapturedRowsHandle> released,
+            NativeInspector inspector) {
         validateEvidence(receipt, table);
+        this.inspector = inspector;
         this.receipt = receipt;
         this.table = table;
         this.released = released;
@@ -90,7 +151,7 @@ final class CapturedRowsHandle implements CapturedRows {
                                 CapturedRowsTypes.ReadState.INVALIDATED,
                                 "CAPTURE_INVALIDATED"));
             }
-            if (active >= 2) {
+            if (inspecting || active >= 2) {
                 return CompletableFuture.failedFuture(
                         new IllegalStateException("Too many captured row reads"));
             }
@@ -112,6 +173,103 @@ final class CapturedRowsHandle implements CapturedRows {
             future.completeExceptionally(failure);
         }
         return future;
+    }
+
+    @Override
+    public CompletableFuture<NativeIdDomainTypes.Result> inspectNativeIdDomain(
+            long id, NativeIdDomainTypes.SourceAccess access, Cancellation external) {
+        java.util.Objects.requireNonNull(access);
+        java.util.Objects.requireNonNull(external);
+        if (id < 0 || id > 0xffff_ffffL) {
+            throw new IllegalArgumentException("Unsigned ID required");
+        }
+        NativeInspector action;
+        synchronized (this) {
+            if (closing) {
+                return CompletableFuture.completedFuture(
+                        new NativeIdDomainTypes.Result(NativeIdDomainTypes.State.CANCELED, null));
+            }
+            if (inspector == null || invalidated) {
+                return CompletableFuture.completedFuture(NativeIdDomainTypes.Result.unsupported());
+            }
+            if (active != 0) {
+                return CompletableFuture.completedFuture(
+                        new NativeIdDomainTypes.Result(NativeIdDomainTypes.State.BUSY, null));
+            }
+            if (!ID_INSPECTING.compareAndSet(false, true)) {
+                return CompletableFuture.completedFuture(
+                        new NativeIdDomainTypes.Result(NativeIdDomainTypes.State.BUSY, null));
+            }
+            active++;
+            inspecting = true;
+            action = inspector;
+        }
+        var result = new CompletableFuture<NativeIdDomainTypes.Result>();
+        var cancellation = new InspectionCancel();
+        try {
+            Thread.startVirtualThread(
+                    () -> {
+                        NativeIdDomainTypes.Result value = null;
+                        Throwable failure = null;
+                        try (var caller = external.onCancel(cancellation::request);
+                                var owner = lifetime.onCancel(cancellation::request)) {
+                            if (cancellation.canceled()) {
+                                throw new java.util.concurrent.CancellationException();
+                            }
+                            value = action.inspect(id, access, cancellation.token);
+                        } catch (Throwable error) {
+                            failure = error;
+                        } finally {
+                            cancellation.sealAndDrain();
+                            if (cancellation.failure != null) {
+                                if (failure == null
+                                        || failure
+                                                instanceof
+                                                java.util.concurrent.CancellationException) {
+                                    failure = cancellation.failure;
+                                } else if (failure != cancellation.failure) {
+                                    failure.addSuppressed(cancellation.failure);
+                                }
+                                synchronized (this) {
+                                    inspectionFailure = cancellation.failure;
+                                }
+                            } else if (cancellation.canceled()
+                                    && (failure == null
+                                            || ClientBuildTables.unwrap(failure)
+                                                    instanceof
+                                                    java.util.concurrent.CancellationException)) {
+                                value =
+                                        new NativeIdDomainTypes.Result(
+                                                NativeIdDomainTypes.State.CANCELED, null);
+                                failure = null;
+                            }
+                            synchronized (this) {
+                                inspecting = false;
+                                if (closing && failure == null) {
+                                    value =
+                                            new NativeIdDomainTypes.Result(
+                                                    NativeIdDomainTypes.State.CANCELED, null);
+                                    failure = null;
+                                }
+                            }
+                            ID_INSPECTING.set(false);
+                            finish();
+                        }
+                        if (failure == null) {
+                            result.complete(value);
+                        } else {
+                            result.completeExceptionally(failure);
+                        }
+                    });
+        } catch (Throwable failure) {
+            synchronized (this) {
+                inspecting = false;
+            }
+            ID_INSPECTING.set(false);
+            finish();
+            result.completeExceptionally(failure);
+        }
+        return result;
     }
 
     private CapturedRowsTypes.Page read(
@@ -287,17 +445,24 @@ final class CapturedRowsHandle implements CapturedRows {
 
     private void completeClose() {
         boolean notify;
+        Throwable sourceFailure;
         synchronized (this) {
+            sourceFailure = inspectionFailure;
             notify = closing && active == 0 && !notified;
             if (notify) {
                 notified = true;
                 table = null;
+                inspector = null;
             }
         }
         if (notify) {
             try {
                 released.accept(this);
-                drained.complete(null);
+                if (sourceFailure == null) {
+                    drained.complete(null);
+                } else {
+                    drained.completeExceptionally(sourceFailure);
+                }
             } catch (Throwable failure) {
                 drained.completeExceptionally(failure);
             }
@@ -306,13 +471,28 @@ final class CapturedRowsHandle implements CapturedRows {
 
     @Override
     public CompletableFuture<Void> closeAsync() {
+        boolean sourceInspection, dispatch;
         synchronized (this) {
             closing = true;
+            sourceInspection = inspecting;
+            dispatch = sourceInspection && !inspectorCloseDispatched;
+            inspectorCloseDispatched |= sourceInspection;
         }
-        try {
-            lifetime.cancel();
-        } finally {
-            completeClose();
+        if (sourceInspection && dispatch) {
+            Thread.startVirtualThread(
+                    () -> {
+                        try {
+                            lifetime.cancel();
+                        } finally {
+                            completeClose();
+                        }
+                    });
+        } else if (!sourceInspection) {
+            try {
+                lifetime.cancel();
+            } finally {
+                completeClose();
+            }
         }
         return drained.copy();
     }

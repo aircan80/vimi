@@ -1,0 +1,286 @@
+# Concrete off-FX World source controller
+
+This next implementation is package-private GUI code beside WorldStreamSourceBridge. It does not
+edit WorldView or GpuPreviewService or launch a second GPU owner. Root supplies the already-launched
+Session from the existing application GPU arbiter and an actual opaque Source/Scope pair. Current
+source APIs include the final post-cancellation-drain lifetime gate and explicit-origin refusals.
+
+## Exact boundaries
+
+`WorldStreamSourceController(Source, Scope, Session, Events)` owns one off-FX orchestration worker.
+`demand(Demand(viewGeneration, centerX, centerY, List<Tile> ordered))`, `camera(Camera)`, `pulse()`
+and `closeAsync()` are metadata-only entry points. Demand accepts at most nine unique recorded
+comparison tiles, in deterministic closest-first order; no MapInfo/Tile DTO creates source authority.
+The actual bridge always requalifies the exact comparison through its Source/Scope.
+
+A small `PresentationPort` adapter holds the not-yet-frozen Commit/Frame boundary. Its intended
+implementation is exactly Session.commit(policy, Resident...) -> CF<CommitReceipt> and
+Session.takeLatestFrame() -> Optional<Frame>. No success inferred from STAGED, produce completion,
+file INPUT_CONSUMED or COMMITTED is a presentation event. The adapter can be replaced by the
+concrete facade only after its independent review; no source-neutral fake receipt creates a holder.
+
+## Bounded actor state
+
+The controller retains one latest demand descriptor (nine comparisons), one latest camera, one
+active tile reservation/producer and one coalesced completion token. Future callbacks never perform
+source/file/pixel IO and never enqueue an unbounded event per callback. A single scheduled flag
+coalesces worker kicks. Parent capacityRevision plus the existing view pulse wakes genuine pressure
+waits; there is no immediate retry loop or pressure-to-height conversion.
+
+Each successful actual STAGED pair is `(opaque Resident, unique bridge Prepared)`. The private holder
+is taken only from that exact successful Producer. Current, candidate and last-presented membership
+tables contain aliases to the same pair. Their union, including one construction admission, must be
+<=12 before a producer starts; each table itself is <=9. No extra base retain, geometry/atlas copy,
+source table index or discarded-neighborhood cache is added. One incoming child slot replaces one
+current member; first useful tile is committed without waiting for all nine neighbors. Source/child
+capacity limits remain unchanged. Held presentation applies backpressure rather than growing union.
+
+Commit-in-flight membership stays immutable until its actual outcome. A new demand replaces only
+the latest descriptor. The worker finishes a useful staged tile if it remains in latest demand;
+otherwise it first calls TileReservation.cancel(), establishing the parent's stop bit, THEN changes
+the producer's actor-owned latest predicate to false. The raw FX demand generation never directly
+turns that predicate false: an unsolicited CancellationException is intentionally fatal at the
+parent boundary. This ordering must be tested with held actual source preparation. Failed cancel
+(ALREADY_COMMITTED/COMMIT_PENDING/etc.) is not cancellation success and cannot free source aliases.
+No successor starts until the prior producer/file/cancellation owner has actually drained.
+
+## Commit, frame and acceptance
+
+A commit submits exact opaque STAGED/current Residents, deterministic unique XY, under the latest
+camera policy. COMMITTED updates current metadata but retains outgoing last-presented holders.
+Frames carry exact CommitReceipt membership and current frame policy/dimensions; historical content
+policy need not equal a later resize policy. Parent frame gating enforces actual content ACK and
+camera/policy causality before allocating detached pixels. The controller keeps at most one pending
+latest frame mailbox; an FX runnable captures only a small wake token and pulls that mailbox.
+
+`acceptPresentation(viewGeneration, sequence, receiptIdentity, policy, width, height)` is a final
+metadata-only acceptance gate. It checks latest view generation, terminal state, monotonic frame
+order, current viewport policy/dimensions, exact frame receipt identity and every represented
+Prepared.isOpen. No source stat/parse, payload borrow or IO occurs on FX. Only successful actual pixel
+upload calls this acceptance path and moves presented aliases. Dropped/superseded frames do not
+retire outgoing holders. An already visible old map image can remain explicitly last-view while
+new generation prepares; it is never relabeled as rendered from the new map.
+
+Camera is independent of source progress: latest monotonic Camera is forwarded without awaiting
+source/commit. Bounds, camera seed, current area/subzone facts and CPU fallback pixels are computed
+inside Prepared.withPayload off FX. Only scalar facts/pixels escape; no Scene of nine cloned meshes
+or escaped live Material/AreaMetadata is constructed. GPU-only fallback can borrow current valid
+holders; workspace invalidation requires fresh source qualification. No parallel second acquisition
+pipeline is started for CPU fallback.
+
+## Retirement and feedback
+
+Clean typed preparation refusal preserves current/presented tables. RETRY_LATER waits for a genuine
+capacity/presentation revision; CAPABILITY_UNAVAILABLE is explicit unsupported state; SOURCE_INVALIDATED
+requires a new qualified scope/session policy. Genuine terminal material height is an actual packet.
+Unknown providers/program errors/dirty cleanup fail the route and request Session close.
+
+Close first requests reservation cancellation and Session.closeAsync outside locks, then retires
+untaken producers/holders off FX when they no longer have users. Session's actual terminatedAndDrained
+receipt is the sole permission to release the application GPU arbiter. A failed/canceled future is
+never proof of drain. Controller close also waits its CPU/payload callbacks and independent source
+holder retirement. It never closes borrowed BuildFiles/BuildTables. Activity includes scope/source,
+material, packet, upload/commit and accepted pixels, with bounded counts and honest partial/reason
+metadata; it ends only at accepted presentation or explicit terminal outcome.
+
+## Implementation/test stages
+
+1. Implement bounded source demand/reservation/holder actor using actual closed bridge. Use a narrow
+   parent adapter so authored scheduling tests can hold real source IO and completion independently.
+2. After reviewed public Commit/Frame facade, add exact commit membership and single frame mailbox;
+   root wires the existing view/application arbiter separately.
+3. Causal tests hold source writer/lower cancellation, STAGED, COMMITTED, actual frame and FX upload
+   independently. Prove superseded cancel-before-stale ordering, continuous camera progress, 12-owner
+   union pressure, no height flash, untaken/MOVED cleanup, stale frames and hide/close drain.
+4. Root integration then traverses real Map0 in the same child, measuring source/upload/presentation
+   latency. No source-only test claims FPS or completed game-like smoothness.
+
+## Frozen view-facing API shape
+
+The concrete class is `WorldStreamSourceController` (package-private GUI). Root may wire this shape
+while implementation remains isolated:
+
+```java
+record Request(long viewGeneration, BuildWorld world, WorldService.MapInfo map,
+    WorldService.Inventory inventory, WorldFormats.Tile origin,
+    WorldFormats.AreaPoint areaPoint, WorldCurrentArea.Index areaIndex) {}
+interface GpuStarter { GpuOwner start(String qualifiedScopeSha256); }
+interface GpuOwner {
+    CompletableFuture<WorldStreamTransport.Session> session();
+    CompletableFuture<Void> closeAsync();
+}
+interface Events { void changed(); }
+// Controller owns worker and source acquisition; fxPost is Platform::runLater in production.
+WorldStreamSourceController(Request request, GpuStarter gpu, Events events,
+    Consumer<Runnable> fxPost);
+void camera(WorldStreamTransport.Camera camera);
+void neighborhood(List<WorldFormats.Tile> ordered); // unique, <=9
+void pulse();
+void software(boolean enabled);
+Snapshot snapshot();
+Optional<Presentation> takePresentation();
+boolean mayPresent(Presentation frame);
+boolean presented(Presentation frame); // only after actual successful pixel upload
+void discard(Presentation frame);
+CompletableFuture<Void> closeAsync();
+```
+
+`Snapshot` contains phase/detail, prepared/desired counts, nullable `Seed(camera,originX,originY,bounds)`
+and `WorldCurrentArea.Result`. `Presentation` is opaque/private-constructed and exposes sequence,
+cameraRevision, policy, width/height and readonly detached pixels, never source handles. Frames are
+pulled from a coalesced mailbox on FX; no per-frame queued runnable captures payload owners. At most
+one presentation is borrowed by FX; actor does not take another parent frame until ack/discard.
+
+`Request.world` and Index are borrowed references; source creation/Scope qualification run only on
+the controller worker. Initial selected tile fully qualifies before any seed is derived. Original
+Inventory is bounded to 4096 comparisons and reused; the controller does not acquire a second
+inventory or copy its tile/Map graph. A controller's small membership/descriptors/control ledger
+is separate from the existing source receipt reserve. New view requests close the old controller;
+no legacy LoadedTile acquisition pipeline runs in parallel.
+
+GpuOwner.closeAsync returns the actual application request-owner drain (`CF<Void>`), including a
+request canceled while queued before a Session exists. Session's actual transport drain remains
+separate; no fake no-child DrainReceipt is constructed. An await-session future must fail when a
+request ends without opening. Request completion/failure alone never releases that owner.
+
+The pure area adapter is `WorldCurrentArea.resolve(mapId,recordedAreaId,Index)` from a512700. Controller
+scans checked AreaChunk coverage inside off-FX payload borrows and passes only the actual recorded
+scalar area ID to this helper; root minimap continues using Inventory, seeded origin and camera.
+
+Initial software toggle policy is **true GPU-off**, superseding the earlier software(boolean)
+method in the API sketch. Root closes this controller/application GPU owner, retains last pixels
+with pending feedback, and starts the existing legacy CPU acquisition only after this controller's
+successful actual close. Exceptional drain requires explicit unavailable/reload; it cannot start
+another acquisition pipeline. GPU re-enable likewise starts a fresh streaming scope/session only
+after the old CPU request is canceled/drained. No EmptyR source-holder path or active-GPU CPU label
+is introduced by this checkpoint.
+
+Initial rendering detail reports bounded textured/partial/height counts and terminal reason enums.
+READY requires the actual current receipt to have been accepted, not merely any prior frame. An
+empty recorded neighborhood keeps camera/sky updates and explicit missing-terrain status. Old
+current members remain until one actual incoming STAGED holder can replace one outgoing member;
+changed demand alone never shrinks the current table.
+
+## Implemented checkpoint and validation
+
+The actual class now uses the frozen df8c3c0 parent Commit/Frame API and reviewed tile cancellation
+follow-ups plus the failed-commit-cleanup correction. No reflection or protocol-status inference is
+used in production. Camera forwarding calls the parent's metadata-only camera mailbox independently
+of held source work. First origin preparation needs no preexisting camera; actual checked geometry
+produces the seed, after which commit waits for the view's first camera. Empty neighborhoods are
+valid. New demand never removes outgoing current members until one actual incoming STAGED source
+holder is ready. Current receipt application waits a borrowed FX handshake, preserving the exact
+mayPresent/upload/presented table. READY requires acceptance of the current receipt.
+
+Actual clean source refusal metadata is consumed only inside an exact clean CompletionException to
+PreparationRefusal branch, with correlated reason. SOURCE_INPUT/NUMERIC_ROOT/TERRAIN_PROFILE capability
+refusals are finite per-demand missing entries (<=9); current holders remain. Whole Map/native source
+capability or invalidation stops acquisition with explicit unavailable detail and retains visible
+pixels in the view. Unknown failure is fatal. Independent Source/pool pressure retries at most once
+per 500ms via the existing pulse if no genuine parent-capacity/presentation/demand revision arrives;
+a private monotonic clock injection makes the cadence deterministic in tests. It is not a hot loop.
+
+Active Events are retained strongly; queued FX work carries weak wake references and no payload.
+One borrowed/queued controller Frame is allowed, never both. Its detached pixels are at most
+800*500*4 = 1,600,000 bytes, separate from source atlas/geometry accounting. The parent independently
+bounds its latest detached frame and mapped slots. Controller membership tables are reference-only
+aliases (each <=9) over at most 12 unique existing source output owners. Request Inventory/area Index
+are borrowed existing graphs, not copied. Additional scalar/reference descriptors and <=9 finite
+refusal records add no image/geometry payload or receipt graph and no source cap increase.
+
+`:gui:worldStreamSourceControllerTest` uses genuine native Map preparation, checked authored
+WDT/ADT/BLP sources, the real packet encoder/decoder, real parent transport, a separate authored
+protocol child and real mapped detached-frame codec. Child pixels are authored; this is lifecycle
+and scheduling evidence, not GPU rendering/FPS evidence. Cases exercise nine initial full textured
+tiles, held incoming ROOT with old nine-member table/camera frames intact, actual post-COMMITTED FX
+handshake, twelve-owner presentation backpressure and stationary final-frame recovery, held source
+superseded only after explicit parent cancel, finite missing ROOT while the scope stays valid,
+shared pool release with no new demand/capacity event, queued GPU-owner late drain, actual initial
+WDT proof cancellation before any GPU owner exists, and close waiting both borrowed FX and actual
+process drain. The companion bridge suite covers full/partial/height, file MOVE and cleanup faults.
+
+GPU checkbox integration is owned by root and uses actual drain before legacy CPU acquisition. This
+checkpoint does not claim UI integration, actual movement smoothness, or software pixels over an
+active GPU session. Unknown/source cleanup/actual-owner failures remain conservatively exceptional
+on close; exact clean close-induced cancellation and clean logical capability refusal do not.
+
+Camera publication follow-up serializes initial Session publication/forward and every later camera
+forward under the same short controller metadata gate. Actual final Session.camera performs only
+metadata updates and no IO/callback. A causal test holds the real parent's metadata monitor while
+initial revision1 enters; a simulated FX revision2 must remain behind the controller gate, then the
+actual accepted first frame belongs to revision2. An old initial camera can never follow a newer FX
+camera and trigger the parent's monotonicity failure.
+
+Failure-cancellation follow-up requests the private qualification cancellation outside all metadata
+locks when an FX observer/dispatch failure marks the route closing. A later public close cannot
+skip actual initial-source cancellation simply because closing was already set. The causal held
+real WDT-proof fixture injects a throwing FX wake and proves the actual child-token listener fires,
+close stays pending through source drain, and the original failure remains fatal. An explicit
+Optional.empty custom streaming capability is separately UNAVAILABLE with successful no-owner
+retirement and no source IO, never fabricated as a typed refusal or child receipt.
+
+Useful-presentation/residency follow-up gates pixel upload on the nearest ordered requested tile
+being in the actual current GPU receipt. A valid current receipt/new camera can otherwise draw
+only sky while the nearest incoming tile is still preparing. Camera/native frame and source work
+continue; useful old-current camera frames remain accepted when the nearest tile is resident.
+Presented-only source pins do not count as live GPU membership or prepared demand. Returning to
+such a tile requalifies/reuploads a separately charged actual source owner rather than attempting
+to recommit its retired opaque Resident. Causal authored cases cover the previously RED returning
+9-tile demand and held nearest-tile motion with rejected uncovered pixels before any upload.
+
+At a full twelve-owner union, returning demand can need a fresh native resident for a tile retained
+only by last-presented source pins. The relief path commits the exact live wanted subset (including
+empty), keeps the old presented image/table, and retires only source owners with no current,
+committing or presented use after COMMITTED. Freed credit permits actual source requalification and
+upload; no retired Resident is reused and no cap is raised. Authored full-union cases prove both
+six-member and empty subsets, pending stale-frame discard, fresh restoration and final readiness.
+The child fixture now preserves an already-unconsumed input lease across a metadata-only commit.
+
+A known unavailable nearest recorded tile is a finite UNAVAILABLE state, never READY from an older
+receipt or indefinite capacity activity. The controller finishes an already-admitted useful bundle,
+then stops new neighbor admission while keeping last-readable pixels. This avoids accumulating
+unpresentable neighbors until the twelve-owner union stalls. Moving back to a readable requested
+center resumes normally. A thirteen-tile causal fixture proves missing-nearest SOURCE_INPUT keeps
+nine old owners, does not open the other three new neighbors, and recovers on readable demand.
+
+Nearest fairness correction removes the historical-presented restriction on relief. At twelve
+owners, ANY missing requested nearest tile must make progress, including a new tile never
+presented. Prefer releasing unwanted current owners not pinned by last presentation. If every
+such owner remains wanted, drop the farthest non-nearest never-presented current neighbor from
+the exact subset. After its actual subset commit releases credit, freshly qualify/upload the
+center. Accepting useful center pixels then releases old presentation pins and allows the dropped
+neighbor to be reacquired. The same twelve-output/source and native-slot caps remain unchanged.
+Both independently authored RED cases (returning center1 and never-presented center12 while all
+new neighbors remain wanted) now pass through actual source/packet/parent/frame fixtures.
+
+Display-usefulness feedback uses the reviewed BASIC sky-gradient helper on the controller worker,
+with immutable detached readonly pixels and no clone. Only downward-looking, still-pending wanted
+terrain with prior accepted pixels can suppress a matching all-sky candidate. Foreground differences,
+intentional upward sky and all-wanted-ready sky remain displayable. This changes display feedback,
+never source authority, material outcome or qualified bindings. Historical receipt frames are not
+classified; sky suppression resets on actual new COMMITTED receipt. Active sky feedback can also
+request bounded credit relief when the under-camera center is resident but a useful lookahead is
+missing. One bounded creditTarget remembers the missing tile that motivated relief, so the dropped
+farthest neighbor is not immediately reloaded ahead of it. Fresh useful pixels then release old
+presentation pins and allow the dropped neighbor back. A thirteen-tile authored sky-until-lookahead
+fixture proves this cycle within twelve owners; held-source foreground/upward/final sky cases pass.
+
+COMMITTED success and actual commit-file retirement remain separate. If an immediate subsequent
+commit receives the exact clean parent RETRY_LATER refusal, the controller retains the immutable
+committing target and retries only on capacity revision or the existing 500ms cadence. It neither
+turns pressure into source failure nor spins/reuses retired residents. Physical stopped-commit
+normalization dependency051e99 is included separately.
+
+Permanent-background liveness policy explicitly converts the last visible image to a detached
+historical raster when a background-only pending full-twelve-owner union otherwise cannot progress.
+Under the metadata gate, with no borrowed/queued Presentation and the same current receipt, clear
+ONLY presented Source-pin aliases. acceptedReceipt and acceptedSequence remain unchanged: no new
+pixels are acknowledged or claimed displayed. The existing GUI raster remains untouched and status
+says “Loading terrain; showing previous view”. Only retireUnused closes source owners no longer in
+current/committing/staged tables after actual native commit; current-only native lookup remains.
+This permits the complete new nine-tile demand to load. Once all wanted tiles are ready, legitimate
+sky may actually be uploaded and acknowledged normally. This is an explicit historical-image
+ownership policy, not a timeout that flashes sky and not source authority derived from pixels.
+The permanent-sky disjoint eighteen-tile authored regression proves unchanged ACK/receipt throughout
+transition/loading, no repeated three-tile cycle (exact eighteen commits), full new nine and real
+final presentation with nine owners.

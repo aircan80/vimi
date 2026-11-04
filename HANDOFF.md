@@ -1,35 +1,123 @@
 # vimi development handoff
 
-## Active overnight checkpoint — inline integration under visual acceptance
+## Current alpha21 delivery gate — pool retry correction
 
-Published application remains alpha20. Reviewed integration is cbb9c72 on
-feature/world-streaming-integration (draft PR153). It includes global WDT declaration
-d8da89f, verified against actual Map249 without reading its WMO or images, and staged
-nonvisible image publication4864637/262e274. This is not yet a working instance viewer.
+Newest runtime/integration checkpoint is dfe9817, superseding9dbad51 only with
+reviewed typed material-pool backoffd34bfee and deterministic pressure tests. A
+hosted Mac failure exposed actual churn: late unused CREDIT and same-resident
+camera acknowledgements reopened a resource refusal without freeing pool owners.
+The fix wakes only on500ms/new demand/actual successful source retirement; parent,
+file and12-owner pressure behavior is unchanged. Root+independent controller tests
+and full check/assemble/installDist/C#interop/eight FX suites pass485tasks:
+`/home/aircan/.cache/vimi-tmp/world-alpha21-pool-final-check.log`.
+Rerun hosted checks before merging/publishing. Other latest9dbad51 hosted Linux,
+Windows, Mac unit and one Mac integration passed; the failed duplicate is not waived.
+No G2/water feature code is included in this alpha21 candidate. Continue after release.
 
-Root inline branch is feature/world-stream-view-integration at8aa5a86 in
-`/home/aircan/.cache/vimi-worktrees/vimi-world-stream-view-integration`. It connects the
-actual native source controller, isolates legacy acquisition during transitions,
-retains images through loading, and waits for actual CPU/texture/GPU retirement.
-Combined bgfx/GUI checks plus authored CPU retirement UI test pass143 tasks:
-`/home/aircan/.cache/vimi-tmp/world-view-close-and-retirement-check.log`.
-The branch includes parent close fix051e99a and texture worker-start failure681ab4c;
-independent review and additional viewport lifecycle checks remain active.
+## Latest Linux checkpoint — alpha21 candidate passes final local gates
 
-Actual frozen GUI movement still FAILED visual acceptance: the camera tile was ready
-but its downward view extended into a tile still pending, yielding only sky. Do not
-report protocol frame counts as visible terrain success. Evidence is private under
-`/home/aircan/.cache/vimi-tmp/world-stream-real-proof/inline-coverage-frozen.log`.
-Controller604f3fb also has two remaining twelve-owner residency recovery regressions;
-source author is fixing these without raising the cap. Known-sky display feedback
-helper8083502 is tested separately but not yet wired or native-validated. It grants
-no source authority. Root view8aa5a86 is not merged into integration or main.
+Published application remains alpha20; alpha21 publication is next, after hosted
+checks. Runtime candidate9dbad51 on feature/world-streaming-integration (draft PR153)
+passes full check/assemble/installDist, explicit C# image interop and eight World
+FX/lifecycle suites:485tasks,26s, log
+`/home/aircan/.cache/vimi-tmp/world-alpha21-owner-final-check.log`.
+Local packaged launcher/UI/native probe passes with40 shader blobs:
+`/home/aircan/.cache/vimi-tmp/vimi-alpha21-candidate-package-smoke.log`.
 
-All agents are resumed for concrete controller, viewport lifecycle, and independent
-close-path reviews. Continue through actual useful movement images, clean close,
-package checks and the next prerelease. Keep terrain/buildings/instances ahead of
-packaged GPU diagnostics and avoid indefinitely delaying the character milestone.
+Exact frozen9dbad51 actual Linux Vulkan movement also passes: onePID959420 before
+and after45forced16-yard steps,46image publications during1832ms, final9textured
+(4partial),2997terrain-color samples, actual child setempty and atlas claims0 after
+close. Private evidence: `world-stream-real-proof/inline-release-candidate-native.log`,
+`inline-run-9-candidate/inline-world.png`, and `inline-frozen-9dbad51/manifest.json`,
+all under `/home/aircan/.cache/vimi-tmp/`. Original/prior libraries READONLY; writes
+only in the diagnostic cache. These counts are not a sustained FPS benchmark.
 
+Independent reviews cover source controller/raster history4e34703, request/file
+pressure89a4b72, actual GPU lifecyclebf0a2d2, original source future failures46eb7e5/
+a9708b7, strict bounded read747816b/26af365, decoder65a1df2/026b191 and CPU owner
+stamp911cb22. The CPU stamp fixes actual GPU-resize admission of a third source
+owner, while current CPU aliases still load a second owner without starvation.
+Hosted fast-exit worker registration8c2ce03 and causal test-observation fixes are
+included. Earlier failed proofs and tests remain failures, superseded by these fixes.
+
+G1 global source chain5db99f7+0db1512+ffad0fc+0473a85+e0ca7e5 is reviewed/integrated,
+with actual local-only Onyxia28-body traversal twice, no mesh/images retained.
+It is not a rendered dungeon. Future separate branches: G2 private payloada7a9ddc
+is independently approved (not integrated for alpha21); raw liquids1ec4e89 is
+independently approved with actual20/26-layer proofs; standalone global design
+057ba90/3651a82 and water source design31b31f8 await next review/implementation.
+Continue those after publishing alpha21; no new feature code enters this candidate.
+
+Local packaging uses checksum-verified Temurin25.0.5+8 at the path in
+`/home/aircan/.cache/vimi-tmp/vimi-alpha21-jdk/java-home.txt` plus verified OpenJFX
+notices in `vimi-alpha21-javafx-sdk/legal`. System Fedora JDK builds/tests work, but
+its modified java.security prevents jlink; no system configuration was changed.
+Keep frozen alpha20 launchers/tags immutable and use HOME cache for new worktrees/tmp.
+
+## Newest Linux checkpoint — actual three-tile persistent textured GPU proof
+
+Integration `feature/world-streaming-integration` reaches51f4fc7. Public Tile
+transport579ad70 +823/95/ff/565 +atomic OFFER/cancel59eae0a and public Commit/Frame
+df8c3c0 +persistent cleanup fix7234325 are root/independently approved. Root isolated
+combined bgfx/closed-source bridge checks PASS104tasks:
+`/home/aircan/.cache/vimi-tmp/world-public-commit-cleanup-integration-check.log`.
+The earlier complete formats/concepts/rendering/bgfx/GUI gate remains156tasks atb50ffae.
+
+Actual source→closed bridge→fixed writer→COMMIT→Vulkan frames PASS for Map0 tiles
+32,32 (256covered),32,31 (223partial),33,32 (256), onePID774942/one launch, content1/2/3,
+sequence9, clean actual drain and atlas claims0. Root inspected images. Evidence
+`/home/aircan/.cache/vimi-tmp/world-stream-real-proof/actual-network.log` and
+[actual proof details](docs/world-stream-real-source-packet-proof.md). Original/prior
+libraries READONLY, new writable proof cache297MiB. This is not GUI/FPS acceptance.
+
+Pure area resolvera512700 and GPU owner adapter34145a6+sticky failure0e690f0 are
+root/independently approved/integrated18ba4b7/4a771a1/f5b91b8. Adapter remembers the
+original request even after service lookup forgets it; repeated close cannot launder
+a failed/unknown lifetime into success. New bridge typed originbaafbec is integrated
+51f4fc7: consumers must require an actual clean PreparationRefusal before using its
+descriptive metadata, never reinterpret an unknown cleanup error as per-tile absence.
+
+Active source controller is UNFROZEN WIP at
+`/home/aircan/.cache/vimi-worktrees/vimi-world-stream-source-controller`; actual API
+compiles, source actor/tests still active. Root WorldView is UNCOMMITTED WIP at
+`/home/aircan/.cache/vimi-worktrees/vimi-world-stream-view-integration`, branch
+feature/world-stream-view-integration. Private API-only javac check passes against
+the actual controller; no full GUI acceptance yet. Architect reviews view lifetime,
+visibility/seed, GPU toggle and staged nonvisible bitmap publication. Root fixes those
+before enabling. New World source acquisition must not overlap legacy acquisition.
+Maps agent implements the separately approved narrow global declaration source engine
+(newWorldGlobalScopes, no WMO/root/image/companion reads, no public/native scene).
+
+All new worktrees and Java tmp files use HOME cache as below. Alpha20 remains the
+published baseline; no new prerelease until actual inline movement/ownership gates.
+
+## Latest integration — reviewed source-to-packet bridge, inline controller next
+
+Integration branch `feature/world-streaming-integration` (draft PR153) now reaches
+`b50ffae`. Combined formats-world/concepts-world/rendering-world/bgfx/GUI checks
+PASS156tasks (66 executed):
+`/home/aircan/.cache/vimi-tmp/world-source-packet-bridge-combined-check.log`.
+The earlier isolated source combined gate also PASS36tasks.
+
+Integrated source cancellation/end ownership f0e2137 + final post-drain handoff
+7e66921, explicit-origin refusal650d18c + foreign-scope/unknown-cancellation fix
+d4f09f1; Tile transport579ad70 with rejected queued-cancel823c8f4, actual file
+retirement95a0903, excluded-commit dispositionff1e20c and exact clean-cancel565e25f.
+Root reviewed production changes; independent Tile review is still pending.
+
+Root fixed writer7989172 is independently approved and integrated9d38338; closed
+source bridgef4c3e81/f3358b9/1775b9a is root/independently approved and integrated
+52688f7/7ba753b/b50ffae. Genuine checked source admission alone authorizes file
+MOVE; PARTIAL material cache keys stay nullable; qualified-binding rejection omits
+atlas payload. Source and moved packet retire independently. These checkpoints
+do not switch WorldView or establish real movement smoothness.
+
+Architect continues concrete public Commit/frame APIs; source agent continues
+controller implementation; root owns WorldView integration. All future temporary
+Java/test files should use `JAVA_TOOL_OPTIONS=-Djava.io.tmpdir=/home/aircan/.cache/vimi-tmp`
+and new worktrees `/home/aircan/.cache/vimi-worktrees`, avoiding the inode-limited
+/tmp mount. Existing relocated review checkouts have preserved /tmp symlink aliases.
+Alpha20 and its frozen launcher remain the published baseline. No new release yet.
 
 ## Current Linux checkpoint — alpha20 released, persistent World integration active
 

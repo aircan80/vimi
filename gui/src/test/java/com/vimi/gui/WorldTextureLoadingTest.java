@@ -84,7 +84,140 @@ public final class WorldTextureLoadingTest {
             for (var call : calls) call.result().complete(WorldTerrainTextureSource.BatchResult.unsupported(TILES));
             for (var outcome : delivered) { if (outcome.snapshot() != null) outcome.snapshot().close(); }
         }
+        workerStartErrorDoesNotLeavePhantomRetirement();
+        idleWaitsProviderAndFxRetirement();
+        idleWaitsWorkerFinallyAfterFx();
+        idleFailuresDoNotHang();
         System.out.println("WorldTextureLoadingTest PASS: off-owner reads, latest-only work, activity, rejection and late close");
+    }
+
+    private static void workerStartErrorDoesNotLeavePhantomRetirement() throws Exception {
+        var original = new AssertionError("Authored worker creation failure");
+        var delivered = new java.util.concurrent.atomic.AtomicInteger();
+        var entered = new CompletableFuture<Void>();
+        var loader = new WorldTextureLoading(task -> task.run(), ignored -> {}, ignored -> delivered.incrementAndGet());
+        try {
+            var field = WorldTextureLoading.class.getDeclaredField("worker");field.setAccessible(true);
+            ((java.util.concurrent.ThreadPoolExecutor)field.get(loader)).setThreadFactory(task -> { throw original; });
+            try {
+                loader.request(source(CompletableFuture.completedFuture(
+                        WorldTerrainTextureSource.BatchResult.unsupported(TILES)),entered),
+                        map(1),TILES,scene());
+                throw new AssertionError("Expected original worker creation error");
+            } catch (AssertionError observed) { require(observed == original,"Exact fatal Error preserved"); }
+            require(!loader.hasActiveWork(), "No phantom active descriptor after worker creation fails");
+            require(!entered.isDone() && delivered.get() == 0, "No provider call or fabricated terminal result");
+            var viewField = WorldTextureLoading.class.getDeclaredField("view");viewField.setAccessible(true);
+            var view = viewField.get(loader);
+            var strong = view.getClass().getDeclaredField("strongScene");strong.setAccessible(true);
+            require(strong.get(view) == null, "Failed unstarted job retires its strong scene alias");
+            try {
+                loader.whenIdle().get(1,TimeUnit.SECONDS);
+                throw new AssertionError("Failed worker creation cannot certify successful retirement");
+            } catch (java.util.concurrent.ExecutionException expected) { }
+            expectFailed(loader.whenIdle()); // A fresh fence cannot turn the sticky failure positive.
+        } finally { loader.close(); }
+    }
+
+    private static BuildWorld source(CompletableFuture<WorldTerrainTextureSource.BatchResult> result,
+            CompletableFuture<Void> entered) {
+        return (BuildWorld) Proxy.newProxyInstance(BuildWorld.class.getClassLoader(),
+                new Class<?>[] {BuildWorld.class}, (proxy, method, values) -> {
+                    if (!method.getName().equals("terrainTextures")) throw new AssertionError(method.getName());
+                    entered.complete(null);
+                    return result;
+                });
+    }
+
+    private static void idleWaitsProviderAndFxRetirement() throws Exception {
+        for (boolean close : List.of(false, true)) {
+            var ui = new ConcurrentLinkedQueue<Runnable>();
+            var result = new CompletableFuture<WorldTerrainTextureSource.BatchResult>();
+            var entered = new CompletableFuture<Void>();
+            var loader = new WorldTextureLoading(ui::add, ignored -> {},
+                    ignored -> { throw new AssertionError("Retired result published"); });
+            try {
+                loader.request(source(result, entered), map(1), TILES, scene());
+                entered.get(5, TimeUnit.SECONDS);
+                var idle = loader.whenIdle();
+                var foreign = loader.whenIdle();
+                foreign.complete(null);
+                if (close) loader.close(); else loader.hide();
+                require(!idle.isDone(), "Hide/close cannot retire held original provider work");
+                var batch = WorldTerrainTextureSource.BatchResult.unsupported(TILES);
+                result.complete(batch);
+                await(new ConcurrentLinkedQueue<>(), () -> !ui.isEmpty(), "queued FX completion");
+                require(!idle.isDone(), "Worker completion alone cannot retire queued FX mailbox");
+                pump(ui);
+                idle.get(5, TimeUnit.SECONDS);
+                requireClosed(batch);
+                require(!loader.hasActiveWork(), "FX retirement clears active descriptor");
+            } finally {
+                result.complete(WorldTerrainTextureSource.BatchResult.unsupported(TILES));
+                loader.close();
+                pump(ui);
+            }
+        }
+    }
+
+    private static void idleWaitsWorkerFinallyAfterFx() throws Exception {
+        var ui = new ConcurrentLinkedQueue<Runnable>();
+        var scheduled = new CompletableFuture<Void>();
+        var release = new CompletableFuture<Void>();
+        var result = CompletableFuture.completedFuture(WorldTerrainTextureSource.BatchResult.unsupported(TILES));
+        var loader = new WorldTextureLoading(task -> {
+            ui.add(task);
+            scheduled.complete(null);
+            release.join();
+        }, ignored -> {}, delivered -> delivered.snapshot().close());
+        try {
+            loader.request(source(result, new CompletableFuture<>()), map(1), TILES, scene());
+            scheduled.get(5, TimeUnit.SECONDS);
+            var idle = loader.whenIdle();
+            pump(ui);
+            require(!loader.hasActiveWork() && !idle.isDone(),
+                    "Empty active pointer and retired FX mailbox do not prove worker finally");
+            release.complete(null);
+            idle.get(5, TimeUnit.SECONDS);
+        } finally { release.complete(null); loader.close(); pump(ui); }
+    }
+
+    private static void idleFailuresDoNotHang() throws Exception {
+        var completed = CompletableFuture.completedFuture(WorldTerrainTextureSource.BatchResult.unsupported(TILES));
+        var scheduling = new WorldTextureLoading(task -> { throw new IllegalStateException("Rejected FX queue"); },
+                ignored -> {}, ignored -> {});
+        try {
+            scheduling.request(source(completed, new CompletableFuture<>()), map(1), TILES, scene());
+            expectFailed(scheduling.whenIdle());
+        } finally { scheduling.close(); }
+        var rejected = new WorldTextureLoading(task -> task.run(), ignored -> {}, ignored -> {});
+        try {
+            var field = WorldTextureLoading.class.getDeclaredField("worker");
+            field.setAccessible(true);
+            ((java.util.concurrent.ThreadPoolExecutor) field.get(rejected)).shutdown();
+            rejected.request(source(CompletableFuture.completedFuture(
+                    WorldTerrainTextureSource.BatchResult.unsupported(TILES)), new CompletableFuture<>()),
+                    map(1), TILES, scene());
+            expectFailed(rejected.whenIdle());
+        } finally { rejected.close(); }
+        var ui = new ConcurrentLinkedQueue<Runnable>();
+        var delivery = new WorldTextureLoading(ui::add, ignored -> {},
+                ignored -> { throw new IllegalStateException("Authored consumer cleanup failure"); });
+        try {
+            delivery.request(source(CompletableFuture.completedFuture(
+                    WorldTerrainTextureSource.BatchResult.unsupported(TILES)), new CompletableFuture<>()),
+                    map(1), TILES, scene());
+            var idle = delivery.whenIdle();
+            await(new ConcurrentLinkedQueue<>(), () -> !ui.isEmpty(), "failing FX delivery");
+            try { pump(ui); throw new AssertionError("Delivery must throw"); }
+            catch (IllegalStateException expected) { }
+            expectFailed(idle);
+        } finally { delivery.close(); pump(ui); }
+    }
+
+    private static void expectFailed(CompletableFuture<Void> future) throws Exception {
+        try { future.get(5, TimeUnit.SECONDS); throw new AssertionError("Expected exceptional retirement"); }
+        catch (java.util.concurrent.ExecutionException expected) { }
     }
 
     private static WorldService.MapInfo map(long id) {

@@ -18,26 +18,41 @@ final class TerrainTextureTasks {
     }
 
     void submit(WorldTerrainTextureSource.Request request) {
-        WorldTerrainTextureSource.Request retired;
+        WorldTerrainTextureSource.Request retired = null;
+        Throwable rejected = null;
         synchronized (this) {
+            if (request.activityTracked) {
+                throw new IllegalStateException("Texture request already submitted");
+            }
+            if (request.source.activityRequests == Integer.MAX_VALUE) {
+                throw new IllegalStateException("Texture activity count exhausted");
+            }
+            request.activityTracked = true;
+            if (request.source.activityRequests++ == 0) {
+                request.source.activityIdle = new CompletableFuture<>();
+            }
             if (stopping || request.source.closed) {
-                retire(request, new IllegalStateException("Terrain texture source closed"));
-                finishSource(request.source);
-                return;
+                rejected = new IllegalStateException("Terrain texture source closed");
+            } else if (request.canceled || request.caller.isCanceled()) {
+                rejected = new CancellationException("Texture batch already canceled");
+            } else {
+                retired = pending;
+                pending = request;
+                if (active != null) {
+                    markCanceled(active);
+                }
+                notifyAll();
             }
-            if (request.canceled || request.caller.isCanceled()) {
-                retire(request, new CancellationException("Texture batch already canceled"));
-                return;
-            }
-            retired = pending;
-            pending = request;
-            if (active != null) {
-                markCanceled(active);
-            }
-            notifyAll();
+        }
+        if (rejected != null) {
+            retire(request, rejected);
+            finishActivity(request);
+            finishSource(request.source);
+            return;
         }
         if (retired != null) {
             retire(retired, new CancellationException("Superseded texture batch"));
+            finishActivity(retired);
             finishSource(retired.source);
         }
     }
@@ -71,6 +86,7 @@ final class TerrainTextureTasks {
         }
         if (retired != null) {
             retire(retired, new CancellationException("Texture source closed"));
+            finishActivity(retired);
         }
         finishSource(source);
     }
@@ -105,6 +121,7 @@ final class TerrainTextureTasks {
                 request.future.completeExceptionally(failure);
             } finally {
                 request.registration.close();
+                request.registration = null;
                 synchronized (this) {
                     while (cancelTarget == request || canceling == request) {
                         await();
@@ -114,6 +131,13 @@ final class TerrainTextureTasks {
                     }
                     notifyAll();
                 }
+                request.completeObservations();
+                if (request.cancellationFailure == null) {
+                    request.drained.complete(null);
+                } else {
+                    request.drained.completeExceptionally(request.cancellationFailure);
+                }
+                finishActivity(request);
                 finishSource(request.source);
             }
         }
@@ -136,6 +160,7 @@ final class TerrainTextureTasks {
             try {
                 target.token.cancel();
             } catch (RuntimeException | Error failure) {
+                target.cancellationFailure = failure;
                 target.source.cancellationFailure = failure;
                 synchronized (this) {
                     if (cancellationFailure == null) {
@@ -168,6 +193,7 @@ final class TerrainTextureTasks {
         }
         if (retired != null) {
             retire(retired, new CancellationException("Texture pool closed"));
+            finishActivity(retired);
             finishSource(retired.source);
         }
         Thread.startVirtualThread(
@@ -192,9 +218,48 @@ final class TerrainTextureTasks {
         return closing.copy();
     }
 
+    CompletableFuture<Void> whenSourceIdle(WorldTerrainTextureSource source) {
+        synchronized (this) {
+            if (source.activityRequests == 0) {
+                return source.cancellationFailure == null
+                        ? CompletableFuture.completedFuture(null)
+                        : CompletableFuture.failedFuture(
+                                activityFailure(source.cancellationFailure));
+            }
+            return source.activityIdle.copy();
+        }
+    }
+
+    private void finishActivity(WorldTerrainTextureSource.Request request) {
+        CompletableFuture<Void> idle = null;
+        Throwable failed = null;
+        synchronized (this) {
+            if (!request.activityTracked || request.activityFinished) {
+                return;
+            }
+            request.activityFinished = true;
+            if (--request.source.activityRequests == 0) {
+                idle = request.source.activityIdle;
+                failed = request.source.cancellationFailure;
+            }
+        }
+        if (idle != null) {
+            if (failed == null) {
+                idle.complete(null);
+            } else {
+                idle.completeExceptionally(activityFailure(failed));
+            }
+        }
+    }
+
+    private static java.io.IOException activityFailure(Throwable error) {
+        return new java.io.IOException(error.getClass().getName());
+    }
+
     private void finishSource(WorldTerrainTextureSource source) {
         synchronized (this) {
             if (!source.closed
+                    || source.activityRequests != 0
                     || (active != null && active.source == source)
                     || (pending != null && pending.source == source)
                     || (cancelTarget != null && cancelTarget.source == source)
@@ -212,7 +277,10 @@ final class TerrainTextureTasks {
     private static void retire(WorldTerrainTextureSource.Request request, Throwable failure) {
         request.canceled = true;
         request.registration.close();
+        request.registration = null;
+        request.completeObservations();
         request.future.completeExceptionally(failure);
+        request.drained.complete(null);
     }
 
     private void await() {

@@ -32,6 +32,13 @@ public final class GpuViewerMain {
     private GpuViewerMain() {}
 
     public static void main(String[] args) {
+        if (WorldStreamMain.requested(args)) {
+            int result = WorldStreamMain.execute(args);
+            if (result != 0) {
+                System.exit(result);
+            }
+            return;
+        }
         try {
             var options = options(args);
             if (options.containsKey("--headless-smoke")) {
@@ -106,22 +113,27 @@ public final class GpuViewerMain {
         GpuTerrainTextureAnnex.Decoded terrainTextures = null;
         TerrainTextureStatus.Code textureInputFailure = TerrainTextureStatus.Code.NONE;
         boolean textureRequested = options.containsKey("--terrain-textures");
+        boolean wmoRequested = options.containsKey("--wmo-annex");
+        GpuTerrainSceneFile.Decoded boundGeometry = null;
         if (terrain) {
-            if (textureRequested) {
+            if (textureRequested || wmoRequested) {
                 var geometry =
                         GpuTerrainSceneFile.readBound(
                                 Path.of(options.get("--terrain-scene")), lifetime::stopping);
                 terrainScene = geometry.scene();
-                try {
-                    terrainTextures =
-                            GpuTerrainTextureAnnex.read(
-                                    Path.of(options.get("--terrain-textures")),
-                                    geometry,
-                                    lifetime::stopping);
-                } catch (GpuTerrainTextureAnnex.Invalid invalid) {
-                    textureInputFailure = invalid.code();
-                } catch (IOException | java.nio.file.InvalidPathException unavailable) {
-                    textureInputFailure = TerrainTextureStatus.Code.INPUT_UNAVAILABLE;
+                boundGeometry = geometry;
+                if (textureRequested) {
+                    try {
+                        terrainTextures =
+                                GpuTerrainTextureAnnex.read(
+                                        Path.of(options.get("--terrain-textures")),
+                                        geometry,
+                                        lifetime::stopping);
+                    } catch (GpuTerrainTextureAnnex.Invalid invalid) {
+                        textureInputFailure = invalid.code();
+                    } catch (IOException | java.nio.file.InvalidPathException unavailable) {
+                        textureInputFailure = TerrainTextureStatus.Code.INPUT_UNAVAILABLE;
+                    }
                 }
             } else {
                 terrainScene =
@@ -144,6 +156,7 @@ public final class GpuViewerMain {
                                 BgfxTerrainRenderer.MAX_HEIGHT)
                         : GpuFrameFile.open(Path.of(options.get("--frames")))) {
             boolean initialized = false;
+            ColdWorldWmoOwner wmoOwner = null;
             try {
                 try (var stack = MemoryStack.stackPush()) {
                     var init = BGFXInit.calloc(stack);
@@ -165,13 +178,32 @@ public final class GpuViewerMain {
                     return;
                 }
                 status("HELLO", backend);
+                if (wmoRequested) {
+                    wmoOwner =
+                            new ColdWorldWmoOwner(
+                                    state -> {
+                                        System.out.println(state.protocolLine());
+                                        System.out.flush();
+                                    });
+                }
                 long submittedRevision = 0, nextRender = 0;
                 boolean announced = false;
                 try (var pipeline =
-                        terrain
+                        wmoRequested
                                 ? new GpuFramePipeline(
-                                        terrainScene, terrainTextures, frames, lifetime::stopping)
-                                : new GpuFramePipeline(modelScene, qualified, frames)) {
+                                        boundGeometry,
+                                        terrainTextures,
+                                        Path.of(options.get("--wmo-annex")),
+                                        wmoOwner,
+                                        frames,
+                                        lifetime::stopping)
+                                : terrain
+                                        ? new GpuFramePipeline(
+                                                terrainScene,
+                                                terrainTextures,
+                                                frames,
+                                                lifetime::stopping)
+                                        : new GpuFramePipeline(modelScene, qualified, frames)) {
                     if (textureRequested) {
                         System.out.println(
                                 pipeline.textureStatus(textureInputFailure).protocolLine());
@@ -189,6 +221,9 @@ public final class GpuViewerMain {
                         }
                         boolean published = pipeline.advance();
                         if (published && !announced) {
+                            if (wmoOwner != null) {
+                                wmoOwner.publishedFirstFrame();
+                            }
                             status("READY", backend);
                             announced = true;
                         }
@@ -201,8 +236,17 @@ public final class GpuViewerMain {
                     }
                 }
             } finally {
-                if (initialized) {
-                    bgfx_shutdown();
+                try {
+                    if (wmoOwner != null) {
+                        wmoOwner.close();
+                    }
+                } finally {
+                    if (initialized) {
+                        bgfx_shutdown();
+                        if (wmoOwner != null) {
+                            wmoOwner.afterContextShutdown();
+                        }
+                    }
                 }
             }
         }
@@ -213,7 +257,14 @@ public final class GpuViewerMain {
                 || !options.containsKey("--frames")
                 || !options.containsKey("--parent-pid")
                 || options.containsKey("--terrain-textures")
-                        && !options.containsKey("--terrain-scene")) {
+                        && !options.containsKey("--terrain-scene")
+                || options.containsKey("--wmo-annex")
+                        && (!options.containsKey("--terrain-scene")
+                                || options.containsKey("--headless-smoke")
+                                || !Path.of(options.get("--wmo-annex")).isAbsolute()
+                                || !Path.of(options.get("--wmo-annex"))
+                                        .normalize()
+                                        .equals(Path.of(options.get("--wmo-annex"))))) {
             throw new IllegalArgumentException(
                     "Inline GPU renderer requires exactly one model or terrain scene, frames and parent");
         }
@@ -254,6 +305,7 @@ public final class GpuViewerMain {
                                     "--scene",
                                     "--terrain-scene",
                                     "--terrain-textures",
+                                    "--wmo-annex",
                                     "--frames",
                                     "--parent-pid",
                                     "--backend",
@@ -262,6 +314,9 @@ public final class GpuViewerMain {
                     || result.put(args[i], args[i + 1]) != null) {
                 throw new IllegalArgumentException("Invalid GPU renderer arguments");
             }
+        }
+        if (result.containsKey("--wmo-annex")) {
+            terrainMode(result);
         }
         return result;
     }

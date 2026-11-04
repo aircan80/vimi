@@ -56,6 +56,7 @@ dependencies {
     testImplementation testFixtures(project(':builds'))
     testImplementation testFixtures(project(':polestar'))
     testImplementation testFixtures(project(':files'))
+    testImplementation testFixtures(project(':formats-tables'))
     testImplementation testFixtures(project(':generated-store'))
     ['base', 'graphics', 'controls'].each {
         implementation "org.openjfx:javafx-${it}:25.0.1:${classifier}"
@@ -509,9 +510,78 @@ tasks.register('worldPreparedTextureUiTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldPreparedTextureUiTest'
 }
 
+tasks.register('worldInlineCadenceProof', JavaExec) {
+    group = 'verification'
+    description = 'Measures authored warm-camera v1 Vulkan publication and FX acceptance cadence.'
+    dependsOn testClasses, ':rendering-bgfx:verifyShaders', ':rendering-bgfx:verifyTerrainShaders'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldInlineCadenceProof'
+    jvmArgs '--enable-native-access=ALL-UNNAMED', '-Dprism.order=sw'
+    args layout.buildDirectory.dir('world-inline-cadence').get().asFile.absolutePath
+}
+
 // Authored hierarchy/artwork and off-FX cancellation proof; requires a display.
 tasks.register('mapsBrowserUiTest', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.MapsBrowserUiTest'
+}
+// Authored native-source-to-packet ownership test; no JavaFX toolkit or native GPU required.
+tasks.register('worldStreamSourceBridgeTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldStreamSourceBridgeTest'
+}
+check.dependsOn worldStreamSourceBridgeTest
+
+// Detached JavaFX bitmap publication; no window or GPU required.
+tasks.register('worldStreamImagePresentationTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldStreamImagePresentationTest'
+}
+check.dependsOn worldStreamImagePresentationTest
+tasks.register('worldStreamSourceControllerTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldStreamSourceControllerTest'
+}
+check.dependsOn worldStreamSourceControllerTest
+
+// Off-FX display feedback and actual legacy-work retirement, without live data or a GPU.
+tasks.register('worldStreamBackgroundTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldStreamBackgroundTest'
+}
+check.dependsOn worldStreamBackgroundTest
+
+tasks.register('worldStreamNeighborhoodTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldStreamNeighborhoodTest'
+}
+check.dependsOn worldStreamNeighborhoodTest
+
+tasks.register('legacyWorldActivityTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.LegacyWorldActivityTest'
+}
+check.dependsOn legacyWorldActivityTest
+
+// Authored CPU failure/retirement checks require a display; no live assets or GPU child.
+tasks.register('worldCpuRetirementUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldCpuRetirementUiTest'
+}
+
+tasks.register('worldHotLifecycleUiProof', JavaExec) {
+    group = 'verification'
+    description = 'Authored qualified HOT World source and actual inline GPU lifecycle; requires Vulkan and an FX display.'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldHotLifecycleUiProof'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
 }

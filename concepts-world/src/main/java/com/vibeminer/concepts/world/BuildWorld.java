@@ -59,6 +59,11 @@ public interface BuildWorld extends AutoCloseable {
                 WorldTerrainTextureSource.BatchResult.unsupported(tiles));
     }
 
+    /** Optional actual-source streaming capability; custom providers perform no fallback IO. */
+    default java.util.Optional<WorldTerrainStreaming> terrainStreaming() {
+        return java.util.Optional.empty();
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override

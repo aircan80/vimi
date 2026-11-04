@@ -61,6 +61,7 @@ application {
 dependencies {
     api project(':rendering-models')
     api project(':rendering-world')
+    testImplementation project(':formats-assets')
     ['lwjgl', 'lwjgl-bgfx'].each {
         implementation "org.lwjgl:${it}:${lwjglVersion}"
         runtimeOnly "org.lwjgl:${it}:${lwjglVersion}:${supportedPlatforms[targetPlatform]}"
@@ -253,4 +254,114 @@ tasks.register('nativeGpuTerrainTextureProof', JavaExec) {
     mainClass = 'com.vibeminer.rendering.bgfx.TerrainTextureNativeProof'
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args layout.buildDirectory.dir('native-terrain-textures').get().asFile.absolutePath
+}
+
+// Authored persistent-World feasibility; no production shader or renderer replacement.
+tasks.register('verifyWorldStreamSpikeShaders', Exec) {
+    group = 'verification'
+    description = 'Verifies separate authored persistent-World shader profiles.'
+    inputs.files(shaderHelper, rootProject.file('scripts/rendering/compile_bgfx_world_stream_spike.py'))
+    inputs.dir(layout.projectDirectory.dir('src/test/shaders/world-stream-spike'))
+    inputs.dir(layout.projectDirectory.dir('src/test/resources/com/vibeminer/rendering/bgfx/world-stream-spike'))
+    workingDir rootProject.layout.projectDirectory
+    commandLine pythonExecutable.get(), rootProject.file('scripts/rendering/compile_bgfx_world_stream_spike.py').absolutePath, '--verify'
+}
+tasks.register('nativeGpuWorldStreamSpike', JavaExec) {
+    group = 'verification'
+    description = 'Proves fixed dynamic resources, callback lifetime and camera-first uploads.'
+    dependsOn testClasses, tasks.named('verifyWorldStreamSpikeShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamSpike'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-world-stream-spike').get().asFile.absolutePath
+}
+
+tasks.register('nativeGpuWorldStreamAcceptance', JavaExec) {
+    group = 'verification'
+    description = 'Checks authored common-rebase UV, seams, coplanar order and reversed-depth pixels.'
+    dependsOn testClasses, tasks.named('verifyWorldStreamSpikeShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamSpikeAcceptance'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-world-stream-acceptance').get().asFile.absolutePath
+}
+
+
+tasks.register('verifyWorldStreamShaders', Exec) {
+    group = 'verification'
+    description = 'Verifies separate production persistent-World shader profiles.'
+    inputs.files(shaderHelper, rootProject.file('scripts/rendering/compile_bgfx_world_stream_shaders.py'))
+    inputs.dir(layout.projectDirectory.dir('src/main/shaders/world-stream'))
+    inputs.dir(layout.projectDirectory.dir('src/main/resources/com/vibeminer/rendering/bgfx/shaders/world-stream'))
+    workingDir rootProject.layout.projectDirectory
+    commandLine pythonExecutable.get(), rootProject.file('scripts/rendering/compile_bgfx_world_stream_shaders.py').absolutePath, '--verify'
+}
+tasks.named('processResources') { dependsOn tasks.named('verifyWorldStreamShaders') }
+tasks.named('check') { dependsOn tasks.named('verifyWorldStreamShaders') }
+
+tasks.register('nativeGpuWorldStreamOwnerProof', JavaExec) {
+    group = 'verification'
+    description = 'Exercises persistent production World uploads, callback drain and v2 readback tickets.'
+    dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamNativeProof'
+    timeout = java.time.Duration.ofMinutes(2)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-world-stream-owner').get().asFile.absolutePath
+}
+
+tasks.register('nativeGpuWorldStreamSessionProof', JavaExec) {
+    group = 'verification'
+    description = 'Exercises the isolated authored World v2 actor and typed child protocol.'
+    dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamSessionProof'
+    timeout = java.time.Duration.ofMinutes(3)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-world-stream-owner').get().asFile.absolutePath
+}
+
+
+// The cold WMO pass has a separate recipe/manifest; existing shader bytes stay unchanged.
+tasks.register('verifyWorldWmoShaders', Exec) {
+    group = 'verification'
+    description = 'Verifies dedicated cold BASIC WMO shader profiles offline.'
+    inputs.files(shaderHelper, rootProject.file('scripts/rendering/compile_bgfx_world_wmo.py'))
+    inputs.dir(layout.projectDirectory.dir('src/main/shaders/world-wmo'))
+    inputs.dir(layout.projectDirectory.dir('src/main/resources/com/vibeminer/rendering/bgfx/shaders/world-wmo'))
+    workingDir rootProject.layout.projectDirectory
+    commandLine pythonExecutable.get(), rootProject.file('scripts/rendering/compile_bgfx_world_wmo.py').absolutePath, '--verify'
+}
+tasks.named('processResources') { dependsOn tasks.named('verifyWorldWmoShaders') }
+tasks.named('check') { dependsOn tasks.named('verifyWorldWmoShaders') }
+
+tasks.register('nativeGpuWorldWmoProof', JavaExec) {
+    group = 'verification'
+    description = 'Checks cold WMO authored same-depth pixels, sampling, fog and upload retirement.'
+    dependsOn testClasses, tasks.named('verifyWorldWmoShaders'), tasks.named('verifyTerrainShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldWmoNativeProof'
+    timeout = java.time.Duration.ofMinutes(2)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-world-wmo').get().asFile.absolutePath
+}
+
+
+tasks.register('nativeGpuWorldWmoColdChildProof', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldWmoColdChildProof'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('world-wmo-cold-child-proof').get().asFile.absolutePath
+}
+
+tasks.register('nativeGpuWorldStreamTransportProof', JavaExec) {
+    group = 'verification'
+    description = 'Exercises actual native startup, camera publication and drain through the public World transport.'
+    dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamTransportProof'
+    timeout = java.time.Duration.ofMinutes(1)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-world-stream-public-lifecycle').get().asFile.absolutePath
 }

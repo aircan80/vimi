@@ -6,6 +6,8 @@ on:
     paths:
       - 'rendering-bgfx/src/main/shaders/**'
       - 'rendering-bgfx/src/main/resources/com/vibeminer/rendering/bgfx/shaders/**'
+      - 'rendering-bgfx/src/test/shaders/world-stream-spike/**'
+      - 'rendering-bgfx/src/test/resources/com/vibeminer/rendering/bgfx/world-stream-spike/**'
       - 'rendering-bgfx/src/test/shaders/terrain-spike/**'
       - 'rendering-bgfx/src/test/resources/com/vibeminer/rendering/bgfx/terrain-spike/**'
       - 'scripts/rendering/**'
@@ -14,6 +16,8 @@ on:
     paths:
       - 'rendering-bgfx/src/main/shaders/**'
       - 'rendering-bgfx/src/main/resources/com/vibeminer/rendering/bgfx/shaders/**'
+      - 'rendering-bgfx/src/test/shaders/world-stream-spike/**'
+      - 'rendering-bgfx/src/test/resources/com/vibeminer/rendering/bgfx/world-stream-spike/**'
       - 'rendering-bgfx/src/test/shaders/terrain-spike/**'
       - 'rendering-bgfx/src/test/resources/com/vibeminer/rendering/bgfx/terrain-spike/**'
       - 'scripts/rendering/**'
@@ -70,5 +74,31 @@ jobs:
         with:
           name: bgfx-terrain-shaders
           path: rendering-bgfx/src/main/resources/com/vibeminer/rendering/bgfx/shaders/terrain/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Compile and verify authored persistent World feasibility shaders
+        shell: bash
+        run: |
+          python scripts/rendering/compile_bgfx_world_stream_spike.py --profile dx11
+          python scripts/rendering/compile_bgfx_world_stream_spike.py --verify
+      - name: Retain authored persistent World feasibility shaders
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bgfx-world-stream-spike-shaders
+          path: rendering-bgfx/src/test/resources/com/vibeminer/rendering/bgfx/world-stream-spike/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Compile and verify cold BASIC WMO shaders
+        shell: bash
+        run: |
+          python scripts/rendering/compile_bgfx_world_wmo.py --profile dx11
+          python scripts/rendering/compile_bgfx_world_wmo.py --verify
+      - name: Retain cold BASIC WMO shaders
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bgfx-world-wmo-shaders
+          path: rendering-bgfx/src/main/resources/com/vibeminer/rendering/bgfx/shaders/world-wmo/
           if-no-files-found: error
           retention-days: 14

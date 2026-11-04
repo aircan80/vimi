@@ -40,6 +40,18 @@ public final class Blp2Decoder {
         return decode(source, 0, new Limits(), Cancellation.NONE);
     }
 
+    /**
+     * Runs the same bounded decoder on the calling thread without creating a decoder task. Call
+     * only from a worker: source reads may block. Sources remain caller owned, and their own
+     * asynchronous work is not certified retired by this method. With immediate in-memory reads,
+     * the decoder stack has returned before the caller starts its next allocation phase.
+     */
+    public static Image decodeSynchronous(
+            AssetSource source, int mip, Limits limits, Cancellation token, MipProfile profile) {
+        Objects.requireNonNull(profile);
+        return decodeCore(source, mip, 0, limits, token, profile, null);
+    }
+
     public static CompletableFuture<List<Mip>> readMips(
             AssetSource source, Limits limits, Cancellation token) {
         return readMips(source, limits, token, MipProfile.STRICT);
@@ -394,9 +406,9 @@ public final class Blp2Decoder {
             int take = Math.min(65536, count - done);
             byte[] part;
             try {
-                part = source.readAt(offset + done, take, token).join();
+                part = awaitSourceRead(source.readAt(offset + done, take, token));
             } catch (RuntimeException e) {
-                if (AssetTasks.unwrap(e) instanceof java.io.EOFException) {
+                if (isSourceEof(e)) {
                     throw error("INVALID", "BLP bytes ended unexpectedly.");
                 }
                 throw e;
@@ -408,6 +420,42 @@ public final class Blp2Decoder {
             done += take;
         }
         return bytes;
+    }
+
+    /** Preserve the stored outcome before JDK join can manufacture a cancellation cause. */
+    private static <T> T awaitSourceRead(CompletableFuture<T> future) {
+        return Objects.requireNonNull(future)
+                .handle(
+                        (value, failure) -> {
+                            if (failure
+                                    instanceof java.util.concurrent.CompletionException wrapped) {
+                                throw wrapped;
+                            }
+                            if (failure != null) {
+                                throw new java.util.concurrent.CompletionException(
+                                        "BLP source read failed", failure);
+                            }
+                            return value;
+                        })
+                .join();
+    }
+
+    /** Only clean standard completion wrappers qualify EOF; never inspect foreign accessors. */
+    private static boolean isSourceEof(Throwable failure) {
+        for (int depth = 0; depth < 8; depth++) {
+            if (failure == null
+                    || failure.getClass() != java.util.concurrent.CompletionException.class) {
+                return failure != null
+                        && failure.getClass() == java.io.EOFException.class
+                        && failure.getSuppressed().length == 0
+                        && failure.getCause() == null;
+            }
+            if (failure.getSuppressed().length != 0) {
+                return false;
+            }
+            failure = failure.getCause();
+        }
+        return false;
     }
 
     private static void palette(

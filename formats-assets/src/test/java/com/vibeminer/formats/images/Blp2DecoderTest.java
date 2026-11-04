@@ -23,6 +23,281 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 final class Blp2DecoderTest {
+    @Test
+    void synchronousDecodeStaysOnCallerAndPreservesOwnedPixelsAndMetadata() {
+        byte[] bytes = build(2, 0, 0, 4, 4, block(0xf800, 0x07e0, 0));
+        var input = AssetSource.bytes(bytes);
+        Thread caller = Thread.currentThread();
+        var reads = new AtomicInteger();
+        var observed =
+                new AssetSource() {
+                    public long length() {
+                        assertEquals(caller, Thread.currentThread());
+                        return input.length();
+                    }
+
+                    public CompletableFuture<byte[]> readAt(
+                            long offset, int count, Cancellation token) {
+                        assertEquals(caller, Thread.currentThread());
+                        reads.incrementAndGet();
+                        return input.readAt(offset, count, token);
+                    }
+                };
+        var actual =
+                Blp2Decoder.decodeSynchronous(
+                        observed, 0, new Limits(), Cancellation.NONE, Blp2Types.MipProfile.STRICT);
+        var expected = Blp2Decoder.decode(input).join();
+        assertTrue(reads.get() >= 2);
+        assertEquals(expected.encoding(), actual.encoding());
+        assertEquals(expected.mips(), actual.mips());
+        assertEquals(expected.width(), actual.width());
+        assertEquals(expected.height(), actual.height());
+        assertArrayEquals(expected.rgba(), actual.rgba());
+        byte[] borrowedCopy = actual.rgba();
+        borrowedCopy[0] ^= 1;
+        assertArrayEquals(expected.rgba(), actual.rgba());
+    }
+
+    @Test
+    void synchronousDecodePreservesStrictLimitsAndDirectFormatFailure() {
+        byte[] bytes = build(2, 0, 0, 4, 4, block(0xf800, 0x07e0, 0));
+        var limit =
+                assertThrows(
+                        BlpFormatException.class,
+                        () ->
+                                Blp2Decoder.decodeSynchronous(
+                                        AssetSource.bytes(bytes),
+                                        0,
+                                        new Limits(148, 4, 16, 8, 64),
+                                        Cancellation.NONE,
+                                        Blp2Types.MipProfile.STRICT));
+        assertEquals("BLP_LIMIT", limit.code());
+        bytes[0] = 0;
+        var malformed =
+                assertThrows(
+                        BlpFormatException.class,
+                        () ->
+                                Blp2Decoder.decodeSynchronous(
+                                        AssetSource.bytes(bytes),
+                                        0,
+                                        new Limits(),
+                                        Cancellation.NONE,
+                                        Blp2Types.MipProfile.STRICT));
+        assertEquals("BLP_UNSUPPORTED", malformed.code());
+    }
+
+    @Test
+    void synchronousDecodeHonorsCancellationBeforeOpeningSource() {
+        var stop = new Cancellation();
+        stop.cancel();
+        var forbidden =
+                new AssetSource() {
+                    public long length() {
+                        throw new AssertionError("Canceled source was inspected");
+                    }
+
+                    public CompletableFuture<byte[]> readAt(
+                            long offset, int count, Cancellation token) {
+                        throw new AssertionError("Canceled source was read");
+                    }
+                };
+        assertThrows(
+                java.util.concurrent.CancellationException.class,
+                () ->
+                        Blp2Decoder.decodeSynchronous(
+                                forbidden, 0, new Limits(), stop, Blp2Types.MipProfile.STRICT));
+    }
+
+    @Test
+    void synchronousActualReadCancellationPreservesOriginalFailureBeforeJoin() throws Exception {
+        var memory = AssetSource.bytes(build(2, 0, 0, 4, 4, block(0xf800, 0x07e0, 0)));
+        var entered = new CompletableFuture<Void>();
+        var release = new CompletableFuture<Void>();
+        var result = new CompletableFuture<Throwable>();
+        var observed = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var stop = new Cancellation();
+        AssetSource gated =
+                new AssetSource() {
+                    public long length() {
+                        return memory.length();
+                    }
+
+                    public CompletableFuture<byte[]> readAt(
+                            long offset, int count, Cancellation token) {
+                        entered.complete(null);
+                        release.join();
+                        var actual = memory.readAt(offset, count, token);
+                        actual.handle(
+                                        (value, failure) -> {
+                                            observed.set(failure);
+                                            return null;
+                                        })
+                                .join();
+                        return actual;
+                    }
+                };
+        Thread.ofVirtual()
+                .start(
+                        () -> {
+                            try {
+                                Blp2Decoder.decodeSynchronous(
+                                        gated, 0, new Limits(), stop, Blp2Types.MipProfile.STRICT);
+                                result.completeExceptionally(
+                                        new AssertionError("Canceled decode escaped"));
+                            } catch (Throwable failure) {
+                                result.complete(failure);
+                            }
+                        });
+        try {
+            entered.get(3, java.util.concurrent.TimeUnit.SECONDS);
+            stop.cancel();
+            release.complete(null);
+            var failure = result.get(3, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(java.util.concurrent.CompletionException.class, failure.getClass());
+            org.junit.jupiter.api.Assertions.assertSame(observed.get(), failure.getCause());
+            assertEquals(
+                    java.util.concurrent.CancellationException.class, observed.get().getClass());
+            assertEquals(null, observed.get().getCause());
+        } finally {
+            release.complete(null);
+            result.get(3, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void sourceAwaitPreservesDirtyAndForeignFailuresWithoutAccessingTheirMethods() {
+        var calls = new AtomicInteger();
+        var foreign =
+                new java.util.concurrent.CompletionException("Foreign", null) {
+                    @Override
+                    public synchronized Throwable getCause() {
+                        calls.incrementAndGet();
+                        throw new AssertionError();
+                    }
+
+                    @Override
+                    public String getMessage() {
+                        calls.incrementAndGet();
+                        throw new AssertionError();
+                    }
+                };
+        var actual =
+                assertThrows(
+                        java.util.concurrent.CompletionException.class,
+                        () -> decodeFailedRead(foreign));
+        org.junit.jupiter.api.Assertions.assertSame(foreign, actual);
+        var canceled =
+                new java.util.concurrent.CancellationException() {
+                    @Override
+                    public synchronized Throwable getCause() {
+                        calls.incrementAndGet();
+                        throw new AssertionError();
+                    }
+
+                    @Override
+                    public String getMessage() {
+                        calls.incrementAndGet();
+                        throw new AssertionError();
+                    }
+                };
+        actual =
+                assertThrows(
+                        java.util.concurrent.CompletionException.class,
+                        () -> decodeFailedRead(canceled));
+        org.junit.jupiter.api.Assertions.assertSame(canceled, actual.getCause());
+        var dirty = new java.util.concurrent.CancellationException();
+        var auxiliary = new IllegalStateException("Actual auxiliary failure");
+        dirty.initCause(auxiliary);
+        actual =
+                assertThrows(
+                        java.util.concurrent.CompletionException.class,
+                        () -> decodeFailedRead(dirty));
+        org.junit.jupiter.api.Assertions.assertSame(dirty, actual.getCause());
+        org.junit.jupiter.api.Assertions.assertSame(auxiliary, dirty.getCause());
+        var existing = new java.util.concurrent.CompletionException("Existing", auxiliary);
+        existing.addSuppressed(new IllegalStateException("Cleanup"));
+        org.junit.jupiter.api.Assertions.assertSame(
+                existing,
+                assertThrows(
+                        java.util.concurrent.CompletionException.class,
+                        () -> decodeFailedRead(existing)));
+        assertEquals(0, calls.get());
+    }
+
+    @Test
+    void sourceAwaitKeepsCleanEofFormatClassificationWithoutGenericCauseTraversal() {
+        var direct =
+                assertThrows(
+                        BlpFormatException.class,
+                        () -> decodeFailedRead(new java.io.EOFException()));
+        assertEquals("BLP_INVALID", direct.code());
+        var wrapped =
+                new java.util.concurrent.CompletionException(
+                        "Actual EOF", new java.io.EOFException());
+        assertEquals(
+                "BLP_INVALID",
+                assertThrows(BlpFormatException.class, () -> decodeFailedRead(wrapped)).code());
+    }
+
+    private static void decodeFailedRead(Throwable failure) {
+        AssetSource failed =
+                new AssetSource() {
+                    public long length() {
+                        return 164;
+                    }
+
+                    public CompletableFuture<byte[]> readAt(
+                            long offset, int count, Cancellation token) {
+                        return CompletableFuture.failedFuture(failure);
+                    }
+                };
+        Blp2Decoder.decodeSynchronous(
+                failed, 0, new Limits(), Cancellation.NONE, Blp2Types.MipProfile.STRICT);
+    }
+
+    @Test
+    void dirtyAndForeignEofRemainOriginalFatalFailures() {
+        var auxiliary = new IllegalStateException("cleanup failure");
+        var suppressed = new java.io.EOFException("truncated");
+        suppressed.addSuppressed(auxiliary);
+        var caused = new java.io.EOFException("truncated");
+        caused.initCause(auxiliary);
+        for (var eof : new java.io.EOFException[] {suppressed, caused}) {
+            var failure =
+                    assertThrows(
+                            java.util.concurrent.CompletionException.class,
+                            () -> decodeFailedRead(eof));
+            org.junit.jupiter.api.Assertions.assertSame(eof, failure.getCause());
+        }
+        var accesses = new AtomicInteger();
+        var foreign =
+                new java.io.EOFException("foreign") {
+                    @Override
+                    public synchronized Throwable getCause() {
+                        accesses.incrementAndGet();
+                        throw new AssertionError("Foreign cause must not be inspected");
+                    }
+
+                    @Override
+                    public String getMessage() {
+                        accesses.incrementAndGet();
+                        throw new AssertionError("Foreign message must not be inspected");
+                    }
+                };
+        var failure =
+                assertThrows(
+                        java.util.concurrent.CompletionException.class,
+                        () -> decodeFailedRead(foreign));
+        org.junit.jupiter.api.Assertions.assertSame(foreign, failure.getCause());
+        assertEquals(0, accesses.get());
+        var wrapped = new java.util.concurrent.CompletionException("Existing", suppressed);
+        org.junit.jupiter.api.Assertions.assertSame(
+                wrapped,
+                assertThrows(
+                        java.util.concurrent.CompletionException.class,
+                        () -> decodeFailedRead(wrapped)));
+    }
+
     static byte[] build(int encoding, int depth, int alpha, int width, int height, byte[]... mips) {
         int start = 148 + (encoding == 1 ? 1024 : 0), length = start;
         for (byte[] mip : mips) {
