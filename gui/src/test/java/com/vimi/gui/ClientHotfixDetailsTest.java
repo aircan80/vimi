@@ -22,6 +22,7 @@ public final class ClientHotfixDetailsTest {
                     if (method.getName().equals("hotfixInfo")) {
                         var ref = (TableTypes.Ref) values[0];
                         var id = (Long) values[1];
+                        if (id != null && id == 998) return CompletableFuture.completedFuture(Optional.empty());
                         var origin = ref.name().equals("SpellName") || ref.name().equals("SpellMisc")
                                 ? HotfixViewInfo.Origin.HOTFIX : HotfixViewInfo.Origin.BASE;
                         if (id != null && id == 999) origin = HotfixViewInfo.Origin.NOT_PUBLIC;
@@ -48,6 +49,8 @@ public final class ClientHotfixDetailsTest {
                 && !String.join("\n", lines).contains("cell data"), "No payload or private identity display");
         check(ClientHotfixDetails.row(tables, "Spell", 999, "Description", "70707", Cancellation.NONE)
                 .join().contains("hidden"), "Not-public origin stays explicit");
+        check(ClientHotfixDetails.row(tables, "Spell", 998, "Description", "70707", Cancellation.NONE)
+                .join().contains("origin not retained"), "Evicted metadata does not imply base origin");
         var header = java.nio.ByteBuffer.allocate(44).order(java.nio.ByteOrder.LITTLE_ENDIAN)
                 .putInt(0x48544658).putInt(9).putInt(70450).array();
         try {

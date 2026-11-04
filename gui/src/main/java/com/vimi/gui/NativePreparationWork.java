@@ -727,7 +727,8 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         return hotfixSnapshot == null ? identity : identity + "\n"
                 + new com.vibeminer.formats.tables.HotfixBinding(ref, locale,
                         info.version(), hotfixSnapshot.source(), hotfixSnapshot.index())
-                        .inputFingerprint();
+                        .inputFingerprint() + "\n"
+                + com.vibeminer.formats.hotfix.HotfixRowDecoder.REVISION;
     }
 
     @Override

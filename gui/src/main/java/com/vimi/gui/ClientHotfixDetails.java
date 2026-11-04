@@ -37,7 +37,7 @@ final class ClientHotfixDetails {
     }
 
     private static String label(Optional<HotfixViewInfo> info, String label, String version) {
-        if (info.isEmpty() || info.get().row() == null) return label + ": base DB2 source";
+        if (info.isEmpty() || info.get().row() == null) return label + ": exact source origin not retained";
         var source = info.get().row();
         String origin = switch (source.origin()) {
             case BASE -> "base DB2 source";
@@ -68,7 +68,7 @@ final class ClientHotfixDetails {
         var ref = TableTypes.Ref.forName("SpellMisc");
         return tables.hotfixInfo(ref, null, TableTypes.Priority.INTERACTIVE, token)
                 .thenCompose(info -> {
-                    if (info.isEmpty()) return CompletableFuture.completedFuture("Icon relationship: base DB2 source");
+                    if (info.isEmpty()) return CompletableFuture.completedFuture("Icon relationship: exact source origin not retained");
                     var filters = List.of(
                             new TableTypes.Filter("SpellID", TableTypes.FilterOp.EQUALS, Long.toString(spell), null),
                             new TableTypes.Filter("DifficultyID", TableTypes.FilterOp.EQUALS, "0", null),
