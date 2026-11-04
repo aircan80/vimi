@@ -600,3 +600,17 @@ tasks.register('raceCustomizationUiTest', JavaExec) {
     mainClass = 'com.vimi.gui.RaceCustomizationUiTest'
     systemProperty 'vimi.uiReviewDirectory', layout.buildDirectory.dir('ui-review').get().asFile.absolutePath
 }
+
+// Session and unified-library World bookmark persistence; authored records, no JavaFX display.
+tasks.register('worldBookmarkStoreTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldBookmarkStoreTest'
+}
+check.dependsOn worldBookmarkStoreTest
+// Authored World coordinate travel and bookmark jumps; requires a desktop display.
+tasks.register('worldTravelUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldTravelUiTest'
+}

@@ -106,7 +106,7 @@ are part of the local trust boundary.
 
 | Location | What the app reads / stores | Lifetime / privacy consequence |
 | --- | --- | --- |
-| `<data>/library/objects.sqlite3` | Unified library index, ownership and build metadata; saved preparation receipts, product/source settings and background-download policy use this database. SQLite sidecar/journal files can exist while in use. | Persistent. Can reveal selected products/builds/locales, source use and preparation/download history. |
+| `<data>/library/objects.sqlite3` | Unified library index, ownership and build metadata; saved preparation receipts, product/source settings, background-download policy and saved World camera bookmarks (`world_bookmarks*`: names, map IDs/names and coordinates) use this database. SQLite sidecar/journal files can exist while in use. | Persistent. Can reveal selected products/builds/locales, source use and preparation/download history. |
 | `<data>/library/packs/pack-*.vmp` | Acquired originals and generated objects (including decoded voice PCM) through owner-bound library views; retained content/provenance can be shared across builds. | Persistent content cache. It is not encrypted by an application storage key. Content decryption is distinct from storage encryption. |
 | `<data>/library/staging/` and library lock files | Store transaction/recovery staging and exclusive-writer coordination. | Operational state; do not delete or manipulate a live library. Crash recovery and retained originals need separate handling. |
 | `<data>/catalog.sqlite` | Local advertised/observed build catalog. | Persistent browsing/build history rather than an account login database. |
