@@ -107,6 +107,7 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         if (currentArea.equals("NPCs") && npcs != null) npcs.ensureLoaded();
         if (currentArea.equals("Quests") && quests != null) quests.ensureLoaded();
         if (currentArea.equals("World") && world != null) world.ensureLoaded();
+        if (currentArea.equals("Maps") && maps != null) maps.ensureLoaded();
         if (currentArea.equals("Dungeons") && dungeons != null) dungeons.ensureLoaded();
         if (currentArea.equals("Mounts") && mounts != null) mounts.ensureLoaded();
         if (currentArea.equals("Professions") && professions != null) professions.ensureLoaded();
