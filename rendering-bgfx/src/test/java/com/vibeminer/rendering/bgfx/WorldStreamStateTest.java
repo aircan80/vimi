@@ -281,6 +281,43 @@ final class WorldStreamStateTest {
         assertEquals(BAD_LEASE, state.consumedReference(lease));
     }
 
+    @org.junit.jupiter.api.Test
+    void commitReservationConsumesReplayBeforeIoAndCompletionSurvivesLaterHighwater() {
+        var state = new WorldStreamState(NONCE);
+        var lease = state.credit();
+        assertEquals(OK, state.offer(NONCE, 1, lease, 7, 19));
+        assertEquals(OK, state.reserveCommit(NONCE, 2));
+        assertEquals(BUSY, state.reserveCommit(NONCE, 3));
+        assertEquals(3, state.highWater());
+        assertEquals(STALE, state.reserveCommit(NONCE, 2));
+        assertEquals(STALE, state.rejectReserved(NONCE, 3));
+        assertEquals(OK, state.cancel(NONCE, 1, lease));
+        assertEquals(OK, state.decoded(lease, false));
+        assertEquals(OK, state.commitReserved(NONCE, 2, 0, 1, java.util.List.of()));
+        assertEquals(1, state.contentRevision());
+        assertEquals(STALE, state.commitReserved(NONCE, 2, 1, 2, java.util.List.of()));
+        assertEquals(OK, state.reserveCommit(NONCE, 4));
+        assertEquals(OK, state.rejectReserved(NONCE, 4));
+        assertEquals(STALE, state.reserveCommit(NONCE, 4));
+        assertEquals(1, state.contentRevision());
+    }
+
+    @org.junit.jupiter.api.Test
+    void commitReservationKeepsCloseUndrainedUntilExactDecoderCompletion() {
+        var state = new WorldStreamState(NONCE);
+        assertEquals(OK, state.reserveCommit(NONCE, 1));
+        var wrong = new WorldStreamState.Nonce(99, 88);
+        assertEquals(WRONG_SESSION, state.rejectReserved(wrong, 1));
+        assertEquals(WRONG_SESSION, state.commitReserved(wrong, 1, 0, 1, java.util.List.of()));
+        state.close();
+        assertFalse(state.drained());
+        assertEquals(STALE, state.rejectReserved(NONCE, 2));
+        assertFalse(state.drained());
+        assertEquals(CLOSED, state.commitReserved(NONCE, 1, 0, 1, java.util.List.of()));
+        assertTrue(state.drained());
+        assertEquals(0, state.contentRevision());
+    }
+
     private static final class AuthoredWriter {
         private final WorldStreamState.Lease lease;
         private boolean canceled, owned = true;

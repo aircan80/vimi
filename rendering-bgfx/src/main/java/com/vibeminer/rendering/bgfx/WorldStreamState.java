@@ -51,7 +51,7 @@ final class WorldStreamState {
     private List<Lease> active = List.of();
     private Lease incoming;
     private Phase phase;
-    private long serial, highWater, offerTransaction, contentRevision;
+    private long serial, highWater, offerTransaction, contentRevision, reservedCommit;
     private boolean decoderOwned, inputConsumed, stopping;
     private int references;
 
@@ -198,10 +198,46 @@ final class WorldStreamState {
         return Result.OK;
     }
 
-    Result commit(Nonce session, long tx, long expected, long next, List<Lease> table) {
+    Result reserveCommit(Nonce session, long tx) {
         var result = newTransaction(session, tx);
         if (result != Result.OK) {
             return result;
+        }
+        if (reservedCommit != 0) {
+            return Result.BUSY;
+        }
+        reservedCommit = tx;
+        return Result.OK;
+    }
+
+    Result rejectReserved(Nonce session, long tx) {
+        if (!nonce.equals(session)) {
+            return Result.WRONG_SESSION;
+        }
+        if (reservedCommit == 0 || reservedCommit != tx) {
+            return Result.STALE;
+        }
+        reservedCommit = 0;
+        retireIfDrained();
+        return Result.OK;
+    }
+
+    Result commit(Nonce session, long tx, long expected, long next, List<Lease> table) {
+        var result = reserveCommit(session, tx);
+        return result == Result.OK ? commitReserved(session, tx, expected, next, table) : result;
+    }
+
+    Result commitReserved(Nonce session, long tx, long expected, long next, List<Lease> table) {
+        if (!nonce.equals(session)) {
+            return Result.WRONG_SESSION;
+        }
+        if (reservedCommit == 0 || reservedCommit != tx) {
+            return Result.STALE;
+        }
+        reservedCommit = 0;
+        if (stopping) {
+            retireIfDrained();
+            return Result.CLOSED;
         }
         if (expected != contentRevision || expected == Long.MAX_VALUE || next != expected + 1) {
             return Result.REVISION_MISMATCH;
@@ -300,7 +336,7 @@ final class WorldStreamState {
     }
 
     private void retireIfDrained() {
-        if (decoderOwned || references != 0) {
+        if (decoderOwned || references != 0 || stopping && reservedCommit != 0) {
             return;
         }
         if (stopping) {
