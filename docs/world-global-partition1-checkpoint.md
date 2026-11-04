@@ -1,0 +1,5 @@
+# Paused global pure protocol partition1
+
+Paused for urgent hotfix-cache work. Pure code only: global argv/control parsing, Closed status, mapping nonce/dimensions and fixed-scalar pre-pixel-allocation selection. No child dispatch/process/GUI/runtime enablement. Based on6a371ad6 plus reviewed frame-owner dependencies88686ff2/dc017621. Root3d1d402 design approval applies to direction, not implementation approval.
+
+Focused GlobalWmoProtocolTest (seven cases), existing GpuFrameFileTest and WorldGlobalProtocolTest compile/pass. Log `/home/aircan/.cache/vimi-tmp/global-protocol-focused.log` (35tasks24executed8cache3uptodate). Formatter applied. Full module/style gates and causal late-filter allocation negative control are NOT run yet. Implementation remains unreviewed and must not be promoted as enabled. Canonical input length is narrowed to existing InputExpectation1024..5577600 inside6MiB stream envelope. Initial-bounds Source bridge metadata is not implemented. No further GPU work until hotfix priority is resolved.
