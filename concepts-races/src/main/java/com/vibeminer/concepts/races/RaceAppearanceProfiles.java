@@ -9,7 +9,9 @@ final class RaceAppearanceProfiles {
     enum Profile {
         LEGACY,
         DWARF_MALE,
-        DWARF_FEMALE
+        DWARF_FEMALE,
+        NIGHT_ELF_MALE,
+        NIGHT_ELF_FEMALE
     }
 
     private RaceAppearanceProfiles() {}
@@ -20,7 +22,21 @@ final class RaceAppearanceProfiles {
             M2Types.Batch batch,
             M2Appearance.ModelFacts facts,
             int sectionBatches) {
-        if ((profile != Profile.DWARF_MALE && profile != Profile.DWARF_FEMALE)
+        return (profile == Profile.DWARF_MALE || profile == Profile.DWARF_FEMALE)
+                && reviewedDraw(profile, model, batch, facts, sectionBatches);
+    }
+
+    static boolean nightElf(Profile profile) {
+        return profile == Profile.NIGHT_ELF_MALE || profile == Profile.NIGHT_ELF_FEMALE;
+    }
+
+    static boolean reviewedDraw(
+            Profile profile,
+            M2Types.Model model,
+            M2Types.Batch batch,
+            M2Appearance.ModelFacts facts,
+            int sectionBatches) {
+        if ((profile != Profile.DWARF_MALE && profile != Profile.DWARF_FEMALE && !nightElf(profile))
                 || model.version() != 272
                 || sectionBatches != 1
                 || facts == null
