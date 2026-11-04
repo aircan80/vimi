@@ -178,7 +178,9 @@ if the first registration was sealed. The bridge registers its operation-local s
 `cancel` request, never a callback that joins this producer or this session's drain future.
 It does not register an entire close-and-wait operation.
 
-Registration/unregistration and requesting stop are short metadata changes only. Cancellation
+Both per-TileReservation.cancel and Session stop/failure trigger this same one-shot path;
+it is not limited to session-wide shutdown. Registration/unregistration and requesting stop
+are short metadata changes only. Cancellation
 requests execute at most once on ONE bounded cancellation lane, outside every monitor, outside
 FX/caller threads and outside the producer/file lane. An already-stopping registration follows
 the same asynchronous path. The cancellation lane can observe the owner's stop flag in its own
