@@ -464,3 +464,10 @@ tasks.register('worldTextureLoadingTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldTextureLoadingTest'
 }
 check.dependsOn worldTextureLoadingTest
+
+// Actual minimap control events must stay isolated from World viewport flight handlers.
+tasks.register('worldMinimapInputUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldMinimapInputUiTest'
+}

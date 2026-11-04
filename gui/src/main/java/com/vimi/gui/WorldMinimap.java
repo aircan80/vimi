@@ -14,6 +14,9 @@ import javafx.scene.control.ProgressIndicator;
 import javafx.scene.image.Image;
 import javafx.scene.image.PixelFormat;
 import javafx.scene.image.WritableImage;
+import javafx.scene.input.KeyEvent;
+import javafx.scene.input.MouseEvent;
+import javafx.scene.input.ScrollEvent;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
@@ -91,6 +94,11 @@ final class WorldMinimap extends VBox implements AutoCloseable {
         orientation.setAccessibleText("Minimap orientation");
         orientation.setPrefWidth(156);
         orientation.setOnAction(event -> redraw());
+        // Let the control/skin handle input first, then stop unhandled flight shortcuts and
+        // gestures from bubbling into the containing World viewport.
+        orientation.addEventHandler(KeyEvent.ANY, event -> event.consume());
+        orientation.addEventHandler(MouseEvent.ANY, event -> event.consume());
+        orientation.addEventHandler(ScrollEvent.ANY, event -> event.consume());
         activity.setId("world-minimap-activity");
         activity.setPrefSize(14, 14);
         activity.setMaxSize(14, 14);
