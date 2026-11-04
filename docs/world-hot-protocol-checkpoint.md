@@ -428,3 +428,103 @@ claimed epoch/dimensions match. This independently prevents relabeling old-polic
 pixels; newer desired cameras within the same policy do not raise that floor or
 starve continuous presentation. The authored regression fails when only this
 floor check is removed, then passes with the barrier restored.
+
+## Next source-factory API checkpoint (proposed, not implemented)
+
+Keep dependencies `concepts-world -> rendering-world` and
+`rendering-bgfx -> rendering-world`; do not make either depend on the other.
+The GUI coordinator/adaptor already depends on both and can bridge owned source
+output into a structural packet writer. None of the pure envelope/state classes
+above creates source authority.
+
+Current `WorldService.Inventory` and `LoadedTile` are public descriptive DTOs;
+they do not retain checked WDT/root content-key evidence. They cannot mint a
+streaming session scope or positive/terminal source-prepared tile. Existing
+`WorldTerrainTextureSource.Receipt` and `BatchResult` retain private positive
+source construction, but unavailable rows intentionally have no receipt. Preserve
+those boundaries instead of adding a public receipt constructor or pretending an
+unsupported row proves source identity.
+
+Proposed optional `BuildWorld` capability:
+
+```java
+// Defaults keep custom/legacy providers on the existing cold path.
+CompletionStage<Optional<WorldStreamScope>> streamingScope(MapInfo map, Cancellation token);
+CompletionStage<WorldPreparedTile.Outcome> prepareStreamingTile(
+    WorldStreamScope scope, WorldFormats.Tile recordedTile,
+    Cancellation token, Consumer<WorldStreamProgress> progress);
+```
+
+These are source/preparation operations, never FX/native-owner calls.
+`WorldStreamScope` is a public final immutable proof value in `concepts-world`
+with private constructor, produced only by the actual source service after
+`WorldFileBytes`-style bounded read/CK revalidation of the selected WDT and a
+checked recorded inventory. It binds BuildRef product/buildConfig/cdnConfig/region,
+locale, map ID, WDT ID/CK and canonical MAID references; exposes bounded metadata
+and the canonical digest, not file bytes. Missing checked numeric WDT identity,
+unsupported inventory or unavailable source means no hot capability, not a fake
+scope. The digest encoding is versioned and length-prefixed before it is pinned
+in source tests; no concatenated ambiguous strings. Source changes invalidate the
+scope/session rather than silently changing its WDT CK.
+
+An internal private-constructed `WorldPreparedGeometry` binds that same scope,
+recorded tile/root reference, checked root CK/consumed source identity, immutable
+native tile and existing geometry fingerprint. Produce it during the existing
+bounded source read/cache path; never accept a caller's `LoadedTile` as proof or
+add an independent cache. Raw and immutable cache worst-distinct owners remain
+separately charged as already approved; the evidence adds metadata, not geometry
+copies. Its static/private constructors remain inside source code. It permits
+terminal height fallback to bind real geometry even when no material receipt was
+available, without inventing a positive material receipt.
+
+`WorldPreparedTile` is public final and AutoCloseable in `concepts-world`, with
+private construction and one close-once resource owner. The service factory takes
+its own checked geometry, actual material BatchResult and cancellation state,
+consumes/closes that batch on every path, and transfers at most one retained pool
+claim. For READY/PARTIAL it compares receipt build/locale/map/WDT/root/tex0, exact
+recorded references, geometry fingerprint, cache key and source revision against
+scope/geometry; existing `TerrainTextureBinding.qualify` validates the retained
+atlas mapping/pixels/coverage. Binding failure is explicit unavailable, never a
+positive packet. A receipt from another map/build/geometry cannot be transplanted.
+No caller-supplied DTO, wire enum, scope digest or pool entry alone grants this
+factory's authority.
+
+`Outcome` distinguishes PREPARED(owned complete tile pair), RETRYABLE_NO_CREDIT
+(POOL_BUSY/backpressure), and UNSUPPORTED_CAPABILITY. Cancellation stays exceptional
+and releases all owners. A PREPARED terminal height outcome is produced only after
+an actual source job concludes unavailable/unsupported/failure with a bounded
+reason and checked scope+geometry. Pending/slow work, pool pressure, canceled work
+and mismatched caller metadata cannot become height fallback. Custom provider
+unsupported defaults do not manufacture this proof; the current cold/legacy view
+remains available.
+
+Prepared output owns its immutable geometry reference and optional single lease.
+It exposes detached immutable metadata and a synchronous scoped payload callback
+for packet writing; no pixel/texture binding escapes that callback. Parent may
+retain a separately charged current-display lease through an explicit retain
+operation, subject to CPU/GPU retirement barriers. `close` retires ownership even
+if callback/write fails. The GUI packet adapter consumes an offered tile on every
+outcome, checks session scope/generation before writing, borrows the atlas during
+streaming write, and closes prepared ownership after atomic publication. The
+packet file then owns disk bytes until INPUT_CONSUMED/confirmed child death; it
+does not retain source arrays/leases or reserve a second incoming payload.
+
+The lower `rendering-bgfx` tile codec accepts/describes wire fields and validates
+bounds, digests, geometry and material consistency. Decoded data is explicitly
+structural IPC output, not `WorldPreparedTile` or a source receipt. Its writer does
+not authorize source results; only the owning adapter may advertise packets from
+the checked source factory to the production session. Authored codec tests may
+construct descriptive wire bytes, but positive source-factory tests must run the
+real factory over authored WDT/root/tex0/BLP BuildFiles, matching the existing
+source-proof fixtures; no reflection or fake-positive factory.
+
+Before any source/packet integration, test wrong-scope and changed CK, mismatched
+geometry, unavailable WDT, unsupported/partial material, POOL_BUSY versus terminal
+failure, held/canceled source work, callback/write failure, rejected offer and
+complete lease drain. Source work stays one active plus latest metadata and does
+not raise the18-entry shared atlas pool or12-entry geometry source cache.
+
+Runtime status integration must emit INPUT_CONSUMED for the old transaction/lease
+from its decoder completion before advertising fresh CREDIT. `inputConsumed()` in
+the pure model describes the current incoming transaction, not an event history;
+a rejection/cancel may immediately grant a new lease and reset that getter.
