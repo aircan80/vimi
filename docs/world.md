@@ -25,7 +25,8 @@ An authored asymmetric-grid test verifies orientation and exact clicked fileID. 
 
 Click the viewport to focus it. WASD moves horizontally, Space or E ascends and Q or X descends,
 mouse drag or arrow keys changes view direction, Shift increases movement speed,
-and the wheel changes speed. Back to map returns to tile selection. Leaving the
+and the wheel moves along the view direction (Shift+wheel changes speed).
+Back to map returns to tile selection. Leaving the
 World area cancels background requests and pauses movement/rendering; returning
 resumes the explorer. Closing/replacing a build drains its world service before
 borrowed tables/files are retired.
@@ -49,9 +50,12 @@ perform bounded metadata lookup without table/file I/O or full catalog scans.
 
 ## First-stage scope
 
-This is a free-fly **terrain preview with height shading**. It renders source
-terrain heights and terrain holes. Buildings, doodads, texture-layer painting,
-water, collision and live NPCs are not rendered yet. Global-WMO-only maps have no
+This is a free-fly **terrain preview with BASIC diffuse textures**. It renders
+source terrain heights, holes and qualified texture layers on GPU and in the
+software fallback. The bounded atlas composition includes source tint and fog;
+client height blending and nonlinear sharpening remain unsupported. Missing or
+unsupported materials retain explicit partial/height fallback and a retry action.
+Buildings, doodads, water, collision and live NPCs are not rendered yet. Global-WMO-only maps have no
 terrain tiles and remain visible with that limitation. The default application viewport now uses inline bgfx GPU rendering on a
 capable backend, with the bounded CPU renderer as fallback. No JavaFX3D pipeline
 is required. **GPU terrain** selects the renderer; **Retry GPU** explicitly retries
@@ -66,6 +70,20 @@ not create another cache directory or contact a third-party service. A service
 instance retains at most 12 parsed tiles; the viewport retains a 3×3 neighborhood.
 Returning to retained files reparses a small terrain payload, avoiding a second
 persistent representation of this geometry in the initial stage.
+
+## Preparing visible terrain
+
+Geometry and a terminal material outcome prepare together before a neighborhood
+replaces the visible scene. The current scene remains available during source
+work; activity continues through the accepted target frame or explicit fallback.
+Initial display waits for the available nearby neighborhood. Work is coalesced
+and canceled candidates release their geometry and atlas ownership before another
+candidate is admitted.
+
+Each neighborhood change still requires a cold native renderer handoff, which can
+pause new camera frames. Persistent incremental GPU streaming remains a separate
+prototype. The current3×3 view window is unchanged; fast movement may outrun loaded
+coverage. This delivery does not promise game-like continuous movement yet.
 
 ## Data and format boundaries
 
