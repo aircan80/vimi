@@ -1,32 +1,57 @@
 # vimi development handoff
 
-## Latest Linux continuation — parallel world integration (2026-11-04)
+## Alpha22 ready-feature release candidate — 2026-11-04
 
-Published application remains alpha.20. Main is7432249 after security/privacy PR160.
-Alpha.21 tag dc7c5a4 is immutable and UNPUBLISHED: Linux ARM64 packaging found the
-split JavaFX SDK native-library-path issue. PR159 fixes that and Maps availability;
-Linux/Windows checks pass, while hosted macOS jobs failed runner acquisition even
-on one infrastructure retry. Do not describe those as source-test failures or waive
-the eventual five-platform package gate.
+This branch `release/world-character-alpha22` isolates reviewed ready features from
+unfinished instance/water integration. It includes PR159 Maps/SDK fixes, persistent
+terrain improvements inherited from main, geographic Explorer camera correction,
+Dwarf skin-color controls and qualified Night Elf static previews. No G2/global
+file renderer or water feature code is added to this release branch.
 
-Active integration: `feature/world-next-integration` under
-`/home/aircan/.cache/vimi-worktrees/vimi-world-next-integration`. Its source6e57190
-passes full `check assemble`:474 tasks,102 executed. This includes reviewed PR159
-code, geographic camera/minimap correction, Dwarf appearance controls, Night Elf
-source/native qualification, standalone global canonical file I/O and private
-Source facade, and single-root liquid Source/coordinate mapping. Water geometry
-ac56f66 follows after independent implementation approval; integrated concepts/formats
-checks pass42 tasks. Private native renderer6b6a749 is also independently approved;
-root bgfx checks plus actual19-readback Vulkan proof pass41 tasks. No instance or water draw is enabled in the GUI yet.
+Latest published release remains alpha.20. Alpha.21 dc7c5a4 is immutable/unpublished
+following Linux ARM64 JavaFX SDK native-path failure. The correction is here.
+PR159 Linux/Windows checks pass; earlier macOS jobs failed hosted runner acquisition.
+All five platform packages remain required before publishing alpha.22. Never move
+published tags or overwrite frozen launchers.
 
-See [world-next-integration-checkpoint.md](docs/world-next-integration-checkpoint.md)
-and [world-experience-roadmap.md](docs/world-experience-roadmap.md) for component
-proofs and remaining gates. Agents continue renderer2cb independent review,
-Source-to-file bridge c62 independent review, and flat-water composition design.
-Bridge depends on genuine test-only Source fixture736a929. Keep frozen agent
-branches unchanged; promote reviewed commits into integration, then check.
+Candidate runtime30aabaf passes fullcheck/assemble/installDist, five changed-path
+FX suites, actual persistent GPU owner proof and native material proof:482tasks,
+174executed,275fromcache,33up-to-date,29s. Log:
+`/home/aircan/.cache/vimi-tmp/alpha22-ready-final-check.log`. Documentation-only
+release notes follow atb631b73. ActualGPUowner proof performed104replacements,
+92contentrevisions,1469framesduringuploads; refs0/pendingreadbacks0 atclose.
+These counters are diagnostic behavior, not a sustained FPS benchmark.
 
-Earlier sections below are historical and do not supersede this checkpoint.
+
+Parallel world development continues on `feature/world-next-integration`, with
+independently approved water geometry, standalone native draw component and closed
+Source-to-file bridge. See that branch's latest checkpoint/roadmap for ongoing work.
+
+## Current delivery — Maps loading fix and alpha.21 packaging correction
+
+PR153 merged at dc7c5a4 after all hosted Linux/Windows/macOS checks passed.
+Immutable tag v0.1.0-alpha.21 points there. Publication run41850955713 failed
+Linux ARM64 because the class-only verified JavaFX SDK adapter did not receive
+its separate native directory during the new image publication check. No
+alpha.21 release was published. Do not move its tag or claim publication.
+
+PR159 combines independently reviewed native-path fix c1a00cf with Maps readiness
+fix da707e2 (integrated f012ce0). Maps was omitted from the shared TABLES_READY
+availability rule, causing a stale Loading/Not ready tab despite loaded content.
+The causal readiness regression fails before the fix. Root combined readiness
+and image checks pass96 tasks; class-only JavaFX JAR proof fails without natives
+and passes with the separate native path. Next unused planned tag alpha.22 has
+release notes ready; hosted checks and actual five-platform packaging must pass.
+Published application remains alpha.20 until a complete later release is verified.
+
+Parallel next-feature branch feature/world-next-integration lives in HOME cache,
+currently e74c8d3: reviewed G2 private instance payload e7d5f32 and raw water parser
+73608b8, root checks62+7 tasks. No renderer/GUI claim. Agents continue the pure
+global packet codec, approved single-root water Source qualification, and shared
+character geometry/atlas choices. Do not merge these unfinished features into
+an urgent Maps/build correction. Broader Maps revision refresh, worker Error
+retirement and World catalog error placeholders remain followups.
+
 
 ## Current alpha21 delivery gate — pool retry correction
 

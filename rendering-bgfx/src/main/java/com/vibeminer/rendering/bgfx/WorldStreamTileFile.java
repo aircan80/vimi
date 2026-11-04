@@ -110,9 +110,10 @@ final class WorldStreamTileFile {
                                 && supported(encoding, alphaDepth, alphaEncoding)
                                 && (WorldStreamTileFile.mipFlags(mipFlags)
                                         || mipFlags == 2
-                                                && encoding == Encoding.BC2
                                                 && alphaDepth == 8
-                                                && alphaEncoding == 1),
+                                                && (encoding == Encoding.BC2 && alphaEncoding == 1
+                                                        || encoding == Encoding.BC3
+                                                                && alphaEncoding == 7)),
                         "Diffuse mip tuple");
             }
         }
