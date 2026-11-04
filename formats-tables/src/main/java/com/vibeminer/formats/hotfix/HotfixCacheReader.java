@@ -124,7 +124,14 @@ public final class HotfixCacheReader {
             throw new IllegalArgumentException("Positive expected build required");
         }
         return CompletableFuture.supplyAsync(
-                () -> inspectActual(source, expectedBuild, limits, token),
+                () -> {
+                    try {
+                        return inspectActual(source, expectedBuild, limits, token);
+                    } catch (RuntimeException | Error failure) {
+                        throw new java.util.concurrent.CompletionException(
+                                "Hotfix inspection failed", failure);
+                    }
+                },
                 command -> Thread.ofVirtual().name("hotfix-inspection").start(command));
     }
 
@@ -132,7 +139,14 @@ public final class HotfixCacheReader {
     public static CompletableFuture<byte[]> readPayload(
             Db2ByteSource source, Index index, int ordinal, int maxBytes, Cancellation token) {
         return CompletableFuture.supplyAsync(
-                () -> readPayloadBlocking(source, index, ordinal, maxBytes, token),
+                () -> {
+                    try {
+                        return readPayloadBlocking(source, index, ordinal, maxBytes, token);
+                    } catch (RuntimeException | Error failure) {
+                        throw new java.util.concurrent.CompletionException(
+                                "Hotfix payload read failed", failure);
+                    }
+                },
                 command -> Thread.ofVirtual().name("hotfix-payload").start(command));
     }
 
