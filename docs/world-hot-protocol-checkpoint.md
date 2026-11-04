@@ -421,3 +421,10 @@ padding, corrupt checksums, unsafe counts, truncation/trailing bytes, incompatib
 modes, wrong nonce and immutable member ownership. Tile/source packet codec,
 file publication/IO lifecycle, mapped-frame fences and pipe/watchdog implementation
 remain separate unimplemented checkpoints.
+
+A presentation policy also pins its minimum camera revision: the first camera
+sent under the new epoch. Frames below that floor are rejected even if their
+claimed epoch/dimensions match. This independently prevents relabeling old-policy
+pixels; newer desired cameras within the same policy do not raise that floor or
+starve continuous presentation. The authored regression fails when only this
+floor check is removed, then passes with the barrier restored.

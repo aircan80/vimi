@@ -22,6 +22,7 @@ final class WorldStreamFrameGate {
             sequence,
             presentedCamera,
             presentedContent;
+    private long policyCameraFloor;
     private int width, height;
     private boolean policyAcknowledged, closed;
 
@@ -45,6 +46,7 @@ final class WorldStreamFrameGate {
         }
         if (epoch != policy) {
             policyAcknowledged = false;
+            policyCameraFloor = revision;
         }
         sentCamera = revision;
         policy = epoch;
@@ -81,6 +83,7 @@ final class WorldStreamFrameGate {
                 || frame.height() != height
                 || frame.sequence() <= sequence
                 || frame.sequence() > MAX_SEQUENCE
+                || frame.camera() < policyCameraFloor
                 || frame.camera() < 1
                 || frame.camera() > sentCamera
                 || frame.camera() < presentedCamera

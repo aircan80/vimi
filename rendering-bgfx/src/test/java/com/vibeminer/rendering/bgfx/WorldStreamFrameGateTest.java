@@ -62,15 +62,22 @@ final class WorldStreamFrameGateTest {
         assertFalse(gate.cameraApplied(1, 800, 500));
         assertFalse(gate.accept(frame(2, 2, 0, 2, 799, 499)));
         assertTrue(gate.cameraApplied(2, 799, 499));
+        assertFalse(
+                gate.accept(frame(2, 1, 0, 2, 799, 499)),
+                "A frame cannot relabel a camera sent only under the previous policy");
+        assertTrue(gate.cameraSent(3, 2, 799, 499));
+        assertTrue(
+                gate.accept(frame(2, 2, 0, 2, 799, 499)),
+                "Within the new policy, an older-than-desired camera remains presentable");
         assertFalse(gate.accept(frame(2, 1, 0, 1, 800, 500)));
-        assertFalse(gate.accept(frame(2, 3, 0, 2, 799, 499)), "Unsent camera");
+        assertFalse(gate.accept(frame(3, 4, 0, 2, 799, 499)), "Unsent camera");
         assertFalse(gate.accept(frame(2, 2, -1, 2, 799, 499)));
         assertFalse(gate.accept(frame(Long.MAX_VALUE, 2, 0, 2, 799, 499)));
         assertTrue(gate.accept(frame(WorldStreamFrameGate.MAX_SEQUENCE, 2, 0, 2, 799, 499)));
         assertFalse(gate.committed(2), "No skipped content ACK");
         assertTrue(gate.committed(1));
         gate.close();
-        assertFalse(gate.cameraSent(3, 2, 799, 499));
+        assertFalse(gate.cameraSent(4, 2, 799, 499));
         assertFalse(gate.cameraApplied(2, 799, 499));
         assertFalse(gate.committed(2));
         assertFalse(gate.accept(frame(4, 2, 1, 2, 799, 499)));
