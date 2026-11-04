@@ -1,5 +1,26 @@
 # vimi development handoff
 
+## Terrain texture integration checkpoint after alpha.17
+
+Draft PR150 / `/tmp/vimi-world-appearance-integration` now contains independently
+approved shared18-slot atlas pool/fingerprint a6d6e62+59d7a8a, scoped texture binding
+1e28350 and CPU texture fallback bce81d0. Pool correction preserves pinned cache
+keys when a nineteenth reservation is refused. Integrated concepts/rendering
+checks pass; CPU analytical ray/plane, clipping, partial coverage, fog and coplanar
+checks pass. Root/domain approvals are in `docs/world-appearance-review.md`.
+No visible terrain textures are delivered yet. Application plan f23ff88 records
+single app-owned pool, scoped retained leases, stale-work cleanup and activity
+through accepted target frame; no pixel retention in geometry scenes.
+
+Pure production distance math0030477+2cf897c is approved/integrated. Opt-in
+source-free49-tile schedule proves8,175,616 plane events/63,338,496 scalar groups
+fit16M/100M hard ceilings. No shipping default budget or distance UI is implied.
+Domain agent is designing the packed planner next. Architecture agent implements
+memory-only batch texture source/scheduler; acceptance agent implements bound
+geometry digest and texture annex codec before shaders. Root owns CPU/GUI/app DI.
+Published alpha.17 remains c70e88d; no alpha.18 tag or release is allocated.
+
+
 ## Verified alpha.17 publication and terrain-texture continuation
 
 Alpha.17 is verified published atc70e88d (run41739279648), explicit prerelease,
