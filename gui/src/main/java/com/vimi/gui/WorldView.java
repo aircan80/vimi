@@ -1382,13 +1382,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void acceptedGpuStatus(TerrainGpuPreview.Status update) {
-        if (publishPrepared() || !update.ready() || textureSnapshot == null) return;
-        if (gpu.usesTextures(textureSnapshot)) {
-            if (update.textures() != null && !textureSourceBusy) finishGpuTextures(update.textures());
-        } else if (texturePendingFrame) {
-            // A warm source may finish before the first height frame. Apply it once that frame
-            // actually presents, without requiring camera input or replacing pending geometry.
+        if (publishPrepared() || !update.ready()) return;
+        if (!gpu.usesTextures(textureSnapshot)) {
+            // A source may finish before the first frame. Install or remove its texture snapshot
+            // after that frame actually presents, without camera input or replacing pending geometry.
             requestFrame();
+        } else if (textureSnapshot != null && update.textures() != null && !textureSourceBusy) {
+            finishGpuTextures(update.textures());
         }
     }
 

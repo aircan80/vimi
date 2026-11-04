@@ -47,6 +47,7 @@ public final class GpuPreviewServiceTest {
             inlineFramesAndCoalescedControls(root);
             terrainAndModelsShareOwnerAndKeepControlsTyped(root);
             emptyTexturesKeepNativeHeightFallbackAndRejectedBatchesClose(root);
+            terrainTextureAcknowledgementsStayBoundToQualifiedSourceAndDrainClaims(root);
             terrainReplacementWaitsForAcceptedFrameButNotTerminalFailure(root);
             normalExitAndOwnerIsolation(root);
             cancelDuringPreparationDoesNotLaunch(root);
@@ -192,6 +193,64 @@ public final class GpuPreviewServiceTest {
             require(empty.atlasCount() == 0, "Empty textures use height mode without requiring an annex ACK");
         } finally {
             fixture.closeAsync().get(3, TimeUnit.SECONDS);
+        }
+    }
+
+    private static void terrainTextureAcknowledgementsStayBoundToQualifiedSourceAndDrainClaims(Path root) throws Exception {
+        for (String mode : List.of("READY", "PARTIAL", "UNAVAILABLE", "MISSING", "DUPLICATE", "WRONG_SCENE", "OVERCLAIM")) {
+            boolean partial = mode.equals("PARTIAL") || mode.equals("OVERCLAIM");
+            try (var source = new TerrainGpuPreviewTextureFixture(partial)) {
+                var snapshot = source.snapshot();
+                var child = new FakeProcess(true);
+                var accepted = new AtomicReference<GpuPreviewService.Status>();
+                var fixture = service(root, GpuPreviewServiceTest::write, file -> {
+                    require(Files.size(file.resolveSibling("terrain.vatx")) > (1 << 20),
+                            "Qualified annex is written before child starts");
+                    return child;
+                });
+                try {
+                    Object owner = new Object();
+                    var drained = fixture.openTerrain(owner, source.scene, snapshot, status -> {
+                        if (status.state() == GpuPreviewService.State.READY) accepted.set(status);
+                    }, ignored -> {});
+                    await(child.started);
+                    require(source.stats().leaseClaims() == 2 && source.stats().borrowPins() == 0,
+                            "Request owns exactly one additional claim after synchronous annex borrow");
+                    var code = com.vibeminer.rendering.bgfx.TerrainTextureStatus.Code.NONE;
+                    var acknowledgement = com.vibeminer.rendering.bgfx.TerrainTextureStatus.of(
+                            mode.equals("UNAVAILABLE") ? 0 : 1,
+                            mode.equals("WRONG_SCENE") ? 2 : 1,
+                            mode.equals("UNAVAILABLE") ? 0 : mode.equals("PARTIAL") ? 128 : 256,
+                            mode.equals("UNAVAILABLE") ? com.vibeminer.rendering.bgfx.TerrainTextureStatus.Code.CAPABILITY : code);
+                    String line = acknowledgement.protocolLine() + "\n";
+                    child.send("VIMI_GPU HELLO Vulkan\n"
+                            + (mode.equals("MISSING") ? "" : line)
+                            + (mode.equals("DUPLICATE") ? line : "")
+                            + "VIMI_GPU READY Vulkan\n");
+                    boolean valid = List.of("READY", "PARTIAL", "UNAVAILABLE").contains(mode);
+                    if (valid) {
+                        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+                        while (accepted.get() == null && System.nanoTime() < deadline) Thread.sleep(2);
+                        require(accepted.get() != null && acknowledgement.equals(accepted.get().textures()),
+                                "Native readiness carries the exact admitted texture outcome " + mode);
+                        fixture.closeOwner(owner).get(3, TimeUnit.SECONDS);
+                        drained.get(3, TimeUnit.SECONDS);
+                    } else {
+                        try {
+                            drained.get(3, TimeUnit.SECONDS);
+                            throw new AssertionError("Invalid texture acknowledgement accepted " + mode);
+                        } catch (java.util.concurrent.ExecutionException expected) {
+                        }
+                        require(accepted.get() == null, "Invalid texture protocol never becomes ready " + mode);
+                    }
+                    require(source.stats().leaseClaims() == 1 && source.stats().borrowPins() == 0,
+                            "All terminal request paths release their claim " + mode);
+                } finally {
+                    fixture.closeAsync().get(3, TimeUnit.SECONDS);
+                    snapshot.close();
+                }
+                require(source.stats().leaseClaims() == 0, "Caller closes its independent claim");
+            }
         }
     }
 
