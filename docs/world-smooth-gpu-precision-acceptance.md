@@ -62,3 +62,12 @@ distinct source colors at the tested depth cases. The constant-X test plane hold
 one UV coordinate constant; these checks do not replace future sloped-surface
 precision coverage or universal UV-error bounds. This approval is for the authored
 feasibility scope, not a production hot-stream implementation.
+
+## Sloped-surface extension
+
+Root added a two-slot sloped plane x-origin=100+.25*(y-origin), with independently
+intersected per-pixel world rays. Both atlas coordinates vary across the surface;
+all four origins and seven rebase offsets retain the exhaustive193×193 interior
+checks. Updated Vulkan acceptance passes99 frames and2,085,944 analytic samples,
+with all shader verification and full rendering-bgfx checks enabled. This retains
+the documented final-channel tolerance and backend/protocol limitations.

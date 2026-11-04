@@ -27,6 +27,7 @@ public final class WorldStreamSpikeAcceptance {
         Files.createDirectories(output);
         try (var gpu = new WorldStreamSpike.Harness()) {
             gradientsAndSeams(gpu, output);
+            slopedGradients(gpu);
             coplanarSourceOrder(gpu);
             nearFarDepth(gpu);
             require(
@@ -156,6 +157,66 @@ public final class WorldStreamSpikeAcceptance {
                     image.setRGB(0, 0, 256, 256, pixels, 0, 256);
                     ImageIO.write(
                             image, "png", output.resolve("absolute-rebase-gradient.png").toFile());
+                }
+            }
+        }
+    }
+
+    private static void slopedGradients(WorldStreamSpike.Harness gpu) throws Exception {
+        for (double origin : new double[] {0, 10000, 999000, -999000}) {
+            commit(gpu, List.of());
+            // x - origin = 100 + .25 * (y - origin): both atlas coordinates vary.
+            var a = new Vertex(origin + 75, origin - 100, origin - 100);
+            var b = new Vertex(origin + 125, origin + 100, origin - 100);
+            var c = new Vertex(origin + 125, origin + 100, origin + 100);
+            var d = new Vertex(origin + 75, origin - 100, origin + 100);
+            var first =
+                    upload(
+                            gpu,
+                            0,
+                            List.of(new Triangle(a, b, c, 200, 40, 60)),
+                            gradient(),
+                            (float) origin + 200,
+                            (float) origin + 200,
+                            true);
+            var second =
+                    upload(
+                            gpu,
+                            1,
+                            List.of(new Triangle(a, c, d, 200, 40, 60)),
+                            gradient(),
+                            (float) origin + 200,
+                            (float) origin + 200,
+                            true);
+            commit(gpu, List.of(first, second));
+            for (double offset : new double[] {0, .030, .031, .032, .034, -.031, -.032}) {
+                var camera =
+                        new TerrainCamera(
+                                origin + offset, origin - offset, origin + offset, .08, -.04);
+                var pixels = render(gpu, camera);
+                for (int y = 32; y <= 224; y++) {
+                    for (int x = 32; x <= 224; x++) {
+                        double right = (x + .5 - 128) / 204.8, up = (128 - y - .5) / 204.8;
+                        double cy = Math.cos(.08),
+                                sy = Math.sin(.08),
+                                cp = Math.cos(-.04),
+                                sp = Math.sin(-.04);
+                        double rayX = cy * cp - sy * right - cy * sp * up;
+                        double rayY = sy * cp + cy * right - sy * sp * up;
+                        double distance =
+                                (100 - (camera.x() - origin) + .25 * (camera.y() - origin))
+                                        / (rayX - .25 * rayY);
+                        double nativeX = camera.x() + distance * rayX;
+                        double nativeY = camera.y() + distance * rayY;
+                        int tx =
+                                Math.clamp(
+                                        (int) Math.floor((origin + 200 - nativeY) * .96), 0, 511);
+                        int ty =
+                                Math.clamp(
+                                        (int) Math.floor((origin + 200 - nativeX) * .96), 0, 511);
+                        pixel(pixels, x, y, 0xff000025 | (tx / 2) << 16 | (ty / 2) << 8);
+                        samples++;
+                    }
                 }
             }
         }
