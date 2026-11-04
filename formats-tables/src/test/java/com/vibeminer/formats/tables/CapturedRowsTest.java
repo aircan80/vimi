@@ -375,17 +375,7 @@ final class CapturedRowsTest {
     }
 
     private static final class NativeCase implements AutoCloseable {
-        final Fixture fixture =
-                new Fixture(
-                        true,
-                        false,
-                        false,
-                        "before",
-                        null,
-                        true,
-                        Db2Fixture.definition(
-                                "int ID\nint Value", "$id,noninline$ID<u32>\nValue<u32>"),
-                        Db2Fixture.numeric("WDC5", 0, 32, 9, new long[0], true));
+        final Fixture fixture;
         final AtomicReference<String> content = new AtomicReference<>(CKEY);
         final AtomicInteger statCalls = new AtomicInteger();
         final AtomicInteger finalOpens = new AtomicInteger();
@@ -396,6 +386,27 @@ final class CapturedRowsTest {
         final ClientBuildTables tables;
 
         NativeCase() {
+            this(false);
+        }
+
+        NativeCase(boolean keyed) {
+            var bytes = Db2Fixture.numeric(keyed ? "WDC3" : "WDC5", 0, 32, 9, new long[0], true);
+            if (keyed) {
+                java.nio.ByteBuffer.wrap(bytes)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                        .putLong(72, 1L);
+            }
+            fixture =
+                    new Fixture(
+                            true,
+                            false,
+                            keyed,
+                            "before",
+                            null,
+                            true,
+                            Db2Fixture.definition(
+                                    "int ID\nint Value", "$id,noninline$ID<u32>\nValue<u32>"),
+                            bytes);
             var files =
                     (BuildFiles)
                             Proxy.newProxyInstance(
@@ -537,6 +548,76 @@ final class CapturedRowsTest {
         var constructor = record.getClass().getDeclaredConstructor(types);
         constructor.setAccessible(true);
         return constructor.newInstance(values);
+    }
+
+    @Test
+    void finalNativePreparationRejectsDefinitionMutationAndRecovers() throws Exception {
+        try (var fixture = new NativeCase()) {
+            assertEquals(
+                    NativePreparationTypes.State.READY,
+                    fixture.prepare(progress -> {}, Cancellation.NONE).join().state());
+            // Negative provider mutation only: the positive graph was authored by the real
+            // native decoder/store. BundledDefinitions is immutable in production.
+            var field = TableDefinitions.class.getDeclaredField("bundled");
+            field.setAccessible(true);
+            var original = field.get(fixture.fixture.definitions);
+            var changed =
+                    BundledDefinitions.of(
+                            List.of(
+                                    new BundledDefinitions.DefinitionTable(
+                                            "11223344", "Numbers", "100", true)),
+                            Map.of(
+                                    "11223344",
+                                    new BundledDefinitions.Definition(
+                                            "b".repeat(64),
+                                            "changed",
+                                            Db2Fixture.definition(
+                                                    "int ID\nint ChangedValue",
+                                                    "$id,noninline$ID<u32>\nChangedValue<u32>"))));
+            var result =
+                    fixture.prepare(
+                                    progress -> {
+                                        if (progress.phase()
+                                                == NativePreparationTypes.Phase.VALIDATING) {
+                                            try {
+                                                field.set(fixture.fixture.definitions, changed);
+                                            } catch (IllegalAccessException failure) {
+                                                throw new AssertionError(failure);
+                                            }
+                                        }
+                                    },
+                                    Cancellation.NONE)
+                            .join();
+            assertEquals(NativePreparationTypes.State.SOURCE_CHANGED, result.state());
+            field.set(fixture.fixture.definitions, original);
+            assertEquals(
+                    NativePreparationTypes.State.READY,
+                    fixture.prepare(progress -> {}, Cancellation.NONE).join().state());
+        }
+    }
+
+    @Test
+    void finalNativePreparationRejectsChangedConsumedKeyAndRecovers() {
+        try (var fixture = new NativeCase(true)) {
+            assertEquals(
+                    NativePreparationTypes.State.READY,
+                    fixture.prepare(progress -> {}, Cancellation.NONE).join().state());
+            var changed =
+                    fixture.prepare(
+                                    progress -> {
+                                        if (progress.phase()
+                                                == NativePreparationTypes.Phase.VALIDATING) {
+                                            fixture.fixture.keyValue.set("after");
+                                        }
+                                    },
+                                    Cancellation.NONE)
+                            .join();
+            assertEquals(NativePreparationTypes.State.SOURCE_CHANGED, changed.state());
+            fixture.fixture.keyValue.set("before");
+            assertEquals(
+                    NativePreparationTypes.State.READY,
+                    fixture.prepare(progress -> {}, Cancellation.NONE).join().state());
+        }
     }
 
     @Test
