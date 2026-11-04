@@ -305,6 +305,16 @@ final class BgfxWorldWmoPass implements AutoCloseable {
                 .asReadOnlyBuffer();
     }
 
+    int imageCount() {
+        requireOwner();
+        return data.imageCount();
+    }
+
+    int batchCount() {
+        requireOwner();
+        return batches.size();
+    }
+
     long issuedMeshBytes() {
         return meshBytes;
     }

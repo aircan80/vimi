@@ -345,3 +345,12 @@ tasks.register('nativeGpuWorldWmoProof', JavaExec) {
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args layout.buildDirectory.dir('native-world-wmo').get().asFile.absolutePath
 }
+
+
+tasks.register('nativeGpuWorldWmoColdChildProof', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldWmoColdChildProof'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('world-wmo-cold-child-proof').get().asFile.absolutePath
+}
