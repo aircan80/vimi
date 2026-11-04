@@ -9,6 +9,7 @@ import javafx.application.Platform;
 import javafx.scene.Scene;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.control.Label;
+import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.ProgressIndicator;
 import javafx.scene.image.WritableImage;
 import javafx.stage.Stage;
@@ -84,6 +85,24 @@ public final class WorldMinimapUiTest {
                             snapshot().getPixelReader().getArgb(85, 90) == 0xffffd66b,
                             "yaw pi/2 arrow west");
                     saveScreenshot("facing-west.png");
+                    var orientation = (ChoiceBox<?>) map.lookup("#world-minimap-orientation");
+                    require(!map.isMouseTransparent() && !orientation.isDisabled(),
+                            "Orientation control accepts user input");
+                    orientation.getSelectionModel().select(1);
+                    pixels = snapshot().getPixelReader();
+                    require(pixels.getArgb(125, 55) == 0xffff0000, "heading west rotates northwest red to northeast");
+                    require(pixels.getArgb(125, 125) == 0xff00ff00, "heading west rotates northeast green to southeast");
+                    require(pixels.getArgb(55, 55) == 0xff0000ff, "heading west rotates southwest blue to northwest");
+                    require(pixels.getArgb(55, 125) == 0xffffffff, "heading west rotates southeast white to southwest");
+                    require(pixels.getArgb(90, 85) == 0xffffd66b, "heading-up arrow stays north on screen");
+                    require(source.calls.get() == 1, "Orientation change reuses artwork without source reads");
+                    update(source, inventory, X - SIDE / 2, Y - SIDE / 2, Math.PI);
+                    pixels = snapshot().getPixelReader();
+                    require(pixels.getArgb(125, 125) == 0xffff0000, "heading south rotates artwork halfway");
+                    require(pixels.getArgb(90, 85) == 0xffffd66b, "heading south arrow still points up");
+                    orientation.getSelectionModel().select(0);
+                    require(snapshot().getPixelReader().getArgb(55, 55) == 0xffff0000,
+                            "North-up toggle restores original orientation");
                     require(
                             WorldMinimap.maxX(new WorldFormats.Tile(21, 30, 0, 0, 1), ORIGIN, X)
                                     == X - SIDE,

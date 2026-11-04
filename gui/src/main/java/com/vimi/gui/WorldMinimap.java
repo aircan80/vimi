@@ -9,6 +9,7 @@ import javafx.application.Platform;
 import javafx.geometry.Pos;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.control.Label;
+import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.ProgressIndicator;
 import javafx.scene.image.Image;
 import javafx.scene.image.PixelFormat;
@@ -30,6 +31,7 @@ final class WorldMinimap extends VBox implements AutoCloseable {
     private final Canvas canvas = new Canvas(SIZE, SIZE);
     private final Label message = new Label("Minimap artwork unavailable");
     private final ProgressIndicator activity = new ProgressIndicator(-1);
+    private final ChoiceBox<String> orientation = new ChoiceBox<>();
     private final LinkedHashMap<Long, Artwork> cache = new LinkedHashMap<>(16, .75f, true);
     private final ThreadPoolExecutor worker = executor("world-minimap-requests");
     private final ThreadPoolExecutor cancellation = executor("world-minimap-cancel");
@@ -74,15 +76,21 @@ final class WorldMinimap extends VBox implements AutoCloseable {
         setId("world-minimap");
         setAlignment(Pos.TOP_CENTER);
         setSpacing(3);
-        setMinSize(190, 210);
-        setPrefSize(190, 210);
-        setMaxSize(190, 210);
-        setMouseTransparent(true);
+        setMinSize(190, 244);
+        setPrefSize(190, 244);
+        setMaxSize(190, 244);
         setStyle(
                 "-fx-background-color: rgba(14,24,31,0.85); -fx-background-radius: 12; -fx-padding:"
                         + " 5;");
         canvas.setId("world-minimap-canvas");
         canvas.setAccessibleText("North-up minimap; player centered");
+        canvas.setMouseTransparent(true);
+        orientation.setId("world-minimap-orientation");
+        orientation.getItems().setAll("North up", "Heading up");
+        orientation.setValue("North up");
+        orientation.setAccessibleText("Minimap orientation");
+        orientation.setPrefWidth(156);
+        orientation.setOnAction(event -> redraw());
         activity.setId("world-minimap-activity");
         activity.setPrefSize(14, 14);
         activity.setMaxSize(14, 14);
@@ -93,7 +101,8 @@ final class WorldMinimap extends VBox implements AutoCloseable {
         message.setStyle("-fx-text-fill: white; -fx-font-size: 10px;");
         var state = new HBox(5, activity, message);
         state.setAlignment(Pos.CENTER);
-        getChildren().addAll(canvas, state);
+        state.setMouseTransparent(true);
+        getChildren().addAll(canvas, state, orientation);
         hide();
     }
 
@@ -273,6 +282,12 @@ final class WorldMinimap extends VBox implements AutoCloseable {
         g.clip();
         g.setFill(Color.web("#223038"));
         g.fillRect(0, 0, SIZE, SIZE);
+        boolean rotating = "Heading up".equals(orientation.getValue());
+        double yaw = view == null ? 0 : view.yaw();
+        double rotation = rotating ? yaw : 0;
+        g.translate(CENTER, CENTER);
+        g.rotate(Math.toDegrees(rotation));
+        g.translate(-CENTER, -CENTER);
         int readable = 0, missing = 0;
         if (view != null) {
             for (var tile : view.tiles()) {
@@ -292,9 +307,10 @@ final class WorldMinimap extends VBox implements AutoCloseable {
         g.setLineWidth(2);
         g.strokeOval(CENTER - RADIUS, CENTER - RADIUS, 2 * RADIUS, 2 * RADIUS);
         g.setFill(Color.WHITE);
-        g.fillText("N", CENTER - 4, 16);
-        double yaw = view == null ? 0 : view.yaw();
-        double dx = -Math.sin(yaw), dy = -Math.cos(yaw);
+        g.fillText("N", CENTER + Math.sin(rotation) * (RADIUS - 8) - 4,
+                CENTER - Math.cos(rotation) * (RADIUS - 8) + 4);
+        double arrowYaw = rotating ? 0 : yaw;
+        double dx = -Math.sin(arrowYaw), dy = -Math.cos(arrowYaw);
         g.setFill(Color.web("#ffd66b"));
         g.setStroke(Color.web("#172129"));
         g.setLineWidth(2);
@@ -318,8 +334,9 @@ final class WorldMinimap extends VBox implements AutoCloseable {
                         ? "Loading minimap artwork…"
                         : readable == 0
                                 ? "Minimap artwork unavailable"
-                                : missing > 0 ? "North up · partial artwork" : "North up");
-        setAccessibleText("North-up minimap. " + message.getText());
+                                : orientation.getValue() + (missing > 0 ? " · partial artwork" : ""));
+        setAccessibleText(orientation.getValue() + " minimap. " + message.getText());
+        canvas.setAccessibleText(orientation.getValue() + " minimap; player centered");
     }
 
     void hide() {

@@ -179,8 +179,11 @@ Run it with `./gradlew :gui:worldNavigationUiTest` on a JavaFX-capable display.
 
 ## Explorer minimap
 
-The top-right minimap stays north-up while recorded artwork scrolls beneath the
-player arrow. Its regional coverage uses at most nine recorded MAID minimap IDs;
+The top-right minimap offers **North up** and **Heading up** orientations. North
+up keeps north fixed while the player arrow turns. Heading up keeps the arrow
+pointed upward while artwork and the north marker rotate around the player.
+Changing orientation redraws cached artwork without additional source reads.
+The orientation selector is local to the viewer; it does not change game settings. Its regional coverage uses at most nine recorded MAID minimap IDs;
 there are no guessed paths or invented markers. A local activity indicator covers
 artwork loading, and missing/protected/unsupported sources remain visibly partial
 or unavailable. The arrow tracks facing even when artwork is missing.
