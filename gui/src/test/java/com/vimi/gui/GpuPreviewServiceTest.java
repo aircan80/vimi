@@ -213,6 +213,11 @@ public final class GpuPreviewServiceTest {
                     var drained = fixture.openTerrain(owner, source.scene, snapshot, status -> {
                         if (status.state() == GpuPreviewService.State.READY) accepted.set(status);
                     }, ignored -> {});
+                    var releasedBeforeDelivery = drained.handle((value, failure) -> {
+                        require(source.stats().leaseClaims() == 1 && source.stats().borrowPins() == 0,
+                                "Drain completion observes all request claims already retired " + mode);
+                        return null;
+                    });
                     await(child.started);
                     require(source.stats().leaseClaims() == 2 && source.stats().borrowPins() == 0,
                             "Request owns exactly one additional claim after synchronous annex borrow");
@@ -243,6 +248,7 @@ public final class GpuPreviewServiceTest {
                         }
                         require(accepted.get() == null, "Invalid texture protocol never becomes ready " + mode);
                     }
+                    releasedBeforeDelivery.get(3, TimeUnit.SECONDS);
                     require(source.stats().leaseClaims() == 1 && source.stats().borrowPins() == 0,
                             "All terminal request paths release their claim " + mode);
                 } finally {

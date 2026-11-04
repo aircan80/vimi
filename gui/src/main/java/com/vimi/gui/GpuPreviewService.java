@@ -202,14 +202,19 @@ final class GpuPreviewService {
             this.owner = owner;
             this.terrain = terrain;
             this.textures = textures == null ? null : textures.retain();
-            drained.whenComplete((ignored, failure) -> {
-                if (this.textures != null) this.textures.close();
-            });
             this.mesh = null;
             this.appearance = null;
             this.parts = Set.of();
             this.listener = listener;
             this.frames = frames;
+        }
+
+        void finish(Throwable failure) {
+            // Release owned claims before completing any drain view. Completion callbacks may run
+            // before earlier callbacks, so resource retirement cannot be a whenComplete listener.
+            if (textures != null) textures.close();
+            if (failure == null) drained.complete(null);
+            else drained.completeExceptionally(failure);
         }
 
         void publish(State state, String message) {
@@ -324,7 +329,7 @@ final class GpuPreviewService {
         boolean supersededPending, start;
         synchronized (gate) {
             if (closed) {
-                request.drained.completeExceptionally(new IllegalStateException("GPU preview service closed"));
+                request.finish(new IllegalStateException("GPU preview service closed"));
                 return request.drained.copy();
             }
             superseded = desired;
@@ -338,7 +343,7 @@ final class GpuPreviewService {
         }
         if (supersededPending) {
             superseded.publish(State.CLOSED, "GPU preview superseded");
-            superseded.drained.complete(null);
+            superseded.finish(null);
         }
         request.publish(State.PREPARING, "Preparing inline GPU preview…");
         if (start) Thread.ofVirtual().name("gpu-preview-lifecycle").start(this::run);
@@ -407,7 +412,7 @@ final class GpuPreviewService {
         }
         if (pending) {
             request.publish(State.CLOSED, "GPU preview canceled");
-            request.drained.complete(null);
+            request.finish(null);
         }
     }
 
@@ -429,7 +434,7 @@ final class GpuPreviewService {
         }
         if (pending != null) {
             pending.publish(State.CLOSED, "GPU preview closed");
-            pending.drained.complete(null);
+            pending.finish(null);
         }
         return CompletableFuture.allOf(waits.toArray(CompletableFuture[]::new));
     }
@@ -447,7 +452,7 @@ final class GpuPreviewService {
         if (pending != null) {
             pending.stopping = true;
             pending.publish(State.CLOSED, "GPU preview closed");
-            pending.drained.complete(null);
+            pending.finish(null);
         }
         return drained.copy();
     }
@@ -641,7 +646,7 @@ final class GpuPreviewService {
                 synchronized (gate) {
                     closed = true;
                     if (desired != null && desired != request) {
-                        desired.drained.completeExceptionally(
+                        desired.finish(
                                 new IOException("Previous GPU process did not stop"));
                     }
                     desired = null;
@@ -650,10 +655,10 @@ final class GpuPreviewService {
             }
             if (failure == null) {
                 request.publish(State.CLOSED, "Inline GPU renderer stopped");
-                request.drained.complete(null);
+                request.finish(null);
             } else {
                 request.publish(State.FAILED, request.failureMessage());
-                request.drained.completeExceptionally(failure);
+                request.finish(failure);
             }
         }
     }
