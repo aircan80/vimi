@@ -54,7 +54,7 @@ of a writer keeps that credit occupied until the writer closes its channel and
 retires its candidate; a stale completed writer never advertises its file.
 
 `WorldTileKey` is immutable metadata: scope digest, tile X/Y, geometry SHA-256,
-qualified cache-key digest, recipe revision and terminal material outcome. Active
+qualified material presentation digest, recipe revision and terminal material outcome. Active
 resident metadata retains no geometry arrays, source pixel views or pool borrows.
 The parent retains the approved current atlas claims for CPU fallback separately;
 these do not belong to IPC packet lifetime.
@@ -201,7 +201,7 @@ unless positive signed counter semantics were specified above):
 | 120 | 4 | geometry bytes |
 | 124 | 4 | atlas bytes |
 | 128 | 32 | geometry SHA-256 |
-| 160 | 32 | qualified cache-key digest, zero for height fallback |
+| 160 | 32 | qualified material presentation digest, zero for height fallback |
 | 192 | 4 | recipe revision |
 | 196 | 4 | geometry encoding revision |
 | 200 | 4 | terminal outcome enum |

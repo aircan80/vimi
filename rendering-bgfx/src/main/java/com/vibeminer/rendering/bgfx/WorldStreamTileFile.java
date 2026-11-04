@@ -129,7 +129,8 @@ final class WorldStreamTileFile {
             int vertices,
             int indices,
             String geometrySha256,
-            String cacheDigest,
+            // Opaque presentation identity; never a successful composition-cache receipt.
+            String materialDigest,
             Outcome outcome,
             Reason reason,
             long[] coverage,
@@ -176,8 +177,8 @@ final class WorldStreamTileFile {
             if (outcome == Outcome.TEXTURED) {
                 require(
                         reason == Reason.NONE
-                                && hex(cacheDigest, 64)
-                                && !cacheDigest.equals("0".repeat(64))
+                                && hex(materialDigest, 64)
+                                && !materialDigest.equals("0".repeat(64))
                                 && tex0 != null
                                 && !diffuse.isEmpty()
                                 && chunks == 256
@@ -194,7 +195,7 @@ final class WorldStreamTileFile {
             } else {
                 require(
                         reason != Reason.NONE
-                                && cacheDigest == null
+                                && materialDigest == null
                                 && diffuse.isEmpty()
                                 && (coverage[0] | coverage[1] | coverage[2] | coverage[3]) == 0
                                 && Float.floatToRawIntBits(maxX) == 0
@@ -492,7 +493,10 @@ final class WorldStreamTileFile {
         out.putInt(h.vertices()).putInt(h.indices()).putInt(h.geometryBytes());
         out.putInt(h.outcome() == Outcome.TEXTURED ? ATLAS_BYTES : 0);
         out.put(HexFormat.of().parseHex(h.geometrySha256()));
-        out.put(h.cacheDigest() == null ? new byte[32] : HexFormat.of().parseHex(h.cacheDigest()));
+        out.put(
+                h.materialDigest() == null
+                        ? new byte[32]
+                        : HexFormat.of().parseHex(h.materialDigest()));
         out.putInt(h.outcome() == Outcome.TEXTURED ? 1 : 0).putInt(1);
         out.putInt(h.outcome() == Outcome.TEXTURED ? 1 : 2);
         out.putInt(

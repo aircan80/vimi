@@ -203,7 +203,7 @@ worker writes it completely, hashes header+body, then atomically publishes a saf
 basename in the session directory. No arbitrary command-supplied paths/symlinks.
 A proposed packet cap is **2,284,544 bytes**: 4 KiB header plus 1,231,872 bytes
 of native vertices/indices and one 1,048,576-byte atlas. It binds source scope,
-filename, fresh resident token, full geometry SHA, qualified material/cache key,
+filename, fresh resident token, full geometry SHA, qualified material identity,
 recipe, source tuples, coverage and payload checksums. Stream decode, bound all
 counts before allocation and never map/read a whole neighborhood packet.
 
