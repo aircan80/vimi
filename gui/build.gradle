@@ -471,3 +471,10 @@ tasks.register('worldMinimapInputUiTest', JavaExec) {
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.WorldMinimapInputUiTest'
 }
+
+// Authored actual source with controlled child frames; requires a JavaFX display, no GPU.
+tasks.register('worldTextureUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldTextureUiTest'
+}

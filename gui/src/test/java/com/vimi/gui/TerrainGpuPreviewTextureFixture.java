@@ -23,12 +23,13 @@ import java.util.concurrent.TimeUnit;
 
 /** Authored ADT18/MAID/BC2 source through the real qualification path; no fabricated receipts. */
 final class TerrainGpuPreviewTextureFixture implements AutoCloseable {
-    private static final WorldFormats.Tile TILE =
+    static final WorldFormats.Tile TILE =
             new WorldFormats.Tile(17, 21, 2, 0, 0, 0, 0, 3, 0, 0);
     private final TerrainAtlasPool pool = new TerrainAtlasPool();
     private final WorldTerrainTextureSource source;
     private final List<WorldTextureSnapshot> snapshots = new ArrayList<>();
     final TerrainScene scene;
+    final WorldFormats.Terrain terrain;
     private final int expectedChunks;
 
     TerrainGpuPreviewTextureFixture() {
@@ -38,11 +39,12 @@ final class TerrainGpuPreviewTextureFixture implements AutoCloseable {
     TerrainGpuPreviewTextureFixture(boolean partial) {
         expectedChunks = partial ? 128 : 256;
         byte[] root = root();
+        terrain = WorldFormats.adt(root, () -> false);
         scene =
                 new TerrainScene(
                         List.of(
                                 new TerrainScene.Tile(
-                                        TILE.x(), TILE.y(), WorldFormats.adt(root, () -> false))));
+                                        TILE.x(), TILE.y(), terrain)));
         Map<Long, byte[]> bytes = Map.of(1L, wdt(), 2L, root, 3L, texture(partial), 10L, blp());
         var files =
                 (BuildFiles)
@@ -146,6 +148,16 @@ final class TerrainGpuPreviewTextureFixture implements AutoCloseable {
                                                                     + method.getName());
                                         });
         source = new WorldTerrainTextureSource(files, pool);
+    }
+
+    static WorldService.MapInfo mapInfo() {
+        return new WorldService.MapInfo(7, "Authored", null, 0, 1L);
+    }
+
+    CompletableFuture<WorldTerrainTextureSource.BatchResult> batch(Cancellation token,
+            java.util.function.Consumer<WorldTerrainTextureSource.Progress> progress) {
+        if (javafx.application.Platform.isFxApplicationThread()) throw new AssertionError("Source on FX");
+        return source.read(mapInfo(), List.of(TILE), token, progress);
     }
 
     TerrainAtlasPool.Stats stats() {
