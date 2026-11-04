@@ -49,8 +49,10 @@ public interface BuildFiles extends AutoCloseable {
      * Lookup state plus index facts only: file id, size, content key, local storage and the
      * encrypted flag agree with {@link #stat}, but the path is not looked up in the listfile and
      * payload headers are never sniffed, so the path is null, the path source is NONE and the
-     * format is UNKNOWN. The default delegates to {@code stat}, which is always a valid (slower)
-     * answer for those facts.
+     * format is UNKNOWN. Lookups by file id do not load file names at all, so this can succeed
+     * where {@code stat} would fail to load them, and it never fills the remembered-format cache.
+     * The default delegates to {@code stat}, which is always a valid (slower) answer for those
+     * facts.
      */
     default CompletableFuture<FileStat> statContent(FileRef file, Cancellation cancellation) {
         return stat(file, cancellation);

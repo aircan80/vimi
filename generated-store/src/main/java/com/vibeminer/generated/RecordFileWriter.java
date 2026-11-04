@@ -74,14 +74,14 @@ public final class RecordFileWriter implements AutoCloseable {
     }
 
     /**
-     * Appends {@code ids[i]} with {@code records[i]} for every index, in order, in one worker call.
-     * The file is byte-identical to calling {@link #add} for each pair. A failure on the first
-     * record leaves the writer usable exactly as {@code add} would; a failure after any record was
-     * appended finishes the writer, since the batch cannot be partially retried.
+     * Appends {@code recordIds[i]} with {@code records[i]} for every index, in order, in one worker
+     * call. The file is byte-identical to calling {@link #add} for each pair. A failure on the
+     * first record leaves the writer usable exactly as {@code add} would; a failure after any
+     * record was appended finishes the writer, since the batch cannot be partially retried.
      */
     public CompletableFuture<Void> addAll(
-            List<Long> ids, List<byte[]> records, Cancellation cancellation) {
-        int size = ids.size();
+            List<Long> recordIds, List<byte[]> records, Cancellation cancellation) {
+        int size = recordIds.size();
         long[] ownedIds = new long[size];
         byte[][] owned = new byte[size][];
         return operation(
@@ -94,7 +94,7 @@ public final class RecordFileWriter implements AutoCloseable {
                         throw RecordFormat.limit("Record count or size exceeds configured bound");
                     }
                     for (int i = 0; i < size; i++) {
-                        long id = ids.get(i);
+                        long id = recordIds.get(i);
                         byte[] record = Objects.requireNonNull(records.get(i));
                         RecordFormat.id(id);
                         if (record.length > options.maxRecordBytes()) {

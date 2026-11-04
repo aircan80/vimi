@@ -13,6 +13,7 @@ import com.vibeminer.formats.internal.Json;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Map;
@@ -56,53 +57,66 @@ final class BundledDefinitionsTest {
         assertEquals(1346, described + unsupported);
     }
 
-    /** The pre-blob lookup: re-inflate the resource and skip to the slice on every miss. */
-    private static BundledDefinitions.Lookup streamed(BundledDefinitions.File file)
-            throws IOException {
-        try (var input =
-                new GZIPInputStream(
-                        BundledDefinitions.class.getResourceAsStream("definitions.gz"))) {
-            input.skipNBytes(file.offset());
-            byte[] bytes = input.readNBytes(file.length());
-            if (bytes.length != file.length() || !Json.sha256(bytes).equals(file.sha())) {
-                return new BundledDefinitions.Lookup(
-                        null,
-                        new DefinitionException(
-                                "DEFINITION_CORRUPT", "Bundled file failed pinned hash"));
-            }
-            try {
-                return new BundledDefinitions.Lookup(
-                        new BundledDefinitions.Definition(
-                                file.sha(),
-                                BundledDefinitions.ORIGIN + "definitions/" + file.name() + ".dbd",
-                                DbdDefinitionReader.parse(bytes)),
-                        null);
-            } catch (Db2FormatException e) {
-                return new BundledDefinitions.Lookup(
-                        null,
-                        new DefinitionException(
-                                "DEFINITION_UNSUPPORTED", e.code() + ": " + e.getMessage()));
-            }
+    /**
+     * The pre-blob lookup, re-inflating the resource and skipping to each slice. One stream is
+     * walked in offset order (skipping forward is exactly what the old per-lookup stream did), so
+     * the whole comparison costs one inflate instead of one per definition.
+     */
+    private static BundledDefinitions.Lookup streamed(
+            InputStream input, long[] position, BundledDefinitions.File file) throws IOException {
+        input.skipNBytes(file.offset() - position[0]);
+        byte[] bytes = input.readNBytes(file.length());
+        position[0] = file.offset() + bytes.length;
+        if (bytes.length != file.length() || !Json.sha256(bytes).equals(file.sha())) {
+            return new BundledDefinitions.Lookup(
+                    null,
+                    new DefinitionException(
+                            "DEFINITION_CORRUPT", "Bundled file failed pinned hash"));
+        }
+        try {
+            return new BundledDefinitions.Lookup(
+                    new BundledDefinitions.Definition(
+                            file.sha(),
+                            BundledDefinitions.ORIGIN + "definitions/" + file.name() + ".dbd",
+                            DbdDefinitionReader.parse(bytes)),
+                    null);
+        } catch (Db2FormatException e) {
+            return new BundledDefinitions.Lookup(
+                    null,
+                    new DefinitionException(
+                            "DEFINITION_UNSUPPORTED", e.code() + ": " + e.getMessage()));
         }
     }
 
     @Test
     void slicedLookupsEqualStreamedLookupsForEveryBundledDefinition() throws IOException {
         var provider = BundledDefinitions.open(Cancellation.NONE).join();
+        var ordered =
+                provider.tables().stream()
+                        .map(BundledDefinitions.DefinitionTable::tableId)
+                        .sorted(
+                                java.util.Comparator.comparingLong(
+                                        id -> provider.file(id).offset()))
+                        .toList();
         int compared = 0;
-        for (var table : provider.tables()) {
-            var file = provider.file(table.tableId());
-            assertNotNull(file, table.tableId());
-            var expected = streamed(file);
-            var actual = provider.tryGet(table.tableId());
-            assertEquals(expected.definition(), actual.definition(), table.tableId());
-            if (expected.failure() == null) {
-                assertNull(actual.failure(), table.tableId());
-            } else {
-                assertEquals(expected.failure().code(), actual.failure().code());
-                assertEquals(expected.failure().getMessage(), actual.failure().getMessage());
+        long[] position = {0};
+        try (var input =
+                new GZIPInputStream(
+                        BundledDefinitions.class.getResourceAsStream("definitions.gz"))) {
+            for (var tableId : ordered) {
+                var file = provider.file(tableId);
+                assertNotNull(file, tableId);
+                var expected = streamed(input, position, file);
+                var actual = provider.tryGet(tableId);
+                assertEquals(expected.definition(), actual.definition(), tableId);
+                if (expected.failure() == null) {
+                    assertNull(actual.failure(), tableId);
+                } else {
+                    assertEquals(expected.failure().code(), actual.failure().code());
+                    assertEquals(expected.failure().getMessage(), actual.failure().getMessage());
+                }
+                compared++;
             }
-            compared++;
         }
         assertEquals(1346, compared);
     }
