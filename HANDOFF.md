@@ -1,5 +1,36 @@
 # vimi development handoff
 
+## Verified alpha.18 publication
+
+Alpha.18 is verified published atc9cd4f3 by run41760647382: explicit prerelease,
+not draft,18assets and all five platform packages passed. The Intel Mac timing-test
+failure passed on unchanged-tag rerun. Release:
+https://github.com/aircan80/vimi/releases/tag/v0.1.0-alpha.18
+PR150 is FF-merged. Main additionally includes independently reviewed PR152
+watchdog cleanup-test scheduling seam09d922e after all hosted gates passed;
+production default still uses Thread.sleep. This test-only follow-up is not in
+alpha.18 and does not justify another release alone. Keep tag/distributions immutable.
+
+Alpha.18 delivers BASIC GPU/CPU terrain textures with atomic prepared-bundle
+publication, current terrain zone/subzone, wheel zoom/X descent/minimap orientation,
+HTTP mining activity with rate/sessionbytes, Talent Source details and item286556
+static-token resolution. One cold renderer handoff per changed neighborhood still
+remains; no wider distance/scenery/water/Maps browser is delivered.
+
+Frozen local development preview `.local/apps/preview-ddcc4c7/bin/vimi-gui-prototype`
+passed UI/native24-shader startup smoke. Its application source matches alpha.18;
+subsequent pre-tag changes were docs. Existing frozen alpha.17 launcher stays intact.
+
+Future source-owned hot streaming scope engine is being implemented in
+`/tmp/vimi-world-hot-protocol`; private factory design approved throughdeeece7 and
+heavy-proof-token refinement58f16ec. Pure state/frame/envelope through3133f29 has
+independent approval. Source authority must use bounded prepared CapturedRows,
+registry-owned proof arrays and independent callback pins; no renderer wiring yet.
+Pure Maps351aa76+8e4a224 independently approved; source facade/API investigation is
+next. Test-only steady GPU bridge cadence proof is underway separately. Earlier
+sections below are historical checkpoints and may describe now-completed gates.
+
+
 ## Latest delivery and future-work checkpoint
 
 PR150 is FF-merged on main atc9cd4f3. Combined local check/assemble and World,
