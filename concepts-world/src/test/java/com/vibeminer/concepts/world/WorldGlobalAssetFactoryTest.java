@@ -784,4 +784,114 @@ class WorldGlobalAssetFactoryTest {
             }
         }
     }
+
+    @Test
+    void shortLimitAndLyingReadCountAreFatalAndDrainActualStream() throws Exception {
+        for (int variant = 0; variant < 4; variant++) {
+            int mode = variant;
+            try (var f =
+                    new Fixture(
+                            new Files() {
+                                @Override
+                                FileReadStream open(long id, Cancellation token) {
+                                    var original = super.open(id, token);
+                                    if (id != 301) {
+                                        return original;
+                                    }
+                                    var first = new java.util.concurrent.atomic.AtomicBoolean(true);
+                                    return new FileReadStream() {
+                                        public long length() {
+                                            return original.length();
+                                        }
+
+                                        public long position() {
+                                            return original.position();
+                                        }
+
+                                        public void seek(long p) {
+                                            original.seek(p);
+                                        }
+
+                                        public List<FileTypes.FileHole> holes() {
+                                            return original.holes();
+                                        }
+
+                                        public CompletableFuture<Integer> read(
+                                                ByteBuffer target, Cancellation c) {
+                                            if (!first.compareAndSet(true, false)) {
+                                                if (mode == 2) {
+                                                    target.put((byte) 0);
+                                                }
+                                                if (mode == 3) {
+                                                    target.limit(0);
+                                                }
+                                                return CompletableFuture.completedFuture(-1);
+                                            }
+                                            if (mode == 1) {
+                                                target.limit(target.limit() - 1);
+                                            }
+                                            return original.read(target, c)
+                                                    .thenApply(n -> mode == 0 ? n + 1 : n);
+                                        }
+
+                                        public void close() {
+                                            original.close();
+                                        }
+                                    };
+                                }
+                            })) {
+                var failure = assertThrows(IllegalStateException.class, f::inspect);
+                assertFalse(failure instanceof WorldTerrainStreaming.Refusal);
+                assertEquals(f.files.totalOpens(), f.files.closed.get());
+            }
+        }
+    }
+
+    @Test
+    void declarationReaderAlsoRejectsLyingCountsBeforeParsingAndDrains() throws Exception {
+        var enabled = new java.util.concurrent.atomic.AtomicBoolean();
+        try (var f =
+                new Fixture(
+                        new Files() {
+                            @Override
+                            FileReadStream open(long id, Cancellation token) {
+                                var original = super.open(id, token);
+                                if (id != 1 || !enabled.get()) {
+                                    return original;
+                                }
+                                return new FileReadStream() {
+                                    public long length() {
+                                        return original.length();
+                                    }
+
+                                    public long position() {
+                                        return original.position();
+                                    }
+
+                                    public void seek(long p) {
+                                        original.seek(p);
+                                    }
+
+                                    public List<FileTypes.FileHole> holes() {
+                                        return original.holes();
+                                    }
+
+                                    public CompletableFuture<Integer> read(
+                                            ByteBuffer target, Cancellation c) {
+                                        return original.read(target, c).thenApply(n -> n + 1);
+                                    }
+
+                                    public void close() {
+                                        original.close();
+                                    }
+                                };
+                            }
+                        })) {
+            enabled.set(true);
+            var failure = assertThrows(IllegalStateException.class, f::inspect);
+            assertFalse(failure instanceof WorldTerrainStreaming.Refusal);
+            assertEquals(f.files.totalOpens(), f.files.closed.get());
+            assertEquals(0, f.files.opens.getOrDefault(123L, new AtomicInteger()).get());
+        }
+    }
 }
