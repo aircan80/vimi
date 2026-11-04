@@ -592,3 +592,12 @@ Runtime status integration must emit INPUT_CONSUMED for the old transaction/leas
 from its decoder completion before advertising fresh CREDIT. `inputConsumed()` in
 the pure model describes the current incoming transaction, not an event history;
 a rejection/cancel may immediately grant a new lease and reset that getter.
+
+The two-heavy-scope bound applies despite externally retained stale capability
+values: the service-owned bounded registry exclusively owns MAID tuple arrays and
+Map-row evidence. Public WorldStreamScope values contain only a detached small
+nonce/owner/generation/digest/header token, not the131,584-byte MAID payload.
+Invalidation removes registry ownership after active callbacks drain; retaining
+arbitrary old public tokens cannot retain heavy proofs or source handles. Every
+operation resolves its token through the current/replacement registry and rejects
+unknown/stale generations before source access.
