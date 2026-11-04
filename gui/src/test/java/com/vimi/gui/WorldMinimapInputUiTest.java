@@ -107,16 +107,42 @@ public final class WorldMinimapInputUiTest {
         var popup = Window.getWindows().stream()
                 .filter(window -> window instanceof PopupWindow && window.isShowing())
                 .findFirst().orElseThrow();
-        var root = java.util.Objects.requireNonNull(popup.getScene().getFocusOwner(),
+        // Native pointer placement can hover either popup row when its screen position changes.
+        // Drive an actual hover into the known first row before testing keyboard navigation;
+        // neither the selection model nor the value is changed programmatically.
+        var north = popup.getScene().getRoot().lookupAll(".menu-item").stream()
+                .filter(node -> "North up".equals(menuText(node)))
+                .findFirst().orElseThrow();
+        var heading = popup.getScene().getRoot().lookupAll(".menu-item").stream()
+                .filter(node -> "Heading up".equals(menuText(node)))
+                .findFirst().orElseThrow();
+        hover(heading);
+        require("Heading up".equals(menuText(popup.getScene().getFocusOwner())),
+                "Adversarial native-pointer hover may initially focus the second row");
+        hover(north);
+        var focused = java.util.Objects.requireNonNull(popup.getScene().getFocusOwner(),
                 "Orientation popup owns keyboard focus");
-        key(root, KeyCode.DOWN, true);
-        key(root, KeyCode.DOWN, false);
+        require("North up".equals(menuText(focused)), "Hover establishes the first popup row");
+        key(focused, KeyCode.DOWN, true);
+        key(focused, KeyCode.DOWN, false);
         var selected = java.util.Objects.requireNonNull(popup.getScene().getFocusOwner());
+        require("Heading up".equals(menuText(selected)), "Down moves focus to the second row");
         key(selected, KeyCode.ENTER, true);
         key(selected, KeyCode.ENTER, false);
         require("Heading up".equals(choice.getValue()), "Popup keyboard chooses Heading up");
         require(!choice.isShowing(), "Popup selection closes normally");
         require(((java.util.Set<?>) get("keys")).isEmpty(), "Control input leaves no held flight keys");
+    }
+
+    private static void hover(Node node) {
+        Event.fireEvent(node, new MouseEvent(MouseEvent.MOUSE_ENTERED,
+                5, 5, 5, 5, MouseButton.NONE, 0, false, false, false, false,
+                false, false, false, false, false, true, new PickResult(node, 5, 5)));
+    }
+
+    private static String menuText(Node node) {
+        var label = node.lookup(".label");
+        return label instanceof javafx.scene.control.Labeled value ? value.getText() : null;
     }
 
     private static void viewportStillAcceptsFlightInput() {
