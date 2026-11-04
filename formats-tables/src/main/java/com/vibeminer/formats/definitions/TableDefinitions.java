@@ -11,7 +11,8 @@ import java.util.function.Function;
 public final class TableDefinitions {
     public enum Source {
         BUNDLED,
-        FETCHED
+        FETCHED,
+        SUPPLEMENTAL
     }
 
     public enum FetchedBecause {
@@ -96,12 +97,27 @@ public final class TableDefinitions {
     private final BundledDefinitions bundled;
     private final FetchedDefinitions fetched;
     private final FetchSwitch fetchSwitch;
+    private final boolean supplemental;
 
     public TableDefinitions(
             BundledDefinitions bundled, FetchedDefinitions fetched, FetchSwitch fetchSwitch) {
+        this(bundled, fetched, fetchSwitch, false);
+    }
+
+    private TableDefinitions(
+            BundledDefinitions bundled,
+            FetchedDefinitions fetched,
+            FetchSwitch fetchSwitch,
+            boolean supplemental) {
+        this.supplemental = supplemental;
         this.bundled = java.util.Objects.requireNonNull(bundled);
         this.fetched = fetched;
         this.fetchSwitch = fetchSwitch;
+    }
+
+    /** Enables only separately pinned exact supplemental profiles; performs no network fetch. */
+    public TableDefinitions withSupplementalDefinitions() {
+        return new TableDefinitions(bundled, fetched, fetchSwitch, true);
     }
 
     public List<DefinitionTable> tables() {
@@ -181,8 +197,12 @@ public final class TableDefinitions {
         Definition chosen = null, other = null;
         DefinitionException fetchFailure = null;
         boolean asked = false;
+        var supplement =
+                supplemental ? SupplementalDefinitions.lookup(table, build, layout, token) : null;
         if (exact(own.document(), build, layout, token)) {
             chosen = own;
+        } else if (supplement != null) {
+            chosen = supplement;
         } else {
             if (enabled && fetched != null && table.name() != null) {
                 FetchedDefinitions.Definition found;
@@ -266,7 +286,7 @@ public final class TableDefinitions {
                                 ? SchemaMatch.LAYOUT
                                 : SchemaMatch.BUILD;
         FetchedBecause because =
-                chosen.source() == Source.BUNDLED
+                chosen.source() != Source.FETCHED
                         ? null
                         : own.document().listsBuild(build, token)
                                 ? FetchedBecause.LAYOUT_NOT_BUNDLED
