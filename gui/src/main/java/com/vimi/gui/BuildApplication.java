@@ -196,6 +196,11 @@ public final class BuildApplication {
                                 fullContexts.communityNames(), ownership, keyClient == null ? network : keyClient, tactOwner, tactOwner, network, network, observer);
                         cleanup.addFirst(dataSources::closeAsync);
                         fullContexts.withSources(dataSources);
+                        var worldBookmarks = WorldBookmarkStore.forLibrary(library.databasePath());
+                        cleanup.addFirst(() -> {
+                            worldBookmarks.close();
+                            return CompletableFuture.completedFuture(null);
+                        });
                         Path comparisonWork = directory.resolve("derived").resolve("comparison-work");
                         ComparisonTemporaryFiles.cleanStale(comparisonWork);
                         var comparisons = new ComparisonCoordinator(
@@ -233,6 +238,7 @@ public final class BuildApplication {
                                         .withComparisons(comparisons)
                                         .withDownloads(downloads)
                                         .withDataSources(dataSources)
+                                        .withWorldBookmarks(worldBookmarks)
                                         .withHotfixImports(hotfixImports)
                                         .withSettings(settings)
                                         .withLoadState(state)
