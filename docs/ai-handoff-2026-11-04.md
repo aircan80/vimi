@@ -1,5 +1,13 @@
 # Linux continuation handoff — 2026-11-04
 
+> **Superseded authorization (2026-11-04, later the same day):** after this handoff
+> was written, the repository owner lifted every hold below. All roadmap issues
+> (#163–#185, #104, storage #24–#26) may start, including TraitTree #164 and refresh
+> #168. Reviewed PRs may merge once all checks pass. Grouped alpha prereleases from
+> alpha.23 onward may publish after passing checks. PR #187 merged as 8597a08b.
+> The rest of this document is historical context; read the current issue bodies
+> and epic #186 for status.
+
 ## Final transfer checkpoint
 
 User requested transfer now. Work is saved; roadmap is not complete. PR #187 is independently approved and unmerged, but GitHub now reports DIRTY after #162 merged: resolve against current main, rerun checks and retain explicit merge hold. Final source commit before this documentation is 378da982. No actual 70707 validation was possible.

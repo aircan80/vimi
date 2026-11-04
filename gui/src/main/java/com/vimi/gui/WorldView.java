@@ -5,6 +5,8 @@ import com.vibeminer.concepts.world.BuildWorld;
 import com.vibeminer.concepts.world.WorldAreaNavigation;
 import com.vibeminer.concepts.world.WorldService;
 import com.vibeminer.formats.world.WorldFormats;
+import com.vibeminer.rendering.world.ExplorerMotion;
+import com.vibeminer.rendering.world.TerrainGround;
 import com.vibeminer.rendering.world.TerrainRenderer;
 import com.vibeminer.rendering.world.TerrainScene;
 import com.vibeminer.rendering.world.TerrainCamera;
@@ -78,6 +80,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final ImageView image = new ImageView();
     private final StackPane viewport = new StackPane(image);
     private final WorldMinimap minimap = new WorldMinimap();
+    private WorldSpawnOverlay spawns;
     private final TerrainGpuPreview gpu;
     private final GpuPreviewService gpuService;
     private WorldStreamSourceController streaming;
@@ -90,6 +93,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private int streamingWidth, streamingHeight;
     private CompletableFuture<Void> streamingRetirement = CompletableFuture.completedFuture(null);
     private final CheckBox gpuEnabled = new CheckBox("GPU terrain");
+    private final CheckBox walkMode = new CheckBox("Walk on terrain (F)");
+    private final CheckBox smoothMotion = new CheckBox("Smooth motion");
+    private final Label motionStatus = new Label("Free flight · no collision");
+    private final ExplorerMotion motion = new ExplorerMotion();
+    // Immutable rendered-surface heights of the visible CPU scene; streaming reads its controller.
+    private TerrainGround ground = TerrainGround.empty();
     private final Button retryGpu = new Button("Retry GPU");
     private final Label gpuStatus = new Label();
     private final ProgressIndicator gpuActivity = activity("world-gpu-activity", 18);
@@ -235,7 +244,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private record Prepared(
             TerrainRenderer.Scene scene, TerrainScene gpuScene,
             TerrainRenderer.Camera camera, double x, double y,
-            java.util.List<WorldFormats.Tile> tiles) {}
+            java.util.List<WorldFormats.Tile> tiles, TerrainGround ground) {}
 
     private static ThreadPoolExecutor worker(String name) {
         return new ThreadPoolExecutor(
@@ -433,6 +442,14 @@ final class WorldView extends BorderPane implements AutoCloseable {
         gpuEnabled.setSelected(gpu != null);
         gpuEnabled.setDisable(gpu == null);
         gpuEnabled.setId("world-gpu-enabled");
+        walkMode.setId("world-walk-mode");
+        walkMode.setFocusTraversable(false);
+        walkMode.setOnAction(e -> motionChanged());
+        smoothMotion.setId("world-smooth-motion");
+        smoothMotion.setFocusTraversable(false);
+        smoothMotion.setSelected(true);
+        smoothMotion.setOnAction(e -> motionChanged());
+        motionStatus.setId("world-motion-status");
         gpuStatus.setId("world-gpu-status");
         retryGpu.setId("world-gpu-retry");
         gpuStatus.setWrapText(true);
@@ -649,7 +666,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
         image.setPreserveRatio(true);
         viewport.setOnKeyPressed(
                 e -> {
-                    keys.add(e.getCode());
+                    if (e.getCode() == KeyCode.F && keys.add(KeyCode.F)) {
+                        walkMode.setSelected(!walkMode.isSelected());
+                        motionChanged();
+                    } else {
+                        keys.add(e.getCode());
+                    }
                     e.consume();
                 });
         viewport.setOnKeyReleased(
@@ -660,7 +682,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         viewport.focusedProperty()
                 .addListener(
                         (o, a, b) -> {
-                            if (!b) keys.clear();
+                            if (!b) clearKeys();
                         });
         viewport.setOnMousePressed(
                 e -> {
@@ -685,15 +707,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     speed = Math.clamp(speed * (delta > 0 ? 1.2 : .8), 10, 800);
                 } else if (camera != null && terrainScene != null) {
                     double step = Math.copySign(Math.min(Math.abs(delta) / 40, 3)
-                            * Math.clamp(speed * .1, 2, 32), delta);
-                    double horizontal = Math.cos(camera.pitch()) * step;
-                    var zoomed = new TerrainRenderer.Camera(
-                            Math.clamp(camera.x() + Math.cos(camera.yaw()) * horizontal, -1_000_000, 1_000_000),
-                            Math.clamp(camera.y() + Math.sin(camera.yaw()) * horizontal, -1_000_000, 1_000_000),
-                            Math.clamp(camera.z() + Math.sin(camera.pitch()) * step, -1_000_000, 1_000_000),
-                            camera.yaw(), camera.pitch());
-                    if (!zoomed.equals(camera)) {
-                        camera = zoomed;
+                            * Math.clamp(motion.speed(speed, false) * .1, motion.mode()
+                                    == ExplorerMotion.Mode.WALK ? .5 : 2, 32), delta);
+                    var zoomed = motion.dolly(camera, step, currentGround());
+                    groundStatus(zoomed.ground());
+                    if (zoomed.moved()) {
+                        camera = zoomed.camera();
                         abandonUnusableCandidate();
                         requestFrame();
                         loadNext();
@@ -714,7 +733,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                 streamingPaused = true;
                                 retireStreaming();
                                 minimap.hide();
-                                keys.clear();
+                                clearKeys();
                                 lastTick = 0;
                                 return;
                             }
@@ -734,7 +753,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                 gpuVisible = false;
                                 show(gpuActivity, false);
                             }
-                            keys.clear();
+                            clearKeys();
                             lastTick = 0;
                             return;
                         }
@@ -750,32 +769,26 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         }
                         double dt = lastTick == 0 ? 0 : Math.min(.1, (now - lastTick) / 1e9);
                         lastTick = now;
-                        double step = speed * dt * (keys.contains(KeyCode.SHIFT) ? 4 : 1),
-                                f =
-                                        (keys.contains(KeyCode.W) ? 1 : 0)
-                                                - (keys.contains(KeyCode.S) ? 1 : 0),
-                                s =
-                                        (keys.contains(KeyCode.D) ? 1 : 0)
-                                                - (keys.contains(KeyCode.A) ? 1 : 0),
-                                z =
-                                        ((keys.contains(KeyCode.E) || keys.contains(KeyCode.SPACE))
-                                                        ? 1
-                                                        : 0)
-                                                - ((keys.contains(KeyCode.Q) || keys.contains(KeyCode.X)) ? 1 : 0);
-                        double
-                                turn =
-                                        ((keys.contains(KeyCode.LEFT) ? 1 : 0)
-                                                        - (keys.contains(KeyCode.RIGHT) ? 1 : 0))
-                                                * dt,
-                                tilt =
-                                        ((keys.contains(KeyCode.UP) ? 1 : 0)
-                                                        - (keys.contains(KeyCode.DOWN) ? 1 : 0))
-                                                * dt;
-                        if (f != 0 || s != 0 || z != 0 || turn != 0 || tilt != 0) {
-                            camera = camera.move(f * step, s * step, z * step).look(turn, tilt);
+                        var input = new ExplorerMotion.Input(
+                                pressed(KeyCode.W) - pressed(KeyCode.S),
+                                pressed(KeyCode.D) - pressed(KeyCode.A),
+                                Math.max(pressed(KeyCode.E), pressed(KeyCode.SPACE))
+                                        - Math.max(pressed(KeyCode.Q), pressed(KeyCode.X)),
+                                pressed(KeyCode.LEFT) - pressed(KeyCode.RIGHT),
+                                pressed(KeyCode.UP) - pressed(KeyCode.DOWN),
+                                keys.contains(KeyCode.SHIFT));
+                        boolean steering = input.forward() != 0 || input.strafe() != 0
+                                || input.vertical() != 0 || input.turn() != 0 || input.tilt() != 0;
+                        if (!steering && !motion.coasting()
+                                && motion.mode() != ExplorerMotion.Mode.WALK) return;
+                        var stepped = motion.step(camera, input, dt, speed, currentGround());
+                        groundStatus(stepped.ground());
+                        if (stepped.moved()) {
+                            camera = stepped.camera();
                             long cadence = streamingMode || gpu != null && gpu.ready()
                                     ? 16_000_000 : 100_000_000;
-                            if (now - lastRender > cadence) {
+                            // The final settling/coasting step is always shown, not dropped by cadence.
+                            if (now - lastRender > cadence || stepped.resting()) {
                                 lastRender = now;
                                 requestFrame();
                             }
@@ -788,6 +801,39 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     }
                 };
         showInventory();
+    }
+
+    private int pressed(KeyCode code) {
+        return keys.contains(code) ? 1 : 0;
+    }
+
+    private void clearKeys() {
+        keys.clear();
+        motion.reset();
+    }
+
+    private TerrainGround currentGround() {
+        if (!streamingMode) return ground;
+        var controller = streaming;
+        return controller == null ? TerrainGround.empty() : controller.ground();
+    }
+
+    private void motionChanged() {
+        motion.mode(walkMode.isSelected() ? ExplorerMotion.Mode.WALK : ExplorerMotion.Mode.FLY);
+        motion.smooth(smoothMotion.isSelected());
+        if (!walkMode.isSelected() || camera == null) groundStatus(ExplorerMotion.Ground.FREE);
+        else groundStatus(Double.isNaN(currentGround().heightAt(camera.x(), camera.y()))
+                ? ExplorerMotion.Ground.UNAVAILABLE : ExplorerMotion.Ground.FOLLOWING);
+        if (explorer) viewport.requestFocus();
+    }
+
+    private void groundStatus(ExplorerMotion.Ground next) {
+        motionStatus.setText(switch (next) {
+            case FREE -> "Free flight · no collision";
+            case FOLLOWING -> "Walking · eye "
+                    + (int) ExplorerMotion.EYE_HEIGHT + " yd above rendered terrain · no collision";
+            case UNAVAILABLE -> "Walking · no rendered terrain here; altitude held";
+        });
     }
 
     void ensureLoaded() {
@@ -859,6 +905,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         timer.stop();
         camera = null;
         terrainScene = null;
+        ground = TerrainGround.empty();
         replaceRender(null);
         frameGeneration.incrementAndGet();
         cancelPreparation();
@@ -904,6 +951,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void cancelRequests() {
+        if (spawns != null) spawns.suspend();
         retireTextures();
         currentArea.setText("Terrain area unavailable");
         audio.area(null, -1, null);
@@ -917,7 +965,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         busy(null);
         show(catalogActivity, false);
         show(firstFrameActivity, false);
-        keys.clear();
+        clearKeys();
         timer.stop();
         frameGeneration.incrementAndGet();
         replaceRender(null);
@@ -932,6 +980,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     void activate() {
         active = true;
+        if (spawns != null && explorer) spawns.resume();
         ensureLoaded();
         areaButtons();
         if (explorer && inventory != null) {
@@ -965,6 +1014,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         selected = null;
         camera = null;
         terrainScene = null;
+        ground = TerrainGround.empty();
         loaded.clear();
         loadedRevision++;
         attempted.clear();
@@ -1255,13 +1305,14 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void showInventory() {
+        if (spawns != null) spawns.suspend();
         resumeCamera = null;
         minimap.hide();
         retireGpu();
         explorer = false;
         streamingMode = false;
         timer.stop();
-        keys.clear();
+        clearKeys();
         content.setTop(new VBox(10, heading, status, localLoading));
         content.setCenter(
                 new javafx.scene.control.ScrollPane(
@@ -1327,6 +1378,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         attempted.clear();
         camera = null;
         terrainScene = null;
+        ground = TerrainGround.empty();
         gpuScene = null;
         sceneTiles = java.util.List.of();
         presentedScene = null;
@@ -1340,13 +1392,17 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                 back,
                                 new Label(
                                         "WASD move · Space/E up · Q/X down · drag or arrows to look · Shift"
-                                                + " faster · wheel zooms · Shift+wheel changes speed")),
+                                                + " faster · wheel zooms · Shift+wheel changes speed"
+                                                + " · F walks")),
+                        new HBox(10, walkMode, smoothMotion, motionStatus),
                         currentArea,
                         audio.node(),
                         position,
                         new HBox(8, gpuEnabled, gpuActivity, retryGpu, gpuStatus),
                         new HBox(8, textureActivity, textureStatus, retryTextures)));
+        if (spawns != null) ((VBox) content.getBottom()).getChildren().add(spawns.controls());
         status.setText("Loading terrain tile " + selected.key() + "…");
+        if (spawns != null) spawns.resume();
         show(firstFrameActivity, true);
         timer.start();
         streamingMode = gpuEnabled.isSelected() && gpuService != null
@@ -1493,8 +1549,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var nativeScene = prepareGpu && !tiles.isEmpty() ? new TerrainScene(tiles.stream()
                 .map(tile -> new TerrainScene.Tile(tile.tile().x(), tile.tile().y(), tile.terrain()))
                 .toList()) : null;
+        var heights = nativeScene != null
+                ? nativeScene.tiles().stream().map(TerrainGround.Tile::of).toList()
+                : tiles.stream().map(tile -> TerrainGround.Tile.of(
+                        new TerrainScene.Tile(tile.tile().x(), tile.tile().y(), tile.terrain()))).toList();
         return new Prepared(cpu, nativeScene, camera, originX, originY,
-                tiles.stream().map(WorldService.LoadedTile::tile).toList());
+                tiles.stream().map(WorldService.LoadedTile::tile).toList(), TerrainGround.of(heights));
     }
 
     private void prepareScene(WorldFormats.Terrain initial, Runnable ready) {
@@ -1589,6 +1649,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var preparedTextures = pending.takeTextures();
         releaseCurrentTextures();
         terrainScene = prepared.scene();
+        ground = prepared.ground();
         gpuScene = prepared.gpuScene();
         sceneTiles = prepared.tiles();
         textureSnapshot = preparedTextures;
@@ -1949,7 +2010,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         camera.x(),
                         camera.y(),
                         camera.z(),
-                        speed,
+                        motion.speed(speed, keys.contains(KeyCode.SHIFT)),
                         loaded.size()));
         if (gpu != null && gpuEnabled.isSelected() && gpuScene != null) {
             if (!viewportActive()) {
@@ -2096,7 +2157,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         }
         if (camera != null) position.setText(String.format(java.util.Locale.ROOT,
                 "Tile %d,%d · x %.1f / y %.1f / altitude %.1f · %.0f yards/s · %d / %d tiles",
-                tileX(), tileY(), camera.x(), camera.y(), camera.z(), speed,
+                tileX(), tileY(), camera.x(), camera.y(), camera.z(),
+                motion.speed(speed, keys.contains(KeyCode.SHIFT)),
                 snapshot.prepared(), snapshot.desired()));
         var pending = controller.takePresentation();
         if (pending.isEmpty()) return;
@@ -2107,7 +2169,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     () -> !stale(selection) && viewportActive() && controller == streaming,
                     () -> controller.presented(frame))) return;
             show(firstFrameActivity, false);
-            status.setText("Terrain explorer · persistent GPU terrain · buildings, water and collision are not rendered");
+            status.setText("Terrain explorer · persistent GPU terrain · static diagnostic water where qualified · buildings and collision are not rendered");
         } catch (RuntimeException failedUpload) {
             retireStreaming();
             show(firstFrameActivity, false);
@@ -2323,11 +2385,24 @@ final class WorldView extends BorderPane implements AutoCloseable {
         }
     }
 
+    /** Mounts declared NPC spawn markers over the presented explorer frame. FX thread. */
+    void attachSpawns(WorldSpawnOverlay overlay) {
+        if (spawns != null || closed) throw new IllegalStateException("Spawn overlay already attached");
+        spawns = java.util.Objects.requireNonNull(overlay);
+        viewport.getChildren().add(viewport.getChildren().indexOf(image) + 1, overlay);
+        overlay.bind(() -> {
+            if (closed || !active || !explorer || camera == null || inventory == null
+                    || !(image.getImage() instanceof javafx.scene.image.Image frame)) return null;
+            return new WorldSpawnOverlay.View(camera, inventory.map().id(), frame.getWidth(), frame.getHeight());
+        });
+    }
+
     @Override
     public void close() {
         closed = true;
         audio.close();
         resumeCamera = null;
+        if (spawns != null) spawns.close();
         streamingImages.clear();
         minimap.close();
         if (gpu != null) gpu.close();

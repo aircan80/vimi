@@ -64,6 +64,7 @@ dependencies {
     testImplementation testFixtures(project(':polestar'))
     testImplementation testFixtures(project(':files'))
     testImplementation testFixtures(project(':formats-tables'))
+    testImplementation testFixtures(project(':concepts-world'))
     testImplementation testFixtures(project(':generated-store'))
     ['base', 'graphics', 'controls'].each {
         implementation "org.openjfx:javafx-${it}:25.0.1:${classifier}"
@@ -309,6 +310,22 @@ tasks.register('providerBrowserUiTest', JavaExec) {
     mainClass = 'com.vimi.gui.ProviderBrowserUiTest'
     def screenshots = providers.gradleProperty('providerScreenshots')
     if (screenshots.isPresent()) systemProperty 'vimi.provider.screenshots', screenshots.get()
+}
+
+tasks.register('worldSpawnsTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldSpawnOverlayTest'
+}
+check.dependsOn worldSpawnsTest
+
+// Authored spawn-marker lifecycle over a live JavaFX scene; opt in because this requires a display.
+tasks.register('worldSpawnsUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldSpawnOverlayUiTest'
+    def screenshot = providers.gradleProperty('worldSpawnsScreenshot')
+    if (screenshot.isPresent()) systemProperty 'vimi.worldSpawns.screenshot', screenshot.get()
 }
 
 tasks.register('worldUiTest', JavaExec) {
@@ -632,3 +649,11 @@ tasks.register('raceCustomizationUiTest', JavaExec) {
     mainClass = 'com.vimi.gui.RaceCustomizationUiTest'
     systemProperty 'vimi.uiReviewDirectory', layout.buildDirectory.dir('ui-review').get().asFile.absolutePath
 }
+
+// Actual qualified global Source to fixed canonical file; no native child or display.
+tasks.register('worldGlobalSourceBridgeTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldGlobalSourceBridgeTest'
+}
+check.dependsOn worldGlobalSourceBridgeTest

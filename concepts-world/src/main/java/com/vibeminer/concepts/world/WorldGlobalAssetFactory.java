@@ -162,10 +162,12 @@ final class WorldGlobalAssetFactory {
 
     static final class Borrow {
         private Manifest manifest;
+        private Cancellation token;
         private final long thread = Thread.currentThread().threadId();
 
-        private Borrow(Manifest manifest) {
+        private Borrow(Manifest manifest, Cancellation token) {
             this.manifest = manifest;
+            this.token = token;
         }
 
         Manifest manifest() {
@@ -177,6 +179,7 @@ final class WorldGlobalAssetFactory {
 
         private void expire() {
             manifest = null;
+            token = null;
         }
     }
 
@@ -185,10 +188,434 @@ final class WorldGlobalAssetFactory {
         R use(Borrow borrow);
     }
 
+    record DrawSpan(int group, int firstIndex, int indexCount, int material) {}
+
+    @FunctionalInterface
+    interface AssetRead<T> {
+        T read(AssetBorrow borrow);
+    }
+
+    @FunctionalInterface
+    interface AssetWriter<R extends AutoCloseable> {
+        R writeUnadvertised(AssetBorrow borrow, Cancellation token);
+    }
+
+    /** Worker-only owned resource, retained by the actual source payload through final gates. */
+    static final class WrittenAsset<R extends AutoCloseable> implements AutoCloseable {
+        private final OwnedAsset asset;
+
+        private WrittenAsset(OwnedAsset asset) {
+            this.asset = asset;
+        }
+
+        boolean isOpen() {
+            return asset.isOpen();
+        }
+
+        Manifest facts() {
+            return asset.facts();
+        }
+
+        <T> T withBorrow(AssetRead<T> read) {
+            return asset.withBorrow(read);
+        }
+
+        void withWrittenResource(java.util.function.Consumer<R> moveOnly) {
+            Objects.requireNonNull(moveOnly);
+            asset.withBorrow(
+                    borrow -> {
+                        @SuppressWarnings("unchecked")
+                        R resource = (R) Objects.requireNonNull(asset.written);
+                        moveOnly.accept(resource);
+                        return null;
+                    });
+        }
+
+        @Override
+        public void close() {
+            asset.close();
+        }
+
+        java.util.concurrent.CompletableFuture<Void> closeAsync() {
+            return asset.closeAsync();
+        }
+    }
+
+    /** Private source owner. All resource-bearing construction, callbacks and close run off FX. */
+    static final class OwnedAsset implements AutoCloseable {
+        private WorldGlobalScopes.PayloadCredit credit;
+        private final java.util.concurrent.CompletableFuture<Void> drained =
+                new java.util.concurrent.CompletableFuture<>();
+        private float[] mesh;
+        private int[] indices;
+        private final ArrayList<byte[]> images = new ArrayList<>(18);
+        private final ArrayList<DrawSpan> spans = new ArrayList<>(64);
+        private Manifest manifest;
+        private int vertices, indexCount, pixels, pins = 1; // Actual construction pin.
+        private boolean closing, qualified, retiring;
+        private AutoCloseable written;
+
+        private OwnedAsset(WorldGlobalScopes.PayloadCredit credit) {
+            this.credit = credit;
+        }
+
+        private void allocateMesh() {
+            mesh = new float[32768 * 5];
+            indices = new int[98304];
+        }
+
+        private void appendGroup(
+                int ordinal, WmoGroupSpans.Borrow raw, GroupFacts facts, Cancellation token) {
+            int count = facts.vertices(), added = facts.rawTriangles() * 3;
+            require((long) vertices + count <= 32768 && (long) indexCount + added <= 98304);
+            for (int v = 0; v < count; v++) {
+                token.check();
+                int target = (vertices + v) * 5;
+                for (int axis = 0; axis < 3; axis++) {
+                    float value = raw.positions().get(v * 3 + axis);
+                    require(Float.isFinite(value) && Math.abs(value) <= 4096);
+                    float nativeValue = axis == 2 ? value : -value;
+                    mesh[target + axis] = nativeValue == 0 ? 0f : nativeValue;
+                }
+                for (int axis = 0; axis < 2; axis++) {
+                    float uv = raw.uv().get(v * 2 + axis);
+                    require(Float.isFinite(uv) && Math.abs(uv) <= 16);
+                    mesh[target + 3 + axis] = uv;
+                }
+            }
+            for (int i = 0; i < added; i++) {
+                if ((i & 4095) == 0) {
+                    token.check();
+                }
+                int local = raw.indices().get(i);
+                require(local < count);
+                indices[indexCount + i] = Math.addExact(vertices, local);
+            }
+            require(spans.size() + raw.batches().size() <= 64);
+            for (var batch : raw.batches()) {
+                spans.add(
+                        new DrawSpan(
+                                ordinal,
+                                Math.addExact(indexCount, (int) batch.firstIndex()),
+                                batch.indexCount(),
+                                batch.materialByte()));
+            }
+            vertices += count;
+            indexCount += added;
+        }
+
+        private void adoptImage(byte[] rgba) {
+            require(
+                    images.size() < 18
+                            && rgba.length % 4 == 0
+                            && (long) pixels + rgba.length / 4 <= 1179648);
+            images.add(rgba); // Exactly the synchronous decoder getter copy; no clone.
+            pixels += rgba.length / 4;
+        }
+
+        synchronized void publish() {
+            if (closing || manifest == null || mesh == null || indices == null || pins != 1) {
+                throw new IllegalStateException("Global payload not publishable");
+            }
+            if (vertices != manifest.vertices()
+                    || indexCount != manifest.rawTriangles() * 3
+                    || images.size() != manifest.images().size()
+                    || pixels != manifest.pixels()
+                    || spans.size() != manifest.batches()) {
+                throw new IllegalStateException("Global payload counts differ");
+            }
+            qualified = true;
+        }
+
+        synchronized void pin() {
+            if (closing || !qualified || credit == null) {
+                throw new IllegalStateException("Global payload closed");
+            }
+            if (pins != 0) {
+                throw WorldSourceRefusals.at(WorldSourceRefusals.Site.GLOBAL_ASSET_CAPACITY);
+            }
+            pins++;
+        }
+
+        synchronized boolean available() {
+            return qualified && !closing && !retiring && credit != null;
+        }
+
+        boolean isOpen() {
+            WorldGlobalScopes.PayloadCredit source;
+            synchronized (this) {
+                source = credit;
+            }
+            return source != null && source.isOpen(this);
+        }
+
+        Manifest facts() {
+            synchronized (this) {
+                if (!qualified) {
+                    throw new IllegalStateException("Global payload never qualified");
+                }
+                return manifest;
+            }
+        }
+
+        <T> T withBorrow(AssetRead<T> read) {
+            Objects.requireNonNull(read);
+            WorldGlobalScopes.PayloadCredit source;
+            synchronized (this) {
+                source = credit;
+            }
+            if (source == null) {
+                throw new IllegalStateException("Global payload closed");
+            }
+            source.pin(this); // Source monitor first, then the fixed pin metadata method.
+            AssetBorrow borrow = null;
+            try {
+                borrow = new AssetBorrow(this);
+                return read.read(borrow);
+            } finally {
+                if (borrow != null) {
+                    borrow.expire();
+                }
+                releasePin();
+            }
+        }
+
+        private void releasePin() {
+            synchronized (this) {
+                if (pins <= 0) {
+                    throw new IllegalStateException("Global payload pin underflow");
+                }
+                pins--;
+            }
+            retireIfReady();
+        }
+
+        private void retireIfReady() {
+            WorldGlobalScopes.PayloadCredit source;
+            AutoCloseable resource;
+            synchronized (this) {
+                if (!closing || pins != 0 || credit == null || retiring) {
+                    return;
+                }
+                retiring = true;
+                source = credit;
+                resource = written;
+            }
+            Throwable failure = null;
+            try {
+                if (resource != null) {
+                    resource.close();
+                }
+            } catch (Exception | Error cleanup) {
+                failure = cleanup;
+            }
+            synchronized (this) {
+                mesh = null;
+                indices = null;
+                images.clear();
+                spans.clear();
+                credit = null;
+                if (failure == null) {
+                    written = null;
+                } // Failed resource stays retained in the source quarantine.
+            }
+            source.retired(failure);
+            if (failure == null) {
+                drained.complete(null);
+            } else {
+                drained.completeExceptionally(failure);
+                throw resourceFailure(failure);
+            }
+        }
+
+        @Override
+        public void close() {
+            synchronized (this) {
+                closing = true;
+            }
+            retireIfReady();
+        }
+
+        java.util.concurrent.CompletableFuture<Void> closeAsync() {
+            close();
+            return drained.copy();
+        }
+    }
+
+    /** Scalar accesses only. Saved borrows detach the asset on expiry. */
+    static final class AssetBorrow {
+        private OwnedAsset asset;
+        private final long thread = Thread.currentThread().threadId();
+
+        private AssetBorrow(OwnedAsset asset) {
+            this.asset = asset;
+        }
+
+        private OwnedAsset checked() {
+            if (asset == null || Thread.currentThread().threadId() != thread) {
+                throw new IllegalStateException("Expired or foreign global payload borrow");
+            }
+            return asset;
+        }
+
+        int vertices() {
+            return checked().vertices;
+        }
+
+        int indices() {
+            return checked().indexCount;
+        }
+
+        int imageCount() {
+            return checked().images.size();
+        }
+
+        float vertex(int vertex, int component) {
+            var a = checked();
+            Objects.checkIndex(vertex, a.vertices);
+            Objects.checkIndex(component, 5);
+            return a.mesh[vertex * 5 + component];
+        }
+
+        int index(int index) {
+            var a = checked();
+            return a.indices[Objects.checkIndex(index, a.indexCount)];
+        }
+
+        int imageByte(int image, int offset) {
+            var a = checked();
+            var bytes = a.images.get(Objects.checkIndex(image, a.images.size()));
+            return bytes[Objects.checkIndex(offset, bytes.length)] & 255;
+        }
+
+        int imageBytes(int image) {
+            var a = checked();
+            return a.images.get(Objects.checkIndex(image, a.images.size())).length;
+        }
+
+        List<DrawSpan> spans() {
+            return List.copyOf(checked().spans);
+        }
+
+        Manifest facts() {
+            return checked().manifest;
+        }
+
+        private void expire() {
+            asset = null;
+        }
+    }
+
     private final WorldGlobalScopes scopes;
 
     WorldGlobalAssetFactory(WorldGlobalScopes scopes) {
         this.scopes = Objects.requireNonNull(scopes);
+    }
+
+    OwnedAsset createOwned(
+            WorldGlobalScopes.GlobalScope scope,
+            WorldGlobalScopes.Selection selection,
+            Cancellation external) {
+        return createOwned(scope, selection, external, null);
+    }
+
+    <R extends AutoCloseable> WrittenAsset<R> createAndWrite(
+            WorldGlobalScopes.GlobalScope scope,
+            WorldGlobalScopes.Selection selection,
+            Cancellation external,
+            AssetWriter<R> writer) {
+        Objects.requireNonNull(writer);
+        var owned = createOwned(scope, selection, external, writer);
+        try {
+            return new WrittenAsset<>(owned);
+        } catch (RuntimeException | Error failure) {
+            try {
+                owned.close();
+            } catch (RuntimeException | Error cleanup) {
+                throw cleanupFailure(failure, cleanup);
+            }
+            throw failure;
+        }
+    }
+
+    private OwnedAsset createOwned(
+            WorldGlobalScopes.GlobalScope scope,
+            WorldGlobalScopes.Selection selection,
+            Cancellation external,
+            AssetWriter<?> writer) {
+        Objects.requireNonNull(selection);
+        Objects.requireNonNull(external);
+        var credit =
+                scopes.reservePayload(scope); // Shared source credit BEFORE any build IO/arrays.
+        OwnedAsset asset = null;
+        boolean published = false;
+        Throwable primary = null;
+        try {
+            asset = new OwnedAsset(credit);
+            scopes.attachPayload(credit, asset);
+            var building = asset;
+            var checked =
+                    inspect(
+                            scope,
+                            selection,
+                            external,
+                            borrow -> {
+                                building.manifest = borrow.manifest();
+                                if (writer != null) {
+                                    var payload = new AssetBorrow(building);
+                                    try {
+                                        // Construction pin remains charged through all final IO.
+                                        building.written =
+                                                Objects.requireNonNull(
+                                                        writer.writeUnadvertised(
+                                                                payload, borrow.token));
+                                    } finally {
+                                        payload.expire();
+                                    }
+                                }
+                                return building;
+                            },
+                            building);
+            scopes.publishPayload(credit, checked);
+            published = true;
+            return checked;
+        } catch (RuntimeException | Error failure) {
+            primary = failure;
+            throw failure;
+        } finally {
+            try {
+                if (asset == null) {
+                    credit.retired();
+                } else {
+                    if (!published) {
+                        asset.close();
+                    }
+                    asset.releasePin(); // Final checks and actual lower cleanup precede retirement.
+                }
+            } catch (RuntimeException | Error cleanup) {
+                if (primary != null) {
+                    throw cleanupFailure(primary, cleanup);
+                }
+                throw cleanup;
+            }
+        }
+    }
+
+    private static RuntimeException resourceFailure(Throwable failure) {
+        if (failure instanceof Error fatal) {
+            throw fatal;
+        }
+        return failure instanceof RuntimeException runtime
+                ? runtime
+                : new IllegalStateException("Global resource cleanup failed", failure);
+    }
+
+    private static IllegalStateException cleanupFailure(Throwable primary, Throwable cleanup) {
+        var failure = new IllegalStateException("Global output cleanup failed", primary);
+        if (primary != cleanup) {
+            failure.addSuppressed(cleanup);
+        }
+        return failure;
     }
 
     <R extends AutoCloseable> R inspectSources(
@@ -196,6 +623,15 @@ final class WorldGlobalAssetFactory {
             WorldGlobalScopes.Selection selection,
             Cancellation external,
             SourceManifestUse<R> use) {
+        return inspect(scope, selection, external, use, null);
+    }
+
+    private <R extends AutoCloseable> R inspect(
+            WorldGlobalScopes.GlobalScope scope,
+            WorldGlobalScopes.Selection selection,
+            Cancellation external,
+            SourceManifestUse<R> use,
+            OwnedAsset payload) {
         Objects.requireNonNull(use);
         return scopes.withAssetInputs(
                 scope,
@@ -212,6 +648,9 @@ final class WorldGlobalAssetFactory {
                             input -> rootBox[0] = qualifyRoot(input, admission.facts(), token));
                     RootFacts root = rootBox[0];
                     rootBox[0] = null;
+                    if (payload != null) {
+                        payload.allocateMesh();
+                    }
                     var groups = new ArrayList<GroupFacts>(root.groups().size());
                     int[] totals = new int[3];
                     for (int ordinal = 0; ordinal < root.groups().size(); ordinal++) {
@@ -242,6 +681,10 @@ final class WorldGlobalAssetFactory {
                                                             totals[0] <= 32768
                                                                     && totals[1] <= 32768
                                                                     && totals[2] <= 64);
+                                                    if (payload != null) {
+                                                        payload.appendGroup(
+                                                                index, borrow, facts, token);
+                                                    }
                                                     groups.add(facts);
                                                 }));
                     }
@@ -256,7 +699,9 @@ final class WorldGlobalAssetFactory {
                         admission.imageCandidate(
                                 material.texture(),
                                 input -> {
-                                    var facts = inspectImage(input, token, 1179648 - pixels[0]);
+                                    var facts =
+                                            inspectImage(
+                                                    input, token, 1179648 - pixels[0], payload);
                                     pixels[0] += facts.width() * facts.height();
                                     images.add(facts);
                                 });
@@ -264,7 +709,7 @@ final class WorldGlobalAssetFactory {
                     var manifest =
                             new Manifest(
                                     admission.facts(), root, groups, images, admission.receipts());
-                    var borrow = new Borrow(manifest);
+                    var borrow = new Borrow(manifest, token);
                     try {
                         return Objects.requireNonNull(use.use(borrow));
                     } finally {
@@ -454,7 +899,10 @@ final class WorldGlobalAssetFactory {
     }
 
     private static ImageFacts inspectImage(
-            WorldGlobalScopes.AssetInput input, Cancellation token, int remainingPixels) {
+            WorldGlobalScopes.AssetInput input,
+            Cancellation token,
+            int remainingPixels,
+            OwnedAsset payload) {
         var raw = input.bytes();
         require(raw.length >= 148);
         var header = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN);
@@ -507,6 +955,9 @@ final class WorldGlobalAssetFactory {
             rgba[i] = (byte) 255;
         }
         require(image.encoding() != Blp2Types.Encoding.BC1 || nonopaque == 0);
+        if (payload != null) {
+            payload.adoptImage(rgba);
+        }
         return new ImageFacts(
                 input.receipt().id(),
                 width,

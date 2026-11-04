@@ -144,6 +144,73 @@ public final class WorldService implements BuildWorld {
         this.minimaps = new WorldMinimaps(files);
     }
 
+    private WorldWaterPreview waterFacade;
+    private WorldGlobalScopes globalCore;
+    private WorldGlobalScenes globalFacade;
+
+    @Override
+    public synchronized java.util.Optional<WorldWaterPreview> waterPreview() {
+        if (closing != null) {
+            throw new IllegalStateException("World workspace closed");
+        }
+        if (atlasPool == null || files == null) {
+            return java.util.Optional.empty();
+        }
+        if (waterFacade == null) {
+            waterFacade = new WorldWaterPreview(preparedTerrain());
+        }
+        return java.util.Optional.of(waterFacade);
+    }
+
+    /**
+     * Prepares native evidence for the two small tables the water preview qualifies indirect layers
+     * against (LiquidType, LiquidMaterial) using the configured source. Completes true only if both
+     * are READY; any other outcome leaves water honestly unresolved, never terrain.
+     */
+    @Override
+    public CompletableFuture<Boolean> prepareWaterTables(Cancellation token) {
+        java.util.Objects.requireNonNull(token);
+        CompletableFuture<Boolean> result = CompletableFuture.completedFuture(true);
+        for (String name : List.of("LiquidType", "LiquidMaterial")) {
+            result =
+                    result.thenCompose(
+                            ready ->
+                                    !ready
+                                            ? CompletableFuture.completedFuture(false)
+                                            : tables.prepareNativeEvidence(
+                                                            TableTypes.Ref.forName(name),
+                                                            TableTypes.Priority.BACKGROUND,
+                                                            com.vibeminer.formats.tables
+                                                                    .NativePreparationTypes
+                                                                    .SourceAccess.CONFIGURED_SOURCE,
+                                                            progress -> {},
+                                                            token)
+                                                    .thenApply(
+                                                            prepared ->
+                                                                    prepared.state()
+                                                                            == com.vibeminer.formats
+                                                                                    .tables
+                                                                                    .NativePreparationTypes
+                                                                                    .State.READY));
+        }
+        return result;
+    }
+
+    @Override
+    public synchronized java.util.Optional<WorldGlobalScenes> globalScenes() {
+        if (closing != null) {
+            throw new IllegalStateException("World workspace closed");
+        }
+        if (files == null) {
+            return java.util.Optional.empty();
+        }
+        if (globalFacade == null) {
+            globalCore = new WorldGlobalScopes(tables, files);
+            globalFacade = new WorldGlobalScenes(globalCore);
+        }
+        return java.util.Optional.of(globalFacade);
+    }
+
     @Override
     public synchronized java.util.Optional<WorldTerrainStreaming> terrainStreaming() {
         if (closing != null) {
@@ -654,6 +721,7 @@ public final class WorldService implements BuildWorld {
         WorldTerrainTextureSource textureSource;
         WorldPreparedTerrain preparedSource;
         WorldAreaAudio audioSource;
+        WorldGlobalScopes globalSource;
         synchronized (this) {
             if (closing != null) {
                 return closing.copy();
@@ -666,11 +734,18 @@ public final class WorldService implements BuildWorld {
             audioSource = areaAudio;
             textureSource = terrainTextures;
             preparedSource = preparedTerrain;
+            globalSource = globalCore;
+            if (globalFacade != null) {
+                globalFacade.invalidate();
+            }
             if (preparedSource != null) {
                 preparedSource.invalidate();
             }
             if (streamingFacade != null) {
                 streamingFacade.invalidate();
+            }
+            if (waterFacade != null) {
+                waterFacade.invalidate();
             }
         }
         Thread.startVirtualThread(
@@ -683,6 +758,15 @@ public final class WorldService implements BuildWorld {
                         failure = error;
                     }
                     var drains = new ArrayList<CompletableFuture<Void>>();
+                    if (globalSource != null) {
+                        try {
+                            globalSource.closeAsync();
+                        } catch (RuntimeException | Error error) {
+                            failure = appendCloseFailure(failure, error);
+                        } finally {
+                            drains.add(globalSource.whenClosed());
+                        }
+                    }
                     var closes =
                             List.<java.util.function.Supplier<CompletableFuture<Void>>>of(
                                     minimaps::closeAsync,

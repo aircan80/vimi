@@ -2,6 +2,7 @@ package com.vimi.gui;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.world.WorldTerrainStreaming;
+import com.vibeminer.concepts.world.WorldWaterPreview;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.rendering.bgfx.WorldStreamTileWriter;
 import com.vibeminer.rendering.bgfx.WorldStreamTransport;
@@ -22,6 +23,12 @@ final class WorldStreamSourceBridge {
     static final class Prepared implements AutoCloseable {
         private final WorldTerrainStreaming.Facts facts;
         private WorldTerrainStreaming.WrittenTile<WorldStreamTileWriter.PacketFile> owned;
+        private volatile int waterCells;
+
+        /** Descriptive count of static water cells carried by this tile's moved packet. */
+        int waterCells() {
+            return waterCells;
+        }
 
         private Prepared(WorldTerrainStreaming.WrittenTile<WorldStreamTileWriter.PacketFile> owned) {
             this.owned = owned;
@@ -75,19 +82,33 @@ final class WorldStreamSourceBridge {
     /** Single-use producer. Close retires an untaken base; take only after transport success. */
     static final class Producer implements WorldStreamTransport.PacketProducer, AutoCloseable {
         private final WorldTerrainStreaming source;
+        private final WorldWaterPreview water;
         private final WorldTerrainStreaming.Scope scope;
         private final WorldFormats.Tile tile;
         private final BooleanSupplier latest;
         private boolean started, closed;
         private Prepared prepared;
         private volatile RefusalMetadata sourceRefusal;
+        private volatile String waterNote = "";
 
         Producer(WorldTerrainStreaming source, WorldTerrainStreaming.Scope scope,
                 WorldFormats.Tile tile, BooleanSupplier latest) {
+            this(source, null, scope, tile, latest);
+        }
+
+        /** Optional water joins this tile's actual terrain owner before its packet MOVE. */
+        Producer(WorldTerrainStreaming source, WorldWaterPreview water,
+                WorldTerrainStreaming.Scope scope, WorldFormats.Tile tile, BooleanSupplier latest) {
             this.source = Objects.requireNonNull(source);
+            this.water = water;
             this.scope = Objects.requireNonNull(scope);
             this.tile = Objects.requireNonNull(tile);
             this.latest = Objects.requireNonNull(latest);
+        }
+
+        /** Descriptive bounded water outcome for diagnostics; never source authority. */
+        String waterNote() {
+            return waterNote;
         }
 
         @Override
@@ -112,7 +133,21 @@ final class WorldStreamSourceBridge {
                                 () -> stopping.getAsBoolean() || token.isCanceled()));
                 local = new Prepared(written);
                 check(stopping, cancellation);
-                written.withWrittenResource(file -> moved[0] = file.move());
+                // Water reports its own cancellation; the MOVE below observes stopping too.
+                var waterCopy = water == null ? null : prepareWater(written, cancellation);
+                BooleanSupplier stop = () -> stopping.getAsBoolean() || cancellation.isCanceled();
+                var attached = new boolean[1];
+                written.withWrittenResource(file -> {
+                    moved[0] = file.move(waterCopy, stop);
+                    attached[0] = file.waterAttached();
+                });
+                if (waterCopy != null) {
+                    if (attached[0]) {
+                        local.waterCells = waterCopy.cells();
+                    } else {
+                        waterNote = "water packet append rolled back";
+                    }
+                }
                 check(stopping, cancellation);
                 // The actual source gate distinguishes known retirement from sticky cleanup faults.
                 // R is inert after MOVE; this callback only checks/pins the source lifetime.
@@ -166,6 +201,44 @@ final class WorldStreamSourceBridge {
             }
         }
 
+        /**
+         * Copies one actual Source water preparation for this exact terrain owner and retires the
+         * water owner immediately; no water Source credit outlives this call. Optional: clean
+         * refusals and unexpected water failures leave terrain intact. Cancellation propagates.
+         */
+        private WorldStreamTileWriter.Water prepareWater(
+                WorldTerrainStreaming.WrittenTile<WorldStreamTileWriter.PacketFile> written,
+                Cancellation cancellation) {
+            try (var prepared = water.prepareAndWrite(written, cancellation, WaterCopy::of)) {
+                var facts = prepared.facts();
+                if (!(prepared instanceof WorldWaterPreview.WrittenWater<WaterCopy> positive)) {
+                    waterNote = "no water surface: " + facts.state();
+                    return null;
+                }
+                var copy = new WorldStreamTileWriter.Water[1];
+                positive.withWrittenResource(r -> copy[0] = r.water());
+                waterNote = "water " + facts.state() + " cells=" + facts.cells();
+                return copy[0];
+            } catch (CancellationException canceled) {
+                throw canceled;
+            } catch (WorldTerrainStreaming.Refusal refused) {
+                if (refused.getCause() != null || refused.getSuppressed().length != 0) {
+                    throw refused;
+                }
+                waterNote = "water refused: " + refused.site();
+                return null;
+            } catch (IllegalArgumentException | IllegalStateException failed) {
+                // Only a clean leaf failure (e.g. this bridge's own copy validation) degrades to
+                // terrain-only. Source cleanup/health faults carry causes or suppressed failures
+                // and stay fatal.
+                if (failed.getCause() != null || failed.getSuppressed().length != 0) {
+                    throw failed;
+                }
+                waterNote = "water failed: " + failed.getClass().getSimpleName();
+                return null;
+            }
+        }
+
         private void check(BooleanSupplier stopping, Cancellation cancellation) {
             cancellation.check();
             if (stopping.getAsBoolean() || !latest.getAsBoolean()) {
@@ -196,6 +269,43 @@ final class WorldStreamSourceBridge {
                 value.close();
             }
         }
+    }
+
+    /** Inert writer result: a detached validated copy; closing it releases nothing. */
+    record WaterCopy(WorldStreamTileWriter.Water water) implements AutoCloseable {
+        static WaterCopy of(WorldWaterPreview.CheckedBorrow borrow, Cancellation token) {
+            int vertices = borrow.vertices(), indexCount = borrow.indices();
+            if (vertices < 4
+                    || vertices > WorldStreamTileWriter.Water.MAX_CELLS * 4
+                    || vertices % 4 != 0
+                    || indexCount != vertices / 4 * 6) {
+                throw new IllegalArgumentException("Water exceeds packet profile");
+            }
+            var positions = new float[vertices * 3];
+            var depths = new byte[vertices];
+            var indices = new int[indexCount];
+            for (int v = 0; v < vertices; v++) {
+                if ((v & 1023) == 0) {
+                    token.check();
+                }
+                positions[v * 3] = borrow.north(v);
+                positions[v * 3 + 1] = borrow.west(v);
+                positions[v * 3 + 2] = borrow.up(v);
+                int depth = borrow.depth(v);
+                if (depth < 0 || depth > 255) {
+                    throw new IllegalArgumentException("Water depth byte");
+                }
+                depths[v] = (byte) depth;
+            }
+            for (int i = 0; i < indexCount; i++) {
+                indices[i] = borrow.index(i);
+            }
+            return new WaterCopy(
+                    new WorldStreamTileWriter.Water(positions, depths, indices, borrow.layers()));
+        }
+
+        @Override
+        public void close() {}
     }
 
     private static WorldStreamTileWriter.PacketFile write(
