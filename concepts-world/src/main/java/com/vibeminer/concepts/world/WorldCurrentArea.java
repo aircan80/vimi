@@ -135,7 +135,20 @@ public final class WorldCurrentArea {
                     metadata ? Reason.NO_COVERAGE : Reason.NO_LOADED_METADATA,
                     0);
         }
-        long id = selected.areaId(), at = id;
+        return resolve(mapId, selected.areaId(), index);
+    }
+
+    /**
+     * Resolves an already observed terrain area ID without retaining geometry or area metadata. The
+     * caller determines spatial coverage inside its checked source borrow; this lookup alone makes
+     * no claim about the camera's position or current source validity.
+     */
+    public static Result resolve(long mapId, long recordedAreaId, Index index) {
+        Objects.requireNonNull(index);
+        if (mapId < 0 || recordedAreaId < 0) {
+            throw new IllegalArgumentException("Invalid recorded area identity");
+        }
+        long id = recordedAreaId, at = id;
         var chain = new ArrayList<WorldService.Area>();
         var seen = new HashSet<Long>();
         while (true) {
