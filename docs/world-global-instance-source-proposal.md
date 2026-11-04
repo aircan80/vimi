@@ -2,6 +2,9 @@
 
 Status: design/source diagnostics only. No source scope, parser, packet, renderer, shader, GUI or budget is approved/modified by this document. The separate exterior source a22b82d/01ddd9e and cold structural codec f6ce9c2 keep their existing profiles/caps. Onyxia is the first actual global-instance candidate; a successfully read raw body or unreviewed partial-Map witness is not a positive source/renderable capability.
 
+
+Followup design/evidence: see [global opaque RGB proposal](world-global-opaque-rgb-profile-proposal.md). Actual image bodies now establish17BC1 plus one meaningfully nonopaque BC3 body, so this document's original strict-BC1 candidate remains refused. The separately named followup proposes deliberate alpha omission under actual opaque MOMT operands, an unlit20-byte vertex layout and phased budgets with headroom. Historical stat-only/witness-pending and32-byte zero-headroom notes below describe this original checkpoint; they are superseded only where the followup explicitly says so, never silently relaxed in a production profile.
+
 ## Actual selected-build evidence and its limits
 
 Selected wowf1.60.1.70755/enUS readable Map249 records Onyxia's Lair/OnyxiaLairInstance/type2 and WDT789922. The saved Map capture has73observed of81declared rows,3encrypted excluded sections/8records. This establishes the specific observed row; it does not establish complete instance discovery or absence of an unobserved ID. The proposed private observed-row native witness is being reviewed separately. No scope is promoted by this investigation.
