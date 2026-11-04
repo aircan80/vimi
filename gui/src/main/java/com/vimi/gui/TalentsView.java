@@ -131,12 +131,16 @@ final class TalentsView extends BorderPane implements AutoCloseable {
     private long generation, revision = -1;
     private boolean loaded, closed, sourceRetired;
     private Long selectedClass;
+    private java.util.function.Supplier<com.vibeminer.formats.tables.BuildTables> sourceTables = () -> null;
+    private String sourceVersion = "";
 
     TalentsView(BuildPreparation.Job job) {
         this(
                 () -> nativeWork(job).talentsHandle(),
                 () -> nativeWork(job).revision(),
                 (id, token) -> nativeWork(job).icon(id, token));
+        sourceTables = () -> nativeWork(job).tablesHandle();
+        sourceVersion = job.build().version();
     }
 
     TalentsView(
@@ -461,13 +465,13 @@ final class TalentsView extends BorderPane implements AutoCloseable {
             node.setLayoutX(PADDING + talent.column() * PITCH);
             node.setLayoutY(PADDING + talent.row() * PITCH);
             node.setAccessibleText(
-                    talent.name() + ", " + talent.rankSpells().size() + " ranks, " + tree.name());
+                    talent.name() + ", " + talent.maxRanks() + " ranks, " + tree.name());
             Tooltip.install(
                     node,
                     new Tooltip(
                             talent.name()
                                     + "\n"
-                                    + talent.rankSpells().size()
+                                    + talent.maxRanks()
                                     + " ranks\nSelect for source details"));
             node.setOnAction(event -> select(tree, talent, byId, node));
             node.setOnKeyPressed(
@@ -515,7 +519,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                     });
             nodeButtons.put(talent.id(), node);
             canvas.getChildren().add(node);
-            Label rank = text(Integer.toString(talent.rankSpells().size()), "talent-rank");
+            Label rank = text(Integer.toString(talent.maxRanks()), "talent-rank");
             rank.setMouseTransparent(true);
             rank.setLayoutX(node.getLayoutX() + 29);
             rank.setLayoutY(node.getLayoutY() + 33);
@@ -530,6 +534,18 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                         text(tree.talents().size() + " talents", "muted"));
         treeHeader.setMinHeight(64);
         VBox panel = new VBox(10, treeHeader, canvas);
+        if (!tree.unplaced().isEmpty()) {
+            VBox unplaced = new VBox(4, text("Recorded outside the tree grid:", "muted"));
+            unplaced.setId("talent-unplaced");
+            for (var item : tree.unplaced()) {
+                Button entry = new Button(item.talent().name());
+                entry.setAccessibleText(item.talent().name() + ", not placed: " + item.reason());
+                Tooltip.install(entry, new Tooltip(item.reason()));
+                entry.setOnAction(event -> select(tree, item.talent(), byId, entry));
+                unplaced.getChildren().add(entry);
+            }
+            panel.getChildren().add(unplaced);
+        }
         panel.setMinWidth(280);
         panel.setPrefWidth(280);
         return panel;
@@ -580,7 +596,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                 .setAll(
                         title,
                         text(tree.name(), "talent-tooltip-context"),
-                        text("Rank 1/" + talent.rankSpells().size(), "wow-line"));
+                        text("Rank 1/" + talent.maxRanks(), "wow-line"));
         for (var edge : talent.prerequisites())
             selection
                     .getChildren()
@@ -590,8 +606,9 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                                             + (byId.containsKey(edge.talentId())
                                                     ? byId.get(edge.talentId()).name()
                                                     : "unavailable talent #" + edge.talentId())
-                                            + " · rank "
-                                            + (edge.rankIndex() + 1),
+                                            + (edge.rankIndex() == null
+                                                    ? ""
+                                                    : " · rank " + (edge.rankIndex() + 1)),
                                     "wow-line"));
         var description = text("Loading description…", "wow-level");
         var descriptionActivity = spinner("Loading talent description", 18);
@@ -609,15 +626,8 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                         "Source details",
                         new VBox(
                                 7,
-                                text(
-                                        "Talent ID "
-                                                + talent.id()
-                                                + " · tier "
-                                                + (talent.row() + 1)
-                                                + " · column "
-                                                + (talent.column() + 1),
-                                        "muted"),
-                                text("Rank spell IDs: " + talent.rankSpells(), "muted")));
+                                text(TalentSourceDetails.identity(talent), "muted"),
+                                text(TalentSourceDetails.spells(talent), "muted")));
         sourceDetails.setId("talent-source-details");
         sourceDetails.setExpanded(false);
         evidence.getChildren().add(sourceDetails);
@@ -632,6 +642,23 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                 : "Description: source text is available.", "muted");
         descriptionSource.setId("talent-source-description");
         facts.getChildren().addAll(iconSource, descriptionSource);
+        var cacheOrigin = text("", "muted");
+        cacheOrigin.setWrapText(true);
+        cacheOrigin.setId("talent-source-hotfix");
+        facts.getChildren().add(cacheOrigin);
+        sourceDetails.expandedProperty().addListener((observable, before, expanded) -> {
+            var tables = sourceTables.get();
+            if (!expanded || tables == null || !cacheOrigin.getText().isEmpty()) return;
+            cacheOrigin.setText("Checking client-cache source…");
+            long current = generation;
+            var requestToken = descriptionToken;
+            request(() -> ClientHotfixDetails.talent(tables, talent, sourceVersion, requestToken))
+                    .whenComplete((lines, error) -> Platform.runLater(() -> {
+                        if (stale(current) || requestToken != descriptionToken) return;
+                        cacheOrigin.setText(error == null ? String.join("\n", lines)
+                                : "Client-cache source could not be confirmed.");
+                    }));
+        });
         if (!classSourceNotices.isEmpty()) {
             facts.getChildren().add(text("Class-level source notices (may affect other talents):", "muted"));
             for (String notice : classSourceNotices) facts.getChildren().add(text(notice, "muted"));
@@ -649,7 +676,8 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                 || talent.description().isBlank()
                 || talent.description().length() > 16384) {
             description.setText("Description unavailable in the readable data.");
-        } else if (!talent.description().contains("$") && !talent.description().contains("|")) {
+        } else if (talent.origin().descriptionOverridden()
+                || !talent.description().contains("$") && !talent.description().contains("|")) {
             description.setText(talent.description());
         } else {
             descriptionActivity.setVisible(true);

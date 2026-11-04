@@ -97,14 +97,7 @@ public final class LocationSources {
 
     public static LocationInput polestar(
             PolestarRepository repository, PolestarTypes.Snapshot snapshot) {
-        var source =
-                new LocationTypes.Source(
-                        LocationTypes.Provider.POLESTAR,
-                        snapshot.id(),
-                        "Forever",
-                        snapshot.catalog().clientBuild(),
-                        "enUS",
-                        "GPL-3.0-only");
+        var source = polestarSource(snapshot);
         return new LocationInput(
                 source,
                 new LocationInput.Reader() {
@@ -235,7 +228,27 @@ public final class LocationSources {
                 });
     }
 
-    private record Rows(List<Map<String, Object>> rows, List<String> issues) {
+    static LocationTypes.Source polestarSource(PolestarTypes.Snapshot snapshot) {
+        return new LocationTypes.Source(
+                LocationTypes.Provider.POLESTAR,
+                snapshot.id(),
+                "Forever",
+                snapshot.catalog().clientBuild(),
+                "enUS",
+                "GPL-3.0-only");
+    }
+
+    /** Bounded local read of every prepared row in one table; readable prefix on failure. */
+    static Rows allRows(
+            PolestarRepository repository,
+            String snapshot,
+            PolestarTypes.Table table,
+            int bound,
+            Cancellation token) {
+        return all(repository, snapshot, table, bound, token);
+    }
+
+    record Rows(List<Map<String, Object>> rows, List<String> issues) {
         Rows {
             rows = List.copyOf(rows);
             issues = List.copyOf(issues);

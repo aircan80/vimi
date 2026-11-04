@@ -21,6 +21,24 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
     private final Timeline clock;
     private final Button retry, cancel;
     private final Node overview;
+    private final javafx.scene.control.Label hotfixSource = new javafx.scene.control.Label();
+    private Button importHotfix, baseData, reopenHotfix;
+    private javafx.scene.control.CheckBox watchHotfix;
+    private boolean watchSync;
+
+    /** Client hotfix cache actions owned by the application window. */
+    interface HotfixActions {
+        /** Choose and import a cache; {@code watch} remembers it for Refresh sources. */
+        void importCache(boolean watch);
+
+        void useBaseData();
+
+        /** Forget the remembered original; binding and imported files stay unchanged. */
+        void stopWatching();
+
+        /** Reopen so a refresh-imported cache replaces the loaded snapshot. */
+        void reopen();
+    }
     private TalentsView talents;
     private RacesView races;
     private NpcsView npcs;
@@ -31,9 +49,16 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
     private ProfessionsView professions;
     private DungeonsView dungeons;
     private final DataSourcesService sources;
+    private WorldBookmarkStore worldBookmarks;
     private boolean closed;
     private long workspaceRevision;
     private String currentArea = "Overview";
+
+    /** Application-owned World bookmarks; null keeps session-only bookmarks. */
+    void worldBookmarks(WorldBookmarkStore store) {
+        worldBookmarks = store;
+        if (world != null) world.bookmarks(store);
+    }
 
     public PreparationPane(
             BuildPreparation.Job job, Runnable choose, Runnable release, Runnable enrich) {
@@ -46,6 +71,12 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
 
     public PreparationPane(BuildPreparation.Job job, Runnable choose, Runnable release, Runnable enrich,
             BuildDownloads downloads, DataSourcesService sources) {
+        this(job, choose, release, enrich, downloads, sources, null);
+    }
+
+    PreparationPane(BuildPreparation.Job job, Runnable choose, Runnable release, Runnable enrich,
+            BuildDownloads downloads, DataSourcesService sources,
+            HotfixActions hotfix) {
         this.job = job;
         this.sources = sources;
         var navigation = new HBox(4);
@@ -69,8 +100,38 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         cancel.setOnAction(event -> job.cancel());
         var closeButton = new Button("Close build");
         closeButton.setOnAction(event -> release.run());
+        var controls = new HBox(10, cancel, retry, closeButton);
+        if (hotfix != null) {
+            importHotfix = new Button("Import client hotfix cache…");
+            importHotfix.setTooltip(new javafx.scene.control.Tooltip(
+                    "Use a local client cache for this build and locale, including cached "
+                            + "decryption keys. The workspace reopens after verification."));
+            importHotfix.setOnAction(event -> hotfix.importCache(watchHotfix.isSelected()));
+            baseData = new Button("Use base data");
+            baseData.setTooltip(new javafx.scene.control.Tooltip(
+                    "Stop applying this build and locale's client cache. Imported files remain stored locally."));
+            baseData.setOnAction(event -> hotfix.useBaseData());
+            watchHotfix = new javafx.scene.control.CheckBox("Check on Refresh sources");
+            watchHotfix.setTooltip(new javafx.scene.control.Tooltip(
+                    "Remember the imported file's location privately. Refresh sources then verifies "
+                            + "and imports a newer cache for this exact build and locale; reopen the "
+                            + "build to apply it. Turning this on asks for the file again."));
+            watchHotfix.selectedProperty().addListener((property, was, selected) -> {
+                if (watchSync) return;
+                if (selected) hotfix.importCache(true);
+                else hotfix.stopWatching();
+            });
+            reopenHotfix = new Button("Reopen with newer cache");
+            reopenHotfix.setOnAction(event -> hotfix.reopen());
+            reopenHotfix.setVisible(false);
+            reopenHotfix.setManaged(false);
+            hotfixSource.setWrapText(true);
+            hotfixSource.getStyleClass().add("muted");
+            controls.getChildren().addAll(importHotfix, baseData, watchHotfix, reopenHotfix);
+        }
         liveOverview =
-                BuildOverviewView.live(job, this::show, new HBox(10, cancel, retry, closeButton), downloads, sources);
+                BuildOverviewView.live(job, this::show,
+                        new javafx.scene.layout.VBox(8, controls, hotfixSource), downloads, sources);
         overview = liveOverview.node();
         show("Overview");
         clock = new Timeline(new KeyFrame(Duration.millis(250), event -> update()));
@@ -86,6 +147,23 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
     private void update() {
         if (closed) return;
         var snapshot = job.snapshot();
+        if (importHotfix != null) {
+            boolean unavailable = !(job.work() instanceof NativePreparationWork work) || !work.canImportHotfix();
+            importHotfix.setDisable(snapshot.busy() || job.enrichingNames() || unavailable);
+            baseData.setDisable(snapshot.busy() || job.enrichingNames() || unavailable);
+            watchHotfix.setDisable(snapshot.busy() || job.enrichingNames() || unavailable);
+            boolean watched = job.work() instanceof NativePreparationWork work && work.hotfixWatched();
+            if (watchHotfix.isSelected() != watched) {
+                watchSync = true;
+                try { watchHotfix.setSelected(watched); } finally { watchSync = false; }
+            }
+            boolean pending = job.work() instanceof NativePreparationWork work && work.hotfixRefreshPending();
+            reopenHotfix.setVisible(pending);
+            reopenHotfix.setManaged(pending);
+            reopenHotfix.setDisable(snapshot.busy() || job.enrichingNames());
+            hotfixSource.setText(job.work() instanceof NativePreparationWork work
+                    ? work.hotfixStatus() : "Base data");
+        }
         if (job.work() instanceof NativePreparationWork work
                 && workspaceRevision != work.revision()) {
             workspaceRevision = work.revision();
@@ -155,7 +233,10 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             return;
         }
         if (area.equals("Dungeons") && job.work() instanceof NativePreparationWork work) {
-            if (dungeons == null) dungeons = new DungeonsView(work::dungeonsHandle, work::revision, job.build().version() + " · " + job.locale(), work::icon);
+            if (dungeons == null) {
+                dungeons = new DungeonsView(work::dungeonsHandle, work::revision, job.build().version() + " · " + job.locale(), work::icon);
+                dungeons.interiorOpener(d -> GlobalInteriorView.open(work::worldHandle, d.mapId(), d.name()));
+            }
             setCenter(dungeons); dungeons.ensureLoaded(); return;
         }
         if (area.equals("Mounts") && job.work() instanceof NativePreparationWork work) {
@@ -171,7 +252,13 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             setCenter(maps); maps.ensureLoaded(); return;
         }
         if (area.equals("World")) {
-            if (world == null) world = new WorldView(job);
+            if (world == null) {
+                world = new WorldView(job);
+                world.bookmarks(worldBookmarks);
+                if (sources != null && job.work() instanceof NativePreparationWork work)
+                    world.attachSpawns(new WorldSpawnOverlay(token -> sources.worldSpawns(job.build(), token),
+                            () -> java.util.List.of(sources.worldSpawnsKey(job.build()), work.revision())));
+            }
             setCenter(world); world.activate(); return;
         }
         if (area.equals("Quests")) {

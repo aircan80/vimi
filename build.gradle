@@ -7,6 +7,17 @@ plugins {
     id 'com.diffplug.spotless' version '8.10.4' apply false
 }
 
+// Checkstyle runs in a Gradle worker daemon whose heap defaults to 512m regardless of
+// org.gradle.jvmargs. ANTLR prediction caches outgrew that on Windows CI (OutOfMemoryError
+// in PredictionContext.mergeArrays while parsing rendering-bgfx test sources).
+subprojects {
+    plugins.withId('checkstyle') {
+        tasks.withType(Checkstyle).configureEach {
+            maxHeapSize = '1g'
+        }
+    }
+}
+
 // Root lifecycle tasks intentionally aggregate only the components that exist.
 tasks.named('check') {
     dependsOn ':object-store:check', ':generated-store:check', ':network-clients:check', ':object-access:check', ':builds:check', ':files:check', ':formats-assets:check', ':formats-tables:check', ':concepts-core:check', ':concepts-items:check', ':concepts-creatures:check', ':concepts-npcs:check', ':concepts-quests:check', ':formats-world:check', ':concepts-world:check', ':rendering-world:check', ':concepts-talents:check', ':concepts-races:check', ':concepts-models:check', ':concepts-mounts:check', ':concepts-professions:check', ':concepts-dungeons:check', ':concepts-locations:check', ':concepts-comparison:check', ':rendering-bgfx:check', ':concepts-effects:check', ':gui:check', ':questie:check', ':polestar:check', ':eg-link:check', ':accounting:check'

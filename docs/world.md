@@ -26,6 +26,14 @@ An authored asymmetric-grid test verifies orientation and exact clicked fileID. 
 Click the viewport to focus it. WASD moves horizontally, Space or E ascends and Q or X descends,
 mouse drag or arrow keys changes view direction, Shift increases movement speed,
 and the wheel moves along the view direction (Shift+wheel changes speed).
+**Walk on terrain** (or F) keeps the eye two yards above the rendered terrain
+surface at 7 yards/s, Shift sprinting at twice that; **Smooth motion** eases
+velocity and downward settling. Walking is surface sampling only, not collision:
+see [walk and fly movement](world-walk-fly-movement-checkpoint.md).
+**Bookmark this view** saves the camera with its map identity and tile. Below the
+tile inventory, **Bookmarks & travel** searches saved bookmarks and accepts typed
+native coordinates; jumps are validated against the current build first. See
+[travel and bookmarks](world-travel-bookmarks-checkpoint.md).
 Back to map returns to tile selection. Leaving the
 World area cancels background requests and pauses movement/rendering; returning
 resumes the explorer. Closing/replacing a build drains its world service before
@@ -55,7 +63,9 @@ source terrain heights, holes and qualified texture layers on GPU and in the
 software fallback. The bounded atlas composition includes source tint and fog;
 client height blending and nonlinear sharpening remain unsupported. Missing or
 unsupported materials retain explicit partial/height fallback and a retry action.
-Buildings, doodads, water, collision and live NPCs are not rendered yet. Global-WMO-only maps have no
+Static flat water renders on the GPU path as an untextured diagnostic teal overlay where the
+Source qualifies it (see [visible water checkpoint](world-visible-water-checkpoint.md)); the CPU
+fallback shows terrain only. Buildings, doodads, collision and creature models are not rendered yet; declared NPC spawn points can be shown as static markers (see [NPC spawn placement](world-npc-placement.md)). Global-WMO-only maps have no
 terrain tiles and remain visible with that limitation. The default application viewport now uses inline bgfx GPU rendering on a
 capable backend, with the bounded CPU renderer as fallback. No JavaFX3D pipeline
 is required. **GPU terrain** selects the renderer; **Retry GPU** explicitly retries

@@ -31,7 +31,7 @@ final class WorldStreamEnvelopeTest {
         assertEquals(500, values.getInt(92));
         assertEquals(10, values.getInt(96));
         assertEquals(9, values.getInt(100));
-        assertEquals(2_284_544, values.getInt(104));
+        assertEquals(2_907_264, values.getInt(104));
         assertEquals(
                 session,
                 WorldStreamEnvelope.decodeSession(bytes, WorldStreamEnvelope.sha256(bytes)));

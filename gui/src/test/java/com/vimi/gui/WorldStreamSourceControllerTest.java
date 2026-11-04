@@ -997,10 +997,21 @@ public final class WorldStreamSourceControllerTest {
         }
 
         void until(BooleanSupplier condition) throws Exception {
-            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(12);
+            // A stall is 12s with no observable controller progress (any snapshot change), not
+            // 12s of wall clock: slow, loaded CI hosts may need longer for a full neighborhood.
+            long idle = TimeUnit.SECONDS.toNanos(12);
+            long start = System.nanoTime(), until = start + idle;
+            long cap = start + TimeUnit.SECONDS.toNanos(120);
+            var observed = controller.snapshot();
             boolean matched = false;
-            while (!(matched = condition.getAsBoolean()) && System.nanoTime() < until) {
+            while (!(matched = condition.getAsBoolean())
+                    && System.nanoTime() < Math.min(until, cap)) {
                 pump();
+                var latest = controller.snapshot();
+                if (!latest.equals(observed)) {
+                    observed = latest;
+                    until = System.nanoTime() + idle;
+                }
                 Thread.sleep(2);
             }
             if (!matched) {

@@ -89,6 +89,12 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
                     new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
     private boolean catalogLoading;
     private boolean loaded, closed;
+    private java.util.function.Consumer<DungeonTypes.Dungeon> interiorOpener;
+
+    /** Optional explicit GPU interior entry; absent providers keep the metadata-only browser. */
+    void interiorOpener(java.util.function.Consumer<DungeonTypes.Dungeon> opener) {
+        interiorOpener = opener;
+    }
 
     DungeonsView(Supplier<BuildDungeons> handles, LongSupplier revisions, String context) {
         this(handles, revisions, context, null);
@@ -397,6 +403,23 @@ final class DungeonsView extends BorderPane implements AutoCloseable {
         heading.setText(dungeon.name());
         identity.setText(label(dungeon.kind()) + " · Map #" + dungeon.mapId());
         details.getChildren().setAll(heading, identity);
+        if (interiorOpener != null) {
+            var open = new Button("View interior (GPU)");
+            open.setId("dungeon-open-interior");
+            open.setAccessibleHelp(
+                    "Opens a GPU inspection view of this instance's global WMO interior when the"
+                            + " client data qualifies");
+            var opener = interiorOpener;
+            open.setOnAction(event -> opener.accept(dungeon));
+            var note =
+                    text(
+                            "Inspection camera only: no entrance, spawn, doodads, liquids or NPCs."
+                                    + " Instances outside the supported single-WMO profile report"
+                                    + " why they are unavailable.",
+                            "muted");
+            note.setWrapText(true);
+            details.getChildren().add(new VBox(6, open, note));
+        }
         var capacity =
                 metric(
                         "RECORDED MAP CAPACITY",

@@ -1,5 +1,7 @@
 package com.vimi.gui;
 
+import java.util.concurrent.CompletableFuture;
+
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -301,6 +303,51 @@ public final class VimiApp extends Application {
 
     private void refreshSources() { refreshSources(false); }
 
+    private volatile com.vibeminer.access.Cancellation hotfixRefreshCancel;
+    private volatile String hotfixRefreshSummary;
+
+    /** Checks only opted-in originals; open workspaces keep their loaded snapshot. */
+    private CompletableFuture<Void> refreshClientHotfixes() {
+        var imports = service.hotfixImports();
+        var token = new com.vibeminer.access.Cancellation();
+        hotfixRefreshCancel = token;
+        hotfixRefreshSummary = null;
+        return imports.refreshWatched(token).thenAccept(results -> {
+            hotfixRefreshSummary = ClientHotfixDetails.refreshSummary(results);
+            Platform.runLater(() -> {
+                if (closing) return;
+                for (var result : results) {
+                    // Every scoped result carries the binding as it stands after the check, so
+                    // open workspaces compare their loaded snapshot against the actual binding.
+                    if (result.scope() == null || result.summary() == null) continue;
+                    for (var job : service.preparation().jobs())
+                        if (job.work() instanceof NativePreparationWork work && work.canImportHotfix()
+                                && work.hotfixScope().equals(result.scope()))
+                            work.noteRefreshedHotfix(result.summary().sha256());
+                }
+            });
+            for (var result : results)
+                if (result.failure() != null)
+                    System.getLogger(VimiApp.class.getName()).log(System.Logger.Level.WARNING,
+                            "Client hotfix refresh check failed: {0}", ClientHotfixDetails.failure(result.failure()));
+            if (token.isCanceled()) throw new java.util.concurrent.CancellationException();
+            if (ClientHotfixDetails.refreshFailed(results))
+                throw new IllegalStateException(hotfixRefreshSummary);
+        }).exceptionally(error -> {
+            // Store-level failures can carry private paths; the row only shows fixed text.
+            Throwable cause = error;
+            while (cause instanceof java.util.concurrent.CompletionException && cause.getCause() != null)
+                cause = cause.getCause();
+            if (cause instanceof java.util.concurrent.CancellationException canceled) throw canceled;
+            if (cause instanceof IllegalStateException summary && hotfixRefreshSummary != null
+                    && hotfixRefreshSummary.equals(summary.getMessage())) throw summary;
+            System.getLogger(VimiApp.class.getName()).log(System.Logger.Level.WARNING,
+                    "Client hotfix refresh failed: {0}", ClientHotfixDetails.failure(cause));
+            throw new IllegalStateException("Client caches could not be checked: "
+                    + ClientHotfixDetails.failure(cause));
+        });
+    }
+
     private void refreshSources(boolean startupRefresh) {
         if (service == null || closing) return;
         if (sourceRefresh == null) {
@@ -327,6 +374,11 @@ public final class VimiApp extends Application {
                                     : new SourceRefresh.Progress(value.message(), value.fraction());
                         }, () -> sources.cancel(id)));
             }
+            providers.add(new SourceRefresh.Provider("CLIENT_HOTFIX", "Client hotfix caches",
+                    () -> service.hotfixImports() != null, this::refreshClientHotfixes,
+                    () -> new SourceRefresh.Progress("Checking client caches marked for refresh…", -1),
+                    () -> { var token = hotfixRefreshCancel; if (token != null) token.cancel(); },
+                    () -> hotfixRefreshSummary));
             sourceRefresh = new SourceRefresh(providers);
         }
         var run = sourceRefresh.start();
@@ -888,6 +940,84 @@ public final class VimiApp extends Application {
         }));
     }
 
+    private void changeClientHotfix(BuildPreparation.Job job, boolean useBase, boolean watch) {
+        var imports = service.hotfixImports();
+        if (imports == null || !(job.work() instanceof NativePreparationWork work)) return;
+        java.nio.file.Path selected = null;
+        if (!useBase) {
+            var chooser = new javafx.stage.FileChooser();
+            chooser.setTitle("Import client hotfix cache · " + job.build().version() + " · " + job.locale());
+            chooser.getExtensionFilters().add(new javafx.stage.FileChooser.ExtensionFilter(
+                    "Client hotfix cache (DBCache.bin)", "DBCache.bin", "*.bin"));
+            var file = chooser.showOpenDialog(root.getScene().getWindow());
+            if (file == null) return;
+            selected = file.toPath();
+        }
+        showDrainActivity(useBase ? "Selecting base data…" : "Importing and verifying client hotfix cache…");
+        var cancellation = new com.vibeminer.access.Cancellation();
+        final CompletableFuture<?> changed;
+        try {
+            changed = useBase ? imports.disable(work.hotfixScope(), cancellation)
+                    : imports.importCache(work.hotfixScope(), selected, watch, cancellation);
+        } catch (RuntimeException | Error error) {
+            hideDrainActivity();
+            status.setText("Client hotfix cache could not be applied: " + ClientHotfixDetails.failure(error));
+            System.getLogger(VimiApp.class.getName()).log(System.Logger.Level.WARNING,
+                    "Client hotfix cache selection failed: {0}", ClientHotfixDetails.failure(error));
+            return;
+        }
+        changed.whenComplete((summary, error) -> Platform.runLater(() -> {
+            if (closing) return;
+            if (error != null) {
+                hideDrainActivity();
+                System.getLogger(VimiApp.class.getName()).log(System.Logger.Level.WARNING,
+                        "Client hotfix cache selection failed: {0}", ClientHotfixDetails.failure(error));
+                status.setText("Client hotfix cache could not be applied: " + ClientHotfixDetails.failure(error));
+                return;
+            }
+            reopenForClientHotfix(job, true);
+        }));
+    }
+
+    private void stopWatchingClientHotfix(BuildPreparation.Job job) {
+        var imports = service.hotfixImports();
+        if (imports == null || !(job.work() instanceof NativePreparationWork work)) return;
+        CompletableFuture<Void> changed;
+        try {
+            changed = imports.unwatch(work.hotfixScope(), new com.vibeminer.access.Cancellation());
+        } catch (RuntimeException | Error error) {
+            changed = CompletableFuture.failedFuture(error);
+        }
+        changed.whenComplete((ignored, error) -> Platform.runLater(() -> {
+            if (closing) return;
+            if (error == null) {
+                work.hotfixWatched(false);
+                status.setText("Refresh sources no longer checks this build's client cache. The imported cache stays applied.");
+            } else status.setText("Client cache check could not be turned off: " + ClientHotfixDetails.failure(error));
+        }));
+    }
+
+    private void reopenForClientHotfix(BuildPreparation.Job job, boolean drainShown) {
+        if (closing) return;
+        if (!drainShown) showDrainActivity("Reopening with the newer client hotfix cache…");
+        viewedPreparation = null;
+        var pane = preparationPane;
+        preparationPane = null;
+        if (pane != null) pane.close();
+        service.preparation().release(job).whenComplete((ignored, retired) -> Platform.runLater(() -> {
+            if (closing) return;
+            hideDrainActivity();
+            if (retired != null) {
+                status.setText("Build retirement failed; the new cache will apply when the workspace is reopened safely.");
+                System.getLogger(VimiApp.class.getName()).log(System.Logger.Level.WARNING,
+                        "Client hotfix workspace retirement failed ({0})", retired.getClass().getName());
+                return;
+            }
+            if (preparationFocus == job) preparationFocus = null;
+            startPreparation(job.build(), job.source(), job.locale());
+        }));
+    }
+
     private void showPreparedWorkspace(BuildPreparation.Job job) {
         if (closing) return;
         navigationGeneration++;
@@ -897,7 +1027,14 @@ public final class VimiApp extends Application {
                 var enriched = service.preparation().enrich(job.build(),job.source(),job.locale());
                 preparationFocus = enriched; showPreparedWorkspace(enriched);
             } catch (RuntimeException error) { status.setText(problem(error)); }
-        }, service.downloads(), service.dataSources());
+        }, service.downloads(), service.dataSources(),
+                service.hotfixImports() == null ? null : new PreparationPane.HotfixActions() {
+                    @Override public void importCache(boolean watch) { changeClientHotfix(job, false, watch); }
+                    @Override public void useBaseData() { changeClientHotfix(job, true, false); }
+                    @Override public void stopWatching() { stopWatchingClientHotfix(job); }
+                    @Override public void reopen() { reopenForClientHotfix(job, false); }
+                });
+        preparationPane.worldBookmarks(service.worldBookmarks());
         viewedPreparation = job;
         root.setTop(preparedOverviewHeader(job)); root.setCenter(preparationPane);
         status.setText("Prepared data is scoped to this build and locale. Unknown and protected data remain explicit.");

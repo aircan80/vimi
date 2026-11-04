@@ -68,6 +68,15 @@ The standalone view constructor accepts handle/revision suppliers, a build-local
 context string and an optional icon-fetch function. The Dungeons menu becomes available when tables are ready. Workspace revision
 changes invalidate the view, and leaving the build cancels outstanding requests.
 
+## GPU interior view
+
+Selecting an instance offers **View interior (GPU)**. It opens a separate window rendering the
+map's qualified single global WMO through the application GPU owner, with free-flight controls.
+The starting camera frames the native bounds for inspection only: it is not an entrance, spawn or
+floor. Instances outside the qualified profile show a bounded reason. Onyxia's Lair (map 249) is
+the actually proven example. Doodads, liquids, lighting, NPCs and navigation are not drawn yet.
+See [world-global-interior-viewer-checkpoint.md](world-global-interior-viewer-checkpoint.md).
+
 ## Verification
 
 ```sh
