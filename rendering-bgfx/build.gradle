@@ -254,3 +254,23 @@ tasks.register('nativeGpuTerrainTextureProof', JavaExec) {
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args layout.buildDirectory.dir('native-terrain-textures').get().asFile.absolutePath
 }
+
+// Authored persistent-World feasibility; no production shader or renderer replacement.
+tasks.register('verifyWorldStreamSpikeShaders', Exec) {
+    group = 'verification'
+    description = 'Verifies separate authored persistent-World shader profiles.'
+    inputs.files(shaderHelper, rootProject.file('scripts/rendering/compile_bgfx_world_stream_spike.py'))
+    inputs.dir(layout.projectDirectory.dir('src/test/shaders/world-stream-spike'))
+    inputs.dir(layout.projectDirectory.dir('src/test/resources/com/vibeminer/rendering/bgfx/world-stream-spike'))
+    workingDir rootProject.layout.projectDirectory
+    commandLine pythonExecutable.get(), rootProject.file('scripts/rendering/compile_bgfx_world_stream_spike.py').absolutePath, '--verify'
+}
+tasks.register('nativeGpuWorldStreamSpike', JavaExec) {
+    group = 'verification'
+    description = 'Proves fixed dynamic resources, callback lifetime and camera-first uploads.'
+    dependsOn testClasses, tasks.named('verifyWorldStreamSpikeShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamSpike'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-world-stream-spike').get().asFile.absolutePath
+}
