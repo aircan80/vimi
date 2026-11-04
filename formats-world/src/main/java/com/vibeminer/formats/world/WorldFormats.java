@@ -251,8 +251,8 @@ public final class WorldFormats {
             byte[] bytes, BooleanSupplier canceled, boolean geometry, boolean captureGrid) {
         var input = input(bytes);
         var grids = captureGrid ? new ArrayList<TerrainGrid.Chunk>() : null;
-        var vertices = geometry ? new ArrayList<Float>() : null;
-        var indices = geometry ? new ArrayList<Integer>() : null;
+        var vertices = geometry ? new FloatBuilder() : null;
+        var indices = geometry ? new IndexBuilder() : null;
         var areas = new ArrayList<AreaChunk>();
         boolean[] seen = new boolean[256];
         int chunks = 0;
@@ -318,9 +318,7 @@ public final class WorldFormats {
                         coordinate(vy);
                         coordinate(vz);
                         if (geometry) {
-                            vertices.add(vx);
-                            vertices.add(vy);
-                            vertices.add(vz);
+                            vertices.vertex(vx, vy, vz);
                         }
                     }
                 }
@@ -345,9 +343,7 @@ public final class WorldFormats {
                             continue;
                         }
                         int a = base + row * 17 + col, b = a + 1, d = a + 17, e = d + 1, m = a + 9;
-                        for (int index : new int[] {a, m, b, b, m, e, e, m, d, d, m, a}) {
-                            indices.add(index);
-                        }
+                        indices.fan(a, b, d, e, m);
                     }
                 }
                 if (captureGrid) {
@@ -411,15 +407,85 @@ public final class WorldFormats {
         if (!geometry) {
             return new ParsedAdt(null, metadata, captureGrid ? new TerrainGrid(grids) : null);
         }
-        float[] positions = new float[vertices.size()];
-        for (int i = 0; i < positions.length; i++) {
-            positions[i] = vertices.get(i);
-        }
         return new ParsedAdt(
-                new Terrain(
-                        positions, indices.stream().mapToInt(Integer::intValue).toArray(), chunks),
+                new Terrain(vertices.take(), indices.take(), chunks),
                 metadata,
                 captureGrid ? new TerrainGrid(grids) : null);
+    }
+
+    /** Lazy bounded primitive ownership; invalid/small inputs never reserve a full tile. */
+    private static final class FloatBuilder {
+        private static final float[] EMPTY = new float[0];
+        private static final int MAX = 256 * 145 * 3;
+        private float[] values = EMPTY;
+        private int size;
+
+        int size() {
+            return size;
+        }
+
+        void vertex(float x, float y, float z) {
+            int required = size + 3;
+            if (required > values.length) {
+                values =
+                        java.util.Arrays.copyOf(
+                                values, grow(values.length, required, MAX, 145 * 3));
+            }
+            values[size++] = x;
+            values[size++] = y;
+            values[size++] = z;
+        }
+
+        float[] take() {
+            float[] owned = values.length == size ? values : java.util.Arrays.copyOf(values, size);
+            values = EMPTY;
+            size = 0;
+            return owned;
+        }
+    }
+
+    private static final class IndexBuilder {
+        private static final int[] EMPTY = new int[0];
+        private static final int MAX = 256 * 8 * 8 * 12;
+        private int[] values = EMPTY;
+        private int size;
+
+        void fan(int a, int b, int d, int e, int middle) {
+            int required = size + 12;
+            if (required > values.length) {
+                values =
+                        java.util.Arrays.copyOf(
+                                values, grow(values.length, required, MAX, 64 * 12));
+            }
+            // Preserve the source fan's exact first/second/third-corner order without a temp array.
+            values[size++] = a;
+            values[size++] = middle;
+            values[size++] = b;
+            values[size++] = b;
+            values[size++] = middle;
+            values[size++] = e;
+            values[size++] = e;
+            values[size++] = middle;
+            values[size++] = d;
+            values[size++] = d;
+            values[size++] = middle;
+            values[size++] = a;
+        }
+
+        int[] take() {
+            int[] owned = values.length == size ? values : java.util.Arrays.copyOf(values, size);
+            values = EMPTY;
+            size = 0;
+            return owned;
+        }
+    }
+
+    private static int grow(int previous, int required, int maximum, int initial) {
+        if (required < 0 || required > maximum) {
+            throw invalid("Terrain geometry exceeds bounds");
+        }
+        int expanded = previous == 0 ? initial : previous + Math.max(1, previous / 2);
+        return Math.min(maximum, Math.max(required, expanded));
     }
 
     private static void coordinate(float value) {
