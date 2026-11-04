@@ -37,5 +37,5 @@ Release readiness requires relevant component checks, authored UI/native proofs 
 
 [Handmade BC3/DXT5 terrain textures](bugs/terrain-handmade-bc3.md): reported five
 textures rejected as DIFFUSE_PROFILE. Narrow BC3 opt-in fix and synthetic256×256
-full-mip regression implemented locally; independent review/release integration
-pending. This is separate from broader terrain material-quality work.
+full-mip regression independently reviewed and integrated into alpha.22 candidate
+PR162; publication pending. This is separate from broader terrain material-quality work.
