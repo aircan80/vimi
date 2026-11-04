@@ -35,6 +35,113 @@ final class WorldStreamScopesTest {
             new WorldFormats.Tile(7, 19, 2, 0, 0, 0, 0, 3, 0, 0);
 
     @Test
+    void derivedCandidatesAreFixedBoundReadsAndNeverMintRenderableEvidence() throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var source = new WorldStreamScopes(tables.handle(), files.files());
+        try {
+            var scope = source.create(REQUEST, Cancellation.NONE);
+            // Arbitrary authored bytes are allowed as candidates, not as qualified assets.
+            AutoCloseable result =
+                    source.withRecordedTile(
+                            scope,
+                            TILE,
+                            WorldStreamScopes.UseProfile.BASIC_WMO,
+                            Cancellation.NONE,
+                            admission -> {
+                                try (var candidate =
+                                        admission.readDerivedCandidate(
+                                                10, WorldStreamScopes.DerivedKind.WMO_ROOT)) {
+                                    assertEquals(10, candidate.fileDataId());
+                                }
+                                int opened = files.opens(11);
+                                assertThrows(
+                                        IllegalStateException.class,
+                                        () ->
+                                                admission.readDerivedCandidate(
+                                                        11,
+                                                        WorldStreamScopes.DerivedKind.WMO_ROOT));
+                                assertEquals(opened, files.opens(11));
+                                for (int i = 0; i < 6; i++) {
+                                    try (var candidate =
+                                            admission.readDerivedCandidate(
+                                                    11, WorldStreamScopes.DerivedKind.WMO_IMAGE)) {
+                                        assertTrue(candidate.bytes().length > 0);
+                                    }
+                                }
+                                assertThrows(
+                                        IllegalStateException.class,
+                                        () ->
+                                                admission.readDerivedCandidate(
+                                                        11,
+                                                        WorldStreamScopes.DerivedKind.WMO_IMAGE));
+                                return (AutoCloseable) () -> {};
+                            });
+            result.close();
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            source.withRecordedTile(
+                                    scope,
+                                    TILE,
+                                    WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                                    Cancellation.NONE,
+                                    admission -> {
+                                        admission.readDerivedCandidate(
+                                                10, WorldStreamScopes.DerivedKind.WMO_ROOT);
+                                        throw new AssertionError("Wrong profile accepted");
+                                    }));
+        } finally {
+            source.closeAsync().join();
+            tables.close();
+        }
+    }
+
+    @Test
+    void admissionRejectsOversizedInputBeforeOpenAndChangedMapAfterCallback() {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var source = new WorldStreamScopes(tables.handle(), files.files());
+        var resultClosed = new AtomicInteger();
+        try {
+            var scope = source.create(REQUEST, Cancellation.NONE);
+            var original = files.sources.get(2L);
+            files.sources.put(2L, new byte[(8 << 20) + 1]);
+            assertThrows(
+                    IllegalStateException.class,
+                    () ->
+                            source.withRecordedTile(
+                                    scope,
+                                    TILE,
+                                    WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                                    Cancellation.NONE,
+                                    admission -> {
+                                        admission.readRecorded(
+                                                WorldStreamScopes.RecordedInput.ROOT);
+                                        throw new AssertionError("Oversized input accepted");
+                                    }));
+            assertEquals(0, files.opens(2));
+            files.sources.put(2L, original);
+            assertThrows(
+                    IllegalStateException.class,
+                    () ->
+                            source.withRecordedTile(
+                                    scope,
+                                    TILE,
+                                    WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                                    Cancellation.NONE,
+                                    admission -> {
+                                        tables.identity = "changed-during-admission";
+                                        return (AutoCloseable) resultClosed::incrementAndGet;
+                                    }));
+            assertEquals(1, resultClosed.get());
+        } finally {
+            source.closeAsync().join();
+            tables.close();
+        }
+    }
+
+    @Test
     void heldAdmissionKeepsBusyAndCloseDrainUntilCallbackFinally() throws Exception {
         var files = new WorldTerrainTextureSourceTest.Files();
         var tables = new Tables(files);
@@ -107,6 +214,13 @@ final class WorldStreamScopesTest {
                             admission -> {
                                 escaped[0] = admission;
                                 assertEquals(TILE, admission.recorded());
+                                CompletableFuture.runAsync(
+                                                () -> {
+                                                    assertThrows(
+                                                            IllegalStateException.class,
+                                                            admission::recorded);
+                                                })
+                                        .join();
                                 try (var root =
                                         admission.readRecorded(
                                                 WorldStreamScopes.RecordedInput.ROOT)) {
