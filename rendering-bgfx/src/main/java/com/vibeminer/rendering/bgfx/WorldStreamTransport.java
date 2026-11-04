@@ -73,11 +73,20 @@ public final class WorldStreamTransport {
 
         /** Transfers file ownership before asynchronous external process creation. */
         public Session launch(Starter starter) {
+            return launch(starter, 10000, 5000);
+        }
+
+        Session launch(Starter starter, long startupMillis, long closeMillis) {
             Objects.requireNonNull(starter);
             var session = new Session(descriptor);
             var owner =
                     WorldStreamLaunchOwner.launch(
-                            files, starter::start, session::attach, 250, 5000, 10000);
+                            files,
+                            starter::start,
+                            session::attach,
+                            250,
+                            closeMillis,
+                            startupMillis);
             session.launched(owner);
             return session;
         }
@@ -139,6 +148,13 @@ public final class WorldStreamTransport {
         private void launched(WorldStreamLaunchOwner.Handle handle) {
             owner = handle;
             handle.childExited().thenRun(this::childExited);
+            handle.boundedClose()
+                    .whenComplete(
+                            (drain, error) -> {
+                                if (error != null) {
+                                    fail(handle.failure() == null ? error : handle.failure());
+                                }
+                            });
             handle.terminatedAndDrained()
                     .whenComplete(
                             (drain, error) -> {
@@ -323,22 +339,18 @@ public final class WorldStreamTransport {
         }
 
         private void fail(Throwable error) {
-            String detail = error.getMessage();
-            if (detail == null) {
-                detail = error.getClass().getSimpleName();
-            }
-            var detached = new IOException(detail.substring(0, Math.min(256, detail.length())));
-            detached.setStackTrace(new StackTraceElement[0]);
-            if (failure == null) {
-                failure = detached;
-            }
+            // Secure the lifetime before diagnostic encoding or any future/user callback.
             requestClose();
-            initialized.completeExceptionally(failure);
-            completion.completeExceptionally(failure);
             var handle = owner;
             if (handle != null) {
                 handle.closeAsync();
             }
+            var detached = WorldStreamLaunchOwner.Handle.detached(error);
+            if (failure == null) {
+                failure = detached;
+            }
+            initialized.completeExceptionally(failure);
+            completion.completeExceptionally(failure);
         }
     }
 

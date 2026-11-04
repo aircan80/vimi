@@ -152,8 +152,11 @@ final class WorldStreamLaunchOwner {
                                     try {
                                         task.run();
                                     } catch (Throwable error) {
-                                        failure = detached(error);
-                                        closeAsync();
+                                        try {
+                                            failure = detached(error);
+                                        } finally {
+                                            closeAsync();
+                                        }
                                     } finally {
                                         done.set(true);
                                     }
@@ -202,8 +205,11 @@ final class WorldStreamLaunchOwner {
                                             attachment.attach(child, this);
                                         }
                                     } catch (Throwable error) {
-                                        failure = detached(error);
-                                        closeAsync();
+                                        try {
+                                            failure = detached(error);
+                                        } finally {
+                                            closeAsync();
+                                        }
                                     } finally {
                                         synchronized (lock) {
                                             sealed = true;
@@ -212,7 +218,11 @@ final class WorldStreamLaunchOwner {
                                     }
                                 });
             } catch (RuntimeException | Error error) {
-                failure = detached(error);
+                try {
+                    failure = detached(error);
+                } finally {
+                    closeAsync();
+                }
                 synchronized (lock) {
                     sealed = true;
                 }
@@ -248,6 +258,11 @@ final class WorldStreamLaunchOwner {
         /** Only confirmed OS exit; failed setup/cleanup and no-child start never imply this. */
         CompletableFuture<Void> childExited() {
             return childExited.copy();
+        }
+
+        /** Observes an existing close deadline without requesting or starting close. */
+        CompletableFuture<Drain> boundedClose() {
+            return boundedClose.copy();
         }
 
         CompletableFuture<Drain> terminatedAndDrained() {
@@ -339,10 +354,17 @@ final class WorldStreamLaunchOwner {
             }
         }
 
-        private static IOException detached(Throwable error) {
-            String message = error.getMessage();
+        static IOException detached(Throwable error) {
+            Class<?> type = error.getClass();
+            // Only these exact JDK classes have trusted message accessors; no arbitrary callback.
+            String message =
+                    type == IOException.class
+                                    || type == IllegalStateException.class
+                                    || type == IllegalArgumentException.class
+                            ? error.getMessage()
+                            : type.getName();
             if (message == null) {
-                message = error.getClass().getSimpleName();
+                message = type.getName();
             }
             var failure = new IOException(message.substring(0, Math.min(256, message.length())));
             failure.setStackTrace(new StackTraceElement[0]);

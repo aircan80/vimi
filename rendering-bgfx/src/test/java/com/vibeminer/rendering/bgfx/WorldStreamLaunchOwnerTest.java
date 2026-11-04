@@ -31,6 +31,58 @@ class WorldStreamLaunchOwnerTest {
             new WorldStreamEnvelope.Session(new WorldStreamState.Nonce(10, 20), "ab".repeat(32), 1);
 
     @Test
+    void hostileStarterAndWorkerMessagesCannotSuppressFailureOrClose() throws Exception {
+        var touched = new AtomicBoolean();
+        var unknown =
+                new RuntimeException() {
+                    @Override
+                    public String getMessage() {
+                        touched.set(true);
+                        throw new AssertionError("message trap");
+                    }
+                };
+        var noChild =
+                WorldStreamLaunchOwner.launch(
+                        WorldStreamPreparedFiles.create(directory, SESSION, null),
+                        arguments -> {
+                            throw unknown;
+                        },
+                        (process, handle) -> {},
+                        0,
+                        1000);
+        assertTrue(noChild.terminatedAndDrained().get(3, TimeUnit.SECONDS).childPid().isEmpty());
+        assertFalse(touched.get());
+        assertNotNull(noChild.failure());
+        assertTrue(noChild.failure().getMessage().contains("WorldStreamLaunchOwnerTest"));
+        assertFalse(Files.exists(noChild.files().directory()));
+
+        var child = new Child();
+        var worker =
+                WorldStreamLaunchOwner.launch(
+                        WorldStreamPreparedFiles.create(directory, SESSION, null),
+                        arguments -> child,
+                        (process, handle) ->
+                                handle.runWorker(
+                                        "hostile-failure",
+                                        () -> {
+                                            throw new java.io.IOException() {
+                                                @Override
+                                                public String getMessage() {
+                                                    touched.set(true);
+                                                    throw new AssertionError("worker message trap");
+                                                }
+                                            };
+                                        }),
+                        0,
+                        1000);
+        assertEquals(
+                0, worker.terminatedAndDrained().get(3, TimeUnit.SECONDS).exitCode().orElseThrow());
+        assertFalse(touched.get());
+        assertNotNull(worker.failure());
+        assertFalse(Files.exists(worker.files().directory()));
+    }
+
+    @Test
     void confirmedExitPrecedesHeldWorkerDrainButIsNeverInferredFromCleanupFailure()
             throws Exception {
         var release = new CountDownLatch(1);
