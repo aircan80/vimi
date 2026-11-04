@@ -55,6 +55,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
+import java.util.function.IntConsumer;
 import org.lwjgl.bgfx.BGFXVertexLayout;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
@@ -97,14 +98,28 @@ final class BgfxWorldWmoPass implements AutoCloseable {
     static BgfxWorldWmoPass readBound(
             Path annex, GpuTerrainSceneFile.Decoded base, BooleanSupplier canceled)
             throws IOException {
+        return readBound(annex, base, canceled, ignored -> {});
+    }
+
+    // At most six fast owner-thread progress calls; never a driver-release callback.
+    static BgfxWorldWmoPass readBound(
+            Path annex,
+            GpuTerrainSceneFile.Decoded base,
+            BooleanSupplier canceled,
+            IntConsumer textureAccepted)
+            throws IOException {
         Objects.requireNonNull(base);
         Objects.requireNonNull(canceled);
+        Objects.requireNonNull(textureAccepted);
         var decoded = GpuWorldWmoAnnex.read(annex, base, canceled);
-        return new BgfxWorldWmoPass(decoded, base.scene().origin(), canceled);
+        return new BgfxWorldWmoPass(decoded, base.scene().origin(), canceled, textureAccepted);
     }
 
     private BgfxWorldWmoPass(
-            GpuWorldWmoAnnex.Decoded decoded, TerrainScene.Origin origin, BooleanSupplier canceled)
+            GpuWorldWmoAnnex.Decoded decoded,
+            TerrainScene.Origin origin,
+            BooleanSupplier canceled,
+            IntConsumer textureAccepted)
             throws IOException {
         this.data = decoded;
         this.metadata = decoded.metadata();
@@ -130,7 +145,7 @@ final class BgfxWorldWmoPass implements AutoCloseable {
             normal = valid(bgfx_create_uniform("u_wmoNormal", BGFX_UNIFORM_TYPE_MAT4, 1));
             sampler = valid(bgfx_create_uniform("s_wmoDiffuse", BGFX_UNIFORM_TYPE_SAMPLER, 1));
             uploadMesh(canceled);
-            uploadTextures(canceled);
+            uploadTextures(canceled, textureAccepted);
             batches = decoded.batches();
             materialImages = new int[decoded.materialCount()];
             for (int m = 0; m < materialImages.length; m++) {
@@ -214,7 +229,8 @@ final class BgfxWorldWmoPass implements AutoCloseable {
         }
     }
 
-    private void uploadTextures(BooleanSupplier canceled) throws IOException {
+    private void uploadTextures(BooleanSupplier canceled, IntConsumer textureAccepted)
+            throws IOException {
         for (int i = 0; i < data.imageCount(); i++) {
             check(canceled);
             var image = data.image(i);
@@ -240,7 +256,7 @@ final class BgfxWorldWmoPass implements AutoCloseable {
                                         BGFX_TEXTURE_NONE,
                                         bgfx_copy(staging),
                                         0));
-
+                textureAccepted.accept(i + 1);
             } finally {
                 liveStaging -= bytes;
                 MemoryUtil.memFree(staging);
