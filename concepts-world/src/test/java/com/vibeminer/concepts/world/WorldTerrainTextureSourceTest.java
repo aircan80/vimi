@@ -327,6 +327,171 @@ class WorldTerrainTextureSourceTest {
     }
 
     @Test
+    void ownedPendingSupersededAlreadyCanceledAndClosedRequestsDrainWithoutNewIo()
+            throws Exception {
+        var entered = new CompletableFuture<Void>();
+        var release = new CompletableFuture<Void>();
+        var files =
+                new Files() {
+                    @Override
+                    FileTypes.FileStat stat(long id, Cancellation token) {
+                        if (id == 1) {
+                            entered.complete(null);
+                            release.join();
+                            token.check();
+                        }
+                        return super.stat(id, token);
+                    }
+                };
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        try {
+            var active = source.readOwned(MAP, List.of(TILE), Cancellation.NONE, p -> {});
+            entered.get(5, TimeUnit.SECONDS);
+            var already = new Cancellation();
+            already.cancel();
+            var rejectedCanceled = source.readOwned(MAP, List.of(TILE), already, p -> {});
+            assertThrows(
+                    java.util.concurrent.CancellationException.class,
+                    () -> rejectedCanceled.result().join());
+            rejectedCanceled.awaitDrained();
+            assertFalse(active.result().isDone());
+            var pending = source.readOwned(MAP, List.of(TILE), Cancellation.NONE, p -> {});
+            var latest = source.readOwned(MAP, List.of(TILE), Cancellation.NONE, p -> {});
+            assertThrows(
+                    java.util.concurrent.CancellationException.class,
+                    () -> pending.result().join());
+            pending.awaitDrained();
+            var close = source.closeAsync();
+            assertFalse(close.isDone());
+            assertThrows(
+                    java.util.concurrent.CancellationException.class, () -> latest.result().join());
+            latest.awaitDrained();
+            var closed = source.readOwned(MAP, List.of(TILE), Cancellation.NONE, p -> {});
+            assertThrows(
+                    java.util.concurrent.CompletionException.class, () -> closed.result().join());
+            closed.awaitDrained();
+            assertEquals(0, files.totalOpens());
+            release.complete(null);
+            assertThrows(
+                    java.util.concurrent.CancellationException.class, () -> active.result().join());
+            active.awaitDrained();
+            close.get(5, TimeUnit.SECONDS);
+            assertTrue(
+                    active.isDrained()
+                            && pending.isDrained()
+                            && latest.isDrained()
+                            && closed.isDrained());
+        } finally {
+            release.complete(null);
+            source.closeAsync().join();
+            pool.closeAsync().join();
+        }
+    }
+
+    @Test
+    void ownedReadsPropagateUnknownFailuresButRetainKnownSourceProfileOutcomes() throws Exception {
+        for (int mode = 0; mode < 6; mode++) {
+            int selected = mode;
+            var finalPhase = new java.util.concurrent.atomic.AtomicBoolean();
+            var files =
+                    new Files() {
+                        @Override
+                        FileTypes.FileStat stat(long id, Cancellation token) {
+                            if (id == 10 && selected == 5 && finalPhase.get()) {
+                                throw new NullPointerException("Authored final validation bug");
+                            }
+                            if (id == 10 && selected == 0) {
+                                throw new NullPointerException("Authored provider bug");
+                            }
+                            if (id == 10 && selected == 1) {
+                                throw new IllegalArgumentException(
+                                        "Authored unknown provider argument bug");
+                            }
+                            return super.stat(id, token);
+                        }
+                    };
+            if (mode == 2) {
+                files.sources.put(3L, new byte[16]);
+            }
+            if (mode == 3) {
+                files.sources.put(10L, new byte[160]);
+            }
+            if (mode == 4) {
+                files.changedId = 10;
+                files.changeAfterRead = true;
+            }
+            var pool = new TerrainAtlasPool();
+            var source = new WorldTerrainTextureSource(files.files(), pool);
+            try {
+                var owned =
+                        source.readOwned(
+                                MAP,
+                                List.of(TILE),
+                                Cancellation.NONE,
+                                p -> {
+                                    if (p.stage() == WorldTerrainTextureSource.Stage.REVALIDATING) {
+                                        finalPhase.set(true);
+                                    }
+                                });
+                try {
+                    if (mode < 2 || mode >= 4) {
+                        assertThrows(
+                                java.util.concurrent.ExecutionException.class,
+                                () -> owned.result().get(5, TimeUnit.SECONDS));
+                    } else {
+                        try (var result = owned.result().get(5, TimeUnit.SECONDS)) {
+                            assertTrue(
+                                    result.tiles().getFirst().state()
+                                            != WorldTerrainTextureSource.State.READY);
+                            assertTrue(
+                                    result.tiles().getFirst().issues().stream()
+                                            .anyMatch(
+                                                    issue ->
+                                                            issue.reason()
+                                                                    == (selected == 2
+                                                                            ? WorldTerrainTextureSource
+                                                                                    .Reason
+                                                                                    .TEXTURE_PROFILE
+                                                                            : WorldTerrainTextureSource
+                                                                                    .Reason
+                                                                                    .DIFFUSE_PROFILE)));
+                        }
+                    }
+                } finally {
+                    owned.awaitDrained();
+                }
+                assertTrue(owned.isDrained());
+                assertEquals(0, pool.stats().leaseClaims());
+                assertEquals(0, pool.stats().borrowPins());
+            } finally {
+                source.closeAsync().join();
+                pool.closeAsync().join();
+            }
+        }
+        var files =
+                new Files() {
+                    @Override
+                    FileTypes.FileStat stat(long id, Cancellation token) {
+                        if (id == 10) {
+                            throw new NullPointerException("Legacy provider behavior unchanged");
+                        }
+                        return super.stat(id, token);
+                    }
+                };
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        try (var legacy =
+                source.read(MAP, List.of(TILE), Cancellation.NONE, p -> {})
+                        .get(5, TimeUnit.SECONDS)) {
+            assertTrue(legacy.tiles().getFirst().state() != WorldTerrainTextureSource.State.READY);
+        } finally {
+            source.closeAsync().join();
+            pool.closeAsync().join();
+        }
+    }
+
+    @Test
     void coldWarmSharesOneAtlasAndFetchesOnlyConsumedPaletteEntries() throws Exception {
         var files = new Files();
         var pool = new TerrainAtlasPool();
@@ -751,7 +916,8 @@ class WorldTerrainTextureSourceTest {
                 };
         var pool = new TerrainAtlasPool();
         var source = new WorldTerrainTextureSource(files.files(), pool);
-        var result = source.read(MAP, List.of(TILE), Cancellation.NONE, p -> {});
+        var owned = source.readOwned(MAP, List.of(TILE), Cancellation.NONE, p -> {});
+        var result = owned.result();
         entered.get(5, TimeUnit.SECONDS);
         var close = source.closeAsync();
         var failure =
@@ -760,6 +926,8 @@ class WorldTerrainTextureSourceTest {
                         () -> close.get(5, TimeUnit.SECONDS));
         assertTrue(failure.toString().contains("Authored texture cancel failure"));
         assertThrows(Exception.class, () -> result.get(5, TimeUnit.SECONDS));
+        assertThrows(java.util.concurrent.CompletionException.class, owned::awaitDrained);
+        assertTrue(owned.isDrained());
         assertEquals(0, pool.stats().entries());
         assertEquals(0, files.totalOpens());
         assertThrows(
