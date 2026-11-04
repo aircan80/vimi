@@ -124,6 +124,28 @@ class WorldCurrentAreaTest {
     }
 
     @Test
+    void detachedRecordedIdUsesTheSameHierarchyAndKeepsUnknownSourceExplicit() {
+        var hierarchy = index(area(1, "Elwynn Forest", 0), area(10, "Goldshire", 1));
+        assertEquals(
+                WorldCurrentArea.locate(
+                        0, 990, 1990, List.of(tile(chunk(0, 0, 10, 1000, 2000))), hierarchy),
+                WorldCurrentArea.resolve(0, 10, hierarchy));
+        assertEquals(
+                WorldCurrentArea.Reason.UNKNOWN_AREA,
+                WorldCurrentArea.resolve(0, 0, hierarchy).reason());
+        assertEquals(
+                WorldCurrentArea.Reason.UNKNOWN_AREA,
+                WorldCurrentArea.resolve(0, 999, hierarchy).reason());
+        assertEquals(
+                WorldCurrentArea.Reason.MAP_MISMATCH,
+                WorldCurrentArea.resolve(1, 10, hierarchy).reason());
+        assertThrows(
+                IllegalArgumentException.class, () -> WorldCurrentArea.resolve(-1, 10, hierarchy));
+        assertThrows(
+                IllegalArgumentException.class, () -> WorldCurrentArea.resolve(0, -1, hierarchy));
+    }
+
+    @Test
     void oversizedCatalogIsRejectedBeforeTraversalOrCopies() {
         var oversized =
                 new AbstractList<WorldService.Area>() {
