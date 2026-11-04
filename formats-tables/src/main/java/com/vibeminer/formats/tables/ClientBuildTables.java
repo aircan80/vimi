@@ -904,7 +904,22 @@ final class ClientBuildTables implements BuildTables {
                                 generated
                                         .openPreparedLocal(source, options.keys().apply(build()), t)
                                         .join();
-                        if (current == null || !current.identity().equals(table.identity())) {
+                        if (current == null
+                                || !current.identity().equals(table.identity())
+                                || !source.equals(current.source())
+                                || !evidence.equals(issueEvidence(current))) {
+                            return new NativePreparationTypes.Result(
+                                    NativePreparationTypes.State.SOURCE_CHANGED,
+                                    access,
+                                    prepared.entry(),
+                                    null);
+                        }
+                        var finalStat =
+                                files.stat(FileRef.id(prepared.entry().fileDataId()), t).join();
+                        if (finalStat.state() != FileTypes.FileLookupState.FOUND
+                                || finalStat.file() == null
+                                || finalStat.file().fileDataId() != prepared.entry().fileDataId()
+                                || !source.contentKey().equals(finalStat.file().contentKey())) {
                             return new NativePreparationTypes.Result(
                                     NativePreparationTypes.State.SOURCE_CHANGED,
                                     access,
