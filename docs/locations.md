@@ -106,10 +106,20 @@ prepares or substitutes another flavor.
   existing area/world projection rules apply. A location is drawn on a UiMap
   only when every drawable candidate for that map agrees. Conflicting
   assignments and locations with no drawable candidate are counted, not drawn.
+  Candidates outside the map's 0..1 frame (for example Questie's `-1,-1`
+  placeholders) are reported and not drawn. As in the location map, a
+  non-drawable candidate (WMO-scoped or partial rectangle) does not block a
+  drawable one on the same UiMap. Placement resolves in chunks of 512, so
+  interactive map requests can run in between.
+- Assignment rows are indexed once by AreaID and MapID. Each coordinate checks
+  only related rows, so unreadable UiMap references on unrelated rows no longer
+  mark every resolution partial. AreaID or MapID read failures are still
+  reported for coordinates of that kind.
 
 The status line names the Questie release and flavor and counts each enabled
-layer on the presented map. It also reports unplaced and conflicting positions
-and the 2,048-marker cap. Faction reaction, phase, quest availability and
+layer on the presented map (positions, not distinct NPCs). It also reports role
+NPCs without recorded positions, unplaced and conflicting positions, the first
+source or resolution issue, and the 2,048-marker cap. Faction reaction, phase, quest availability and
 service inventories are not evaluated. Questie `friendlyToFaction` is kept on
 each NPC but not yet used as a filter.
 

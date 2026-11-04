@@ -123,15 +123,19 @@ public final class MapRoles {
                 var page =
                         handle.search(QuestieTypes.EntityKind.NPC, "", locale, offset, 500, cancel)
                                 .join();
+                boolean truncated = false;
                 for (var record : page.entities()) {
                     if (rows.size() >= MAX_NPCS) {
+                        truncated = true;
                         break;
                     }
                     var fields = new java.util.HashMap<String, Object>(record.fields());
                     fields.put("id", record.id());
                     rows.add(fields);
                 }
-                if (rows.size() >= MAX_NPCS && offset + page.entities().size() < page.total()) {
+                if (truncated
+                        || rows.size() >= MAX_NPCS
+                                && offset + page.entities().size() < page.total()) {
                     LocationAdapters.issue(issues, "Questie NPC bound reached; prefix retained.");
                     break;
                 }
@@ -194,10 +198,20 @@ public final class MapRoles {
             }
             var layers = EnumSet.noneOf(Layer.class);
             try {
-                if (row.get("questStarts") != null
-                        && LocationAdapters.entries(row.get("questStarts"), 4096).stream()
-                                .anyMatch(e -> e.getValue() instanceof Number)) {
-                    layers.add(Layer.QUEST_GIVER);
+                if (row.get("questStarts") != null) {
+                    boolean unusable = false;
+                    for (var entry : LocationAdapters.entries(row.get("questStarts"), 4096)) {
+                        try {
+                            LocationAdapters.integer(entry.getValue(), false);
+                            layers.add(Layer.QUEST_GIVER);
+                        } catch (IllegalArgumentException failure) {
+                            unusable = true;
+                        }
+                    }
+                    if (unusable) {
+                        LocationAdapters.issue(
+                                issues, "Some Questie questStarts entries are not quest IDs.");
+                    }
                 }
             } catch (IllegalArgumentException failure) {
                 LocationAdapters.issue(issues, "Some Questie questStarts fields are unsupported.");
@@ -328,7 +342,15 @@ public final class MapRoles {
                 }
                 var groups = new java.util.LinkedHashMap<Long, List<MapTypes.Candidate>>();
                 for (var candidate : resolved.candidates()) {
-                    if (candidate.x() != null && candidate.y() != null) {
+                    if (candidate.x() == null || candidate.y() == null) {
+                        continue;
+                    }
+                    if (!(candidate.x() >= 0 && candidate.x() <= 1)
+                            || !(candidate.y() >= 0 && candidate.y() <= 1)) {
+                        LocationAdapters.issue(
+                                issues,
+                                "Some recorded positions fall outside the map frame; not drawn.");
+                    } else {
                         groups.computeIfAbsent(candidate.map().id(), k -> new ArrayList<>())
                                 .add(candidate);
                     }

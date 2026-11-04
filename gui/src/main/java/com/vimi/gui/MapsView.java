@@ -167,7 +167,10 @@ final class MapsView extends BorderPane implements AutoCloseable {
 
     /** Mounts quest/service overlays; their controls join the footer and markers the canvas. */
     void attachRoles(MapRoleOverlay overlay) {
-        if (roles != null) roles.close();
+        if (roles != null) {
+            footer.getChildren().remove(roles.controls());
+            roles.close();
+        }
         roles = overlay;
         footer.getChildren().add(1, overlay.controls());
         draw();
@@ -424,7 +427,7 @@ final class MapsView extends BorderPane implements AutoCloseable {
                         (r.maxX() - r.minX()) * box[2], (r.maxY() - r.minY()) * box[3]);
             }
         }
-        if (roles != null) roles.paint(gc, box, matching ? presented.value() : null);
+        if (roles != null) roles.paint(gc, box, image != null && matching ? presented.value() : null);
     }
 
     private void publish(long request, long version, BuildLocationMaps source, Runnable action) {

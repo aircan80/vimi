@@ -44,6 +44,7 @@ public final class MapsBrowserUiTest {
     private static final TableRead ASSIGNMENTS = new TableRead(Table.ASSIGNMENT, "b".repeat(32), "C9CC8DFB", ReadState.READY);
     private static final Rect FULL = new Rect(0, 0, 1, 1);
     private static final AtomicInteger roleLoads = new AtomicInteger(), roleKey = new AtomicInteger();
+    private static final CountDownLatch roleCancelled = new CountDownLatch(1);
     private MapsBrowserUiTest() {}
 
     private static Node node(long id, String name, Parent parent) {
@@ -118,6 +119,15 @@ public final class MapsBrowserUiTest {
                 view.attachRoles(new MapRoleOverlay(token -> {
                     require(!Platform.isFxApplicationThread(), "Role placement on FX");
                     roleLoads.incrementAndGet();
+                    if (roleKey.get() == 2) {
+                        token.onCancel(() -> {
+                            require(!Platform.isFxApplicationThread(), "Role cancellation on FX");
+                            roleCancelled.countDown();
+                            throw new IllegalStateException("lower cancellation failure stays off FX");
+                        });
+                        while (!token.isCanceled()) Thread.onSpinWait();
+                        throw new java.util.concurrent.CancellationException();
+                    }
                     return MapRoleOverlayTest.placement("v1.0.10", 947, List.of(
                             MapRoleOverlayTest.npc(2, 4, null, 25, 25),
                             MapRoleOverlayTest.npc(3, 0, List.of(7L), 75, 25)));
@@ -161,6 +171,11 @@ public final class MapsBrowserUiTest {
                 require(view.roles().drawn().isEmpty(), "changed source key retires markers");
             });
             await(() -> view.roles().drawn().size() == 2 && roleLoads.get() == 2, "changed key reloads");
+            fx(() -> { roleKey.incrementAndGet(); view.redraw(); });
+            await(() -> roleLoads.get() == 3, "held placement starts");
+            fx(() -> { roleKey.incrementAndGet(); view.redraw(); });
+            require(roleCancelled.await(2, TimeUnit.SECONDS), "held placement cancelled off FX");
+            await(() -> view.roles().drawn().size() == 2 && roleLoads.get() == 4, "newest key wins after held load");
             fx(() -> {
                 view.roles().toggle(com.vibeminer.concepts.locations.MapRoles.Layer.VENDOR).setSelected(false);
                 view.roles().toggle(com.vibeminer.concepts.locations.MapRoles.Layer.QUEST_GIVER).setSelected(false);

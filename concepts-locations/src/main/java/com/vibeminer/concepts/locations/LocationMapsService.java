@@ -141,13 +141,17 @@ public final class LocationMapsService implements BuildLocationMaps {
                 data.reference("UiMapID", "UiMap");
                 data.reference("MapID", "Map");
                 var index = assignmentIndex(assignments, data, request);
-                if (!location.coordinates().isEmpty()) {
-                    for (var failure : index.failures()) {
-                        MapTable.issue(issues, failure);
-                    }
-                }
                 for (var coordinate : location.coordinates()) {
                     var kind = coordinate.map().kind();
+                    var keyFailures =
+                            kind == LocationTypes.MapKind.AREA
+                                    ? index.areaFailures()
+                                    : kind == LocationTypes.MapKind.WORLD_MAP
+                                            ? index.mapFailures()
+                                            : List.<String>of();
+                    for (var failure : keyFailures) {
+                        MapTable.issue(issues, failure);
+                    }
                     var related =
                             kind == LocationTypes.MapKind.AREA
                                     ? index.byArea().getOrDefault(coordinate.map().id(), List.of())
@@ -226,7 +230,8 @@ public final class LocationMapsService implements BuildLocationMaps {
             List<Db2Types.Row> source,
             Map<Long, List<Db2Types.Row>> byArea,
             Map<Long, List<Db2Types.Row>> byMap,
-            List<String> failures) {}
+            List<String> areaFailures,
+            List<String> mapFailures) {}
 
     private AssignmentIndex assignmentIndex;
 
@@ -237,20 +242,28 @@ public final class LocationMapsService implements BuildLocationMaps {
         }
         var byArea = new HashMap<Long, List<Db2Types.Row>>();
         var byMap = new HashMap<Long, List<Db2Types.Row>>();
-        var failures = new ArrayList<String>();
+        var areaFailures = new ArrayList<String>();
+        var mapFailures = new ArrayList<String>();
         for (var assignment : assignments) {
             token.check();
             for (String field : List.of("AreaID", "MapID")) {
+                boolean area = field.equals("AreaID");
                 try {
-                    (field.equals("AreaID") ? byArea : byMap)
+                    (area ? byArea : byMap)
                             .computeIfAbsent(data.number(assignment, field), k -> new ArrayList<>())
                             .add(assignment);
                 } catch (MapTable.Projection failure) {
-                    MapTable.issue(failures, failure.getMessage());
+                    MapTable.issue(area ? areaFailures : mapFailures, failure.getMessage());
                 }
             }
         }
-        assignmentIndex = new AssignmentIndex(assignments, byArea, byMap, List.copyOf(failures));
+        assignmentIndex =
+                new AssignmentIndex(
+                        assignments,
+                        byArea,
+                        byMap,
+                        List.copyOf(areaFailures),
+                        List.copyOf(mapFailures));
         return assignmentIndex;
     }
 

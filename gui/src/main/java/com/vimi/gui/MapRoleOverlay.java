@@ -57,6 +57,10 @@ final class MapRoleOverlay implements AutoCloseable {
                         thread.setDaemon(true);
                         return thread;
                     });
+    /** Lower cancellation callbacks may block or throw; they never run on FX. */
+    private final java.util.concurrent.ExecutorService cancellation =
+            java.util.concurrent.Executors.newSingleThreadExecutor(
+                    Thread.ofPlatform().daemon().name("map-role-cancel").factory());
     private MapRoles.Placement placement;
     private String failure;
     private Object placementKey;
@@ -75,7 +79,7 @@ final class MapRoleOverlay implements AutoCloseable {
             var toggle = new CheckBox(label(layer));
             toggle.setId("maps-role-" + layer.name().toLowerCase(java.util.Locale.ROOT).replace('_', '-'));
             toggle.setTextFill(color(layer));
-            toggle.selectedProperty().addListener((o, before, on) -> changed());
+            toggle.selectedProperty().addListener((o, before, on) -> changed(on));
             toggles.put(layer, toggle);
             controls.getChildren().add(toggle);
         }
@@ -118,8 +122,13 @@ final class MapRoleOverlay implements AutoCloseable {
         return result;
     }
 
-    private void changed() {
+    private void changed(boolean on) {
         if (closed) return;
+        // Turning the first layer on retries a failed placement instead of keeping a stale error.
+        if (on && failure != null && layers().size() == 1) {
+            failure = null;
+            placementKey = null;
+        }
         if (layers().isEmpty()) {
             drawn = List.of();
             status.setText("Map overlays off");
@@ -164,7 +173,7 @@ final class MapRoleOverlay implements AutoCloseable {
 
     /** Latest request wins: at most one placement runs; a newer key waits for it to drain. */
     private void load(Object current) {
-        if (loading != null) loading.cancel();
+        cancel(loading);
         loading = new Cancellation();
         placementKey = current;
         placement = null;
@@ -244,7 +253,7 @@ final class MapRoleOverlay implements AutoCloseable {
             for (var marker : markers)
                 for (var layer : marker.npc().layers())
                     if (layers.contains(layer)) counts.merge(layer, 1, Integer::sum);
-            text.append(" · on this map:");
+            text.append(" · positions on this map:");
             for (var layer : layers)
                 text.append(" ").append(counts.getOrDefault(layer, 0)).append(" ")
                         .append(label(layer).toLowerCase(java.util.Locale.ROOT)).append(",");
@@ -255,12 +264,17 @@ final class MapRoleOverlay implements AutoCloseable {
         }
         text.append(" · ").append(catalog.npcs().size()).append(" role NPCs, ")
                 .append(placement.locations()).append(" recorded positions");
+        long withoutPositions = catalog.npcs().stream().filter(n -> n.locations().isEmpty()).count();
+        if (withoutPositions > 0)
+            text.append(" · ").append(withoutPositions).append(" role NPCs without recorded positions");
         if (placement.unplaced() > 0)
-            text.append(" · ").append(placement.unplaced()).append(" not placed on any map");
+            text.append(" · ").append(placement.unplaced()).append(" positions not placed on any map");
         if (placement.ambiguous() > 0)
-            text.append(" · ").append(placement.ambiguous()).append(" with conflicting assignments not drawn");
-        if (catalog.state() == LocationTypes.State.PARTIAL && !catalog.issues().isEmpty())
-            text.append(" · partial: ").append(catalog.issues().getFirst());
+            text.append(" · ").append(placement.ambiguous())
+                    .append(" map placements with conflicting assignments not drawn");
+        if (catalog.state() == LocationTypes.State.PARTIAL || !placement.issues().isEmpty())
+            text.append(" · partial: ").append(placement.issues().isEmpty()
+                    ? "source coverage incomplete" : placement.issues().getFirst());
         return text.append(" · faction, phase and quest availability not evaluated").toString();
     }
 
@@ -268,6 +282,16 @@ final class MapRoleOverlay implements AutoCloseable {
         while (error.getCause() != null && error instanceof java.util.concurrent.CompletionException)
             error = error.getCause();
         return error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+    }
+
+    private void cancel(Cancellation token) {
+        if (token != null) cancellation.execute(() -> {
+            try {
+                token.cancel();
+            } catch (RuntimeException ignored) {
+                // The placement is already retired; a lower cancellation failure has no reader.
+            }
+        });
     }
 
     private void show(boolean busy) {
@@ -278,10 +302,11 @@ final class MapRoleOverlay implements AutoCloseable {
     @Override
     public void close() {
         closed = true;
-        if (loading != null) loading.cancel();
+        cancel(loading);
         loading = null;
         placement = null;
         drawn = List.of();
         worker.shutdown();
+        cancellation.shutdown();
     }
 }

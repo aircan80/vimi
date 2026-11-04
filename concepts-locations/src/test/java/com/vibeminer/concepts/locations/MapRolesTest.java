@@ -191,4 +191,23 @@ final class MapRolesTest {
                                         resolved(locations.get(0), List.of()),
                                         resolved(locations.get(2), List.of()))));
     }
+
+    @Test
+    void outOfFrameAndNonQuestStartEntriesAreReportedNotDrawn() {
+        var odd = npc(4, 0L, java.util.Arrays.asList(0L, "x", 1.5));
+        var catalog =
+                catalog(
+                        QuestieTypes.Flavor.FOREVER,
+                        MapRoles.REVIEWED_RELEASE,
+                        List.of(npc(2, 4L, null), odd));
+        assertTrue(catalog.npcs().stream().noneMatch(n -> n.id() == 4L));
+        assertTrue(catalog.issues().stream().anyMatch(i -> i.contains("not quest IDs")));
+        var location = MapRoles.locations(catalog).getFirst();
+        var placement =
+                MapRoles.place(
+                        catalog, List.of(resolved(location, List.of(candidate(1411, -.01, -.01)))));
+        assertTrue(placement.markers(1411, Set.of(MapRoles.Layer.values())).isEmpty());
+        assertEquals(1, placement.unplaced());
+        assertTrue(placement.issues().stream().anyMatch(i -> i.contains("outside the map frame")));
+    }
 }

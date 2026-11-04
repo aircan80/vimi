@@ -266,12 +266,18 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         var build = job.build();
         var locale = job.locale();
         view.attachRoles(new MapRoleOverlay(token -> {
-            var catalog = sources.mapRoles(build, locale, token);
             var source = work.locationMapsHandle();
             if (source == null) throw new IllegalStateException("Selected-build map tables are unavailable.");
+            var catalog = sources.mapRoles(build, locale, token);
             var locations = com.vibeminer.concepts.locations.MapRoles.locations(catalog);
-            return com.vibeminer.concepts.locations.MapRoles.place(catalog,
-                    source.resolveAll(locations, token).join());
+            // Bounded chunks let interactive artwork and location requests interleave on the shared worker.
+            var resolutions = new java.util.ArrayList<com.vibeminer.concepts.locations.MapTypes.Resolution>(locations.size());
+            for (int at = 0; at < locations.size(); at += 512) {
+                token.check();
+                resolutions.addAll(source.resolveAll(
+                        locations.subList(at, Math.min(locations.size(), at + 512)), token).join());
+            }
+            return com.vibeminer.concepts.locations.MapRoles.place(catalog, resolutions);
         }, () -> java.util.Arrays.asList(sources.mapRolesKey(build), work.revision(),
                 work.locationMapsHandle()), view::redraw));
     }
