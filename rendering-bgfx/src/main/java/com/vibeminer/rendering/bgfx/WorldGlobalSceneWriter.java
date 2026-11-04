@@ -182,6 +182,228 @@ public final class WorldGlobalSceneWriter {
         }
     }
 
+    /**
+     * Fixed canonical writer, off FX and inside the actual Source operation. The synchronous borrow
+     * must remain frozen; a returned file is still unadvertised through Source final validation.
+     */
+    public static UnadvertisedFile writeUnadvertised(
+            Destination target, StructuralRead borrowed, BooleanSupplier stopping)
+            throws IOException {
+        Objects.requireNonNull(target);
+        Objects.requireNonNull(borrowed);
+        Objects.requireNonNull(stopping);
+        WorldGlobalFileAccess.stop(stopping);
+        var counts = Objects.requireNonNull(borrowed.counts());
+        var description = Objects.requireNonNull(borrowed.description());
+        require(
+                description.scope().equals(target.scope())
+                        && description.sources().size() == counts.sources()
+                        && description.materials().size() == counts.materials()
+                        && description.images().size() == counts.images());
+        var groups = bounded(borrowed.groups(), 8);
+        var batches = bounded(borrowed.batches(), 64);
+        require(groups.size() == counts.groups() && batches.size() == counts.batches());
+        int pixels = 0;
+        for (int n = 0; n < counts.images(); n++) {
+            var image = description.images().get(n);
+            int bytes = image.width() * image.height() * 4;
+            require(borrowed.imageBytes(n) == bytes);
+            pixels += bytes / 4;
+        }
+        require(pixels == counts.pixels());
+        WorldGlobalHashes.Mesh frozen =
+                new WorldGlobalHashes.Mesh() {
+                    public WorldGlobalLayout.Counts counts() {
+                        return counts;
+                    }
+
+                    public List<WorldGlobalHashes.Group> groups() {
+                        return groups;
+                    }
+
+                    public List<WorldGlobalHashes.Batch> batches() {
+                        return batches;
+                    }
+
+                    public float vertex(int vertex, int component) {
+                        return borrowed.vertex(vertex, component);
+                    }
+
+                    public int index(int ordinal) {
+                        return borrowed.index(ordinal);
+                    }
+                };
+        var hashes = WorldGlobalHashes.mesh(frozen, stopping);
+        float[] bounds = bounds(frozen, stopping);
+        byte[] header = WorldGlobalFileCodec.header(target, description, counts, hashes, bounds);
+        byte[] metadata =
+                WorldGlobalFileCodec.metadata(
+                        description, counts, groups, batches, hashes.groups());
+        var parent =
+                Files.readAttributes(
+                        target.path().getParent(),
+                        BasicFileAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS);
+        if (!parent.isDirectory()) {
+            throw new IOException("Global destination is not a private directory");
+        }
+        boolean created = false;
+        UnadvertisedFile result = null;
+        try {
+            String sha;
+            try (var file =
+                    java.nio.channels.FileChannel.open(
+                            target.path(),
+                            java.nio.file.StandardOpenOption.CREATE_NEW,
+                            java.nio.file.StandardOpenOption.READ,
+                            java.nio.file.StandardOpenOption.WRITE,
+                            LinkOption.NOFOLLOW_LINKS)) {
+                created = true;
+                WorldGlobalFileAccess.write(file, java.nio.ByteBuffer.wrap(header), stopping);
+                long bodyCrc = writeBody(file, borrowed, frozen, description, metadata, stopping);
+                if (file.position() != counts.offsets().actualBytes()
+                        || file.size() != counts.offsets().actualBytes()) {
+                    throw new IOException("Written global extent differs");
+                }
+                var actual =
+                        WorldGlobalFileAccess.meshHash(file, counts, groups, batches, stopping);
+                if (!actual.hashes().equals(hashes)
+                        || !java.util.Arrays.equals(actual.bounds(), bounds)) {
+                    throw new IOException("Global structural borrow changed while writing");
+                }
+                var fixed =
+                        java.nio.ByteBuffer.wrap(header).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+                fixed.putInt(424, (int) bodyCrc);
+                fixed.putInt(428, (int) WorldGlobalHashes.headerCrc(header));
+                file.position(0);
+                WorldGlobalFileAccess.write(file, java.nio.ByteBuffer.wrap(header), stopping);
+                var digest = WorldGlobalFileAccess.hash(file, counts, stopping);
+                if (digest.bodyCrc32c() != bodyCrc) {
+                    throw new IOException("Written global CRC differs");
+                }
+                sha = digest.sha256();
+                fixed.position(160).put(HexFormat.of().parseHex(sha));
+                file.position(160);
+                WorldGlobalFileAccess.write(
+                        file, java.nio.ByteBuffer.wrap(header, 160, 32), stopping);
+                WorldGlobalHashes.verifyIntegrity(header, digest, sha);
+                WorldGlobalFileAccess.stop(stopping);
+                if (file.size() != counts.offsets().actualBytes()) {
+                    throw new IOException("Written global size changed");
+                }
+                file.position(counts.offsets().actualBytes());
+                WorldGlobalFileAccess.eof(file, counts.offsets().actualBytes(), stopping);
+            }
+            var expected =
+                    new ExpectedFile(
+                            new WorldGlobalStatus.Identity(target.nonce(), target.scope(), sha),
+                            counts.offsets().actualBytes(),
+                            counts,
+                            description.recipe(),
+                            hashes.nativeWire());
+            result = finalizedCreated(target, expected);
+            return result;
+        } catch (IOException | RuntimeException | Error failure) {
+            if (created && result == null) {
+                try {
+                    Files.deleteIfExists(target.path());
+                } catch (IOException | RuntimeException | Error cleanup) {
+                    if (cleanup != failure) {
+                        failure.addSuppressed(cleanup);
+                    }
+                }
+            }
+            throw failure;
+        }
+    }
+
+    private static long writeBody(
+            java.nio.channels.FileChannel file,
+            StructuralRead read,
+            WorldGlobalHashes.Mesh mesh,
+            Description description,
+            byte[] metadata,
+            BooleanSupplier stopping)
+            throws IOException {
+        var sink = new WorldGlobalFileAccess.Sink(file, stopping);
+        sink.bytes(metadata, 0, metadata.length);
+        var counts = mesh.counts();
+        for (int vertex = 0; vertex < counts.vertices(); vertex++) {
+            WorldGlobalFileAccess.stop(stopping);
+            for (int component = 0; component < 5; component++) {
+                float value = mesh.vertex(vertex, component);
+                require(
+                        component < 3
+                                ? WorldGlobalFileCodec.position(value)
+                                : WorldGlobalFileCodec.uv(value));
+                sink.integer(Float.floatToRawIntBits(value));
+            }
+        }
+        for (int index = 0; index < counts.indices(); index++) {
+            if ((index & 1023) == 0) {
+                WorldGlobalFileAccess.stop(stopping);
+            }
+            int value = mesh.index(index);
+            require(value >= 0 && value < counts.vertices());
+            sink.shortValue(value);
+        }
+        byte[] scratch = new byte[4096];
+        for (int image = 0; image < counts.images(); image++) {
+            int length =
+                    description.images().get(image).width()
+                            * description.images().get(image).height()
+                            * 4;
+            var hash = sha();
+            for (int offset = 0; offset < length; ) {
+                WorldGlobalFileAccess.stop(stopping);
+                int size = Math.min(scratch.length, length - offset);
+                for (int n = 0; n < size; n++) {
+                    int value = read.imageByte(image, offset + n);
+                    require(value >= 0 && value <= 255 && ((offset + n) % 4 != 3 || value == 255));
+                    scratch[n] = (byte) value;
+                }
+                hash.update(scratch, 0, size);
+                sink.bytes(scratch, 0, size);
+                offset += size;
+            }
+            if (!HexFormat.of()
+                    .formatHex(hash.digest())
+                    .equals(description.images().get(image).opaqueRgbaSha256())) {
+                throw new IOException("Global image changed while writing");
+            }
+        }
+        return sink.finish();
+    }
+
+    private static float[] bounds(WorldGlobalHashes.Mesh read, BooleanSupplier stopping) {
+        float[] bounds = {
+            Float.POSITIVE_INFINITY,
+            Float.POSITIVE_INFINITY,
+            Float.POSITIVE_INFINITY,
+            Float.NEGATIVE_INFINITY,
+            Float.NEGATIVE_INFINITY,
+            Float.NEGATIVE_INFINITY
+        };
+        for (int n = 0; n < read.counts().vertices(); n++) {
+            WorldGlobalFileAccess.stop(stopping);
+            for (int axis = 0; axis < 3; axis++) {
+                float value = read.vertex(n, axis);
+                require(WorldGlobalFileCodec.position(value));
+                bounds[axis] = Math.min(bounds[axis], value);
+                bounds[axis + 3] = Math.max(bounds[axis + 3], value);
+            }
+        }
+        return bounds;
+    }
+
+    static java.security.MessageDigest sha() {
+        try {
+            return java.security.MessageDigest.getInstance("SHA-256");
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new AssertionError(impossible);
+        }
+    }
+
     private record Data(Path path, Object identity, ExpectedFile expected) {}
 
     private record Cleanup(Data data, CompletableFuture<Void> done) {}
