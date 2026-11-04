@@ -26,6 +26,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Isolated worker-only source authority engine. No caller DTO can mint a heavy proof. */
 final class WorldStreamScopes {
+    static final CapturedRowsTypes.ReadLimits READ_LIMITS =
+            new CapturedRowsTypes.ReadLimits(256 << 10, 128 << 10, 64 << 10, 128, 128, 64 << 10);
+
     static final class Scope {
         private final long owner, generation, mapId, wdtId;
         private final String wdtKey, digest;
@@ -59,7 +62,30 @@ final class WorldStreamScopes {
 
     private record MapBinding(long mapId, long wdtId, String identity) {}
 
-    private record Source(String key, byte[] bytes) {}
+    private static final class Source implements AutoCloseable {
+        private final String key;
+        private byte[] bytes;
+
+        Source(String key, byte[] bytes) {
+            this.key = key;
+            this.bytes = bytes;
+        }
+
+        String key() {
+            return key;
+        }
+
+        byte[] bytes() {
+            return Objects.requireNonNull(bytes, "Source input retired");
+        }
+
+        @Override
+        public void close() {
+            bytes = null;
+        }
+    }
+
+    private record Maid(String key, int[] tuples, BitSet present) {}
 
     private record Proof(Scope token, MapBinding map, int[] maid, BitSet present) {}
 
@@ -99,7 +125,34 @@ final class WorldStreamScopes {
             synchronized (this) {
                 replacement = null;
             }
-            Source wdt = read(map.wdtId(), 1 << 20, token);
+            Maid maid = readMaid(map.wdtId(), token);
+            // Recheck the qualified selected row and WDT identity before committing a proof.
+            if (!map.equals(map(requested.id(), token))
+                    || !maid.key().equals(stat(map.wdtId(), token).contentKey())) {
+                throw new IllegalStateException("Scope source changed");
+            }
+            String digest = digest(map, maid.key());
+            synchronized (this) {
+                checkOpen();
+                token.check();
+                if (generation == Long.MAX_VALUE) {
+                    throw new IllegalStateException("Scope generation exhausted");
+                }
+                var scope =
+                        new Scope(
+                                owner, ++generation, map.mapId(), map.wdtId(), maid.key(), digest);
+                replacement = new Proof(scope, map, maid.tuples(), maid.present());
+                return scope;
+            }
+        } finally {
+            end();
+        }
+    }
+
+    // Owns and retires source bytes/parsed inventory before any next Map capture is opened.
+    private Maid readMaid(long id, Cancellation token) {
+        try (var wdt = read(id, 1 << 20, token)) {
+
             var world = WorldFormats.wdt(wdt.bytes(), token::isCanceled);
             int[] maid = new int[4096 * 8];
             var present = new BitSet(4096);
@@ -118,25 +171,7 @@ final class WorldStreamScopes {
                     maid[ordinal * 8 + i] = (int) refs[i];
                 }
             }
-            // Recheck the qualified selected row and WDT identity before committing a proof.
-            if (!map.equals(map(requested.id(), token))
-                    || !wdt.key().equals(stat(map.wdtId(), token).contentKey())) {
-                throw new IllegalStateException("Scope source changed");
-            }
-            String digest = digest(map, wdt.key());
-            synchronized (this) {
-                checkOpen();
-                token.check();
-                if (generation == Long.MAX_VALUE) {
-                    throw new IllegalStateException("Scope generation exhausted");
-                }
-                var scope =
-                        new Scope(owner, ++generation, map.mapId(), map.wdtId(), wdt.key(), digest);
-                replacement = new Proof(scope, map, maid, present);
-                return scope;
-            }
-        } finally {
-            end();
+            return new Maid(wdt.key(), maid, present);
         }
     }
 
@@ -313,7 +348,11 @@ final class WorldStreamScopes {
             MapBinding found = null;
             do {
                 token.check();
-                var page = rows.readOrdinalPage(ordinal, 1, token).join();
+                var page = rows.readOrdinalPage(ordinal, 1, READ_LIMITS, token).join();
+                if (page.state() == CapturedRowsTypes.ReadState.LIMIT_EXCEEDED) {
+                    throw new UnsupportedOperationException(
+                            "Map source exceeds bounded hot scope profile");
+                }
                 token.check();
                 if (page.state() != CapturedRowsTypes.ReadState.READ
                         || !page.identity().equals(receipt.graphIdentity())
