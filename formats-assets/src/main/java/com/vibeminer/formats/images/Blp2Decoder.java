@@ -40,6 +40,18 @@ public final class Blp2Decoder {
         return decode(source, 0, new Limits(), Cancellation.NONE);
     }
 
+    /**
+     * Runs the same bounded decoder on the calling thread without creating a decoder task. Call
+     * only from a worker: source reads may block. Sources remain caller owned, and their own
+     * asynchronous work is not certified retired by this method. With immediate in-memory reads,
+     * the decoder stack has returned before the caller starts its next allocation phase.
+     */
+    public static Image decodeSynchronous(
+            AssetSource source, int mip, Limits limits, Cancellation token, MipProfile profile) {
+        Objects.requireNonNull(profile);
+        return decodeCore(source, mip, 0, limits, token, profile, null);
+    }
+
     public static CompletableFuture<List<Mip>> readMips(
             AssetSource source, Limits limits, Cancellation token) {
         return readMips(source, limits, token, MipProfile.STRICT);

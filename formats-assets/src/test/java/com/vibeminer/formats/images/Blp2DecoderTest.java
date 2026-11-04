@@ -23,6 +23,91 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 final class Blp2DecoderTest {
+    @Test
+    void synchronousDecodeStaysOnCallerAndPreservesOwnedPixelsAndMetadata() {
+        byte[] bytes = build(2, 0, 0, 4, 4, block(0xf800, 0x07e0, 0));
+        var input = AssetSource.bytes(bytes);
+        Thread caller = Thread.currentThread();
+        var reads = new AtomicInteger();
+        var observed =
+                new AssetSource() {
+                    public long length() {
+                        assertEquals(caller, Thread.currentThread());
+                        return input.length();
+                    }
+
+                    public CompletableFuture<byte[]> readAt(
+                            long offset, int count, Cancellation token) {
+                        assertEquals(caller, Thread.currentThread());
+                        reads.incrementAndGet();
+                        return input.readAt(offset, count, token);
+                    }
+                };
+        var actual =
+                Blp2Decoder.decodeSynchronous(
+                        observed, 0, new Limits(), Cancellation.NONE, Blp2Types.MipProfile.STRICT);
+        var expected = Blp2Decoder.decode(input).join();
+        assertTrue(reads.get() >= 2);
+        assertEquals(expected.encoding(), actual.encoding());
+        assertEquals(expected.mips(), actual.mips());
+        assertEquals(expected.width(), actual.width());
+        assertEquals(expected.height(), actual.height());
+        assertArrayEquals(expected.rgba(), actual.rgba());
+        byte[] borrowedCopy = actual.rgba();
+        borrowedCopy[0] ^= 1;
+        assertArrayEquals(expected.rgba(), actual.rgba());
+    }
+
+    @Test
+    void synchronousDecodePreservesStrictLimitsAndDirectFormatFailure() {
+        byte[] bytes = build(2, 0, 0, 4, 4, block(0xf800, 0x07e0, 0));
+        var limit =
+                assertThrows(
+                        BlpFormatException.class,
+                        () ->
+                                Blp2Decoder.decodeSynchronous(
+                                        AssetSource.bytes(bytes),
+                                        0,
+                                        new Limits(148, 4, 16, 8, 64),
+                                        Cancellation.NONE,
+                                        Blp2Types.MipProfile.STRICT));
+        assertEquals("BLP_LIMIT", limit.code());
+        bytes[0] = 0;
+        var malformed =
+                assertThrows(
+                        BlpFormatException.class,
+                        () ->
+                                Blp2Decoder.decodeSynchronous(
+                                        AssetSource.bytes(bytes),
+                                        0,
+                                        new Limits(),
+                                        Cancellation.NONE,
+                                        Blp2Types.MipProfile.STRICT));
+        assertEquals("BLP_UNSUPPORTED", malformed.code());
+    }
+
+    @Test
+    void synchronousDecodeHonorsCancellationBeforeOpeningSource() {
+        var stop = new Cancellation();
+        stop.cancel();
+        var forbidden =
+                new AssetSource() {
+                    public long length() {
+                        throw new AssertionError("Canceled source was inspected");
+                    }
+
+                    public CompletableFuture<byte[]> readAt(
+                            long offset, int count, Cancellation token) {
+                        throw new AssertionError("Canceled source was read");
+                    }
+                };
+        assertThrows(
+                java.util.concurrent.CancellationException.class,
+                () ->
+                        Blp2Decoder.decodeSynchronous(
+                                forbidden, 0, new Limits(), stop, Blp2Types.MipProfile.STRICT));
+    }
+
     static byte[] build(int encoding, int depth, int alpha, int width, int height, byte[]... mips) {
         int start = 148 + (encoding == 1 ? 1024 : 0), length = start;
         for (byte[] mip : mips) {
