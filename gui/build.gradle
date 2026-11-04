@@ -508,3 +508,13 @@ tasks.register('worldPreparedTextureUiTest', JavaExec) {
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.WorldPreparedTextureUiTest'
 }
+
+tasks.register('worldInlineCadenceProof', JavaExec) {
+    group = 'verification'
+    description = 'Measures authored warm-camera v1 Vulkan publication and FX acceptance cadence.'
+    dependsOn testClasses, ':rendering-bgfx:verifyShaders', ':rendering-bgfx:verifyTerrainShaders'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldInlineCadenceProof'
+    jvmArgs '--enable-native-access=ALL-UNNAMED', '-Dprism.order=sw'
+    args layout.buildDirectory.dir('world-inline-cadence').get().asFile.absolutePath
+}
