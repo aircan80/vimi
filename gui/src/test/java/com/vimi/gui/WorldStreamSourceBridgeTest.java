@@ -23,6 +23,7 @@ public final class WorldStreamSourceBridgeTest {
         successfulMove(true, false, true);
         successfulMove(false, true, false);
         successfulMove(true, false, false);
+        untakenResidentCloseLeavesMovedPacketOwned();
         rejectLateView(2);
         rejectLateView(3);
         fatalCleanupAfterMove();
@@ -75,6 +76,36 @@ public final class WorldStreamSourceBridgeTest {
                 check(!Files.exists(path), "Transport retirement deletes packet");
             }
             check(fixture.pool.stats().leaseClaims() == 0, "No material lease leaked");
+        } finally {
+            fixture.close();
+            Files.deleteIfExists(path);
+            Files.deleteIfExists(path.getParent());
+        }
+    }
+
+    @SuppressWarnings("try")
+    private static void untakenResidentCloseLeavesMovedPacketOwned() throws Exception {
+        var fixture = new Fixture();
+        var path = Files.createTempDirectory("bridge-untaken-").resolve("tile-1.wst");
+        try {
+            var scope = fixture.scope();
+            var producer = new WorldStreamSourceBridge.Producer(fixture.source, scope, TILE, () -> true);
+            try (var packet = producer.prepare(
+                    AuthoredPacketDestination.create(path, scope.scopeSha256()), () -> false)) {
+                producer.close();
+                check(fixture.pool.stats().leaseClaims() == 0, "Untaken base retired exactly once");
+                check(Files.exists(path), "Untaken source retirement cannot delete moved packet");
+                try {
+                    producer.takePrepared();
+                    throw new AssertionError("Retired producer cannot transfer a source holder");
+                } catch (IllegalStateException expected) {
+                    // No holder can be minted from a retired producer.
+                }
+                producer.close();
+            } finally {
+                producer.close();
+            }
+            check(!Files.exists(path), "File ownership stays with returned packet");
         } finally {
             fixture.close();
             Files.deleteIfExists(path);
