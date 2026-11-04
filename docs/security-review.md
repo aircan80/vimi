@@ -109,8 +109,8 @@ folder is private.
   not proof of codec memory safety or sandbox confinement. See `VoiceDecoder`,
   `OggVoiceInput`, `VorbisWorker` and `PcmClip` in `formats-audio/src/main/java`.
 - World explorer streaming audio accepts byte-identified Ogg Vorbis (same framing
-  preflight) or MPEG-1 audio (JavaMP3 1.0.1, unmaintained since 2017) up to 24 MiB,
-  uses `-Xmx96m`/48 MiB metaspace, bounds output to 15 minutes, fails after 8 s
+  preflight) or MPEG-1 audio (JavaMP3 1.0.1, unmaintained since 2017) up to 16 MiB,
+  uses `-Xmx128m`/48 MiB metaspace, bounds output to 15 minutes, fails after 8 s
   without output and destroys the child on close. See `AudioStreamDecoder`,
   `AudioStreamWorker` and `PcmStream`, and [the checkpoint](world-area-audio-checkpoint.md).
 - GPU preview uses LWJGL/bgfx/GLFW and OS graphics drivers in a child JVM with

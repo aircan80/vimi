@@ -39,6 +39,8 @@ final class WorldAudioControls implements AutoCloseable {
     private WorldCurrentArea.Result area;
     private Cancellation request;
     private long generation;
+    private BuildWorld sourceHandle;
+    private WorldAudioPlayback.Source source;
     private boolean closed;
 
     WorldAudioControls() {
@@ -99,6 +101,8 @@ final class WorldAudioControls implements AutoCloseable {
     }
 
     private void toggle(WorldAudioPlayback.Channel channel, boolean on) {
+        // A previously resolved area may be stale; enabling waits for the current area.
+        if (on) channel.track(null, null);
         channel.enabled(on);
         if (on) {
             resolved = null;
@@ -136,12 +140,21 @@ final class WorldAudioControls implements AutoCloseable {
                         musicStatus = ambienceStatus = "Recorded area audio unavailable";
                         resolved = null;
                     } else {
-                        publish(plan, handle::audioFile);
+                        publish(plan, source(handle));
                         musicStatus = plan.music().message();
                         ambienceStatus = plan.ambience().message();
                     }
                     refresh();
                 }));
+    }
+
+    /** One stable source per handle, so an unchanged sound kit keeps playing. */
+    private WorldAudioPlayback.Source source(BuildWorld handle) {
+        if (handle != sourceHandle) {
+            sourceHandle = handle;
+            source = handle::audioFile;
+        }
+        return source;
     }
 
     private void publish(WorldAreaAudio.Plan plan, WorldAudioPlayback.Source source) {

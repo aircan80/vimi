@@ -12,7 +12,7 @@ import java.util.function.BooleanSupplier;
  */
 public final class AudioStreamDecoder {
     public static final String REVISION = "world-audio-stream-jogg-1.0.6-javamp3-1.0.1-v1";
-    public static final int MAX_ENCODED = 24 << 20, MAX_SECONDS = 15 * 60;
+    public static final int MAX_ENCODED = 16 << 20, MAX_SECONDS = 15 * 60;
     static final int MAGIC = 0x56505332;
     static final long STALL_NANOS = TimeUnit.SECONDS.toNanos(8);
 
@@ -75,7 +75,7 @@ public final class AudioStreamDecoder {
                 new ProcessBuilder(
                                 Path.of(System.getProperty("java.home"), "bin", executable)
                                         .toString(),
-                                "-Xmx96m",
+                                "-Xmx128m",
                                 "-XX:MaxMetaspaceSize=48m",
                                 "-cp",
                                 workerClasspath(),

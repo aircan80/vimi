@@ -146,8 +146,8 @@ and [EgLinkRepository](../eg-link/src/main/java/com/vibeminer/eglink/EgLinkRepos
   closing the preview does not erase that derivative. World explorer music/ambience
   (off by default) streams original Vorbis/MPEG bytes from memory through an
   `AudioStreamDecoder` child pipe to the audio line and persists no PCM derivative; a
-  single-file ambience loop holds at most 16 MiB of decoded PCM in memory until the area
-  changes or the channel stops. Child JVMs inherit user privileges and environment; they
+  single-file ambience loop retains at most 16 MiB of decoded PCM in memory (transient
+  peak higher while it is built) until the area changes or the channel stops. Child JVMs inherit user privileges and environment; they
   are not OS sandboxes.
 - Runtime reads also include packaged JARs, pinned bundled definitions, shaders,
   native libraries, JRE configuration and OS fonts/drivers/audio resources. Native

@@ -35,8 +35,12 @@ Playback:
   inheriting zone music) keeps the current track playing.
 - Music picks one file at random from the kit. After it ends, the channel waits the
   recorded silence interval (capped at 10 minutes) and then picks again.
-- Ambience loops without a gap. A single-file kit replays an in-memory copy of up to
-  16 MiB of decoded PCM on the same line. A multi-file kit opens another random entry.
+- Ambience loops on one line. A single-file kit whose decoded PCM fits in 16 MiB (about
+  95 s of 44.1 kHz stereo) replays an in-memory copy without a gap. A multi-file kit, or a
+  longer file, reopens a random entry and has an audible gap while it is read and decoded.
+- A stream that decodes no audio is reported and is not retried until the area, kit or
+  toggle changes. Turning a channel on clears its previous track and waits for the
+  current area, which also retries an earlier failure.
 - Volume changes and toggling a channel off ramp the gain, so changes do not click.
   Turning a channel off releases its decoder and line. Leaving the World view, resetting
   it or closing it stops both channels.
@@ -51,10 +55,10 @@ Playback:
 - The container is identified from bytes only: `OggS` for Vorbis, and an optional
   ID3v2 tag followed by an MPEG-1 frame sync for MPEG audio. RIFF/WAVE, MPEG-2/2.5 and
   everything else are reported as unsupported.
-- Encoded input is capped at 24 MiB and decoded output at 15 minutes. Sample rates must be
+- Encoded input is capped at 16 MiB and decoded output at 15 minutes. Sample rates must be
   8–48 kHz and there must be one or two channels. Ogg framing/CRC preflight reuses
   `OggVoiceInput`.
-- The codec runs in a child JVM (`-Xmx96m`, 48 MiB metaspace) under `java.home`, using an
+- The codec runs in a child JVM (`-Xmx128m`, 48 MiB metaspace) under `java.home`, using an
   argument list. Stdout carries only a 12-byte header and big-endian PCM. A decoder that
   produces nothing for 8 s fails. Closing the stream destroys the process.
 - Vorbis uses the existing J-Ogg 1.0.6 dependency. MPEG uses
@@ -70,8 +74,8 @@ unchanged.
 
 World audio stores nothing. The original encoded bytes are held in memory only while
 the channel decodes them. Decoded PCM streams through a pipe to the audio line.
-A single-file ambience loop keeps at most one bounded in-memory PCM copy until the
-area changes or the channel stops. Unlike Races voice previews, no PCM derivative is
+A single-file ambience loop retains at most one 16 MiB in-memory PCM copy until the
+area changes or the channel stops (the transient peak while building it is higher). Unlike Races voice previews, no PCM derivative is
 written to the generated store. The [data-flow inventory](data-flow-inventory.md) records
 this.
 
@@ -97,8 +101,9 @@ These limits are stated in the UI tooltip and every resolved plan:
   unknown areas and unverified schema shapes.
 - `:gui:worldAudioPlaybackTest` (part of `:gui:check`): controlled lines and authored PCM
   only. Covers fade-in, keeping the same kit, fade-out on replacement, gapless ambience
-  from memory, recorded music silence, toggling off, visible missing/undecodable sources
-  and owned close.
+  from memory, recorded music silence, toggling off, visible missing/undecodable/empty
+  sources and owned close. Kit continuity in `WorldAudioControls` relies on one stable
+  source per build handle; the JavaFX controls themselves are not unit-tested.
 
 Not run: an audible check on actual game data. A local display was not available for the
 opt-in JavaFX World UI tests either.

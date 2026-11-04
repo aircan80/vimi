@@ -22,7 +22,7 @@ import java.util.concurrent.TimeUnit;
  * condition or SoundKit mixing rule; those limits are reported in every plan.
  */
 public final class WorldAreaAudio {
-    public static final int MAX_ENTRIES = 64, MAX_FILE_BYTES = 24 << 20;
+    public static final int MAX_ENTRIES = 64, MAX_FILE_BYTES = 16 << 20;
 
     public enum Kind {
         MUSIC,

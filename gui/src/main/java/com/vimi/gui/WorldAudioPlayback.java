@@ -298,6 +298,7 @@ final class WorldAudioPlayback implements AutoCloseable {
                 var loop = kind == WorldAreaAudio.Kind.AMBIENCE && ids.size() == 1
                         ? new java.io.ByteArrayOutputStream() : null;
                 byte[] cached = null;
+                long frames = 0;
                 while (true) {
                     if (closedNow()) return null;
                     boolean live = current(expected);
@@ -312,6 +313,11 @@ final class WorldAudioPlayback implements AutoCloseable {
                         return null;
                     }
                     if (count < 0) {
+                        if (frames == 0) {
+                            return live ? "Recorded " + label() + " file #" + fileId
+                                    + " decoded no audio." : null;
+                        }
+                        frames = 0;
                         if (live && kind == WorldAreaAudio.Kind.AMBIENCE) {
                             if (loop != null && loop.size() > 0) cached = loop.toByteArray();
                             loop = null;
@@ -334,6 +340,7 @@ final class WorldAudioPlayback implements AutoCloseable {
                         if (live) line.drain();
                         return null;
                     }
+                    frames += count / frame;
                     if (loop != null) {
                         if (loop.size() <= MAX_LOOP_BYTES - count) loop.write(block, 0, count);
                         else loop = null;

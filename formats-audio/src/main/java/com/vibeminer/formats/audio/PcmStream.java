@@ -130,7 +130,7 @@ public final class PcmStream implements AutoCloseable {
                 if (ended || count > 0 && chunks.isEmpty()) {
                     break;
                 }
-                Object next = poll(chunks, canceled, stallNanos);
+                Object next = poll(chunks, () -> closed || canceled.getAsBoolean(), stallNanos);
                 if (next instanceof IOException failure) {
                     throw failure;
                 }
@@ -164,7 +164,7 @@ public final class PcmStream implements AutoCloseable {
         int count = 0;
         while (count < missing) {
             if (position == current.length) {
-                Object next = poll(chunks, canceled, stallNanos);
+                Object next = poll(chunks, () -> closed || canceled.getAsBoolean(), stallNanos);
                 if (next instanceof IOException failure) {
                     throw failure;
                 }

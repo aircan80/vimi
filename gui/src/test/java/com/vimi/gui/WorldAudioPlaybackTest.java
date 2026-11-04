@@ -132,14 +132,23 @@ public final class WorldAudioPlaybackTest {
         if (streams.size() != 1) throw new AssertionError("Same kit restarted");
 
         // A different kit fades the old track out before the next one starts.
+        var replaced = streams.peek();
+        long sentBefore = replaced.sent;
+        device.peaks.clear();
         music.track(track(WorldAreaAudio.Kind.MUSIC, 200, 0), FILES);
         await(() -> streams.size() == 2, "new kit did not start");
         var before = streams.peek();
         if (!before.closed) throw new AssertionError("Replaced decoder was not closed");
         if (device.closedLines.get() < 1) throw new AssertionError("Replaced line was not closed");
-        long faded = before.sent;
+        long faded = before.sent - sentBefore;
         if (faded < 8000 * WorldAudioPlayback.FADE_SECONDS * 0.9)
             throw new AssertionError("Replacement must fade out over the recorded ramp: " + faded);
+        var fade = device.peaks.toArray(Integer[]::new);
+        int quiet = 0;
+        for (int i = 1; i < fade.length && quiet == 0; i++)
+            if (fade[i] < 500) quiet = i;
+        if (quiet == 0 || fade[0] < 16000 || fade[quiet / 2] >= fade[0])
+            throw new AssertionError("Old track must ramp down toward silence");
 
         music.enabled(false);
         await(() -> streams.stream().allMatch(s -> s.closed), "muted decoder was not closed");
@@ -209,6 +218,20 @@ public final class WorldAudioPlaybackTest {
                 "missing file was hidden");
         if (device.opened.get() != 0) throw new AssertionError("Failed sources opened a line");
         playback.closeAsync().get(10, TimeUnit.SECONDS);
+
+        var opens = new AtomicInteger();
+        var empty = new ConcurrentLinkedQueue<WorldAudioPlayback.Status>();
+        var silent = new WorldAudioPlayback(format -> device.line(), (bytes, canceled) -> {
+            opens.incrementAndGet();
+            return new FakePcm(0);
+        }, empty::add);
+        silent.ambience.track(track(WorldAreaAudio.Kind.AMBIENCE, 8, 0), FILES);
+        silent.ambience.enabled(true);
+        await(() -> empty.stream().anyMatch(s -> s.message().contains("decoded no audio")),
+                "empty decode was hidden");
+        Thread.sleep(100);
+        if (opens.get() != 1) throw new AssertionError("Empty stream respawned decoders");
+        silent.closeAsync().get(10, TimeUnit.SECONDS);
     }
 
     private static void gainRampsPerFrame() {
