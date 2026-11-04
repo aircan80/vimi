@@ -107,7 +107,6 @@ final class WorldStreamScopes {
     private final String locale;
     private final long owner;
     private final AtomicBoolean working = new AtomicBoolean();
-    private final Cancellation lifetime = new Cancellation();
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
     private boolean closed;
     private long generation;
@@ -134,8 +133,10 @@ final class WorldStreamScopes {
     @SuppressWarnings("try")
     Scope create(WorldService.MapInfo requested, Cancellation external) {
         begin();
-        try (var registration = external.onCancel(lifetimeChild::cancel)) {
+        var operationCancellation = cancelLane;
+        try (var registration = external.onCancel(operationCancellation::request)) {
             var token = lifetimeChild;
+            operationCancellation.check();
             token.check();
             MapBinding map = map(requested.id(), token);
             synchronized (this) {
@@ -150,7 +151,7 @@ final class WorldStreamScopes {
             String digest = digest(map, maid.key());
             synchronized (this) {
                 checkOpen();
-                token.check();
+                operationCancellation.check();
                 if (generation == Long.MAX_VALUE) {
                     throw new IllegalStateException("Scope generation exhausted");
                 }
@@ -193,6 +194,47 @@ final class WorldStreamScopes {
 
     // Per-operation linked token is protected by the one-active CAS, never exposed in a Scope.
     private Cancellation lifetimeChild;
+    private CancelLane cancelLane;
+
+    private static final class CancelLane {
+        private final Cancellation child = new Cancellation();
+        private final CompletableFuture<Void> done = new CompletableFuture<>();
+        private boolean requested, sealed;
+
+        void request() {
+            synchronized (this) {
+                if (sealed || requested) {
+                    return;
+                }
+                requested = true;
+            }
+            Thread.startVirtualThread(
+                    () -> {
+                        try {
+                            child.cancel();
+                        } finally {
+                            done.complete(null);
+                        }
+                    });
+        }
+
+        synchronized void check() {
+            if (requested) {
+                throw new java.util.concurrent.CancellationException();
+            }
+            child.check();
+        }
+
+        void sealAndDrain() {
+            synchronized (this) {
+                sealed = true;
+                if (!requested) {
+                    done.complete(null);
+                }
+            }
+            done.join();
+        }
+    }
 
     private void begin() {
         if (!working.compareAndSet(false, true)) {
@@ -202,7 +244,8 @@ final class WorldStreamScopes {
         synchronized (this) {
             rejected = closed;
             if (!rejected) {
-                lifetimeChild = new Cancellation();
+                cancelLane = new CancelLane();
+                lifetimeChild = cancelLane.child;
             }
         }
         if (rejected) {
@@ -210,15 +253,15 @@ final class WorldStreamScopes {
             drained.complete(null);
             throw new IllegalStateException("Scope source closed");
         }
-        if (lifetime.isCanceled()) {
-            lifetimeChild.cancel();
-        }
     }
 
     private void end() {
+        // Source worker waits for the single off-caller cancellation dispatch to drain.
+        cancelLane.sealAndDrain();
         boolean finish;
         synchronized (this) {
             lifetimeChild = null;
+            cancelLane = null;
             working.set(false);
             finish = closed;
         }
@@ -242,8 +285,10 @@ final class WorldStreamScopes {
     @SuppressWarnings("try")
     WorldFormats.Tile recorded(Scope scope, WorldFormats.Tile caller, Cancellation external) {
         begin();
-        try (var registration = external.onCancel(lifetimeChild::cancel)) {
+        var operationCancellation = cancelLane;
+        try (var registration = external.onCancel(operationCancellation::request)) {
             var token = lifetimeChild;
+            operationCancellation.check();
             Proof proof;
             synchronized (this) {
                 proof = resolve(scope);
@@ -271,7 +316,7 @@ final class WorldStreamScopes {
                     throw new IllegalArgumentException("Caller differs from recorded MAID");
                 }
             }
-            token.check();
+            operationCancellation.check();
             synchronized (this) {
                 resolve(scope);
             }
@@ -385,7 +430,7 @@ final class WorldStreamScopes {
             if (engine == null) {
                 throw new IllegalStateException("Admission expired");
             }
-            token.check();
+            engine.cancelLane.check();
         }
 
         WorldFormats.Tile recorded() {
@@ -503,8 +548,11 @@ final class WorldStreamScopes {
         begin();
         TileAdmission admission = null;
         R result = null;
-        try (var registration = external.onCancel(lifetimeChild::cancel)) {
+        Throwable primary = null;
+        var operationCancellation = cancelLane;
+        try (var registration = external.onCancel(operationCancellation::request)) {
             var token = lifetimeChild;
+            operationCancellation.check();
             Proof proof;
             synchronized (this) {
                 proof = resolve(scope);
@@ -530,28 +578,51 @@ final class WorldStreamScopes {
             }
             validateProof(proof, token);
             synchronized (this) {
-                token.check();
+                operationCancellation.check();
                 resolve(scope);
                 R transferred = result;
                 result = null;
                 return transferred;
             }
+        } catch (RuntimeException | Error failure) {
+            primary = failure;
+            throw failure;
         } finally {
+            Throwable cleanup = primary;
             try {
                 if (admission != null) {
-                    admission.expire();
+                    cleanup = closePreserving(admission::expire, cleanup);
                 }
                 if (result != null) {
-                    try {
-                        result.close();
-                    } catch (Exception failure) {
-                        throw new IllegalStateException("Output cleanup failed", failure);
-                    }
+                    cleanup = closePreserving(result, cleanup);
                 }
             } finally {
                 end();
             }
+            if (primary == null && cleanup != null) {
+                if (cleanup instanceof Error error) {
+                    throw error;
+                }
+                if (cleanup instanceof RuntimeException failure) {
+                    throw failure;
+                }
+                throw new IllegalStateException("Output cleanup failed", cleanup);
+            }
         }
+    }
+
+    private static Throwable closePreserving(AutoCloseable owner, Throwable primary) {
+        try {
+            owner.close();
+        } catch (Exception | Error failure) {
+            if (primary == null) {
+                return failure;
+            }
+            if (failure != primary) {
+                primary.addSuppressed(failure);
+            }
+        }
+        return primary;
     }
 
     private void validateBinding(Binding binding, Cancellation token) {
@@ -584,7 +655,7 @@ final class WorldStreamScopes {
     }
 
     CompletableFuture<Void> closeAsync() {
-        Cancellation active;
+        CancelLane active;
         boolean finish;
         synchronized (this) {
             if (closed) {
@@ -593,19 +664,15 @@ final class WorldStreamScopes {
             closed = true;
             current = null;
             replacement = null;
-            active = lifetimeChild;
+            active = cancelLane;
             finish = !working.get();
         }
         if (finish) {
             drained.complete(null);
         }
-        Thread.startVirtualThread(
-                () -> {
-                    lifetime.cancel();
-                    if (active != null) {
-                        active.cancel();
-                    }
-                });
+        if (active != null) {
+            active.request();
+        }
         return drained.copy();
     }
 
