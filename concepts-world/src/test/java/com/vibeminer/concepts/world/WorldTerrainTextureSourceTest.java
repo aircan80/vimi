@@ -272,6 +272,12 @@ class WorldTerrainTextureSourceTest {
 
                 public CompletableFuture<Integer> read(ByteBuffer target, Cancellation cancel) {
                     cancel.check();
+                    if (!target.hasRemaining()) {
+                        return CompletableFuture.completedFuture(0);
+                    }
+                    if (position == bytes.length) {
+                        return CompletableFuture.completedFuture(-1);
+                    }
                     int count = Math.min(target.remaining(), bytes.length - position);
                     target.put(bytes, position, count);
                     position += count;

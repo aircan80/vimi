@@ -68,11 +68,47 @@ class WorldSourceReadBoundsTest {
         }
     }
 
+    @Test
+    void zeroProgressBeforeTrailingByteIsNotVerifiedEof() throws Exception {
+        rejectsContradiction(33, 1);
+    }
+
+    @Test
+    void shortenedDestinationLimitCannotCertifyZeroPaddedTail() throws Exception {
+        rejectsContradiction(16, 2);
+    }
+
+    private static void rejectsContradiction(int actual, int mode) throws Exception {
+        var closed = new AtomicInteger();
+        var files = files(actual, closed, new AtomicInteger(), () -> 32, mode);
+        var tables = new WorldStreamScopesTest.Tables(files);
+        var source = new WorldStreamScopes(tables.handle(), files.files());
+        try {
+            var failure = assertThrows(IllegalStateException.class, () -> read(source, 64));
+            assertTrue(
+                    !(failure instanceof WorldTerrainStreaming.Refusal),
+                    "Contradictory provider outcome is fatal, never capability/height");
+            assertEquals(1, closed.get());
+        } finally {
+            source.closeAsync().join();
+            tables.close();
+        }
+    }
+
     private static WorldTerrainTextureSourceTest.Files files(
             int actual,
             AtomicInteger streamCloses,
             AtomicInteger maximum,
             java.util.function.LongSupplier length) {
+        return files(actual, streamCloses, maximum, length, 0);
+    }
+
+    private static WorldTerrainTextureSourceTest.Files files(
+            int actual,
+            AtomicInteger streamCloses,
+            AtomicInteger maximum,
+            java.util.function.LongSupplier length,
+            int mode) {
         return new WorldTerrainTextureSourceTest.Files() {
             @Override
             FileTypes.FileStat stat(long id, Cancellation token) {
@@ -100,6 +136,7 @@ class WorldSourceReadBoundsTest {
                 }
                 return new FileReadStream() {
                     int position;
+                    boolean zeroReturned;
 
                     public long length() {
                         return length.getAsLong();
@@ -122,6 +159,19 @@ class WorldSourceReadBoundsTest {
                         if (target.capacity() > 64) {
                             throw new AssertionError(
                                     "Small source cap bypassed before provider read");
+                        }
+                        if (!target.hasRemaining()) {
+                            return CompletableFuture.completedFuture(0);
+                        }
+                        if (mode == 1 && position == 32 && !zeroReturned) {
+                            zeroReturned = true;
+                            return CompletableFuture.completedFuture(0);
+                        }
+                        if (position == actual) {
+                            return CompletableFuture.completedFuture(-1);
+                        }
+                        if (mode == 2 && position == 0) {
+                            target.limit(16);
                         }
                         int n = Math.min(actual - position, target.remaining());
                         for (int i = 0; i < n; i++) {

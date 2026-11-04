@@ -1162,18 +1162,24 @@ final class WorldStreamScopes {
                 if (read <= 0) {
                     throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_INPUT);
                 }
-                if (read != bytes.position() - position) {
+                if (read != bytes.position() - position || bytes.limit() != bytes.capacity()) {
                     throw new IllegalStateException("Source stream progress differs");
                 }
             }
             token.check();
+            if (bytes.position() != observedLength || bytes.limit() != bytes.capacity()) {
+                throw new IllegalStateException("Source buffer extent differs");
+            }
             var eof = ByteBuffer.allocate(1);
             int extra = WorldSourceFutures.await(stream.read(eof, token));
             token.check();
+            if (eof.limit() != eof.capacity()) {
+                throw new IllegalStateException("Source EOF buffer extent differs");
+            }
             if (extra > 0 || eof.position() != 0) {
                 throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_BINDING);
             }
-            if (extra < -1) {
+            if (extra != -1) {
                 throw new IllegalStateException("Source EOF result differs");
             }
             var after = stat(id, token, WorldSourceRefusals.Site.SOURCE_BINDING);

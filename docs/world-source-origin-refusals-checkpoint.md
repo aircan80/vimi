@@ -95,3 +95,12 @@ The probe adds only one bounded byte buffer, not a new raw input owner/profile i
 Negative raw-input tests use limit64 and a later length65 to trap any oversized target before read
 (no OOM), plus an actual33-byte stream advertising32. Both were causally RED before the guards and
 now pass with stream retirement; these tests create no source-positive renderable capability.
+
+The EOF follow-up tightens the initial guard: a nonempty EOF probe must return EXACTLY -1 with
+unchanged buffer limit and zero written bytes. Zero progress is not EOF; zero/other invalid results
+are fatal provider contradictions. Before probing, the full input position must equal the one
+observed length and its limit must still equal capacity; changing the destination limit can no
+longer end the loop early and certify a zero-padded suffix. Canonical concept test streams now
+match actual DecodedFileStream semantics (empty destination0, nonempty EOF-1). Two small causal
+negatives—zero-before-extra and a provider shrinking a32-byte destination to16—were RED before
+these checks and now reject with actual stream closure. No G1/global/profile changes.
