@@ -578,7 +578,12 @@ final class WorldStreamTileFile {
             indices[i] = Integer.reverseBytes(input.readInt());
         }
         var water = new Water(positions, depths, indices, in.getInt(24));
-        // Water must lie on this terrain tile: within its vertex footprint plus one liquid cell.
+        require(onFootprint(water, footprint(tile)), "Water outside terrain tile");
+        return water;
+    }
+
+    /** Terrain vertex XY bounds {minX, maxX, minY, maxY}; shared by writer and reader. */
+    static float[] footprint(TerrainScene.Tile tile) {
         var terrain = tile.vertices();
         float minX = Float.POSITIVE_INFINITY, minY = Float.POSITIVE_INFINITY;
         float maxX = Float.NEGATIVE_INFINITY, maxY = Float.NEGATIVE_INFINITY;
@@ -588,17 +593,32 @@ final class WorldStreamTileFile {
             minY = Math.min(minY, terrain.get(at + 1));
             maxY = Math.max(maxY, terrain.get(at + 1));
         }
+        return new float[] {minX, maxX, minY, maxY};
+    }
+
+    /** Water must lie on its terrain tile: the vertex footprint plus one liquid cell. */
+    static boolean onFootprint(Water water, float[] bounds) {
         float slack = (float) (com.vibeminer.formats.world.WorldFormats.TILE_SIZE / 128);
-        for (int v = 0; v < vertices; v++) {
+        var positions = water.positions();
+        for (int v = 0; v < water.vertices(); v++) {
             float x = positions[v * 3], y = positions[v * 3 + 1];
-            require(
-                    x >= minX - slack
-                            && x <= maxX + slack
-                            && y >= minY - slack
-                            && y <= maxY + slack,
-                    "Water outside terrain tile");
+            if (!(x >= bounds[0] - slack
+                    && x <= bounds[1] + slack
+                    && y >= bounds[2] - slack
+                    && y <= bounds[3] + slack)) {
+                return false;
+            }
         }
-        return water;
+        return true;
+    }
+
+    /** The unadvertised packet no longer matches its own expectation: never advertise it. */
+    static final class PacketChanged extends IOException {
+        private static final long serialVersionUID = 1L;
+
+        PacketChanged(String message) {
+            super(message);
+        }
     }
 
     private static byte[] encodeWater(Header header, Water water) {
@@ -648,7 +668,7 @@ final class WorldStreamTileFile {
                         StandardOpenOption.WRITE,
                         LinkOption.NOFOLLOW_LINKS)) {
             if (channel.size() != expected.length()) {
-                throw new IOException("Packet size differs before water append");
+                throw new PacketChanged("Packet size differs before water append");
             }
             var digest = digest();
             var scratch = ByteBuffer.allocate(SCRATCH);
@@ -658,7 +678,7 @@ final class WorldStreamTileFile {
                 scratch.clear();
                 int read = channel.read(scratch, at);
                 if (read < 0) {
-                    throw new IOException("Truncated packet before water append");
+                    throw new PacketChanged("Truncated packet before water append");
                 }
                 digest.update(scratch.array(), 0, read);
                 at += read;
@@ -670,9 +690,8 @@ final class WorldStreamTileFile {
                 throw new AssertionError(impossible);
             }
             if (!HexFormat.of().formatHex(prior.digest()).equals(expected.sha256())) {
-                throw new IOException("Packet bytes changed before water append");
+                throw new PacketChanged("Packet bytes changed before water append");
             }
-            boolean appended = false;
             try {
                 check(canceled);
                 var body = ByteBuffer.wrap(trailer);
@@ -682,12 +701,18 @@ final class WorldStreamTileFile {
                 }
                 channel.force(false);
                 check(canceled);
-                appended = true;
-            } finally {
-                if (!appended) {
+            } catch (IOException | RuntimeException | Error primary) {
+                try {
                     channel.truncate(expected.length());
                     channel.force(false);
+                } catch (IOException | RuntimeException | Error cleanup) {
+                    // Restore unknown: the caller must discard this packet, never advertise it.
+                    var unknown = new PacketChanged("Water rollback failed");
+                    unknown.addSuppressed(primary);
+                    unknown.addSuppressed(cleanup);
+                    throw unknown;
                 }
+                throw primary;
             }
             digest.update(trailer);
             return new Expected(

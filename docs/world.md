@@ -55,7 +55,9 @@ source terrain heights, holes and qualified texture layers on GPU and in the
 software fallback. The bounded atlas composition includes source tint and fog;
 client height blending and nonlinear sharpening remain unsupported. Missing or
 unsupported materials retain explicit partial/height fallback and a retry action.
-Buildings, doodads, water, collision and live NPCs are not rendered yet. Global-WMO-only maps have no
+Static flat water renders on the GPU path as an untextured diagnostic teal overlay where the
+Source qualifies it (see [visible water checkpoint](world-visible-water-checkpoint.md)); the CPU
+fallback shows terrain only. Buildings, doodads, collision and live NPCs are not rendered yet. Global-WMO-only maps have no
 terrain tiles and remain visible with that limitation. The default application viewport now uses inline bgfx GPU rendering on a
 capable backend, with the bounded CPU renderer as fallback. No JavaFX3D pipeline
 is required. **GPU terrain** selects the renderer; **Retry GPU** explicitly retries

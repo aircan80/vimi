@@ -189,6 +189,7 @@ public final class WorldStreamTileWriter {
     /** Source R owns this unadvertised file until its independently pinned one-shot MOVE. */
     public static final class PacketFile implements AutoCloseable {
         private final WorldStreamPacketFile file;
+        private final float[] footprint;
         private WorldStreamTransport.PacketDestination destination;
         private WorldStreamTileFile.Header writtenHeader;
         private boolean waterAttached, waterDropped;
@@ -206,8 +207,10 @@ public final class WorldStreamTileWriter {
         private PacketFile(
                 WorldStreamPacketFile file,
                 WorldStreamTransport.PacketDestination destination,
-                WorldStreamTileFile.Header writtenHeader) {
+                WorldStreamTileFile.Header writtenHeader,
+                float[] footprint) {
             this.file = file;
+            this.footprint = footprint;
             this.destination = destination;
             this.writtenHeader = writtenHeader;
         }
@@ -232,20 +235,27 @@ public final class WorldStreamTileWriter {
                     throw new IllegalStateException("Packet file already moved or closed");
                 }
                 WorldStreamTileFile.Expected replacement = null;
-                if (water != null) {
+                if (water != null && !WorldStreamTileFile.onFootprint(water.wire, footprint)) {
+                    // Every reader check runs here first: off-tile water never costs terrain.
+                    waterDropped = true;
+                } else if (water != null) {
                     var before = file.expected();
+                    var path = file.path();
                     try {
                         replacement =
                                 WorldStreamTileFile.appendWater(
-                                        file.path(), before, writtenHeader, water.wire, stopping);
-                    } catch (IOException failed) {
-                        try {
-                            if (Files.size(file.path()) != before.length()) {
-                                throw new java.io.UncheckedIOException(failed);
-                            }
-                        } catch (IOException unknown) {
-                            failed.addSuppressed(unknown);
-                            throw new java.io.UncheckedIOException(failed);
+                                        path, before, writtenHeader, water.wire, stopping);
+                    } catch (WorldStreamTileFile.PacketChanged changed) {
+                        throw new java.io.UncheckedIOException(changed);
+                    } catch (IOException
+                            | IllegalArgumentException
+                            | java.nio.BufferOverflowException failed) {
+                        // Pre-write refusals leave the file untouched; IO failures were truncated
+                        // back by appendWater. Either way the terrain-only file is exact.
+                        if (stopping.getAsBoolean()) {
+                            var canceled = new java.util.concurrent.CancellationException();
+                            canceled.addSuppressed(failed);
+                            throw canceled;
                         }
                         replacement = null;
                         waterDropped = true;
@@ -361,7 +371,8 @@ public final class WorldStreamTileWriter {
                             texture == null ? null : texture.pixels(),
                             stopping);
             owner = WorldStreamPacketFile.finalized(expected, context.path(), context.identity());
-            return new PacketFile(owner, destination, header);
+            return new PacketFile(
+                    owner, destination, header, WorldStreamTileFile.footprint(geometry));
         } catch (IOException | RuntimeException | Error failure) {
             try {
                 if (owner != null) {

@@ -227,9 +227,13 @@ final class WorldStreamSourceBridge {
                 }
                 waterNote = "water refused: " + refused.site();
                 return null;
-            } catch (RuntimeException failed) {
-                // Optional preview: report bounded diagnostics, keep terrain. Fatal Source health
-                // still fails the following terrain MOVE gate.
+            } catch (IllegalArgumentException | IllegalStateException failed) {
+                // Only a clean leaf failure (e.g. this bridge's own copy validation) degrades to
+                // terrain-only. Source cleanup/health faults carry causes or suppressed failures
+                // and stay fatal.
+                if (failed.getCause() != null || failed.getSuppressed().length != 0) {
+                    throw failed;
+                }
                 waterNote = "water failed: " + failed.getClass().getSimpleName();
                 return null;
             }
@@ -271,8 +275,11 @@ final class WorldStreamSourceBridge {
     record WaterCopy(WorldStreamTileWriter.Water water) implements AutoCloseable {
         static WaterCopy of(WorldWaterPreview.CheckedBorrow borrow, Cancellation token) {
             int vertices = borrow.vertices(), indexCount = borrow.indices();
-            if (vertices > WorldStreamTileWriter.Water.MAX_CELLS * 4) {
-                throw new IllegalStateException("Water exceeds packet bound");
+            if (vertices < 4
+                    || vertices > WorldStreamTileWriter.Water.MAX_CELLS * 4
+                    || vertices % 4 != 0
+                    || indexCount != vertices / 4 * 6) {
+                throw new IllegalArgumentException("Water exceeds packet profile");
             }
             var positions = new float[vertices * 3];
             var depths = new byte[vertices];
@@ -284,7 +291,11 @@ final class WorldStreamSourceBridge {
                 positions[v * 3] = borrow.north(v);
                 positions[v * 3 + 1] = borrow.west(v);
                 positions[v * 3 + 2] = borrow.up(v);
-                depths[v] = (byte) borrow.depth(v);
+                int depth = borrow.depth(v);
+                if (depth < 0 || depth > 255) {
+                    throw new IllegalArgumentException("Water depth byte");
+                }
+                depths[v] = (byte) depth;
             }
             for (int i = 0; i < indexCount; i++) {
                 indices[i] = borrow.index(i);
