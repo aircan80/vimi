@@ -35,6 +35,193 @@ final class WorldStreamScopesTest {
             new WorldFormats.Tile(7, 19, 2, 0, 0, 0, 0, 3, 0, 0);
 
     @Test
+    void heldAdmissionKeepsBusyAndCloseDrainUntilCallbackFinally() throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var source = new WorldStreamScopes(tables.handle(), files.files());
+        var entered = new CountDownLatch(1);
+        var release = new CompletableFuture<Void>();
+        var outputClosed = new AtomicInteger();
+        try {
+            var scope = source.create(REQUEST, Cancellation.NONE);
+            var work =
+                    CompletableFuture.supplyAsync(
+                            () ->
+                                    source.withRecordedTile(
+                                            scope,
+                                            TILE,
+                                            WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                                            Cancellation.NONE,
+                                            admission -> {
+                                                try (var root =
+                                                        admission.readRecorded(
+                                                                WorldStreamScopes.RecordedInput
+                                                                        .ROOT)) {
+                                                    assertTrue(root.bytes().length > 0);
+                                                    entered.countDown();
+                                                    release.join();
+                                                }
+                                                return (AutoCloseable)
+                                                        outputClosed::incrementAndGet;
+                                            }));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertThrows(
+                    IllegalStateException.class,
+                    () ->
+                            source.withRecordedTile(
+                                    scope,
+                                    TILE,
+                                    WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                                    Cancellation.NONE,
+                                    admission -> (AutoCloseable) () -> {}));
+            var drain = source.closeAsync();
+            assertFalse(drain.isDone());
+            release.complete(null);
+            assertThrows(java.util.concurrent.CompletionException.class, work::join);
+            drain.join();
+            assertEquals(1, outputClosed.get());
+            assertEquals(files.totalOpens(), files.closed.get());
+        } finally {
+            release.complete(null);
+            source.closeAsync().join();
+            tables.close();
+        }
+    }
+
+    @Test
+    void admissionOwnsSerialInputsAndExpiresWithoutRestartingSource() {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var source = new WorldStreamScopes(tables.handle(), files.files());
+        var escaped = new WorldStreamScopes.TileAdmission[1];
+        var escapedInput = new WorldStreamScopes.Input[1];
+        var closed = new AtomicInteger();
+        try {
+            var scope = source.create(REQUEST, Cancellation.NONE);
+            AutoCloseable result =
+                    source.withRecordedTile(
+                            scope,
+                            TILE,
+                            WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                            Cancellation.NONE,
+                            admission -> {
+                                escaped[0] = admission;
+                                assertEquals(TILE, admission.recorded());
+                                try (var root =
+                                        admission.readRecorded(
+                                                WorldStreamScopes.RecordedInput.ROOT)) {
+                                    escapedInput[0] = root;
+                                    assertTrue(root.bytes().length > 0);
+                                    int before = files.opens(3);
+                                    assertThrows(
+                                            IllegalStateException.class,
+                                            () ->
+                                                    admission.readRecorded(
+                                                            WorldStreamScopes.RecordedInput.TEX0));
+                                    assertEquals(
+                                            before,
+                                            files.opens(3),
+                                            "Credit rejection precedes open");
+                                }
+                                try (var texture =
+                                        admission.readRecorded(
+                                                WorldStreamScopes.RecordedInput.TEX0)) {
+                                    assertTrue(texture.bytes().length > 0);
+                                }
+                                return (AutoCloseable) closed::incrementAndGet;
+                            });
+            assertEquals(0, closed.get());
+            assertThrows(IllegalStateException.class, () -> escaped[0].recorded());
+            assertThrows(IllegalStateException.class, () -> escapedInput[0].bytes());
+            try {
+                result.close();
+            } catch (Exception failure) {
+                throw new AssertionError(failure);
+            }
+            assertEquals(1, closed.get());
+        } finally {
+            source.closeAsync().join();
+            tables.close();
+        }
+    }
+
+    @Test
+    void admissionFinalBindingChangeClosesReturnedResultAndUnreturnedOutputIsCallbackOwned()
+            throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var source = new WorldStreamScopes(tables.handle(), files.files());
+        var closed = new AtomicInteger();
+        try {
+            var scope = source.create(REQUEST, Cancellation.NONE);
+            assertThrows(
+                    IllegalStateException.class,
+                    () ->
+                            source.withRecordedTile(
+                                    scope,
+                                    TILE,
+                                    WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                                    Cancellation.NONE,
+                                    admission -> {
+                                        try (var root =
+                                                admission.readRecorded(
+                                                        WorldStreamScopes.RecordedInput.ROOT)) {
+                                            assertTrue(root.bytes().length > 0);
+                                        }
+                                        files.changedId = 2;
+                                        files.changeAfterRead = true;
+                                        return (AutoCloseable) closed::incrementAndGet;
+                                    }));
+            assertEquals(1, closed.get());
+            files.changeAfterRead = false;
+            var scratch = java.nio.file.Files.createTempFile("vimi-unreturned-output-", ".tmp");
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            source.withRecordedTile(
+                                    scope,
+                                    TILE,
+                                    WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                                    Cancellation.NONE,
+                                    admission -> {
+                                        // A real local owner must be released before an exceptional
+                                        // non-return.
+                                        try (AutoCloseable local =
+                                                () -> {
+                                                    java.nio.file.Files.delete(scratch);
+                                                    closed.incrementAndGet();
+                                                }) {
+                                            assertTrue(local != null);
+                                            throw new IllegalArgumentException(
+                                                    "Factory failed before return");
+                                        } catch (IllegalArgumentException failure) {
+                                            throw failure;
+                                        } catch (Exception failure) {
+                                            throw new AssertionError(failure);
+                                        }
+                                    }));
+            assertEquals(2, closed.get());
+            assertFalse(java.nio.file.Files.exists(scratch));
+            AutoCloseable recovered =
+                    source.withRecordedTile(
+                            scope,
+                            TILE,
+                            WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                            Cancellation.NONE,
+                            admission -> (AutoCloseable) closed::incrementAndGet);
+            try {
+                recovered.close();
+            } catch (Exception failure) {
+                throw new AssertionError(failure);
+            }
+            assertEquals(3, closed.get());
+        } finally {
+            source.closeAsync().join();
+            tables.close();
+        }
+    }
+
+    @Test
     void derivesNumericWdtOnlyFromQualifiedOwnedMapRowAndRevalidatesEveryRecordedReference() {
         var files = new WorldTerrainTextureSourceTest.Files();
         var tables = new Tables(files);

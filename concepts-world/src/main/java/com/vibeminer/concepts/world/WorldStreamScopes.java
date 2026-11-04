@@ -21,6 +21,7 @@ import java.security.DigestOutputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
+import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.HexFormat;
 import java.util.List;
@@ -96,9 +97,9 @@ final class WorldStreamScopes {
         }
     }
 
-    private record Maid(String key, int[] tuples, BitSet present) {}
+    private record Maid(String key, long length, int[] tuples, BitSet present) {}
 
-    private record Proof(Scope token, MapBinding map, int[] maid, BitSet present) {}
+    private record Proof(Scope token, MapBinding map, long wdtLength, int[] maid, BitSet present) {}
 
     private final BuildTables tables;
     private final BuildFiles files;
@@ -156,7 +157,7 @@ final class WorldStreamScopes {
                 var scope =
                         new Scope(
                                 owner, ++generation, map.mapId(), map.wdtId(), maid.key(), digest);
-                replacement = new Proof(scope, map, maid.tuples(), maid.present());
+                replacement = new Proof(scope, map, maid.length(), maid.tuples(), maid.present());
                 return scope;
             }
         } finally {
@@ -186,7 +187,7 @@ final class WorldStreamScopes {
                     maid[ordinal * 8 + i] = (int) refs[i];
                 }
             }
-            return new Maid(wdt.key(), maid, present);
+            return new Maid(wdt.key(), wdt.bytes().length, maid, present);
         }
     }
 
@@ -277,6 +278,218 @@ final class WorldStreamScopes {
             return caller;
         } finally {
             end();
+        }
+    }
+
+    enum UseProfile {
+        TERRAIN_BASIC,
+        BASIC_WMO
+    }
+
+    enum RecordedInput {
+        ROOT,
+        TEX0,
+        OBJ0
+    }
+
+    @FunctionalInterface
+    interface TileSourceUse<R extends AutoCloseable> {
+        R prepare(TileAdmission admission);
+    }
+
+    private record Binding(long id, String key, long length) {}
+
+    /** A callback-local input. No service or admission remains behind an expired owner. */
+    static final class Input implements AutoCloseable {
+        private Source source;
+        private TileAdmission admission;
+        private final Binding binding;
+
+        private Input(Source source, TileAdmission admission, Binding binding) {
+            this.source = source;
+            this.admission = admission;
+            this.binding = binding;
+        }
+
+        byte[] bytes() {
+            if (source == null) throw new IllegalStateException("Input retired");
+            admission.check();
+            return source.bytes();
+        }
+
+        long fileDataId() {
+            return binding.id();
+        }
+
+        String contentKey() {
+            return binding.key();
+        }
+
+        long consumedLength() {
+            return binding.length();
+        }
+
+        @Override
+        public void close() {
+            if (source != null) {
+                source.close();
+                source = null;
+                admission.input = null;
+                admission = null;
+            }
+        }
+    }
+
+    static final class TileAdmission {
+        private WorldStreamScopes engine;
+        private Cancellation token;
+        private final WorldFormats.Tile recorded;
+        private final UseProfile profile;
+        private final ArrayList<Binding> bindings = new ArrayList<>();
+        private Input input;
+        private boolean reserved;
+
+        private TileAdmission(
+                WorldStreamScopes engine,
+                Cancellation token,
+                WorldFormats.Tile recorded,
+                UseProfile profile,
+                Proof proof) {
+            this.engine = engine;
+            this.token = token;
+            this.recorded = recorded;
+            this.profile = profile;
+            bindings.add(
+                    new Binding(proof.token().wdtId(), proof.token().wdtKey(), proof.wdtLength()));
+        }
+
+        private void check() {
+            if (engine == null) throw new IllegalStateException("Admission expired");
+            token.check();
+        }
+
+        WorldFormats.Tile recorded() {
+            check();
+            return recorded;
+        }
+
+        Input readRecorded(RecordedInput kind) {
+            check();
+            long id =
+                    switch (kind) {
+                        case ROOT -> recorded.rootId();
+                        case TEX0 -> recorded.tex0Id();
+                        case OBJ0 -> {
+                            if (profile != UseProfile.BASIC_WMO)
+                                throw new IllegalArgumentException("Wrong input profile");
+                            yield recorded.obj0Id();
+                        }
+                    };
+            if (id == 0) throw new IllegalArgumentException("Missing recorded input");
+            if (reserved || input != null) throw new IllegalStateException("Input credit busy");
+            if (bindings.size() >= (profile == UseProfile.TERRAIN_BASIC ? 67 : 11))
+                throw new IllegalStateException("Binding limit");
+            // Reservation precedes even stat/open, and remains held through actual read drain.
+            reserved = true;
+            Source source = null;
+            try {
+                source = engine.read(id, 8 << 20, token);
+                var binding = new Binding(id, source.key(), source.bytes().length);
+                for (var prior : bindings) {
+                    if (prior.id() == id && !prior.equals(binding))
+                        throw new IllegalStateException("Source changed");
+                }
+                if (!bindings.contains(binding)) bindings.add(binding);
+                input = new Input(source, this, binding);
+                source = null;
+                return input;
+            } finally {
+                if (source != null) source.close();
+                reserved = false;
+            }
+        }
+
+        private void expire() {
+            if (input != null) input.close();
+            bindings.clear();
+            token = null;
+            engine = null;
+        }
+    }
+
+    /** The callback owns unreturned outputs; this method owns only successfully returned R. */
+    @SuppressWarnings("try")
+    <R extends AutoCloseable> R withRecordedTile(
+            Scope scope,
+            WorldFormats.Tile caller,
+            UseProfile profile,
+            Cancellation external,
+            TileSourceUse<R> use) {
+        Objects.requireNonNull(profile);
+        Objects.requireNonNull(use);
+        begin();
+        TileAdmission admission = null;
+        R result = null;
+        try (var registration = external.onCancel(lifetimeChild::cancel)) {
+            var token = lifetimeChild;
+            Proof proof;
+            synchronized (this) {
+                proof = resolve(scope);
+            }
+            validateProof(proof, token);
+            int ordinal = caller.y() * 64 + caller.x();
+            if (!proof.present().get(ordinal))
+                throw new IllegalArgumentException("Unrecorded coordinate");
+            var refs = references(caller);
+            for (int i = 0; i < 8; i++) {
+                if (refs[i] != Integer.toUnsignedLong(proof.maid()[ordinal * 8 + i]))
+                    throw new IllegalArgumentException("Caller differs from recorded MAID");
+            }
+            admission = new TileAdmission(this, token, caller, profile, proof);
+            result = Objects.requireNonNull(use.prepare(admission), "Missing owned result");
+            if (admission.input != null || admission.reserved)
+                throw new IllegalStateException("Input not drained before transfer");
+            for (var binding : admission.bindings) validateBinding(binding, token);
+            validateProof(proof, token);
+            synchronized (this) {
+                token.check();
+                resolve(scope);
+                R transferred = result;
+                result = null;
+                return transferred;
+            }
+        } finally {
+            try {
+                if (admission != null) admission.expire();
+                if (result != null) {
+                    try {
+                        result.close();
+                    } catch (Exception failure) {
+                        throw new IllegalStateException("Output cleanup failed", failure);
+                    }
+                }
+            } finally {
+                end();
+            }
+        }
+    }
+
+    private void validateBinding(Binding binding, Cancellation token) {
+        token.check();
+        var fresh = stat(binding.id(), token);
+        if (!binding.key().equals(fresh.contentKey())
+                || fresh.size() != null && fresh.size() != binding.length())
+            throw new IllegalStateException("Consumed source changed");
+    }
+
+    private void validateProof(Proof proof, Cancellation token) {
+        if (!revalidateMap(proof.map(), token))
+            throw new IllegalStateException("Map source changed");
+        validateBinding(
+                new Binding(proof.token().wdtId(), proof.token().wdtKey(), proof.wdtLength()),
+                token);
+        synchronized (this) {
+            resolve(proof.token());
         }
     }
 
