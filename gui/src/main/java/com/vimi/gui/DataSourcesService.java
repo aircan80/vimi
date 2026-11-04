@@ -293,6 +293,30 @@ public final class DataSourcesService {
         return List.copyOf(result);
     }
 
+    /**
+     * Declared world-yard NPC spawns for World placement: only Polestar records world yards on a
+     * client Map ID. Questie area percentages and EG interaction observations are not admitted.
+     * Local prepared snapshots only; never downloads or prepares.
+     */
+    public com.vibeminer.concepts.locations.WorldSpawns.Index worldSpawns(BuildInfo build,
+            com.vibeminer.access.Cancellation token) {
+        var unsupported = com.vibeminer.concepts.locations.LocationTypes.State.UNSUPPORTED;
+        if (!policy(Id.POLESTAR).enabled())
+            return com.vibeminer.concepts.locations.WorldSpawns.unavailable(unsupported,
+                    "Polestar is disabled; no other source records world-yard spawn points.");
+        if (!"Forever".equals(automaticFlavor(build.product(), build.version())))
+            return com.vibeminer.concepts.locations.WorldSpawns.unavailable(unsupported,
+                    "No reviewed world-yard spawn source applies to this build.");
+        var snapshot = polestarState.snapshots().stream()
+                .filter(v -> v.preparedAt() != null && compatibleNpcBuild(v.catalog().clientBuild(), build.version()))
+                .max(java.util.Comparator.comparing(v -> v.catalog().clientBuild(), DataSourcesService::compareNpcBuild));
+        if (snapshot.isEmpty())
+            return com.vibeminer.concepts.locations.WorldSpawns.unavailable(
+                    com.vibeminer.concepts.locations.LocationTypes.State.UNKNOWN,
+                    "No prepared Polestar snapshot at or before this build; use Data Sources.");
+        return com.vibeminer.concepts.locations.WorldSpawns.polestar(polestar, snapshot.get(), token);
+    }
+
     static boolean compatibleNpcBuild(String source, String target) {
         if (source == null || target == null || !source.matches("\\d+\\.\\d+\\.\\d+\\.\\d+") || !target.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) return false;
         try {

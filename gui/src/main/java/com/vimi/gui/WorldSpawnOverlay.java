@@ -1,0 +1,362 @@
+package com.vimi.gui;
+
+import com.vibeminer.access.Cancellation;
+import com.vibeminer.concepts.locations.LocationTypes;
+import com.vibeminer.concepts.locations.WorldSpawns;
+import com.vibeminer.rendering.world.TerrainCamera;
+import com.vibeminer.rendering.world.TerrainRenderer;
+
+import javafx.animation.AnimationTimer;
+import javafx.application.Platform;
+import javafx.geometry.VPos;
+import javafx.scene.canvas.Canvas;
+import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.control.CheckBox;
+import javafx.scene.control.Label;
+import javafx.scene.control.ProgressIndicator;
+import javafx.scene.control.Tooltip;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.Pane;
+import javafx.scene.paint.Color;
+import javafx.scene.text.Font;
+import javafx.scene.text.TextAlignment;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
+
+/**
+ * Static NPC spawn markers projected with the explorer's own camera over the presented frame.
+ *
+ * <p>Only declared world-yard points with a recorded height are drawn; points without height are
+ * counted, never snapped to a guessed floor. Markers are not depth tested against terrain. One
+ * worker builds at most one source index at a time; results from a retired source revision or a
+ * closed overlay never publish. FX-owned apart from the worker.
+ */
+final class WorldSpawnOverlay extends Pane implements AutoCloseable {
+    static final double RADIUS = 300, LABEL_DEPTH = 120;
+    static final int LIMIT = 256, LABELS = 16;
+
+    /** Local prepared-source read; must not download or prepare data. */
+    @FunctionalInterface
+    interface Loader {
+        WorldSpawns.Index load(Cancellation token) throws Exception;
+    }
+
+    /** What the viewport presents: the camera, its client Map ID and the frame's pixel size. */
+    record View(TerrainRenderer.Camera camera, long mapId, double frameWidth, double frameHeight) {
+        View {
+            Objects.requireNonNull(camera);
+        }
+    }
+
+    /** One marker in viewport pixels. */
+    record Marker(WorldSpawns.Spawn spawn, double x, double footY, double headY, double depth) {}
+
+    private final Canvas canvas = new Canvas();
+    private final CheckBox enabled = new CheckBox("NPC spawns");
+    private final Label status = new Label("NPC spawn markers off");
+    private final ProgressIndicator activity = new ProgressIndicator(-1);
+    private final HBox controls = new HBox(8, enabled, activity, status);
+    private final Loader loader;
+    private final Supplier<Object> revision;
+    private final ThreadPoolExecutor worker =
+            new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(1),
+                    runnable -> {
+                        var thread = new Thread(runnable, "world-spawn-index");
+                        thread.setDaemon(true);
+                        return thread;
+                    });
+    private final AnimationTimer timer;
+    private Supplier<View> views = () -> null;
+    private WorldSpawns.Index index;
+    private Object indexRevision;
+    private Cancellation loading;
+    private long generation;
+    private View drawn;
+    private WorldSpawns.Index drawnIndex;
+    private List<Marker> markers = List.of();
+    private double lastWidth, lastHeight;
+    private boolean closed;
+
+    WorldSpawnOverlay(Loader loader, Supplier<Object> revision) {
+        this.loader = Objects.requireNonNull(loader);
+        this.revision = Objects.requireNonNull(revision);
+        setId("world-spawn-overlay");
+        setMouseTransparent(true);
+        setPickOnBounds(false);
+        getChildren().add(canvas);
+        canvas.widthProperty().bind(widthProperty());
+        canvas.heightProperty().bind(heightProperty());
+        enabled.setId("world-spawns");
+        enabled.setMinWidth(javafx.scene.layout.Region.USE_PREF_SIZE);
+        status.setId("world-spawn-status");
+        status.setWrapText(true);
+        status.setMinWidth(0);
+        activity.setPrefSize(18, 18);
+        activity.setMaxSize(18, 18);
+        activity.setVisible(false);
+        activity.setManaged(false);
+        activity.setAccessibleText("Indexing declared NPC spawn points");
+        Tooltip.install(status, new Tooltip(
+                "Declared spawn points in world yards from the selected prepared source."
+                        + " Points without a recorded height are counted but not placed."
+                        + " Markers are not occluded by terrain; phase, patrols and live"
+                        + " server state are unknown."));
+        timer = new AnimationTimer() {
+            @Override
+            public void handle(long now) {
+                refresh();
+            }
+        };
+        enabled.selectedProperty().addListener((observable, before, on) -> {
+            if (on) {
+                timer.start();
+            } else {
+                timer.stop();
+                clearCanvas();
+                status.setText("NPC spawn markers off");
+            }
+        });
+    }
+
+    /** Explorer controls row for the World footer. */
+    HBox controls() {
+        return controls;
+    }
+
+    /** Supplies the presented view, or null while no explorer frame is visible. */
+    void bind(Supplier<View> views) {
+        this.views = Objects.requireNonNull(views);
+    }
+
+    List<Marker> markers() {
+        return markers;
+    }
+
+    CheckBox toggle() {
+        return enabled;
+    }
+
+    Label status() {
+        return status;
+    }
+
+    void refresh() {
+        if (closed || !enabled.isSelected()) return;
+        var view = views.get();
+        if (view == null) {
+            if (drawn != null) clearCanvas();
+            return;
+        }
+        Object current = revision.get();
+        if (index == null || !Objects.equals(indexRevision, current)) {
+            if (loading == null || !Objects.equals(indexRevision, current)) load(current);
+            if (index == null) return;
+        }
+        if (view.equals(drawn) && index == drawnIndex
+                && canvas.getWidth() == lastWidth && canvas.getHeight() == lastHeight) return;
+        draw(view);
+    }
+
+
+    private void load(Object current) {
+        if (loading != null) loading.cancel();
+        var token = new Cancellation();
+        loading = token;
+        indexRevision = current;
+        index = null;
+        long request = ++generation;
+        clearCanvas();
+        show(true);
+        status.setText("Indexing declared NPC spawn points…");
+        try {
+            CompletableFuture.supplyAsync(() -> {
+                try {
+                    return loader.load(token);
+                } catch (Exception failure) {
+                    throw new java.util.concurrent.CompletionException(failure);
+                }
+            }, worker).whenComplete((result, failure) -> Platform.runLater(() -> {
+                if (closed || request != generation) return;
+                loading = null;
+                show(false);
+                if (failure != null) {
+                    if (token.isCanceled()) return;
+                    index = WorldSpawns.unavailable(LocationTypes.State.UNKNOWN,
+                            "Spawn source could not be read: " + rootMessage(failure));
+                } else {
+                    index = result;
+                }
+                drawn = null;
+                refresh();
+                if (views.get() == null) status.setText(summary(index, null, 0));
+            }));
+        } catch (java.util.concurrent.RejectedExecutionException busy) {
+            // The single worker is draining a canceled index; retry on a later pulse.
+            loading = null;
+            indexRevision = null;
+            show(false);
+        }
+    }
+
+    private void draw(View view) {
+        drawn = view;
+        drawnIndex = index;
+        lastWidth = canvas.getWidth();
+        lastHeight = canvas.getHeight();
+        var g = canvas.getGraphicsContext2D();
+        g.clearRect(0, 0, lastWidth, lastHeight);
+        if (index.source().isEmpty()) {
+            markers = List.of();
+            status.setText(summary(index, null, 0));
+            return;
+        }
+        var camera = view.camera();
+        var nearby = index.near(view.mapId(), camera.x(), camera.y(), RADIUS, LIMIT);
+        markers = project(nearby.placed(), camera, view.frameWidth(), view.frameHeight(),
+                lastWidth, lastHeight);
+        paint(g, markers);
+        status.setText(summary(index, nearby, markers.size()));
+    }
+
+    /**
+     * Projects with the same native camera convention as terrain rendering: eye right/up/depth and
+     * a focal length of 0.8 frame widths, then fits the frame centered in the viewport.
+     */
+    static List<Marker> project(List<WorldSpawns.Spawn> spawns, TerrainRenderer.Camera camera,
+            double frameWidth, double frameHeight, double viewWidth, double viewHeight) {
+        if (!(frameWidth > 0) || !(frameHeight > 0) || !(viewWidth > 0) || !(viewHeight > 0))
+            return List.of();
+        var eyeCamera = TerrainCamera.from(camera);
+        double scale = Math.min(viewWidth / frameWidth, viewHeight / frameHeight);
+        double left = (viewWidth - frameWidth * scale) / 2, top = (viewHeight - frameHeight * scale) / 2;
+        double focal = frameWidth * .8;
+        var result = new ArrayList<Marker>();
+        for (var spawn : spawns) {
+            if (spawn.z() == null) continue;
+            var foot = eyeCamera.eye(spawn.x(), spawn.y(), spawn.z());
+            var head = eyeCamera.eye(spawn.x(), spawn.y(), spawn.z() + 2);
+            if (foot.depth() <= TerrainCamera.NEAR || head.depth() <= TerrainCamera.NEAR) continue;
+            double x = frameWidth * .5 + foot.right() * focal / foot.depth();
+            double footY = frameHeight * .5 - foot.up() * focal / foot.depth();
+            double headY = frameHeight * .5 - head.up() * focal / head.depth();
+            double sx = left + x * scale, fy = top + footY * scale, hy = top + headY * scale;
+            if (sx < left - 8 || sx > left + frameWidth * scale + 8
+                    || Math.max(fy, hy) < top - 8 || Math.min(fy, hy) > top + frameHeight * scale + 8)
+                continue;
+            result.add(new Marker(spawn, sx, fy, hy, foot.depth()));
+        }
+        // Far markers first so near markers and labels remain legible.
+        result.sort((a, b) -> Double.compare(b.depth(), a.depth()));
+        return List.copyOf(result);
+    }
+
+    private void paint(GraphicsContext g, List<Marker> markers) {
+        g.setFont(Font.font(11));
+        g.setTextAlign(TextAlignment.CENTER);
+        g.setTextBaseline(VPos.BOTTOM);
+        int labelStart = Math.max(0, markers.size() - LABELS);
+        for (int i = 0; i < markers.size(); i++) {
+            var marker = markers.get(i);
+            var npc = index.npc(marker.spawn().npcId()).orElse(null);
+            double radius = Math.clamp(240 / marker.depth(), 2.5, 7);
+            Color color = rankColor(npc == null ? null : npc.rank());
+            g.setStroke(Color.rgb(20, 24, 22, .85));
+            g.setLineWidth(1.5);
+            g.strokeLine(marker.x(), marker.footY(), marker.x(), marker.headY());
+            g.setFill(color);
+            g.fillOval(marker.x() - radius, marker.headY() - radius, radius * 2, radius * 2);
+            g.strokeOval(marker.x() - radius, marker.headY() - radius, radius * 2, radius * 2);
+            if (i >= labelStart && marker.depth() <= LABEL_DEPTH) {
+                String label = npc == null || npc.name() == null
+                        ? "NPC " + marker.spawn().npcId() : npc.name();
+                double y = marker.headY() - radius - 2;
+                g.setFill(Color.rgb(12, 16, 14, .8));
+                g.fillText(label, marker.x() + 1, y + 1);
+                g.setFill(Color.WHITE);
+                g.fillText(label, marker.x(), y);
+            }
+        }
+    }
+
+    static Color rankColor(Integer rank) {
+        if (rank == null) return Color.rgb(170, 176, 180);
+        return switch (rank) {
+            case 0 -> Color.rgb(242, 201, 76);
+            case 1 -> Color.rgb(242, 153, 74);
+            case 2 -> Color.rgb(187, 107, 217);
+            case 3 -> Color.rgb(235, 87, 87);
+            case 4 -> Color.rgb(200, 214, 229);
+            default -> Color.rgb(170, 176, 180);
+        };
+    }
+
+    static String summary(WorldSpawns.Index index, WorldSpawns.Nearby nearby, int visible) {
+        if (index.source().isEmpty())
+            return "NPC spawns unavailable: " + String.join(" ", index.issues());
+        var source = index.source().get();
+        var text = new StringBuilder("NPC spawns · ").append(provider(source.provider()))
+                .append(" source client ").append(source.build());
+        if (nearby != null) {
+            text.append(" · ").append(visible).append(" in view of ").append(nearby.placed().size())
+                    .append(" placed within ").append((int) nearby.radius()).append(" yd");
+            if (nearby.heightless() > 0)
+                text.append(" · ").append(nearby.heightless()).append(" without recorded height not placed");
+            if (nearby.omitted() > 0)
+                text.append(" · ").append(nearby.omitted()).append(" beyond the ").append(LIMIT).append("-marker cap");
+            if (nearby.placed().isEmpty() && nearby.heightless() == 0 && index.count(nearby.mapId()) == 0)
+                text.append(" · no declared points on this map");
+        } else {
+            text.append(" · ").append(index.spawns()).append(" declared points");
+        }
+        if (index.state() == LocationTypes.State.PARTIAL) text.append(" · partial: ").append(index.issues().getFirst());
+        return text.append(" · not depth-tested; phase unknown").toString();
+    }
+
+    private static String provider(LocationTypes.Provider provider) {
+        return switch (provider) {
+            case POLESTAR -> "Polestar";
+            case QUESTIE -> "Questie";
+            case EG_LINK -> "EG Link";
+        };
+    }
+
+    private static String rootMessage(Throwable failure) {
+        while (failure.getCause() != null && failure instanceof java.util.concurrent.CompletionException)
+            failure = failure.getCause();
+        return failure.getMessage() == null ? failure.getClass().getSimpleName() : failure.getMessage();
+    }
+
+    private void show(boolean busy) {
+        activity.setVisible(busy);
+        activity.setManaged(busy);
+    }
+
+    private void clearCanvas() {
+        drawn = null;
+        markers = List.of();
+        canvas.getGraphicsContext2D().clearRect(0, 0, canvas.getWidth(), canvas.getHeight());
+    }
+
+    /** Explorer left or map replaced: retain the index, drop markers. */
+    void clear() {
+        clearCanvas();
+    }
+
+    @Override
+    public void close() {
+        closed = true;
+        timer.stop();
+        if (loading != null) loading.cancel();
+        loading = null;
+        index = null;
+        clearCanvas();
+        worker.shutdown();
+    }
+}

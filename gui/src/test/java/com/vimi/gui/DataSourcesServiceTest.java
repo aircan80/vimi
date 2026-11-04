@@ -82,12 +82,20 @@ public final class DataSourcesServiceTest {
                 require(npcResult.npcs().getFirst().evidence().getFirst().source().build().equals("1.60.1.70532"),"Older source build provenance retained");
                 var questResult=com.vibeminer.concepts.quests.QuestCatalog.load(service.questInputs(selectedBuild,"enUS"),com.vibeminer.access.Cancellation.NONE);
                 require(questResult.quests().size()==1 && questResult.quests().getFirst().title()==null,"Quest adapter retains ID without inventing title from unsupported name field");
+                int beforeSpawns = calls.get();
+                var spawns = service.worldSpawns(selectedBuild,com.vibeminer.access.Cancellation.NONE);
+                require(calls.get()==beforeSpawns && spawns.source().orElseThrow().build().equals("1.60.1.70532"),"World spawns read prepared Polestar locally with source provenance");
+                require(spawns.spawns()==0 && spawns.state()==com.vibeminer.concepts.locations.LocationTypes.State.PARTIAL,"Rows without a declared spawn kind are not placements");
+                require(spawns.npc(1).orElseThrow().name().equals("Authored record"),"Spawn labels come from the same snapshot");
+                var classic = new BuildInfo("wow_classic","Classic","1.15.7.61582","us","config",BuildInfo.BuildSource.CURRENT,false,null,0);
+                require(service.worldSpawns(classic,com.vibeminer.access.Cancellation.NONE).source().isEmpty(),"No world-yard source is guessed for other products");
                 int beforeSync = calls.get();
                 service.sync(DataSourcesService.Id.POLESTAR).join();
                 require(calls.get() == beforeSync + 1 && service.polestar().snapshots().getFirst().records() == 15,
                         "Global Polestar sync checks one head and reuses prepared records");
                 service.setEnabled(DataSourcesService.Id.POLESTAR,false).join();
                 require(service.npcInputs(selectedBuild,"enUS").isEmpty() && service.questInputs(selectedBuild,"enUS").isEmpty(),"Disabled source excluded from both catalogues");
+                require(service.worldSpawns(selectedBuild,com.vibeminer.access.Cancellation.NONE).state()==com.vibeminer.concepts.locations.LocationTypes.State.UNSUPPORTED,"Disabled Polestar supplies no world spawns");
                 expectFailure(() -> service.syncPolestar().join());
                 require(service.polestar().snapshots().size()==1,"Disabling retains completed source data");
             } finally { service.closeAsync().join(); }

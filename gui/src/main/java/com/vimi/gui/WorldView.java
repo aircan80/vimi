@@ -77,6 +77,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final ImageView image = new ImageView();
     private final StackPane viewport = new StackPane(image);
     private final WorldMinimap minimap = new WorldMinimap();
+    private WorldSpawnOverlay spawns;
     private final TerrainGpuPreview gpu;
     private final GpuPreviewService gpuService;
     private WorldStreamSourceController streaming;
@@ -1343,6 +1344,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         position,
                         new HBox(8, gpuEnabled, gpuActivity, retryGpu, gpuStatus),
                         new HBox(8, textureActivity, textureStatus, retryTextures)));
+        if (spawns != null) ((VBox) content.getBottom()).getChildren().add(spawns.controls());
         status.setText("Loading terrain tile " + selected.key() + "…");
         show(firstFrameActivity, true);
         timer.start();
@@ -2314,10 +2316,23 @@ final class WorldView extends BorderPane implements AutoCloseable {
         }
     }
 
+    /** Mounts declared NPC spawn markers over the presented explorer frame. FX thread. */
+    void attachSpawns(WorldSpawnOverlay overlay) {
+        if (spawns != null || closed) throw new IllegalStateException("Spawn overlay already attached");
+        spawns = java.util.Objects.requireNonNull(overlay);
+        viewport.getChildren().add(viewport.getChildren().indexOf(image) + 1, overlay);
+        overlay.bind(() -> {
+            if (closed || !active || !explorer || camera == null || inventory == null
+                    || !(image.getImage() instanceof javafx.scene.image.Image frame)) return null;
+            return new WorldSpawnOverlay.View(camera, inventory.map().id(), frame.getWidth(), frame.getHeight());
+        });
+    }
+
     @Override
     public void close() {
         closed = true;
         resumeCamera = null;
+        if (spawns != null) spawns.close();
         streamingImages.clear();
         minimap.close();
         if (gpu != null) gpu.close();
