@@ -520,7 +520,9 @@ final class WorldBasicWmo {
                         && h.firstPortal() == 0
                         && h.rawBatchPadding() == 0
                         && h.rawUnused() == 0
-                        && h.liquidType() == 0
+                        // These two recorded header values are inert in this exact flags9,
+                        // no-MLIQ profile; neither admits water or invents a liquid material.
+                        && (h.liquidType() == 0 || h.liquidType() == 15)
                         && h.tail0() == 0
                         && h.tail1() == 0,
                 "UNSUPPORTED_GROUP");

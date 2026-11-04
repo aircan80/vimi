@@ -10,6 +10,8 @@ import com.vibeminer.formats.generated.GeneratedTableSource;
 import com.vibeminer.formats.tables.BuildTables;
 import com.vibeminer.formats.tables.CapturedRows;
 import com.vibeminer.formats.tables.CapturedRowsTypes;
+import com.vibeminer.formats.tables.NativeIdDomainTypes;
+import com.vibeminer.formats.tables.NativeIdReceiptFingerprint;
 import com.vibeminer.formats.tables.TableTypes;
 import com.vibeminer.formats.world.WorldFormats;
 import java.io.ByteArrayOutputStream;
@@ -65,7 +67,24 @@ final class WorldStreamScopes {
         }
     }
 
-    private record MapBinding(long mapId, long wdtId, String identity, String sourceStamp) {}
+    enum MapAuthority {
+        COMPLETE_READY,
+        OBSERVED_SELECTED_ROW
+    }
+
+    private record MapBinding(
+            long mapId,
+            long wdtId,
+            String identity,
+            String sourceStamp,
+            long ordinal,
+            NativeIdDomainTypes.Witness witness) {
+        MapAuthority authority() {
+            return witness == null
+                    ? MapAuthority.COMPLETE_READY
+                    : MapAuthority.OBSERVED_SELECTED_ROW;
+        }
+    }
 
     private record MapContext(
             CapturedRowsTypes.Receipt receipt,
@@ -444,6 +463,7 @@ final class WorldStreamScopes {
         private final long owner, generation, mapId, wdtId, wdtLength;
         private final Long wdtDeclaredLength;
         private final int wdtSourceLimit;
+        private final MapAuthority mapAuthority;
 
         private AdmissionMetadata(WorldStreamScopes engine, Proof proof) {
             build = engine.build;
@@ -458,6 +478,11 @@ final class WorldStreamScopes {
             wdtLength = proof.wdtLength();
             wdtDeclaredLength = proof.wdtDeclaredLength();
             wdtSourceLimit = proof.wdtSourceLimit();
+            mapAuthority = proof.map().authority();
+        }
+
+        MapAuthority mapAuthority() {
+            return mapAuthority;
         }
 
         BuildRef build() {
@@ -892,11 +917,15 @@ final class WorldStreamScopes {
         requireEntry(receipt.table());
         if (!receipt.build().equals(build)
                 || !receipt.locale().equals(locale)
-                || receipt.rowCount() > 10_000
-                || receipt.completion().excludedEncryptedSections() != 0
+                || receipt.rowCount() > 10_000) {
+            throw new IllegalStateException("Unqualified Map capture scope");
+        }
+        if (receipt.table().state() == TableTypes.State.PARTIAL) {
+            requirePartialMapProfile(receipt);
+        } else if (receipt.completion().excludedEncryptedSections() != 0
                 || receipt.completion().excludedPhysicalRecords() != 0
                 || receipt.completion().excludedCopyRecords() != 0) {
-            throw new IllegalStateException("Unqualified Map capture scope");
+            throw new IllegalStateException("Unqualified complete Map capture scope");
         }
         validateNative(receipt);
         var schema =
@@ -914,7 +943,24 @@ final class WorldStreamScopes {
         try (var rows = openMap(token)) {
             var context = qualifyMap(rows, token);
             probeEof(rows, context.receipt(), token);
-            return binding.sourceStamp().equals(context.stamp());
+            if (!binding.sourceStamp().equals(context.stamp())) {
+                return false;
+            }
+            if (context.receipt().table().state() == TableTypes.State.PARTIAL) {
+                var witness = binding.witness();
+                if (witness == null
+                        || !witness.receiptFingerprint()
+                                .equals(NativeIdReceiptFingerprint.sha256(context.receipt()))) {
+                    return false;
+                }
+                validateBinding(
+                        new Binding(
+                                witness.sourceFileDataId(),
+                                witness.sourceContentKey(),
+                                witness.consumedLength()),
+                        token);
+            }
+            return true;
         }
     }
 
@@ -1014,7 +1060,9 @@ final class WorldStreamScopes {
                                     requestedId,
                                     wdt,
                                     sha(binding.getBytes(java.nio.charset.StandardCharsets.UTF_8)),
-                                    context.stamp());
+                                    context.stamp(),
+                                    row.ordinal(),
+                                    null);
                 }
                 if (page.nextOrdinal() == null) {
                     if (ordinal + page.rows().size() != receipt.rowCount()) {
@@ -1027,8 +1075,115 @@ final class WorldStreamScopes {
             if (found == null) {
                 throw new IllegalStateException("Unknown Map ID");
             }
+            if (receipt.table().state() == TableTypes.State.PARTIAL) {
+                var inspected =
+                        rows.inspectNativeIdDomain(
+                                        requestedId,
+                                        NativeIdDomainTypes.SourceAccess.CONFIGURED_SOURCE,
+                                        token)
+                                .join();
+                token.check();
+                if (inspected.state() == NativeIdDomainTypes.State.BUSY) {
+                    throw new IllegalStateException(
+                            "Native ID inspection busy; retry latest request");
+                }
+                if (inspected.state() == NativeIdDomainTypes.State.CANCELED) {
+                    throw new java.util.concurrent.CancellationException();
+                }
+                if (inspected.state() == NativeIdDomainTypes.State.SOURCE_CHANGED) {
+                    throw new IllegalStateException(
+                            "Map source changed during selected-ID inspection");
+                }
+                var witness = inspected.witness();
+                if (inspected.state() != NativeIdDomainTypes.State.READABLE_UNIQUE
+                        || witness == null
+                        || witness.selectedId() != requestedId
+                        || witness.readableOrdinal() != found.ordinal()
+                        || witness.sourceFileDataId() != receipt.table().fileDataId()
+                        || !witness.sourceContentKey().equals(receipt.table().contentKey())
+                        || witness.consumedLength() != receipt.completion().consumedBytes()
+                        || !witness.layoutHash().equals(receipt.header().layoutHash())
+                        || witness.excludedCount() != receipt.completion().excludedPhysicalRecords()
+                        || !NativeIdDomainTypes.REVISION.equals(witness.profileRevision())
+                        || !witness.receiptFingerprint()
+                                .equals(NativeIdReceiptFingerprint.sha256(receipt))) {
+                    throw new UnsupportedOperationException(
+                            "Partial Map lacks matching selected-ID witness: " + inspected.state());
+                }
+                validateBinding(
+                        new Binding(
+                                witness.sourceFileDataId(),
+                                witness.sourceContentKey(),
+                                witness.consumedLength()),
+                        token);
+                String identity =
+                        sha(
+                                (found.identity()
+                                                + ":OBSERVED_SELECTED_ROW:"
+                                                + witness.evidenceDigest())
+                                        .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                found =
+                        new MapBinding(
+                                found.mapId(),
+                                found.wdtId(),
+                                identity,
+                                found.sourceStamp(),
+                                found.ordinal(),
+                                witness);
+            }
             probeEof(rows, receipt, token);
             return found;
+        }
+    }
+
+    private static void requirePartialMapProfile(CapturedRowsTypes.Receipt r) {
+        var c = r.completion();
+        var counts = r.table().counts();
+        if (c.excludedEncryptedSections() < 1
+                || c.excludedPhysicalRecords() < 1
+                || !"unencryptedSections".equals(c.scope())) {
+            throw new IllegalStateException("PARTIAL Map state lacks an encrypted-section domain");
+        }
+        if (!List.of("WDC4", "WDC5").contains(r.header().format())
+                || r.rowCount() < 1
+                || r.rowCount() > 256
+                || r.header().declaredRecords() > 256
+                || r.header().declaredCopyRecords() != 0
+                || c.copyRows() != 0
+                || c.excludedCopyRecords() != 0
+                || c.excludedEncryptedSections() < 1
+                || c.excludedEncryptedSections() > 16
+                || c.excludedPhysicalRecords() < 1
+                || !"unencryptedSections".equals(c.scope())
+                || c.physicalRows() != r.rowCount()
+                || c.declaredRecords() != c.physicalRows() + c.excludedPhysicalRecords()
+                || c.declaredRecords() != r.header().declaredRecords()
+                || r.sections().size() > 16
+                || counts == null
+                || counts.declaredRows() != c.declaredRecords()
+                || counts.readableRows() != r.rowCount()
+                || counts.excludedSections() != c.excludedEncryptedSections()
+                || counts.excludedRecords() != c.excludedPhysicalRecords()) {
+            throw new UnsupportedOperationException("Partial Map outside selected-ID profile");
+        }
+        long declared = 0, excluded = 0;
+        int hidden = 0;
+        for (var section : r.sections()) {
+            if (section.copyCount() != 0
+                    || section.protectedCopyCount() != 0
+                    || section.unresolvedCopyCount() != 0) {
+                throw new UnsupportedOperationException("Partial Map copy domain unsupported");
+            }
+            declared += section.recordCount();
+            if (section.isEncrypted() && !section.isDecrypted()) {
+                hidden++;
+                excluded += section.recordCount();
+            }
+        }
+        if (declared != c.declaredRecords()
+                || hidden != c.excludedEncryptedSections()
+                || excluded != c.excludedPhysicalRecords()) {
+            throw new IllegalStateException("Partial Map section domain differs");
         }
     }
 
@@ -1390,6 +1545,7 @@ final class WorldStreamScopes {
         if (entry == null
                 || !entry.checked()
                 || entry.state() != TableTypes.State.READY
+                        && entry.state() != TableTypes.State.PARTIAL
                 || !"Map".equals(entry.name())
                 || entry.contentKey() == null
                 || !entry.contentKey().matches("[0-9a-f]{32}")) {

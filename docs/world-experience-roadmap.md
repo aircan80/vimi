@@ -11,8 +11,8 @@ The user authorized all items below and autonomous continued work, including ove
 | Greater view distance | 49-source planner/test-emitter checkpoint; integration pending | Independent seam/error/cap review, multi-source geometry/material representation and bounded streaming |
 | Terrain load allocation | Released alpha.19 | Primitive parser preserves exact geometry/area; cold neighborhood renderer handoff remains |
 | Terrain visual quality | Planned | Higher-resolution GPU material sampling, filtering/mips and qualified blending; no claim of client parity |
-| Cities/buildings/doodads | Private BASIC_WMO source factory reviewed; cold neutral annex under independent review; visible native pass pending | Qualified transforms/materials, culling, same-world depth/camera and combined GPU ledger |
-| Dungeons/raids | Raw WDT scene facts merged; actual global instance source proofs | Qualified global transforms/materials and scene mode integration; first actual instance, interior navigation and safe camera framing |
+| Cities/buildings/doodads | Private BASIC_WMO source and cold annex reviewed; actual guarded source/6-texture packet proof passes; native draw pass active | Qualified transforms/materials, culling, same-world depth/camera and combined GPU ledger |
+| Dungeons/raids | Raw WDT facts released; strict zero-global transform direction reviewed; actual group/texture diagnostics, global admission pending | Qualified global transforms/materials and scene mode integration; first actual instance, interior navigation and safe camera framing |
 | Water | Source/design preserved | Qualified source/layout and bounded visible rendering |
 | NPC/monster placement | Authorized | Verified spawn coordinate domains, model/display mapping, height/floor/phase provenance, bounded instances; static placement first |
 | Area music | Authorized | Actual area/subzone music relationships, supported playback, transition fades, mute/volume and missing-source state |
