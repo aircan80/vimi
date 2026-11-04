@@ -21,6 +21,8 @@ change is required.
 Candidate fix: admit BC3/8/7 alongside BC2/8/1 under explicit handmade opt-in,
 retain complete power-of-two chain/range/order/EOF validation, and report actual
 colour encoding, decoded encoding, alpha depth and alpha encoding on refusal.
+The streaming packet diffuse-tuple guard receives the same narrow BC3 amendment;
+otherwise successful decoding would still be refused during hot tile transport.
 Other handmade profiles remain unsupported pending their own evidence. Strict
 flag policy and persisted-image authority are unchanged. Decoder revision advances
 to blp2-rgba8-v3 so dependent generated/terrain cache identities change.
@@ -29,7 +31,9 @@ Regression uses a synthetic256×256 BLP with exactly the reported header and nin
 declared levels through1×1, including16-byte terminal blocks. Every level checks
 exact RGBA, including distinct BC3 alpha; tests cover4×4 terrain mip selection,
 strict-profile refusal, wrong block lengths, truncated unselected payload and
-unsupported tuple diagnostics. No acquired game texture is committed. The new
+unsupported tuple diagnostics. Additional tests pass BC3 through actual terrain
+source/atlas qualification and the textured streaming packet roundtrip, while
+rejecting unreviewed handmade tuples. No acquired game texture is committed. The new
 regression reproduced the original BC2-only refusal before the fix.
 
 Status: implemented locally; independent review and release-candidate integration

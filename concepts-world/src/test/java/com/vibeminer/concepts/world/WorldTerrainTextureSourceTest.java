@@ -769,6 +769,37 @@ class WorldTerrainTextureSourceTest {
     }
 
     @Test
+    void handmadeBc3DiffuseReachesQualifiedTerrainAtlas() throws Exception {
+        var files = new Files();
+        for (long id : new long[] {10, 11}) {
+            var bytes = files.sources.get(id).clone();
+            bytes[10] = 7;
+            // BC3 alpha endpoint255, other endpoint0, selectors0 for every existing block.
+            for (int at = 148; at < bytes.length; at += 16) {
+                java.util.Arrays.fill(bytes, at, at + 8, (byte) 0);
+                bytes[at] = (byte) 255;
+            }
+            files.sources.put(id, bytes);
+        }
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        try (var loaded = read(source)) {
+            var tile = loaded.tiles().getFirst();
+            assertEquals(WorldTerrainTextureSource.State.READY, tile.state());
+            assertEquals(256, tile.supportedChunks());
+            for (var diffuse : tile.receipt().diffuse()) {
+                assertEquals("BC3", diffuse.encoding());
+                assertEquals(8, diffuse.alphaDepth());
+                assertEquals(7, diffuse.alphaEncoding());
+                assertEquals(2, diffuse.mipFlags());
+            }
+        } finally {
+            source.closeAsync().join();
+            pool.closeAsync().join();
+        }
+    }
+
+    @Test
     void coldWarmSharesOneAtlasAndFetchesOnlyConsumedPaletteEntries() throws Exception {
         var files = new Files();
         var pool = new TerrainAtlasPool();
