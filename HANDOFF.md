@@ -1,5 +1,47 @@
 # vimi development handoff
 
+## Alpha.19 parser allocation release candidate
+
+Focused release worktree `/tmp/vimi-terrain-parser-release`, branch
+`fix/terrain-parser-release`, includes independently approved8e57ff1+f0bba22.
+Only terrain geometry accumulation changed: bounded primitive buffers replace
+boxing/per-fan arrays. Five authored old-parser geometry/area goldens and actual
+three-ADT hashes/counts agree. Fulltile measuredallocation13.3MB→5.3MB;
+actualthree-source5.3–6.1MB, noFPS/wholeheapclaim. Root andindependentreviews pass.
+Full combined/hosted/package gates still required before alpha.19 tag; alpha.18
+remains the latest verified published prerelease until publication is checked.
+No city/instance/NPC/music/hotstreaming/characterUI feature is claimed delivered.
+
+
+## Current authorization and expanded roadmap
+
+The user explicitly authorized continued autonomous/overnight work and all additions
+in [the world/character roadmap](docs/world-experience-roadmap.md). Keep agents
+working in parallel; publish reviewed ready groups as prereleases. Current world
+streaming/cities/instances remain priorities. Finish remaining character models
+and a WoW-inspired character creator AFTER current world milestones; do not lose
+that request or make every later immersive extra block it. NPC/monster static
+placement, area music, sky/lighting/fog/time-of-day, ambient audio, walk/fly,
+inspection, search/travel/bookmarks, quest/vendor/trainer/flight overlays, idle
+animations and dungeon floor/group/entrance navigation are all authorized.
+
+Main through718ef40 includes mergedPR154 optional preallocation-bounded row reads
+(independent approval,75combinedchecks); alpha.18 tag remainsc9cd4f3. Future draft
+PR153/worktree `/tmp/vimi-world-streaming-integration` combines reviewed hot
+protocol/spike and reader,157combinedchecks plus actual root cadence proof pass.
+Framev2 codec is uncommitted root work in `/tmp/vimi-world-frame-v2`, seven tests
+andfullrendering-bgfxcheckpass; not wired into a renderer.
+
+World source engine corrected throughce55dba independentlyapproved; source cache/
+PreparedTile design pending boxed-parser budget and fresh-area-metadata corrections.
+Maps source3230c45+6da76c6 works onfreshnativecaptures; oldUNKNOWN issue receipts
+honestlyunsupported. WMO city design/sourceproof5d79dca+81143c8 preserved separately.
+Instance team found StockadeMap34/WDT791060 globalWMO-only108631, while some other
+instances have ADTs; classify source mode separately from Map.InstanceType.
+Character audit currentlyprofilesHuman/Orc/Dwarf/Tauren only; no user choice-vector
+API yet, remainingrace/sex support andcustomizationare futureimplementation.
+
+
 ## Verified alpha.18 publication
 
 Alpha.18 is verified published atc9cd4f3 by run41760647382: explicit prerelease,
