@@ -57,6 +57,10 @@ public final class AudioStreamDecoder {
         return Codec.UNSUPPORTED;
     }
 
+    /**
+     * Messages starting with {@code "World audio "} (here and in {@link PcmStream}) are shown to
+     * the user as is, so they must never include paths or other local details.
+     */
     public static PcmStream open(byte[] encoded, BooleanSupplier canceled) throws IOException {
         check(canceled);
         if (encoded.length < 32 || encoded.length > MAX_ENCODED) {

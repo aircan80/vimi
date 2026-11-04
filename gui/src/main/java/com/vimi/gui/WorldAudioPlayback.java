@@ -14,6 +14,7 @@ import java.util.function.Consumer;
 
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioSystem;
+import javax.sound.sampled.DataLine;
 import javax.sound.sampled.SourceDataLine;
 
 /**
@@ -24,6 +25,16 @@ import javax.sound.sampled.SourceDataLine;
 final class WorldAudioPlayback implements AutoCloseable {
     static final double FADE_SECONDS = 1.5;
     static final int MAX_SILENCE_MILLIS = 600_000, MAX_LOOP_BYTES = 16 << 20;
+    static final String OUTPUT_UNAVAILABLE = "Audio output is unavailable on this machine.",
+            OUTPUT_STOPPED = "Audio output stopped accepting audio.";
+    /** A common line format, used only to check that an output device exists before decoding. */
+    static final AudioFormat PROBE = new AudioFormat(AudioFormat.Encoding.PCM_SIGNED,
+            AudioSystem.NOT_SPECIFIED, 16, AudioSystem.NOT_SPECIFIED, AudioSystem.NOT_SPECIFIED,
+            AudioSystem.NOT_SPECIFIED, true);
+
+    static boolean outputSupported() {
+        return AudioSystem.isLineSupported(new DataLine.Info(SourceDataLine.class, PROBE));
+    }
 
     @FunctionalInterface
     interface Lines {
@@ -54,6 +65,19 @@ final class WorldAudioPlayback implements AutoCloseable {
 
     record Status(WorldAreaAudio.Kind kind, boolean playing, String message) {}
 
+    /**
+     * Decoder messages are shown only when authored by the audio decoder; process start and pipe
+     * failures can name the local Java installation, so they map to {@code fallback}.
+     */
+    static String detail(IOException failure, String fallback) {
+        String message = failure.getMessage();
+        if (message == null) return fallback;
+        if (message.startsWith("World audio ")) return message;
+        // OggVoiceInput's shared preflight is worded for voice previews.
+        if (message.startsWith("Voice preview requires")) return "not a valid Vorbis stream";
+        return fallback;
+    }
+
     static Pcm decode(byte[] encoded, BooleanSupplier canceled) throws IOException {
         PcmStream stream = AudioStreamDecoder.open(encoded, canceled);
         return new Pcm() {
@@ -70,12 +94,19 @@ final class WorldAudioPlayback implements AutoCloseable {
     final Channel music, ambience;
 
     WorldAudioPlayback(Consumer<Status> status) {
-        this(AudioSystem::getSourceDataLine, WorldAudioPlayback::decode, status);
+        this(WorldAudioPlayback::outputSupported, AudioSystem::getSourceDataLine,
+                WorldAudioPlayback::decode, status);
     }
 
     WorldAudioPlayback(Lines lines, Decoder decoder, Consumer<Status> status) {
-        music = new Channel(WorldAreaAudio.Kind.MUSIC, lines, decoder, status);
-        ambience = new Channel(WorldAreaAudio.Kind.AMBIENCE, lines, decoder, status);
+        this(() -> true, lines, decoder, status);
+    }
+
+    /** {@code output} is checked before each track's file read and decoder start. */
+    WorldAudioPlayback(BooleanSupplier output, Lines lines, Decoder decoder,
+            Consumer<Status> status) {
+        music = new Channel(WorldAreaAudio.Kind.MUSIC, output, lines, decoder, status);
+        ambience = new Channel(WorldAreaAudio.Kind.AMBIENCE, output, lines, decoder, status);
     }
 
     Channel channel(WorldAreaAudio.Kind kind) {
@@ -94,6 +125,7 @@ final class WorldAudioPlayback implements AutoCloseable {
 
     static final class Channel {
         private final WorldAreaAudio.Kind kind;
+        private final BooleanSupplier output;
         private final Lines lines;
         private final Decoder decoder;
         private final Consumer<Status> status;
@@ -107,8 +139,10 @@ final class WorldAudioPlayback implements AutoCloseable {
         private Pcm active;
         private volatile double volume = 0.5;
 
-        Channel(WorldAreaAudio.Kind kind, Lines lines, Decoder decoder, Consumer<Status> status) {
+        Channel(WorldAreaAudio.Kind kind, BooleanSupplier output, Lines lines, Decoder decoder,
+                Consumer<Status> status) {
             this.kind = kind;
+            this.output = output;
             this.lines = lines;
             this.decoder = decoder;
             this.status = status;
@@ -258,7 +292,7 @@ final class WorldAudioPlayback implements AutoCloseable {
                 return decoder.open(file.bytes(), () -> !current(expected));
             } catch (IOException failure) {
                 problem[0] = "Recorded " + label() + " file #" + fileId + " cannot be decoded: "
-                        + failure.getMessage();
+                        + detail(failure, "the decoder could not start");
             } catch (RuntimeException canceledOrFailed) {
                 problem[0] = "Recorded " + label() + " decoding failed.";
             }
@@ -271,6 +305,7 @@ final class WorldAudioPlayback implements AutoCloseable {
          */
         private String play(long expected, WorldAreaAudio.Track playing, Source from,
                 Cancellation token) {
+            if (!outputAvailable()) return current(expected) ? OUTPUT_UNAVAILABLE : null;
             var ids = playing.fileDataIds();
             long fileId = ids.get(ThreadLocalRandom.current().nextInt(ids.size()));
             String[] problem = new String[1];
@@ -286,7 +321,7 @@ final class WorldAudioPlayback implements AutoCloseable {
                     line.open(format, Math.max(frame, pcm.sampleRate() / 4 * frame));
                     line.start();
                 } catch (Exception unavailable) {
-                    return "Audio output is unavailable on this machine.";
+                    return current(expected) ? OUTPUT_UNAVAILABLE : null;
                 }
                 report(true, "Playing recorded " + label() + " (sound kit #"
                         + playing.soundKitId() + ", file #" + fileId + ") from "
@@ -308,9 +343,12 @@ final class WorldAudioPlayback implements AutoCloseable {
                         count = pcm.read(block, 0, block.length, this::closedNow);
                     } catch (IOException failure) {
                         return live ? "Recorded " + label() + " stream failed: "
-                                + failure.getMessage() : null;
-                    } catch (RuntimeException canceledOrFailed) {
+                                + detail(failure, "decoder output was lost") : null;
+                    } catch (java.util.concurrent.CancellationException canceled) {
                         return null;
+                    } catch (RuntimeException failed) {
+                        // Not a natural end: retrying would re-decode the same file in a loop.
+                        return live ? "Recorded " + label() + " stream failed." : null;
                     }
                     if (count < 0) {
                         if (frames == 0) {
@@ -337,7 +375,13 @@ final class WorldAudioPlayback implements AutoCloseable {
                             if (!adopt(pcm)) return null;
                             continue;
                         }
-                        if (live) line.drain();
+                        if (live) {
+                            try {
+                                line.drain();
+                            } catch (RuntimeException stopped) {
+                                return current(expected) ? OUTPUT_STOPPED : null;
+                            }
+                        }
                         return null;
                     }
                     frames += count / frame;
@@ -349,8 +393,14 @@ final class WorldAudioPlayback implements AutoCloseable {
                     double target = fadingOut ? 0 : volume;
                     gain = apply(block, count, pcm.channels(), gain, target, step);
                     for (int offset = 0; offset < count; ) {
-                        int written = line.write(block, offset, count - offset);
-                        if (written <= 0) return null;
+                        int written;
+                        try {
+                            written = line.write(block, offset, count - offset);
+                        } catch (RuntimeException stopped) {
+                            written = 0;
+                        }
+                        // A removed device or a line stopped by the OS; stop instead of re-looping.
+                        if (written <= 0) return current(expected) ? OUTPUT_STOPPED : null;
                         offset += written;
                     }
                 }
@@ -367,6 +417,15 @@ final class WorldAudioPlayback implements AutoCloseable {
                         /* A failed close only affects this finished track. */
                     }
                 }
+            }
+        }
+
+        /** Cheap device check before any file read or decoder process; no line is created. */
+        private boolean outputAvailable() {
+            try {
+                return output.getAsBoolean();
+            } catch (RuntimeException unavailable) {
+                return false;
             }
         }
 

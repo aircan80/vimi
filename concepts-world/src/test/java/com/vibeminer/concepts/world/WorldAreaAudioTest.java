@@ -234,6 +234,48 @@ final class WorldAreaAudioTest {
     }
 
     @Test
+    void tableFailuresShowNoLocalPaths() {
+        var tables =
+                (BuildTables)
+                        java.lang.reflect.Proxy.newProxyInstance(
+                                WorldAreaAudioTest.class.getClassLoader(),
+                                new Class<?>[] {BuildTables.class},
+                                (proxy, method, args) ->
+                                        java.util.concurrent.CompletableFuture.failedFuture(
+                                                new java.io.UncheckedIOException(
+                                                        new java.io.IOException(
+                                                                "/home/someone/.cache/vimi/"
+                                                                        + "tables.db: locked"))));
+        var plan =
+                WorldAreaAudio.resolve(
+                        tables, 0, area(11, INDEX), WorldAreaAudio.Variant.DAY, Cancellation.NONE);
+        assertEquals(WorldAreaAudio.State.UNAVAILABLE, plan.music().state());
+        assertEquals("Recorded zone music unavailable: source unavailable", plan.music().message());
+        assertEquals(
+                "Recorded ambience unavailable: source unavailable", plan.ambience().message());
+    }
+
+    @Test
+    void storageFailuresShowNoLocalPaths() {
+        var files =
+                (com.vibeminer.files.BuildFiles)
+                        java.lang.reflect.Proxy.newProxyInstance(
+                                WorldAreaAudioTest.class.getClassLoader(),
+                                new Class<?>[] {com.vibeminer.files.BuildFiles.class},
+                                (proxy, method, args) ->
+                                        // A real source fails its future; join() wraps it.
+                                        java.util.concurrent.CompletableFuture.failedFuture(
+                                                new java.io.UncheckedIOException(
+                                                        new java.io.IOException(
+                                                                "/home/someone/.cache/vimi/"
+                                                                        + "files/index.db:"
+                                                                        + " locked"))));
+        var file = WorldAreaAudio.read(files, 9001, Cancellation.NONE);
+        assertEquals(WorldAreaAudio.FileState.UNAVAILABLE, file.state());
+        assertEquals("Audio file #9001: source unavailable", file.issue());
+    }
+
+    @Test
     void absentBuildFilesAreUnavailableRatherThanSilent() {
         var file = WorldAreaAudio.read(null, 9001, Cancellation.NONE);
         assertEquals(WorldAreaAudio.FileState.UNAVAILABLE, file.state());

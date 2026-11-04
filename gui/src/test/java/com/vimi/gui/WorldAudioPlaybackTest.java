@@ -24,7 +24,7 @@ public final class WorldAudioPlaybackTest {
     private static final byte[] ENCODED = new byte[64];
 
     /** Authored mono 8 kHz stream of a constant sample; frames bounds its length. */
-    private static final class FakePcm implements WorldAudioPlayback.Pcm {
+    private static class FakePcm implements WorldAudioPlayback.Pcm {
         final long frames;
         long sent;
         volatile boolean closed;
@@ -56,6 +56,8 @@ public final class WorldAudioPlaybackTest {
         final AtomicLong frames = new AtomicLong();
         final ConcurrentLinkedQueue<Integer> peaks = new ConcurrentLinkedQueue<>();
         volatile int last;
+        /** A removed device or a line stopped by the OS accepts no bytes. */
+        volatile boolean dead;
 
         SourceDataLine line() {
             return (SourceDataLine) Proxy.newProxyInstance(
@@ -63,6 +65,7 @@ public final class WorldAudioPlaybackTest {
                     new Class<?>[] {SourceDataLine.class},
                     (proxy, method, args) -> switch (method.getName()) {
                         case "write" -> {
+                            if (dead) yield 0;
                             byte[] bytes = (byte[]) args[0];
                             int offset = (Integer) args[1], length = (Integer) args[2];
                             int peak = 0;
@@ -234,6 +237,162 @@ public final class WorldAudioPlaybackTest {
         silent.closeAsync().get(10, TimeUnit.SECONDS);
     }
 
+    private static long count(ConcurrentLinkedQueue<WorldAudioPlayback.Status> statuses,
+            String message) {
+        return statuses.stream().filter(s -> s.message().equals(message)).count();
+    }
+
+    private static void missingDeviceIsReportedBeforeAnyFileOrDecoder() throws Exception {
+        var reads = new AtomicInteger();
+        var decodes = new AtomicInteger();
+        var lines = new AtomicInteger();
+        var statuses = new ConcurrentLinkedQueue<WorldAudioPlayback.Status>();
+        WorldAudioPlayback.Source counted = (id, token) -> {
+            reads.incrementAndGet();
+            return FILES.file(id, token);
+        };
+        var playback = new WorldAudioPlayback(() -> false, format -> {
+            lines.incrementAndGet();
+            throw new javax.sound.sampled.LineUnavailableException("no mixer");
+        }, (bytes, canceled) -> {
+            decodes.incrementAndGet();
+            return new FakePcm(400);
+        }, statuses::add);
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 100, 0), counted);
+        playback.music.enabled(true);
+        await(() -> count(statuses, WorldAudioPlayback.OUTPUT_UNAVAILABLE) == 1,
+                "missing device was hidden");
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 200, 0), counted);
+        await(() -> count(statuses, WorldAudioPlayback.OUTPUT_UNAVAILABLE) == 2,
+                "next kit did not report the missing device");
+        Thread.sleep(100);
+        if (reads.get() != 0 || decodes.get() != 0 || lines.get() != 0)
+            throw new AssertionError("No device must read no file and start no decoder: "
+                    + reads.get() + " " + decodes.get() + " " + lines.get());
+        if (count(statuses, WorldAudioPlayback.OUTPUT_UNAVAILABLE) != 2)
+            throw new AssertionError("Unavailable output must wait instead of retrying");
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+
+        // The probe can pass while opening the real format fails: report once, do not retry.
+        var failing = new WorldAudioPlayback(() -> true, format -> {
+            lines.incrementAndGet();
+            throw new javax.sound.sampled.LineUnavailableException("busy");
+        }, (bytes, canceled) -> {
+            decodes.incrementAndGet();
+            return new FakePcm(400);
+        }, statuses::add);
+        failing.ambience.track(track(WorldAreaAudio.Kind.AMBIENCE, 7, 0), counted);
+        failing.ambience.enabled(true);
+        await(() -> count(statuses, WorldAudioPlayback.OUTPUT_UNAVAILABLE) == 3,
+                "line open failure was hidden");
+        Thread.sleep(100);
+        if (decodes.get() != 1 || lines.get() != 1)
+            throw new AssertionError("Failed line open must not retry: " + decodes.get());
+        failing.closeAsync().get(10, TimeUnit.SECONDS);
+    }
+
+    private static void deadLineAndStreamFailuresStopAmbienceLooping() throws Exception {
+        var device = new Device();
+        device.dead = true;
+        var opens = new AtomicInteger();
+        var statuses = new ConcurrentLinkedQueue<WorldAudioPlayback.Status>();
+        var playback = new WorldAudioPlayback(format -> {
+            device.opened.incrementAndGet();
+            return device.line();
+        }, (bytes, canceled) -> {
+            opens.incrementAndGet();
+            return new FakePcm(400);
+        }, statuses::add);
+        playback.ambience.track(track(WorldAreaAudio.Kind.AMBIENCE, 100, 0), FILES);
+        playback.ambience.enabled(true);
+        await(() -> count(statuses, WorldAudioPlayback.OUTPUT_STOPPED) == 1,
+                "dead line was hidden");
+        Thread.sleep(200);
+        if (opens.get() != 1 || device.opened.get() != 1)
+            throw new AssertionError("Dead line must not re-decode in a loop: " + opens.get());
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+
+        // A line whose write throws (device removed mid-write) is reported, not a dead worker.
+        var throwingOpens = new AtomicInteger();
+        var throwing = new WorldAudioPlayback(format -> (SourceDataLine) Proxy.newProxyInstance(
+                WorldAudioPlaybackTest.class.getClassLoader(),
+                new Class<?>[] {SourceDataLine.class}, (proxy, method, args) -> {
+                    if (method.getName().equals("write"))
+                        throw new IllegalStateException("device removed");
+                    return method.getName().startsWith("is") ? false : null;
+                }), (bytes, canceled) -> {
+                    throwingOpens.incrementAndGet();
+                    return new FakePcm(400);
+                }, statuses::add);
+        throwing.ambience.track(track(WorldAreaAudio.Kind.AMBIENCE, 11, 0), FILES);
+        throwing.ambience.enabled(true);
+        await(() -> count(statuses, WorldAudioPlayback.OUTPUT_STOPPED) == 2,
+                "throwing line was hidden");
+        Thread.sleep(200);
+        if (throwingOpens.get() != 1)
+            throw new AssertionError("Throwing line must not re-decode: " + throwingOpens.get());
+        throwing.closeAsync().get(10, TimeUnit.SECONDS);
+
+        var failing = new AtomicInteger();
+        var broken = new WorldAudioPlayback(format -> new Device().line(), (bytes, canceled) -> {
+            failing.incrementAndGet();
+            return new FakePcm(400) {
+                @Override
+                public int read(byte[] buffer, int offset, int length, BooleanSupplier c) {
+                    throw new IllegalStateException("unexpected");
+                }
+            };
+        }, statuses::add);
+        broken.ambience.track(track(WorldAreaAudio.Kind.AMBIENCE, 9, 0), FILES);
+        broken.ambience.enabled(true);
+        await(() -> count(statuses, "Recorded ambience stream failed.") == 1,
+                "unexpected read failure was hidden");
+        Thread.sleep(200);
+        if (failing.get() != 1)
+            throw new AssertionError("Read failure must not re-decode in a loop: " + failing.get());
+        broken.closeAsync().get(10, TimeUnit.SECONDS);
+    }
+
+    private static void statusTextNamesNoLocalPaths() throws Exception {
+        String home = "/home/someone/.local/jdk";
+        var statuses = new ConcurrentLinkedQueue<WorldAudioPlayback.Status>();
+        var start = new WorldAudioPlayback(format -> new Device().line(), (bytes, canceled) -> {
+            throw new IOException("Cannot run program \"" + home + "/bin/java\": error=2");
+        }, statuses::add);
+        start.music.track(track(WorldAreaAudio.Kind.MUSIC, 100, 0), FILES);
+        start.music.enabled(true);
+        await(() -> statuses.stream().anyMatch(s -> s.message().contains("could not start")),
+                "decoder start failure was hidden");
+        start.closeAsync().get(10, TimeUnit.SECONDS);
+
+        var pipe = new WorldAudioPlayback(format -> new Device().line(), (bytes, canceled) ->
+                new FakePcm(400) {
+                    @Override
+                    public int read(byte[] buffer, int offset, int length, BooleanSupplier c)
+                            throws IOException {
+                        throw new IOException(home + "/pipe: Broken pipe");
+                    }
+                }, statuses::add);
+        pipe.music.track(track(WorldAreaAudio.Kind.MUSIC, 200, 0), FILES);
+        pipe.music.enabled(true);
+        await(() -> statuses.stream().anyMatch(s -> s.message().contains("output was lost")),
+                "stream failure was hidden");
+        pipe.closeAsync().get(10, TimeUnit.SECONDS);
+        if (statuses.stream().anyMatch(s -> s.message().contains("/home")
+                || s.message().contains("Cannot run")))
+            throw new AssertionError("Status text must not name local paths: " + statuses);
+
+        if (!WorldAudioPlayback.detail(new IOException(
+                "Voice preview requires a complete valid single Vorbis stream"), "x")
+                .equals("not a valid Vorbis stream"))
+            throw new AssertionError("Shared Ogg preflight wording must fit world audio");
+
+        // Authored decoder messages stay visible.
+        if (!WorldAudioPlayback.detail(new IOException("World audio decoder stalled"), "x")
+                .equals("World audio decoder stalled"))
+            throw new AssertionError("Authored decoder detail was hidden");
+    }
+
     private static void gainRampsPerFrame() {
         byte[] block = new byte[8];
         for (int i = 0; i < 8; i += 2) block[i] = 0x40;
@@ -250,7 +409,11 @@ public final class WorldAudioPlaybackTest {
         fadesKeepKitsAndCloseOwnedResources();
         ambienceLoopsFromMemoryAndMusicWaitsRecordedSilence();
         missingSourcesAreVisibleAndOpenNoLine();
+        missingDeviceIsReportedBeforeAnyFileOrDecoder();
+        deadLineAndStreamFailuresStopAmbienceLooping();
+        statusTextNamesNoLocalPaths();
         System.out.println("World audio playback: fades, kit continuity, ambience loops,"
-                + " recorded silence, mute, missing sources and owned close passed");
+                + " recorded silence, mute, missing sources, missing device, dead lines,"
+                + " path-free status and owned close passed");
     }
 }
