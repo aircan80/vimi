@@ -158,6 +158,43 @@ public final class CompactTerrainSource {
                 new byte[0]);
     }
 
+    TerrainGrid.Chunk chunkUncharged(int ordinal, float[] scratch, BooleanSupplier canceled) {
+        requireReadable();
+        check(canceled);
+        if (ordinal < 0 || ordinal >= CHUNKS || scratch.length != 145) {
+            throw new IllegalArgumentException("Invalid chunk scratch");
+        }
+        System.arraycopy(heights, ordinal * 145, scratch, 0, 145);
+        return new TerrainGrid.Chunk(
+                ordinal,
+                ordinal % 16,
+                ordinal / 16,
+                0,
+                origins[ordinal * 3],
+                origins[ordinal * 3 + 1],
+                origins[ordinal * 3 + 2],
+                scratch,
+                holes[ordinal],
+                TerrainGrid.ColorState.ABSENT,
+                new byte[0]);
+    }
+
+    void copyPosition(int chunk, int row, int col, float[] target, int offset) {
+        int sample = (row / 2) * 17 + (row % 2) * 9 + col;
+        target[offset] =
+                (float)
+                        (origins[chunk * 3]
+                                - row * (com.vibeminer.formats.world.WorldFormats.TILE_SIZE / 256));
+        target[offset + 1] =
+                (float)
+                        (origins[chunk * 3 + 1]
+                                - col * (com.vibeminer.formats.world.WorldFormats.TILE_SIZE / 128)
+                                - (row % 2)
+                                        * (com.vibeminer.formats.world.WorldFormats.TILE_SIZE
+                                                / 256));
+        target[offset + 2] = origins[chunk * 3 + 2] + heights[chunk * 145 + sample];
+    }
+
     private void requireReadable() {
         if (!readable()) {
             throw new IllegalStateException("Source is not readable");
