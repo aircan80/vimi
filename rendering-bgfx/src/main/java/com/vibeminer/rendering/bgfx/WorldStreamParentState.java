@@ -180,22 +180,26 @@ final class WorldStreamParentState {
         value.fileRetired = true;
     }
 
-    synchronized Commit prepareCommit(long policy, List<Resident> ordered) {
+    Commit prepareCommit(long policy, List<Resident> ordered) {
         Objects.requireNonNull(ordered);
+        int count = ordered.size();
+        require(count >= 0 && count <= 9, "Commit count");
+        var snapshot = new Resident[count];
+        // Caller list code must never run under the state monitor.
+        for (int i = 0; i < count; i++) {
+            snapshot[i] = ordered.get(i);
+        }
+        return prepareCapturedCommit(policy, snapshot);
+    }
+
+    private synchronized Commit prepareCapturedCommit(long policy, Resident[] snapshot) {
         if (closed
                 || !hello
                 || commit != null && (!commit.terminal || !commit.fileRetired)
                 || ticket != null && !ticket.offered && !ticket.unusedSent && !ticket.credited) {
             return null;
         }
-        int count = ordered.size();
-        require(
-                policy >= session.policy() && content < Long.MAX_VALUE && count <= 9 && count >= 0,
-                "Commit bounds");
-        var snapshot = new Resident[count];
-        for (int i = 0; i < count; i++) {
-            snapshot[i] = ordered.get(i);
-        }
+        require(policy >= session.policy() && content < Long.MAX_VALUE, "Commit bounds");
         var stable = java.util.Arrays.asList(snapshot);
         var slots = new HashSet<Integer>();
         var coordinates = new HashSet<Integer>();

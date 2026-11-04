@@ -29,7 +29,7 @@ The lifecycle/file driver must validate before doing IO and retain ownership unt
 cleanup; this pure state cannot prove a caller actually deleted or exited anything. The frame
 ACK gate remains separate and must be wired to matched expectations/receipts by the full Session.
 
-Seven authored tests cover a full stage/commit/next-credit trace, file deletion versus ack,
+Nine authored tests cover a full stage/commit/next-credit trace, file deletion versus ack,
 unadvertised writer cancellation/counter order, advertised cancellation/old-input ordering,
 wrong nonce/duplicate/premature/mismatched statuses, stale/foreign/duplicate-XY/canceled handles,
 optional rejection and terminal-versus-process-exit cleanup. An adversarial changing list proves
@@ -39,3 +39,12 @@ list then copying a different foreign descriptor. Full rendering-bgfx check pass
 No authenticated-source, actual parent pipe/process protocol, frame-presentation or performance
 qualification is claimed. The complete public transport still needs to connect these reviewed
 helpers, enforce the reliable operation/window bounds, and execute authored real-child proofs.
+
+Follow-up caller-boundary correction: size/get of the caller list run outside every state
+monitor, with a hard count at most9 before allocation. Only the private captured array enters
+synchronized validation, which rechecks terminal/current state after all caller code returns.
+Tests hold get while close/reserve remain prompt, reenter close from get (no commit may then
+publish), and throw from get without consuming a transaction. Adding only an outer synchronized
+wrapper makes the held-get fixture time out; restored full check passes. The eventual public
+facade must perform this preparation on its off-FX controller/file lane, not call arbitrary
+caller collection code from FX.
