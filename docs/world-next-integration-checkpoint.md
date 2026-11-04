@@ -67,3 +67,17 @@ reviewed PR159 code changes fb80a21/a3fbb5f/6e57190 and liquid Source/mapping,
 but excludes the still-reviewed flat geometry implementation and unfinished native
 instance renderer/bridge. Separate root liquid owner/mapping checks passed42 tasks.
 Documentation-only updates efa9afc/e6527ba follow that tested source head.
+
+Followup review and integrated checks:
+
+- Flat liquid geometry93405ac is independently approved and promoted asac56f66.
+  Root integrated concepts/formats checks pass42 tasks (7 executed). Same private
+  two-owner Source limits, no scene/native integration. Independent forced tests
+  pass32 tasks; actual author proof matches5,268 vertices and7,902 indices.
+- Standalone candidate renderer2cb45f2 and six test-only shaders1796a4c are
+  independently approved and promoted as6b6a749/9366208. Root integrated bgfx check
+  plus actual Vulkan native proof passes41 tasks (16 executed),19 readbacks:
+  `/home/aircan/.cache/vimi-tmp/global-native-root-integrated-check.log`.
+  Independent actual Vulkan proof also passes19 readbacks. Root inspected the
+  authored asymmetric landmark image. This remains a private draw component;
+  DX11 artifacts, fixed frame/process owner and GUI enablement are still pending.

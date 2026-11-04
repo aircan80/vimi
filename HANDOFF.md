@@ -15,8 +15,9 @@ passes full `check assemble`:474 tasks,102 executed. This includes reviewed PR15
 code, geographic camera/minimap correction, Dwarf appearance controls, Night Elf
 source/native qualification, standalone global canonical file I/O and private
 Source facade, and single-root liquid Source/coordinate mapping. Water geometry
-ac56f66 follows after independent implementation approval; its integrated check
-is running. No instance or water draw is enabled in the GUI yet.
+ac56f66 follows after independent implementation approval; integrated concepts/formats
+checks pass42 tasks. Private native renderer6b6a749 is also independently approved;
+root bgfx checks plus actual19-readback Vulkan proof pass41 tasks. No instance or water draw is enabled in the GUI yet.
 
 See [world-next-integration-checkpoint.md](docs/world-next-integration-checkpoint.md)
 and [world-experience-roadmap.md](docs/world-experience-roadmap.md) for component
