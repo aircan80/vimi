@@ -24,6 +24,7 @@ public interface BuildService {
     default String historicalPreparation(BuildInfo build) { return null; }
 
     default DataSourcesService dataSources() { return null; }
+    default ClientHotfixStore hotfixImports() { return null; }
 
     default BuildDownloads downloads() { return null; }
 

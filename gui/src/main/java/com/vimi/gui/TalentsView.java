@@ -131,12 +131,16 @@ final class TalentsView extends BorderPane implements AutoCloseable {
     private long generation, revision = -1;
     private boolean loaded, closed, sourceRetired;
     private Long selectedClass;
+    private java.util.function.Supplier<com.vibeminer.formats.tables.BuildTables> sourceTables = () -> null;
+    private String sourceVersion = "";
 
     TalentsView(BuildPreparation.Job job) {
         this(
                 () -> nativeWork(job).talentsHandle(),
                 () -> nativeWork(job).revision(),
                 (id, token) -> nativeWork(job).icon(id, token));
+        sourceTables = () -> nativeWork(job).tablesHandle();
+        sourceVersion = job.build().version();
     }
 
     TalentsView(
@@ -638,6 +642,23 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                 : "Description: source text is available.", "muted");
         descriptionSource.setId("talent-source-description");
         facts.getChildren().addAll(iconSource, descriptionSource);
+        var cacheOrigin = text("", "muted");
+        cacheOrigin.setWrapText(true);
+        cacheOrigin.setId("talent-source-hotfix");
+        facts.getChildren().add(cacheOrigin);
+        sourceDetails.expandedProperty().addListener((observable, before, expanded) -> {
+            var tables = sourceTables.get();
+            if (!expanded || tables == null || !cacheOrigin.getText().isEmpty()) return;
+            cacheOrigin.setText("Checking client-cache source…");
+            long current = generation;
+            var requestToken = descriptionToken;
+            request(() -> ClientHotfixDetails.talent(tables, talent, sourceVersion, requestToken))
+                    .whenComplete((lines, error) -> Platform.runLater(() -> {
+                        if (stale(current) || requestToken != descriptionToken) return;
+                        cacheOrigin.setText(error == null ? String.join("\n", lines)
+                                : "Client-cache source could not be confirmed.");
+                    }));
+        });
         if (!classSourceNotices.isEmpty()) {
             facts.getChildren().add(text("Class-level source notices (may affect other talents):", "muted"));
             for (String notice : classSourceNotices) facts.getChildren().add(text(notice, "muted"));
