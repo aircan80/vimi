@@ -10,6 +10,8 @@ final class WorldSourceRefusals {
     private WorldSourceRefusals() {}
 
     enum Site {
+        WATER_OUTPUT_CREDIT(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
+        WATER_ROOT_BINDING(WorldTerrainStreaming.Refusal.Reason.SOURCE_INVALIDATED),
         OUTPUT_CREDIT(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
         GLOBAL_ASSET_CAPACITY(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
         GEOMETRY_CREDIT(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),

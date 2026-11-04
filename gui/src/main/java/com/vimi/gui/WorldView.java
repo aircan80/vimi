@@ -2104,7 +2104,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     () -> !stale(selection) && viewportActive() && controller == streaming,
                     () -> controller.presented(frame))) return;
             show(firstFrameActivity, false);
-            status.setText("Terrain explorer · persistent GPU terrain · buildings, water and collision are not rendered");
+            status.setText("Terrain explorer · persistent GPU terrain · static diagnostic water where qualified · buildings and collision are not rendered");
         } catch (RuntimeException failedUpload) {
             retireStreaming();
             show(firstFrameActivity, false);

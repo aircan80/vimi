@@ -70,7 +70,7 @@ class WorldTerrainLiquidsTest {
     private static final class Fixture implements AutoCloseable {
         AuthoredNativeLiquids nativeRows;
         int liquidCaptures;
-        boolean changedTable;
+        boolean changedTable, changedRoot;
         int changeAtCapture;
         boolean failCaptureClose;
         final CompletableFuture<Void> entered = new CompletableFuture<>(),
@@ -95,6 +95,21 @@ class WorldTerrainLiquidsTest {
                                                     : id == 1371380
                                                             ? AuthoredNativeLiquids.TYPE_KEY
                                                             : AuthoredNativeLiquids.MATERIAL_KEY,
+                                            FileTypes.FileFormat.UNKNOWN,
+                                            FileTypes.FileFormatSource.NONE,
+                                            FileTypes.FileStorage.STORED,
+                                            false));
+                        }
+                        if (id == 2 && changedRoot) {
+                            var old = super.stat(id, token).file();
+                            return new FileTypes.FileStat(
+                                    FileTypes.FileLookupState.FOUND,
+                                    new FileTypes.BuildFile(
+                                            id,
+                                            null,
+                                            FileTypes.FilePathSource.NONE,
+                                            old.size(),
+                                            "b".repeat(32),
                                             FileTypes.FileFormat.UNKNOWN,
                                             FileTypes.FileFormatSource.NONE,
                                             FileTypes.FileStorage.STORED,
@@ -836,6 +851,395 @@ class WorldTerrainLiquidsTest {
                             assertEquals(5, v.vertexUp(0));
                             return null;
                         });
+            }
+        }
+    }
+
+    private static final class PublicFixture implements AutoCloseable {
+        final Fixture authored = new Fixture();
+        final TerrainAtlasPool pool = new TerrainAtlasPool();
+        final WorldService world;
+        final WorldTerrainStreaming terrain;
+        final WorldWaterPreview water;
+        final WorldTerrainStreaming.WrittenTile<AutoCloseable> tile;
+        final AtomicReference<RuntimeException> terrainCleanup = new AtomicReference<>();
+        boolean expectedCloseFailure;
+
+        PublicFixture(int secondary) {
+            authored.payload(liquids(1, secondary, 1, false));
+            world = new WorldService(authored.tables, authored.files, pool);
+            terrain = world.terrainStreaming().orElseThrow();
+            water = world.waterPreview().orElseThrow();
+            var scope = terrain.createScope(MAP, Cancellation.NONE);
+            terrain.activate(scope);
+            tile =
+                    terrain.prepareAndWrite(
+                            scope,
+                            TILE,
+                            Cancellation.NONE,
+                            (b, t) ->
+                                    (AutoCloseable)
+                                            () -> {
+                                                if (terrainCleanup.get() != null) {
+                                                    throw terrainCleanup.get();
+                                                }
+                                            });
+        }
+
+        public void close() throws Exception {
+            try {
+                world.closeAsync().get(5, TimeUnit.SECONDS);
+            } catch (java.util.concurrent.ExecutionException fatalCleanup) {
+                if (!expectedCloseFailure) {
+                    throw fatalCleanup;
+                }
+            } finally {
+                pool.closeAsync().get(5, TimeUnit.SECONDS);
+                authored.close();
+            }
+        }
+    }
+
+    @Test
+    void publicWaterRequiresActualOpaqueTerrainAndDirectLayoutKeepsTablesAbsent() throws Exception {
+        try (var f = new PublicFixture(0);
+                var foreign = new PublicFixture(0)) {
+            int capturesBefore = f.authored.liquidCaptures;
+            var saved = new AtomicReference<WorldWaterPreview.CheckedBorrow>();
+            var closes = new java.util.concurrent.atomic.AtomicInteger();
+            var result =
+                    f.water.prepareAndWrite(
+                            f.tile,
+                            Cancellation.NONE,
+                            (b, t) -> {
+                                t.check();
+                                saved.set(b);
+                                assertEquals(4, b.vertices());
+                                assertEquals(6, b.indices());
+                                assertEquals(0, b.facts().tableObservations().size());
+                                return (AutoCloseable) closes::incrementAndGet;
+                            });
+            var written = (WorldWaterPreview.WrittenWater<AutoCloseable>) result;
+            assertEquals(capturesBefore, f.authored.liquidCaptures);
+            assertThrows(IllegalStateException.class, () -> saved.get().vertices());
+            assertEquals(4, written.withPayload(WorldWaterPreview.CheckedBorrow::vertices));
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            f.water.prepareAndWrite(
+                                    foreign.tile,
+                                    Cancellation.NONE,
+                                    (b, t) -> (AutoCloseable) () -> {}));
+            written.withWrittenResource(r -> assertEquals(0, closes.get()));
+            written.closeAsync().get(3, TimeUnit.SECONDS);
+            assertEquals(1, closes.get());
+            assertFalse(written.isOpen());
+            f.world.closeAsync().get(3, TimeUnit.SECONDS);
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            f.water.prepareAndWrite(
+                                    foreign.tile,
+                                    Cancellation.NONE,
+                                    (b, t) -> (AutoCloseable) () -> {}));
+            assertThrows(
+                    WorldTerrainStreaming.Refusal.class,
+                    () ->
+                            f.water.prepareAndWrite(
+                                    f.tile, Cancellation.NONE, (b, t) -> (AutoCloseable) () -> {}));
+        }
+    }
+
+    @Test
+    void waterWriterFinalNativeChangeClosesUnadvertisedOutputBeforeHandoff() throws Exception {
+        try (var f = new PublicFixture(42)) {
+            var closes = new java.util.concurrent.atomic.AtomicInteger();
+            assertThrows(
+                    RuntimeException.class,
+                    () ->
+                            f.water.prepareAndWrite(
+                                    f.tile,
+                                    Cancellation.NONE,
+                                    (b, t) -> {
+                                        assertEquals(2, b.facts().tableObservations().size());
+                                        for (var observation : b.facts().tableObservations()) {
+                                            assertEquals(64, observation.receiptSha256().length());
+                                        }
+                                        f.authored.changedTable = true;
+                                        return (AutoCloseable) closes::incrementAndGet;
+                                    }));
+            assertEquals(1, closes.get());
+            f.authored.changedTable = false;
+            try (var recovered =
+                    f.water.prepareAndWrite(
+                            f.tile, Cancellation.NONE, (b, t) -> (AutoCloseable) () -> {})) {
+                assertEquals(WorldWaterPreview.State.READY, recovered.facts().state());
+            }
+        }
+    }
+
+    @Test
+    void waterNoSurfaceCreatesNoWriterAndTwoCreditsIncludeActualWrittenOwners() throws Exception {
+        try (var f = new PublicFixture(0)) {
+            var a =
+                    f.water.prepareAndWrite(
+                            f.tile, Cancellation.NONE, (b, t) -> (AutoCloseable) () -> {});
+            var b =
+                    f.water.prepareAndWrite(
+                            f.tile, Cancellation.NONE, (v, t) -> (AutoCloseable) () -> {});
+            int before = f.authored.base.opens.get(2L).get();
+            var pressure =
+                    assertThrows(
+                            WorldTerrainStreaming.Refusal.class,
+                            () ->
+                                    f.water.prepareAndWrite(
+                                            f.tile,
+                                            Cancellation.NONE,
+                                            (v, t) -> (AutoCloseable) () -> {}));
+            assertEquals(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER, pressure.reason());
+            assertEquals(before, f.authored.base.opens.get(2L).get());
+            a.close();
+            b.close();
+            f.authored.payload(liquids(1, 0, 0, false));
+            try (var noSurface =
+                    f.water.prepareAndWrite(
+                            f.tile,
+                            Cancellation.NONE,
+                            (v, t) -> {
+                                throw new AssertionError("empty writer");
+                            })) {
+                assertTrue(noSurface instanceof WorldWaterPreview.NoSurface<?>);
+                assertEquals(WorldWaterPreview.State.EMPTY, noSurface.facts().state());
+            }
+        }
+    }
+
+    @Test
+    void actualWaterWriterCancellationAndHeldResourceRetirementKeepServiceDrainHonest()
+            throws Exception {
+        try (var f = new PublicFixture(0)) {
+            var entered = new CompletableFuture<Void>();
+            var release = new CompletableFuture<Void>();
+            var canceled = new CompletableFuture<Void>();
+            var result = new CompletableFuture<Throwable>();
+            var closes = new java.util.concurrent.atomic.AtomicInteger();
+            var worker =
+                    Thread.ofVirtual()
+                            .start(
+                                    () -> {
+                                        try {
+                                            f.water.prepareAndWrite(
+                                                    f.tile,
+                                                    Cancellation.NONE,
+                                                    (b, t) -> {
+                                                        try (var registration =
+                                                                t.onCancel(
+                                                                        () ->
+                                                                                canceled.complete(
+                                                                                        null))) {
+                                                            entered.complete(null);
+                                                            release.join();
+                                                            return (AutoCloseable)
+                                                                    closes::incrementAndGet;
+                                                        }
+                                                    });
+                                            result.complete(
+                                                    new AssertionError(
+                                                            "closed Source returned water"));
+                                        } catch (RuntimeException | Error failure) {
+                                            result.complete(failure);
+                                        }
+                                    });
+            try {
+                entered.get(3, TimeUnit.SECONDS);
+                var drain = f.world.closeAsync();
+                canceled.get(3, TimeUnit.SECONDS);
+                assertFalse(drain.isDone());
+                assertFalse(result.isDone());
+                release.complete(null);
+                worker.join();
+                drain.get(3, TimeUnit.SECONDS);
+                assertEquals(1, closes.get());
+                assertTrue(
+                        result.get(3, TimeUnit.SECONDS)
+                                instanceof java.util.concurrent.CancellationException);
+            } finally {
+                release.complete(null);
+                worker.join();
+            }
+        }
+    }
+
+    @Test
+    void waterCannotJoinOldOpaqueTerrainToChangedActualRoot() throws Exception {
+        try (var f = new PublicFixture(0)) {
+            f.authored.changedRoot = true;
+            var refused =
+                    assertThrows(
+                            WorldTerrainStreaming.Refusal.class,
+                            () ->
+                                    f.water.prepareAndWrite(
+                                            f.tile,
+                                            Cancellation.NONE,
+                                            (b, t) -> {
+                                                throw new AssertionError("stale terrain joined");
+                                            }));
+            assertEquals(WorldTerrainStreaming.Refusal.Reason.SOURCE_INVALIDATED, refused.reason());
+            assertEquals("WATER_ROOT_BINDING", refused.site());
+            f.authored.changedRoot = false;
+            try (var recovered =
+                    f.water.prepareAndWrite(
+                            f.tile, Cancellation.NONE, (b, t) -> (AutoCloseable) () -> {})) {
+                assertEquals(1, recovered.facts().cells());
+            }
+        }
+    }
+
+    @Test
+    void waterCleanupFailureCannotCompleteServiceDrainWhileAnotherPayloadIsBorrowed()
+            throws Exception {
+        try (var f = new PublicFixture(0)) {
+            f.expectedCloseFailure = true;
+            var cleanupEntered = new CompletableFuture<Void>();
+            f.water.prepareAndWrite(
+                    f.tile,
+                    Cancellation.NONE,
+                    (b, t) ->
+                            (AutoCloseable)
+                                    () -> {
+                                        cleanupEntered.complete(null);
+                                        throw new IllegalStateException("actual water R cleanup");
+                                    });
+            var second =
+                    (WorldWaterPreview.WrittenWater<AutoCloseable>)
+                            f.water.prepareAndWrite(
+                                    f.tile, Cancellation.NONE, (b, t) -> (AutoCloseable) () -> {});
+            var entered = new CompletableFuture<Void>();
+            var release = new CompletableFuture<Void>();
+            var borrowed =
+                    CompletableFuture.runAsync(
+                            () ->
+                                    second.withPayload(
+                                            b -> {
+                                                entered.complete(null);
+                                                release.join();
+                                                assertEquals(4, b.vertices());
+                                                return null;
+                                            }));
+            try {
+                entered.get(3, TimeUnit.SECONDS);
+                var drain = f.world.closeAsync();
+                cleanupEntered.get(3, TimeUnit.SECONDS);
+                // Wait causally for first cleanup failure; the held second pin still owns geometry.
+                var until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+                boolean failed = false;
+                while (!failed && System.nanoTime() < until) {
+                    try {
+                        f.water.prepareAndWrite(
+                                f.tile, Cancellation.NONE, (b, t) -> (AutoCloseable) () -> {});
+                    } catch (RuntimeException expected) {
+                        failed = !(expected instanceof WorldTerrainStreaming.Refusal);
+                    }
+                    if (!failed) {
+                        Thread.yield();
+                    }
+                }
+                assertTrue(failed);
+                assertFalse(drain.isDone());
+                release.complete(null);
+                borrowed.get(3, TimeUnit.SECONDS);
+                assertThrows(
+                        java.util.concurrent.ExecutionException.class,
+                        () -> drain.get(3, TimeUnit.SECONDS));
+            } finally {
+                release.complete(null);
+            }
+        }
+    }
+
+    @Test
+    void failedFinalWaterGateHoldsSourceAdmissionUntilReturnedResourceActuallyCloses()
+            throws Exception {
+        try (var f = new PublicFixture(42)) {
+            var cleanupEntered = new CompletableFuture<Void>();
+            var release = new CompletableFuture<Void>();
+            var outcome = new CompletableFuture<Throwable>();
+            var worker =
+                    Thread.ofVirtual()
+                            .start(
+                                    () -> {
+                                        try {
+                                            f.water.prepareAndWrite(
+                                                    f.tile,
+                                                    Cancellation.NONE,
+                                                    (b, t) -> {
+                                                        f.authored.changedTable = true;
+                                                        return (AutoCloseable)
+                                                                () -> {
+                                                                    cleanupEntered.complete(null);
+                                                                    release.join();
+                                                                };
+                                                    });
+                                            outcome.complete(
+                                                    new AssertionError("stale writer returned"));
+                                        } catch (RuntimeException | Error error) {
+                                            outcome.complete(error);
+                                        }
+                                    });
+            try {
+                cleanupEntered.get(3, TimeUnit.SECONDS);
+                assertFalse(outcome.isDone());
+                int before = f.authored.base.opens.get(2L).get();
+                var busy =
+                        assertThrows(
+                                WorldTerrainStreaming.Refusal.class,
+                                () -> f.terrain.createScope(MAP, Cancellation.NONE));
+                assertEquals("SOURCE_WORKER", busy.site());
+                assertEquals(before, f.authored.base.opens.get(2L).get());
+                release.complete(null);
+                worker.join();
+                assertTrue(
+                        outcome.get(3, TimeUnit.SECONDS) instanceof WorldTerrainStreaming.Refusal);
+                f.authored.changedTable = false;
+                try (var retry =
+                        f.water.prepareAndWrite(
+                                f.tile, Cancellation.NONE, (b, t) -> (AutoCloseable) () -> {})) {
+                    assertEquals(1, retry.facts().cells());
+                }
+            } finally {
+                release.complete(null);
+                worker.join();
+            }
+        }
+    }
+
+    @Test
+    void terrainRetirementAfterWaterCallbackCannotLeakUnreturnedWaterOwner() throws Exception {
+        for (boolean cleanupFailure : new boolean[] {false, true}) {
+            try (var f = new PublicFixture(0)) {
+                if (cleanupFailure) {
+                    f.expectedCloseFailure = true;
+                    f.terrainCleanup.set(
+                            new IllegalStateException("actual terrain cleanup failure"));
+                }
+                var closes = new java.util.concurrent.atomic.AtomicInteger();
+                var failure =
+                        assertThrows(
+                                RuntimeException.class,
+                                () ->
+                                        f.water.prepareAndWrite(
+                                                f.tile,
+                                                Cancellation.NONE,
+                                                (b, t) -> {
+                                                    f.tile.close();
+                                                    return (AutoCloseable) closes::incrementAndGet;
+                                                }));
+                assertEquals(1, closes.get());
+                if (cleanupFailure) {
+                    assertFalse(failure instanceof WorldTerrainStreaming.Refusal);
+                } else {
+                    assertTrue(failure instanceof WorldTerrainStreaming.Refusal);
+                }
             }
         }
     }

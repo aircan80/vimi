@@ -110,6 +110,7 @@ final class WorldStreamScopes {
     private final BuildTables borrowedTables;
     private WorldTerrainLiquids liquidInspector;
     private final ArrayList<LiquidCredit> liquidCredits = new ArrayList<>(2);
+    private final ArrayList<WorldTerrainLiquids.Owner> liquidQuarantine = new ArrayList<>(2);
     private final BuildFiles files;
     private final BuildRef build;
     private final String locale;
@@ -1128,13 +1129,36 @@ final class WorldStreamScopes {
                 }
             }
         }
+        Throwable requestFailure = null;
         try {
             if (active != null) {
                 active.request();
             }
+        } catch (RuntimeException | Error failure) {
+            requestFailure = failure;
+            throw failure;
         } finally {
+            Throwable cleanup = null;
             for (var liquid : liquidOwners) {
-                liquid.close();
+                try {
+                    liquid.close();
+                } catch (RuntimeException | Error error) {
+                    if (cleanup == null) {
+                        cleanup = error;
+                    } else if (cleanup != error) {
+                        cleanup.addSuppressed(error);
+                    }
+                }
+            }
+            if (cleanup != null && requestFailure != null && cleanup != requestFailure) {
+                // Preserve the cancellation-request failure behind the cleanup failure.
+                cleanup.addSuppressed(requestFailure);
+            }
+            if (cleanup instanceof Error fatal) {
+                throw fatal;
+            }
+            if (cleanup instanceof RuntimeException runtime) {
+                throw runtime;
             }
         }
         if (finish) {
@@ -1144,6 +1168,10 @@ final class WorldStreamScopes {
             }
             completeDrain(terminal);
         }
+        return drained.copy();
+    }
+
+    CompletableFuture<Void> whenClosed() {
         return drained.copy();
     }
 
@@ -1172,7 +1200,21 @@ final class WorldStreamScopes {
         }
 
         void retired() {
-            engine.retireLiquid(this);
+            retired(null, null);
+        }
+
+        void retired(Throwable failure, WorldTerrainLiquids.Owner owner) {
+            engine.retireLiquid(this, failure, owner);
+        }
+
+        boolean isOpen(WorldTerrainLiquids.Owner expected) {
+            synchronized (engine) {
+                return engine.isKnown(scope)
+                        && !closing
+                        && asset == expected
+                        && engine.liquidCredits.contains(this)
+                        && expected.available();
+            }
         }
     }
 
@@ -1217,10 +1259,17 @@ final class WorldStreamScopes {
         owner.pin();
     }
 
-    private void retireLiquid(LiquidCredit credit) {
+    private void retireLiquid(
+            LiquidCredit credit, Throwable failure, WorldTerrainLiquids.Owner owner) {
         boolean finish;
         Throwable terminal;
         synchronized (this) {
+            if (failure != null) {
+                recordCleanupFailure(failure);
+                if (owner != null) {
+                    liquidQuarantine.add(owner);
+                }
+            }
             liquidCredits.remove(credit);
             credit.asset = null;
             finish = closed && !working.get() && liquidCredits.isEmpty();

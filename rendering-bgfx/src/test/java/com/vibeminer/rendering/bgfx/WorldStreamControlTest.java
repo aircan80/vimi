@@ -67,7 +67,7 @@ class WorldStreamControlTest {
                         "CANCEL_UNUSED 1 0 9 23",
                         "OFFER 1 37 9 23 ../tile-1.wst 4096 " + "a".repeat(64),
                         "OFFER 1 37 9 23 tile-2.wst 4096 " + "a".repeat(64),
-                        "OFFER 1 37 9 23 tile-1.wst 2284545 " + "a".repeat(64),
+                        "OFFER 1 37 9 23 tile-1.wst 2907265 " + "a".repeat(64),
                         "COMMIT 1 commit-1.wsc " + "A".repeat(64),
                         "COMMIT 1 commit-01.wsc " + "a".repeat(64),
                         "CAM 1 1 801 500 0.0 0.0 0.0 0.0 0.0",

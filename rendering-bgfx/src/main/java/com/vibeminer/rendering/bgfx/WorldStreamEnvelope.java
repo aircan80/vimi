@@ -15,7 +15,8 @@ import java.util.Objects;
 /** Fixed-size v2 metadata codecs only. No paths, source authority, mappings or native resources. */
 final class WorldStreamEnvelope {
     static final int BYTES = 256;
-    static final int MAX_PACKET_BYTES = 2_284_544;
+    // Terrain 2,284,544B plus the optional 622,720B static water trailer.
+    static final int MAX_PACKET_BYTES = 2_907_264;
     private static final byte[] SESSION_MAGIC = "VIMIWSS2".getBytes(StandardCharsets.US_ASCII);
     private static final byte[] COMMIT_MAGIC = "VIMIWSC2".getBytes(StandardCharsets.US_ASCII);
 

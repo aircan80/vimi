@@ -68,6 +68,8 @@ final class WorldTerrainLiquids {
             long rootLength,
             String geometrySha) {}
 
+    record TableFact(long id, String key, long length, String receiptSha) {}
+
     private record Layer(
             int header,
             int instance,
@@ -95,7 +97,12 @@ final class WorldTerrainLiquids {
         private byte[] depths;
         private int[] indices;
         private int pins = 1;
-        private boolean closing, qualified;
+        private boolean closing, qualified, retiring, construction = true;
+        private AutoCloseable written;
+        private WorldStreamScopes.AdmissionMetadata metadata;
+        private WorldTerrainTextureSource.FileBinding rootBinding;
+        private List<WorldLiquidTables.Observed> observations = List.of();
+        private List<TableFact> tableFacts = List.of();
 
         private Owner(WorldStreamScopes.LiquidCredit credit) {
             this.credit = credit;
@@ -159,19 +166,75 @@ final class WorldTerrainLiquids {
 
         private void retire() {
             WorldStreamScopes.LiquidCredit source;
+            AutoCloseable resource;
             synchronized (this) {
-                if (!closing || pins != 0 || credit == null) {
+                if (!closing || pins != 0 || credit == null || retiring) {
                     return;
                 }
+                retiring = true;
+                source = credit;
+                resource = written;
+            }
+            Throwable failure = null;
+            try {
+                if (resource != null) {
+                    resource.close();
+                }
+            } catch (Exception | Error error) {
+                failure = error;
+            }
+            synchronized (this) {
                 layers = List.of();
                 positions = null;
                 depths = null;
                 indices = null;
-                source = credit;
+                observations = List.of();
+                metadata = null;
+                rootBinding = null;
+                tableFacts = List.of();
                 credit = null;
+                if (failure == null) {
+                    written = null;
+                }
             }
-            source.retired();
-            drained.complete(null);
+            source.retired(failure, this);
+            if (failure == null) {
+                drained.complete(null);
+            } else {
+                var fatal = new IllegalStateException("Water resource cleanup failed", failure);
+                drained.completeExceptionally(fatal);
+                throw fatal;
+            }
+        }
+
+        private void finishConstruction() {
+            synchronized (this) {
+                if (!construction) {
+                    return;
+                }
+                construction = false;
+            }
+            releasePin();
+        }
+
+        boolean isOpen() {
+            WorldStreamScopes.LiquidCredit source;
+            synchronized (this) {
+                source = credit;
+            }
+            return source != null && source.isOpen(this);
+        }
+
+        synchronized boolean available() {
+            return qualified && !closing && credit != null;
+        }
+
+        void withResource(java.util.function.Consumer<AutoCloseable> use) {
+            withBorrow(
+                    b -> {
+                        use.accept(Objects.requireNonNull(written));
+                        return null;
+                    });
         }
 
         @Override
@@ -297,6 +360,22 @@ final class WorldTerrainLiquids {
             return a.indices[Objects.checkIndex(ordinal, a.indices == null ? 0 : a.indices.length)];
         }
 
+        Summary facts() {
+            return checked().summary;
+        }
+
+        WorldStreamScopes.AdmissionMetadata metadata() {
+            return checked().metadata;
+        }
+
+        WorldTerrainTextureSource.FileBinding rootBinding() {
+            return checked().rootBinding;
+        }
+
+        List<TableFact> tableFacts() {
+            return checked().tableFacts;
+        }
+
         private void expire() {
             owner = null;
         }
@@ -334,6 +413,7 @@ final class WorldTerrainLiquids {
                             external,
                             admission -> {
                                 populate(building, admission);
+                                building.observations = List.of();
                                 return building;
                             });
             scopes.publishLiquid(credit, result, external);
@@ -348,7 +428,121 @@ final class WorldTerrainLiquids {
                 if (!published) {
                     owner.close();
                 }
-                owner.releasePin();
+                owner.finishConstruction();
+            }
+        }
+    }
+
+    @FunctionalInterface
+    interface Writer<R extends AutoCloseable> {
+        R write(Borrow borrow, Cancellation actualToken);
+    }
+
+    private static final class AdmissionResult implements AutoCloseable {
+        private final Owner owner;
+
+        private AdmissionResult(Owner owner) {
+            this.owner = owner;
+        }
+
+        @Override
+        public void close() {
+            try {
+                owner.close();
+            } finally {
+                owner.finishConstruction();
+            }
+        }
+    }
+
+    <R extends AutoCloseable> Owner inspectAndWrite(
+            WorldStreamScopes.Scope scope,
+            WorldFormats.Tile tile,
+            WorldTerrainTextureSource.FileBinding expectedRoot,
+            String expectedGeometry,
+            Cancellation external,
+            Writer<R> writer) {
+        Objects.requireNonNull(writer);
+        var credit = scopes.reserveLiquid(scope);
+        Owner owner = null;
+        boolean published = false;
+        try {
+            owner = new Owner(credit);
+            scopes.attachLiquid(credit, owner);
+            var building = owner;
+            var returned =
+                    scopes.withRecordedTile(
+                            scope,
+                            tile,
+                            WorldStreamScopes.UseProfile.LIQUID_INSPECTION,
+                            external,
+                            admission -> {
+                                try {
+                                    populate(building, admission);
+                                    building.metadata = admission.metadata();
+                                    var actual = building.summary;
+                                    if (actual.rootId() != expectedRoot.fileId()
+                                            || !actual.rootKey().equals(expectedRoot.contentKey())
+                                            || actual.rootLength() != expectedRoot.length()
+                                            || actual.geometrySha() != null
+                                                    && !Objects.equals(
+                                                            actual.geometrySha(),
+                                                            expectedGeometry)) {
+                                        throw new Changed();
+                                    }
+                                    if (actual.cells() > 0) {
+                                        var borrow = new Borrow(building);
+                                        try {
+                                            building.written =
+                                                    Objects.requireNonNull(
+                                                            writer.write(
+                                                                    borrow,
+                                                                    admission.cancellation()));
+                                        } finally {
+                                            borrow.expire();
+                                        }
+                                    }
+                                    for (var observed : building.observations) {
+                                        try {
+                                            tables.revalidate(observed, admission.cancellation());
+                                        } catch (WorldLiquidTables.Unavailable stale) {
+                                            throw new Changed();
+                                        } catch (WorldLiquidTables.CleanupFailure cleanup) {
+                                            admission.liquidCleanupFailed(cleanup);
+                                            throw cleanup;
+                                        }
+                                    }
+                                    building.observations = List.of();
+                                    return new AdmissionResult(building);
+                                } catch (RuntimeException | Error primary) {
+                                    try {
+                                        new AdmissionResult(building).close();
+                                    } catch (RuntimeException | Error cleanup) {
+                                        if (primary != cleanup) {
+                                            primary.addSuppressed(cleanup);
+                                        }
+                                        throw new IllegalStateException(
+                                                "Water construction cleanup failed", primary);
+                                    }
+                                    throw primary;
+                                }
+                            });
+            scopes.publishLiquid(credit, returned.owner, external);
+            published = true;
+            return returned.owner;
+        } catch (RuntimeException failure) {
+            throw WorldSourceRefusals.boundary(failure);
+        } finally {
+            if (owner == null) {
+                credit.retired();
+            } else {
+                try {
+                    if (!published) {
+                        owner.close();
+                    }
+                } finally {
+                    owner.finishConstruction();
+                }
             }
         }
     }
@@ -361,7 +555,8 @@ final class WorldTerrainLiquids {
             String geometry,
             boolean malformed,
             float[] anchors,
-            Cancellation token) {}
+            Cancellation token,
+            WorldTerrainTextureSource.FileBinding binding) {}
 
     private static Root root(WorldStreamScopes.TileAdmission admission) {
         try (var input = admission.readRecorded(WorldStreamScopes.RecordedInput.ROOT)) {
@@ -398,7 +593,13 @@ final class WorldTerrainLiquids {
                         geometry,
                         true,
                         anchors,
-                        token);
+                        token,
+                        new WorldTerrainTextureSource.FileBinding(
+                                input.fileDataId(),
+                                input.contentKey(),
+                                input.consumedLength(),
+                                input.declaredLength(),
+                                input.sourceLimit()));
             }
             return new Root(
                     raw,
@@ -408,7 +609,13 @@ final class WorldTerrainLiquids {
                     geometry,
                     false,
                     anchors,
-                    token);
+                    token,
+                    new WorldTerrainTextureSource.FileBinding(
+                            input.fileDataId(),
+                            input.contentKey(),
+                            input.consumedLength(),
+                            input.declaredLength(),
+                            input.sourceLimit()));
         }
     }
 
@@ -517,6 +724,7 @@ final class WorldTerrainLiquids {
                     List.of(),
                     0);
         }
+        var observations = new ArrayList<WorldLiquidTables.Observed>(3);
         // Even known-negative selected-row observations must stay tied to unchanged source.
         for (var proof : new WorldLiquidTables.Observed[] {types, materials, failedContext}) {
             if (proof == null) {
@@ -528,7 +736,19 @@ final class WorldTerrainLiquids {
                 throw new Changed();
             }
             admission.rememberLiquidTable(proof);
+            observations.add(proof);
         }
+        output.observations = List.copyOf(observations);
+        output.tableFacts =
+                observations.stream()
+                        .map(
+                                o ->
+                                        new TableFact(
+                                                o.sourceId(),
+                                                o.sourceKey(),
+                                                o.sourceLength(),
+                                                o.receiptSha()))
+                        .toList();
     }
 
     private static final class Malformed extends RuntimeException {
@@ -675,6 +895,7 @@ final class WorldTerrainLiquids {
             List<Layer> layers,
             int cells) {
         owner.layers = List.copyOf(layers);
+        owner.rootBinding = root.binding();
         geometry(owner, root, cells);
         owner.summary =
                 new Summary(
