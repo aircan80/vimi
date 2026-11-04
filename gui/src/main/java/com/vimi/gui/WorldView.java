@@ -816,6 +816,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                             catalogLoading = false;
                                             show(catalogActivity, false);
                                             if (error != null || data == null) {
+                                                maps.setPlaceholder(new Label("Map records unavailable; use Reload to retry."));
                                                 status.setText(
                                                         "Map records unavailable; use Reload after"
                                                                 + " preparation");
