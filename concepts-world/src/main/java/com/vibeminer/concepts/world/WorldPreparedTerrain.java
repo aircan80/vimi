@@ -159,7 +159,7 @@ final class WorldPreparedTerrain {
                 source.scopes.requireHealthy();
             }
             if (!isOpen()) {
-                throw new IllegalStateException("Terrain output closed");
+                throw WorldSourceRefusals.at(WorldSourceRefusals.Site.OWNER_RETIRED);
             }
         }
 
@@ -171,7 +171,7 @@ final class WorldPreparedTerrain {
                 }
             }
             value.close();
-            throw new IllegalStateException("Terrain output closed");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.OWNER_RETIRED);
         }
 
         private synchronized void attachReceipt(WorldTerrainTextureSource.Receipt value) {
@@ -187,7 +187,7 @@ final class WorldPreparedTerrain {
                 }
             }
             value.close();
-            throw new IllegalStateException("Terrain output closed");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.OWNER_RETIRED);
         }
 
         private void attachWritten(R value) {
@@ -198,7 +198,7 @@ final class WorldPreparedTerrain {
                 }
             }
             closeResource(value);
-            throw new IllegalStateException("Terrain output closed");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.OWNER_RETIRED);
         }
 
         /** File-only shell; a later closed bridge must MOVE its capability before advertisement. */
@@ -419,7 +419,7 @@ final class WorldPreparedTerrain {
 
     private void checkOpen() {
         if (invalidated) {
-            throw new IllegalStateException("Terrain source closed");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.OWNER_RETIRED);
         }
     }
 
@@ -427,7 +427,7 @@ final class WorldPreparedTerrain {
             WorldStreamScopes.Scope scope) {
         checkOpen();
         if (outputs.size() >= 12) {
-            throw new IllegalStateException("Terrain output credit busy");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.OUTPUT_CREDIT);
         }
         var value = new WrittenTile<R>(this, Objects.requireNonNull(scope));
         outputs.add(value);
@@ -558,7 +558,7 @@ final class WorldPreparedTerrain {
             owned.materialState = result.state();
             owned.supportedChunks = result.supportedChunks();
             if (result.state() == WorldTerrainTextureSource.State.POOL_BUSY) {
-                throw new IllegalStateException("Material pool busy");
+                throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MATERIAL_POOL);
             }
             if (result.state() == WorldTerrainTextureSource.State.UNAVAILABLE) {
                 if (result.issues().isEmpty()) {
@@ -583,9 +583,12 @@ final class WorldPreparedTerrain {
                     || receipt.root().fileId() != owned.root.fileId()
                     || !receipt.root().contentKey().equals(owned.root.contentKey())
                     || receipt.root().length() != owned.root.length()
-                    || receipt.textures().fileId() != tile.tex0Id()
-                    || !receipt.geometrySha256().equals(owned.geometry.fingerprint())) {
-                throw new IllegalStateException("Material source differs");
+                    || receipt.textures().fileId() != tile.tex0Id()) {
+                throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MATERIAL_BINDING);
+            }
+            if (!receipt.geometrySha256().equals(owned.geometry.fingerprint())) {
+                throw new IllegalStateException(
+                        "Material geometry disagrees with the same root source");
             }
             profileReceipt(receipt);
             owned.attachReceipt(receipt);

@@ -127,7 +127,12 @@ final class WorldMapProofs {
             throw new java.util.concurrent.CancellationException();
         }
         if (capture.rows() == null) {
-            throw new UnsupportedOperationException("Prepared native Map capture unavailable");
+            if (capture.state() == CapturedRowsTypes.CaptureState.UNSUPPORTED
+                    || capture.state() == CapturedRowsTypes.CaptureState.NOT_PREPARED
+                    || capture.state() == CapturedRowsTypes.CaptureState.SCHEMA_UNSUPPORTED) {
+                throw WorldSourceRefusals.at(WorldSourceRefusals.Site.NATIVE_CAPTURE);
+            }
+            throw new IllegalStateException("Prepared native Map capture failed");
         }
         return capture.rows();
     }
@@ -136,10 +141,11 @@ final class WorldMapProofs {
         token.check();
         var receipt = rows.receipt();
         requireEntry(receipt.table());
-        if (!receipt.build().equals(build)
-                || !receipt.locale().equals(locale)
-                || receipt.rowCount() > 10_000) {
-            throw new IllegalStateException("Unqualified Map capture scope");
+        if (!receipt.build().equals(build) || !receipt.locale().equals(locale)) {
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MAP_BINDING);
+        }
+        if (receipt.rowCount() > 10_000) {
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MAP_PROFILE);
         }
         if (receipt.table().state() == TableTypes.State.PARTIAL) {
             requirePartialMapProfile(receipt);
@@ -153,7 +159,7 @@ final class WorldMapProofs {
                 new TableTypes.SchemaResult(receipt.table(), receipt.columns(), receipt.schema());
         int column = WorldService.column(schema, "WdtFileDataID", true);
         if (column < 0) {
-            throw new IllegalStateException("Unqualified Map WDT field");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.NUMERIC_WDT);
         }
         String layout = mapLayout(schema);
         return new MapContext(
@@ -185,10 +191,36 @@ final class WorldMapProofs {
         }
     }
 
+    private static CapturedRowsTypes.Page strictPage(
+            CapturedRows rows, long first, Cancellation token) {
+        CapturedRowsTypes.Page page;
+        try {
+            page = rows.readOrdinalPage(first, 1, READ_LIMITS, token).join();
+        } catch (RuntimeException failure) {
+            if (WorldSourceRefusals.defaultStrictUnsupported(failure)) {
+                throw WorldSourceRefusals.at(WorldSourceRefusals.Site.STRICT_ROWS);
+            }
+            throw failure;
+        }
+        token.check();
+        switch (page.state()) {
+            case CANCELED -> throw new java.util.concurrent.CancellationException();
+            case LIMIT_EXCEEDED ->
+                    throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MAP_PROFILE);
+            case CLOSED, INVALIDATED ->
+                    throw WorldSourceRefusals.at(WorldSourceRefusals.Site.OWNER_RETIRED);
+            case CORRUPT -> throw new IllegalStateException("Corrupt native Map page");
+            case READ -> {
+                return page;
+            }
+            default -> throw new IllegalStateException("Unknown native Map read state");
+        }
+    }
+
     private static void probeEof(
             CapturedRows rows, CapturedRowsTypes.Receipt receipt, Cancellation token) {
         token.check();
-        var page = rows.readOrdinalPage(receipt.rowCount(), 1, READ_LIMITS, token).join();
+        var page = strictPage(rows, receipt.rowCount(), token);
         token.check();
         if (page.state() != CapturedRowsTypes.ReadState.READ
                 || !page.identity().equals(receipt.graphIdentity())
@@ -196,8 +228,7 @@ final class WorldMapProofs {
                 || !page.rows().isEmpty()
                 || !page.cellIssues().isEmpty()
                 || page.nextOrdinal() != null) {
-            throw new UnsupportedOperationException(
-                    "Fresh Map capture lacks bounded EOF capability");
+            throw new IllegalStateException("Contradictory native Map EOF page");
         }
     }
 
@@ -212,10 +243,9 @@ final class WorldMapProofs {
             Binding found = null;
             do {
                 token.check();
-                var page = rows.readOrdinalPage(ordinal, 1, READ_LIMITS, token).join();
+                var page = strictPage(rows, ordinal, token);
                 if (page.state() == CapturedRowsTypes.ReadState.LIMIT_EXCEEDED) {
-                    throw new UnsupportedOperationException(
-                            "Map source exceeds bounded hot scope profile");
+                    throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MAP_PROFILE);
                 }
                 token.check();
                 int expectedRows = (int) Math.min(1, receipt.rowCount() - ordinal);
@@ -250,7 +280,7 @@ final class WorldMapProofs {
                     }
                     Long wdt = WorldService.number(schema, row.row(), "WdtFileDataID");
                     if (wdt == null || wdt <= 0 || wdt > 0xffff_ffffL) {
-                        throw new IllegalStateException("Missing Map WDT reference");
+                        throw WorldSourceRefusals.at(WorldSourceRefusals.Site.NUMERIC_WDT);
                     }
                     String binding =
                             receipt.table().fileDataId()
@@ -305,15 +335,18 @@ final class WorldMapProofs {
                                 .join();
                 token.check();
                 if (inspected.state() == NativeIdDomainTypes.State.BUSY) {
-                    throw new IllegalStateException(
-                            "Native ID inspection busy; retry latest request");
+                    throw WorldSourceRefusals.at(WorldSourceRefusals.Site.ID_INSPECTION);
                 }
                 if (inspected.state() == NativeIdDomainTypes.State.CANCELED) {
                     throw new java.util.concurrent.CancellationException();
                 }
                 if (inspected.state() == NativeIdDomainTypes.State.SOURCE_CHANGED) {
-                    throw new IllegalStateException(
-                            "Map source changed during selected-ID inspection");
+                    throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MAP_BINDING);
+                }
+                if (inspected.state() == NativeIdDomainTypes.State.UNSUPPORTED_DOMAIN
+                        || inspected.state() == NativeIdDomainTypes.State.UNAVAILABLE
+                        || inspected.state() == NativeIdDomainTypes.State.LIMIT_EXCEEDED) {
+                    throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MAP_PROFILE);
                 }
                 var witness = inspected.witness();
                 if (inspected.state() != NativeIdDomainTypes.State.READABLE_UNIQUE
@@ -328,8 +361,7 @@ final class WorldMapProofs {
                         || !NativeIdDomainTypes.REVISION.equals(witness.profileRevision())
                         || !witness.receiptFingerprint()
                                 .equals(NativeIdReceiptFingerprint.sha256(receipt))) {
-                    throw new UnsupportedOperationException(
-                            "Partial Map lacks matching selected-ID witness: " + inspected.state());
+                    throw new IllegalStateException("Contradictory selected-ID witness");
                 }
                 validateBinding(
                         new FileBinding(
@@ -385,7 +417,7 @@ final class WorldMapProofs {
                 || counts.readableRows() != r.rowCount()
                 || counts.excludedSections() != c.excludedEncryptedSections()
                 || counts.excludedRecords() != c.excludedPhysicalRecords()) {
-            throw new UnsupportedOperationException("Partial Map outside selected-ID profile");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MAP_PROFILE);
         }
         long declared = 0, excluded = 0;
         int hidden = 0;
@@ -393,7 +425,7 @@ final class WorldMapProofs {
             if (section.copyCount() != 0
                     || section.protectedCopyCount() != 0
                     || section.unresolvedCopyCount() != 0) {
-                throw new UnsupportedOperationException("Partial Map copy domain unsupported");
+                throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MAP_PROFILE);
             }
             declared += section.recordCount();
             if (section.isEncrypted() && !section.isDecrypted()) {
@@ -411,8 +443,10 @@ final class WorldMapProofs {
     private static void validateNative(CapturedRowsTypes.Receipt r) {
         profileMetadata(r);
         var e = r.issueChannelEvidence();
-        if (e.state() != CapturedRowsTypes.IssueChannelState.VERIFIED_NATIVE
-                || !e.graphIdentity().equals(r.graphIdentity())
+        if (e.state() != CapturedRowsTypes.IssueChannelState.VERIFIED_NATIVE) {
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.NATIVE_ISSUES);
+        }
+        if (!e.graphIdentity().equals(r.graphIdentity())
                 || !e.resolvedBlockSha256().equals(r.blockIdentity())
                 || !e.readerOptionsSha256().equals(r.readerOptions())
                 || !e.actualColumnsSha256().equals(NativeIssueIdentity.columns(r.columns()))) {
@@ -462,7 +496,7 @@ final class WorldMapProofs {
                 || r.sections().size() > 128
                 || r.holeKeys().size() > 128
                 || r.effectiveKeys().size() > 128) {
-            throw new UnsupportedOperationException("Map metadata shape exceeds hot profile");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MAP_PROFILE);
         }
         long bytes = 1024;
         bytes +=
@@ -471,7 +505,7 @@ final class WorldMapProofs {
                         + profileString(r.header().format(), 16, false)
                         + profileString(r.completion().scope(), 64, false);
         if (r.table().counts() == null) {
-            throw new UnsupportedOperationException("Missing Map counts");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MAP_PROFILE);
         }
         bytes +=
                 profileString(r.table().counts().format(), 16, false)
@@ -513,7 +547,7 @@ final class WorldMapProofs {
                                 + profileString(column.interpretation().warning(), 256, false);
             }
             if (bytes > 64 << 10) {
-                throw new UnsupportedOperationException("Map metadata exceeds hot profile");
+                throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MAP_PROFILE);
             }
         }
         for (var column : r.schema().columns()) {
@@ -528,11 +562,11 @@ final class WorldMapProofs {
                                 + profileString(column.foreignKey().column(), 128, false);
             }
             if (bytes > 64 << 10) {
-                throw new UnsupportedOperationException("Map metadata exceeds hot profile");
+                throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MAP_PROFILE);
             }
         }
         if (bytes > 64 << 10) {
-            throw new UnsupportedOperationException("Map metadata exceeds hot profile");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MAP_PROFILE);
         }
         if (!r.header().columns().equals(r.columns())) {
             throw new IllegalStateException("Map header columns differ");
@@ -555,7 +589,7 @@ final class WorldMapProofs {
             tuple += 5 + profileString(value, 256, true);
         }
         if (tuple > 4096) {
-            throw new UnsupportedOperationException("Map source tuple exceeds hot profile");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MAP_PROFILE);
         }
     }
 
@@ -564,10 +598,10 @@ final class WorldMapProofs {
             if (nullable) {
                 return 0;
             }
-            throw new UnsupportedOperationException("Missing hot source metadata");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MAP_PROFILE);
         }
         if (value.length() > maximumChars) {
-            throw new UnsupportedOperationException("Hot source metadata scalar exceeds profile");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MAP_PROFILE);
         }
         return 16L + 4L * value.length();
     }
@@ -745,6 +779,9 @@ final class WorldMapProofs {
                 schema.schema().columns().stream()
                         .filter(c -> c.name().equals("WdtFileDataID"))
                         .toList();
+        if (field.isEmpty()) {
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.NUMERIC_WDT);
+        }
         if (field.size() != 1) {
             throw new IllegalStateException("Ambiguous Map WDT field");
         }
@@ -776,23 +813,16 @@ final class WorldMapProofs {
 
     private void validateBinding(FileBinding binding, Cancellation token) {
         token.check();
-        var fresh = stat(binding.id(), token);
-        if (!binding.key().equals(fresh.contentKey())
+        var lookup = files.stat(FileTypes.FileRef.id(binding.id()), token).join();
+        token.check();
+        var fresh = lookup.file();
+        if (lookup.state() != FileTypes.FileLookupState.FOUND
+                || fresh == null
+                || fresh.fileDataId() != binding.id()
+                || !binding.key().equals(fresh.contentKey())
                 || fresh.size() != null && fresh.size() != binding.length()) {
-            throw new IllegalStateException("Consumed source changed");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MAP_BINDING);
         }
-    }
-
-    private FileTypes.BuildFile stat(long id, Cancellation token) {
-        var result = files.stat(FileTypes.FileRef.id(id), token).join();
-        if (result.state() != FileTypes.FileLookupState.FOUND
-                || result.file() == null
-                || result.file().fileDataId() != id
-                || result.file().contentKey() == null
-                || !result.file().contentKey().matches("[0-9a-f]{32}")) {
-            throw new IllegalStateException("Unbound source");
-        }
-        return result.file();
     }
 
     private static String sha(byte[] bytes) {

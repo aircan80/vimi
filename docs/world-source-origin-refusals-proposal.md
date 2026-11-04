@@ -100,9 +100,10 @@ invalidation itself is NEVER the basis for classifying the failure. Unknown proo
 errors invalidate conservatively but still remain fatal.
 
 Do not broadly catch UnsupportedOperationException from an entire Map operation.
-Only the documented optional strict-row invocation boundary may convert its
-unsupported result/exception; arbitrary capture/provider/writer exceptions keep
-fatal semantics. Actual native CaptureState.CANCELED and the reviewed c995 bounded
+Only the documented optional strict-row invocation boundary may convert the
+private-constructed BoundedReadUnsupportedException default marker or explicit
+LIMIT state; arbitrary plain provider UOE/capture/writer exceptions keep fatal
+semantics. Actual native CaptureState.CANCELED and the reviewed c995 bounded
 wrapper handling remain unchanged. Structured CORRUPT/contradictory native proof,
 noncontiguous/duplicate rows, wrong returned ordinal, mismatched verified witness/
 issue certificate and ambiguous duplicate numeric fields remain fatal in this

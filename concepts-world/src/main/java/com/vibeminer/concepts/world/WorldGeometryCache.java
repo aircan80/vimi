@@ -164,7 +164,7 @@ final class WorldGeometryCache {
         synchronized (this) {
             checkOpen();
             if (preparing) {
-                throw new IllegalStateException("Geometry preparation busy");
+                throw WorldSourceRefusals.at(WorldSourceRefusals.Site.GEOMETRY_CREDIT);
             }
             preparing = true;
         }
@@ -192,7 +192,7 @@ final class WorldGeometryCache {
         synchronized (this) {
             checkOpen();
             if (outputs.size() >= LIMIT) {
-                throw new IllegalStateException("Geometry output credit busy");
+                throw WorldSourceRefusals.at(WorldSourceRefusals.Site.GEOMETRY_CREDIT);
             }
             previous = current.get(key);
             if (previous != null && previous.proof != null) {
@@ -236,7 +236,7 @@ final class WorldGeometryCache {
                     previous = null;
                 }
                 if (!makeRoom(previous)) {
-                    throw new IllegalStateException("Geometry cache credit busy");
+                    throw WorldSourceRefusals.at(WorldSourceRefusals.Site.GEOMETRY_CREDIT);
                 }
             }
             constructing++;
@@ -250,8 +250,14 @@ final class WorldGeometryCache {
             TerrainScene.Tile nativeTile;
             RootProof proof;
             try (var root = admission.readRecorded(WorldStreamScopes.RecordedInput.ROOT)) {
-                var parsed =
-                        WorldFormats.adtTile(root.bytes(), admission.cancellation()::isCanceled);
+                WorldFormats.TerrainAreas parsed;
+                try {
+                    parsed =
+                            WorldFormats.adtTile(
+                                    root.bytes(), admission.cancellation()::isCanceled);
+                } catch (IllegalArgumentException unsupportedProfile) {
+                    throw WorldSourceRefusals.at(WorldSourceRefusals.Site.TERRAIN_PROFILE);
+                }
                 nativeTile = new TerrainScene.Tile(tuple.x(), tuple.y(), parsed.terrain());
                 String fingerprint = TerrainGeometryFingerprint.sha256(nativeTile);
                 proof =
@@ -284,7 +290,7 @@ final class WorldGeometryCache {
             synchronized (this) {
                 checkOpen();
                 if (outputs.size() >= LIMIT) {
-                    throw new IllegalStateException("Geometry output credit busy");
+                    throw WorldSourceRefusals.at(WorldSourceRefusals.Site.GEOMETRY_CREDIT);
                 }
                 var displaced = current.put(key, next);
                 retained.add(next);
@@ -314,7 +320,7 @@ final class WorldGeometryCache {
             String key, WorldFormats.Tile tuple, RootProof proof) {
         checkOpen();
         if (outputs.size() >= LIMIT) {
-            throw new IllegalStateException("Geometry output credit busy");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.GEOMETRY_CREDIT);
         }
         var old = current.get(key);
         if (old == null || old.proof != proof) {
@@ -327,7 +333,7 @@ final class WorldGeometryCache {
             return pin(old);
         }
         if (!makeRoom(old)) {
-            throw new IllegalStateException("Geometry cache credit busy");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.GEOMETRY_CREDIT);
         }
         var next = new Entry(key, refreshed);
         next.nativeTile = old.nativeTile;
@@ -415,7 +421,7 @@ final class WorldGeometryCache {
 
     private void checkOpen() {
         if (closed) {
-            throw new IllegalStateException("Geometry cache closed");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.OWNER_RETIRED);
         }
     }
 }

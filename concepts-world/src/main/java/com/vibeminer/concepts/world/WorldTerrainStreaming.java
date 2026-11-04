@@ -37,6 +37,46 @@ public final class WorldTerrainStreaming {
         BGRA8
     }
 
+    /** Expected negative source outcome; never a successful height packet or a drain receipt. */
+    public static final class Refusal extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+
+        public enum Reason {
+            RETRY_LATER,
+            CAPABILITY_UNAVAILABLE,
+            SOURCE_INVALIDATED
+        }
+
+        private final Reason reason;
+        private final String site;
+
+        private Refusal(WorldSourceRefusals.Site origin) {
+            super("Terrain source: " + origin.name(), null);
+            reason = origin.reason();
+            site = origin.name();
+            if (getMessage().length() > 256) {
+                throw new IllegalArgumentException("Source refusal scalar bound");
+            }
+        }
+
+        public Reason reason() {
+            return reason;
+        }
+
+        public String site() {
+            return site;
+        }
+
+        @Override
+        public synchronized Throwable fillInStackTrace() {
+            return this;
+        }
+    }
+
+    static Refusal refusal(WorldSourceRefusals.Site site) {
+        return new Refusal(site);
+    }
+
     /** Detached descriptive tuple; public construction confers no source authority. */
     public record SourceTuple(
             long fileDataId,
@@ -401,15 +441,19 @@ public final class WorldTerrainStreaming {
 
         public void withPayload(Consumer<CheckedBorrow> use) {
             Objects.requireNonNull(use);
-            tile.withPayload(
-                    borrow -> {
-                        var checked = new CheckedBorrow(borrow, facts);
-                        try {
-                            use.accept(checked);
-                        } finally {
-                            checked.expire();
-                        }
-                    });
+            try {
+                tile.withPayload(
+                        borrow -> {
+                            var checked = new CheckedBorrow(borrow, facts);
+                            try {
+                                use.accept(checked);
+                            } finally {
+                                checked.expire();
+                            }
+                        });
+            } catch (RuntimeException failure) {
+                throw WorldSourceRefusals.boundary(failure);
+            }
         }
 
         /**
@@ -417,12 +461,20 @@ public final class WorldTerrainStreaming {
          * Source close waits this accepted callback before closing the now-inert R/base owners.
          */
         public void withWrittenResource(Consumer<R> moveOnly) {
-            tile.withWrittenResource(moveOnly);
+            try {
+                tile.withWrittenResource(moveOnly);
+            } catch (RuntimeException failure) {
+                throw WorldSourceRefusals.boundary(failure);
+            }
         }
 
         @Override
         public void close() {
-            tile.close();
+            try {
+                tile.close();
+            } catch (RuntimeException failure) {
+                throw new IllegalStateException("Source output cleanup failed", failure);
+            }
         }
     }
 
@@ -443,7 +495,7 @@ public final class WorldTerrainStreaming {
     private WorldPreparedTerrain source() {
         var current = source;
         if (current == null) {
-            throw new IllegalStateException("Terrain source closed");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.OWNER_RETIRED);
         }
         return current;
     }
@@ -453,11 +505,19 @@ public final class WorldTerrainStreaming {
         if (comparison.id() < 0 || comparison.id() > 0xffff_ffffL) {
             throw new IllegalArgumentException("Map ID profile");
         }
-        return new Scope(source().createScope(comparison, cancel));
+        try {
+            return new Scope(source().createScope(comparison, cancel));
+        } catch (RuntimeException failure) {
+            throw WorldSourceRefusals.boundary(failure);
+        }
     }
 
     public void activate(Scope scope) {
-        source().activate(Objects.requireNonNull(scope).token);
+        try {
+            source().activate(Objects.requireNonNull(scope).token);
+        } catch (RuntimeException failure) {
+            throw WorldSourceRefusals.boundary(failure);
+        }
     }
 
     public <R extends AutoCloseable> WrittenTile<R> prepareAndWrite(
@@ -472,6 +532,15 @@ public final class WorldTerrainStreaming {
                 || comparison.y() >= 64) {
             throw new IllegalArgumentException("Tile coordinate profile");
         }
+        try {
+            return prepareOwned(scope, comparison, cancel, writer);
+        } catch (RuntimeException failure) {
+            throw WorldSourceRefusals.boundary(failure);
+        }
+    }
+
+    private <R extends AutoCloseable> WrittenTile<R> prepareOwned(
+            Scope scope, WorldFormats.Tile comparison, Cancellation cancel, Output<R> writer) {
         var facts = new Facts[1];
         var owned =
                 source().prepareAndWrite(
@@ -488,13 +557,26 @@ public final class WorldTerrainStreaming {
                                     }
                                 });
         boolean transferred = false;
+        Throwable primary = null;
         try {
             var result = new WrittenTile<>(owned, Objects.requireNonNull(facts[0]));
             transferred = true;
             return result;
+        } catch (RuntimeException | Error failure) {
+            primary = failure;
+            throw failure;
         } finally {
             if (!transferred) {
-                owned.close();
+                try {
+                    owned.close();
+                } catch (RuntimeException | Error failure) {
+                    if (primary == null) {
+                        throw failure;
+                    }
+                    if (primary != failure) {
+                        primary.addSuppressed(failure);
+                    }
+                }
             }
         }
     }

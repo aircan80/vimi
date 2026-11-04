@@ -60,9 +60,11 @@ class WorldMapProofsTest {
             assertNull(tables.last);
             tables.stampMode = 0;
             tables.eofMode = 1;
-            assertThrows(
-                    UnsupportedOperationException.class,
-                    () -> source.revalidate(binding, Cancellation.NONE));
+            var contradiction =
+                    assertThrows(
+                            IllegalStateException.class,
+                            () -> source.revalidate(binding, Cancellation.NONE));
+            assertFalse(contradiction instanceof WorldTerrainStreaming.Refusal);
             assertNull(tables.last);
             assertEquals(0, files.totalOpens());
         } finally {

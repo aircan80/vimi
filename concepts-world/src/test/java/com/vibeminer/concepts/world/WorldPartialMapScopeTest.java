@@ -1,6 +1,7 @@
 package com.vibeminer.concepts.world;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -221,9 +222,19 @@ class WorldPartialMapScopeTest {
                         new WorldStreamScopes(
                                 wrapped(selected.tables(), mode, witness), selected.files());
                 try {
-                    assertThrows(
-                            UnsupportedOperationException.class,
-                            () -> scopes.create(REQUEST, Cancellation.NONE));
+                    var failure =
+                            assertThrows(
+                                    IllegalStateException.class,
+                                    () -> scopes.create(REQUEST, Cancellation.NONE));
+                    if (mode == 0) {
+                        assertEquals(
+                                WorldTerrainStreaming.Refusal.Reason.CAPABILITY_UNAVAILABLE,
+                                ((WorldTerrainStreaming.Refusal) failure).reason());
+                    } else {
+                        assertFalse(
+                                failure instanceof WorldTerrainStreaming.Refusal,
+                                "Contradictory verified witness is fatal");
+                    }
                     assertEquals(0, files.totalOpens());
                     assertEquals(0, selected.opens.get());
                 } finally {
@@ -303,9 +314,13 @@ class WorldPartialMapScopeTest {
                     try (var rows = capture.rows()) {
                         assertEquals(TableTypes.State.PARTIAL, rows.receipt().table().state());
                     }
-                    assertThrows(
-                            UnsupportedOperationException.class,
-                            () -> scopes.create(REQUEST, Cancellation.NONE));
+                    var refused =
+                            assertThrows(
+                                    WorldTerrainStreaming.Refusal.class,
+                                    () -> scopes.create(REQUEST, Cancellation.NONE));
+                    assertEquals(
+                            WorldTerrainStreaming.Refusal.Reason.CAPABILITY_UNAVAILABLE,
+                            refused.reason());
                     assertEquals(
                             0,
                             files.totalOpens(),
