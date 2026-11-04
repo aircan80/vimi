@@ -205,36 +205,8 @@ public final class WorldUiTest {
                                                                                 .isVisible(),
                                                                         "Initial terrain has"
                                                                             + " central activity");
-                                                                ((Button)
-                                                                                view.lookup(
-                                                                                        "#world-back"))
-                                                                        .fire();
-                                                                ((Button)
-                                                                                view.lookup(
-                                                                                        "#world-open"))
-                                                                        .fire();
-                                                                var high = terrain().vertices();
-                                                                for (int at = 2;
-                                                                        at < high.length;
-                                                                        at += 3) high[at] = 900;
-                                                                oldTile.complete(
-                                                                        new WorldService.LoadedTile(
-                                                                                tile,
-                                                                                new WorldFormats
-                                                                                        .Terrain(
-                                                                                        high,
-                                                                                        terrain()
-                                                                                                .triangles(),
-                                                                                        1),
-                                                                                null));
-                                                                await(
-                                                                        () ->
-                                                                                ((ImageView)
-                                                                                                        view
-                                                                                                                .lookup(
-                                                                                                                        "#world-frame"))
-                                                                                                .getImage()
-                                                                                        != null,
+                                                                restartAfterOldTileIssued(
+                                                                        view, tile, tileCalls, oldTile,
                                                                         () -> {
                                                                             require(
                                                                                     scene.lookup(
@@ -1338,6 +1310,24 @@ public final class WorldUiTest {
                             done);
                 },
                 done);
+    }
+
+    private static void restartAfterOldTileIssued(
+            WorldView view, WorldFormats.Tile tile, AtomicInteger calls,
+            CompletableFuture<WorldService.LoadedTile> oldTile, Runnable afterImage,
+            CompletableFuture<Void> done) {
+        // Opening only schedules acquisition. Exercise a genuinely issued old request, rather
+        // than assuming a queued request has started before the immediate back/open actions.
+        await(() -> calls.get() > 0, () -> {
+            ((Button) view.lookup("#world-back")).fire();
+            ((Button) view.lookup("#world-open")).fire();
+            var high = terrain().vertices();
+            for (int at = 2; at < high.length; at += 3) high[at] = 900;
+            oldTile.complete(new WorldService.LoadedTile(tile,
+                    new WorldFormats.Terrain(high, terrain().triangles(), 1), null));
+            await(() -> ((ImageView) view.lookup("#world-frame")).getImage() != null,
+                    afterImage, done);
+        }, done);
     }
 
     private static void await(
