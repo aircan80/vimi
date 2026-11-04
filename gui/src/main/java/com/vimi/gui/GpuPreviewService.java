@@ -158,7 +158,10 @@ final class GpuPreviewService {
     private Request desired, active;
     private boolean running, closed;
 
+    private enum RequestKind { MODEL, COLD_TERRAIN }
+
     private static final class Request {
+        final RequestKind kind;
         final Object owner;
         final PreviewMesh mesh;
         final TerrainScene terrain;
@@ -187,6 +190,7 @@ final class GpuPreviewService {
                 Set<Integer> parts,
                 Consumer<Status> listener,
                 Consumer<Frame> frames) {
+            this.kind = RequestKind.MODEL;
             this.frames = frames;
             this.owner = owner;
             this.mesh = mesh;
@@ -199,6 +203,7 @@ final class GpuPreviewService {
 
         Request(Object owner, TerrainScene terrain, WorldTextureSnapshot textures,
                 Consumer<Status> listener, Consumer<Frame> frames) {
+            this.kind = RequestKind.COLD_TERRAIN;
             this.owner = owner;
             this.terrain = terrain;
             this.textures = textures == null ? null : textures.retain();
@@ -356,18 +361,18 @@ final class GpuPreviewService {
     }
 
     void update(Object owner, ViewRequest view) {
-        updateControl(owner, view, false);
+        updateControl(owner, view, RequestKind.MODEL);
     }
 
     void updateTerrain(Object owner, TerrainRequest view) {
-        updateControl(owner, view, true);
+        updateControl(owner, view, RequestKind.COLD_TERRAIN);
     }
 
-    private void updateControl(Object owner, Control view, boolean terrain) {
+    private void updateControl(Object owner, Control view, RequestKind kind) {
         Objects.requireNonNull(view);
         synchronized (gate) {
             if (desired != null
-                    && (desired.terrain != null) == terrain
+                    && desired.kind == kind
                     && desired.owner == owner
                     && !desired.stopping
                     && view.revision() > desired.revision) {
@@ -498,7 +503,7 @@ final class GpuPreviewService {
                             ? Files.createTempDirectory("vimi-gpu-")
                             : Files.createTempDirectory(temporaryParent, "vimi-gpu-");
             scene = directory.resolve("scene.vgpu");
-            if (request.terrain == null) {
+            if (request.kind == RequestKind.MODEL) {
                 writer.write(scene, request.mesh, request.appearance, request.parts);
             } else {
                 if (request.textures == null) {
@@ -517,15 +522,15 @@ final class GpuPreviewService {
                     });
                 }
             }
-            long sceneLimit = request.terrain == null ? MAX_SCENE_BYTES : GpuTerrainSceneFile.MAX_BYTES;
+            long sceneLimit = request.kind == RequestKind.MODEL ? MAX_SCENE_BYTES : GpuTerrainSceneFile.MAX_BYTES;
             if (Files.size(scene) > sceneLimit)
                 throw new IOException("GPU scene exceeds its size bound");
             if (request.stopping) return;
             framePath = directory.resolve("frames.vgpu");
-            frames = request.terrain != null && nativeDefaults
+            frames = request.kind == RequestKind.COLD_TERRAIN && nativeDefaults
                     ? createFrames(framePath, 800, 500) : frameFactory.create(framePath);
             request.publish(State.STARTING, "Starting inline GPU renderer…");
-            child = request.terrain != null && nativeDefaults
+            child = request.kind == RequestKind.COLD_TERRAIN && nativeDefaults
                     ? startChild(scene, framePath, true, texturePath) : starter.start(scene, framePath);
             final Process process = child;
             stdout =
@@ -718,7 +723,7 @@ final class GpuPreviewService {
         } else if (line.startsWith("VIMI_GPU TEXTURES ")) {
             try {
                 var textures = com.vibeminer.rendering.bgfx.TerrainTextureStatus.parse(line);
-                if (request.terrain == null || request.textures == null || request.ready
+                if (request.kind == RequestKind.MODEL || request.textures == null || request.ready
                         || request.textureStatus != null
                         || textures.sceneTiles() != request.terrain.tiles().size()
                         || textures.activeAtlases() > request.textures.atlasCount()
