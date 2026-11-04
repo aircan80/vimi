@@ -54,6 +54,30 @@ final class GpuWorldRequestTest {
                                 "frames",
                                 "--parent-pid",
                                 "1")));
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        GpuViewerMain.terrainMode(
+                                Map.of(
+                                        "--scene",
+                                        "model",
+                                        "--terrain-textures",
+                                        "atlas",
+                                        "--frames",
+                                        "frames",
+                                        "--parent-pid",
+                                        "1")));
+        assertTrue(
+                GpuViewerMain.terrainMode(
+                        Map.of(
+                                "--terrain-scene",
+                                "terrain",
+                                "--terrain-textures",
+                                "atlas",
+                                "--frames",
+                                "frames",
+                                "--parent-pid",
+                                "1")));
         assertFalse(
                 GpuViewerMain.terrainMode(
                         Map.of("--scene", "model", "--frames", "frames", "--parent-pid", "1")));

@@ -90,6 +90,7 @@ final class BgfxTerrainRenderer implements AutoCloseable {
     private final TerrainTextureBinding.Metadata[] textureMetadata =
             new TerrainTextureBinding.Metadata[9];
     private int activeAtlases, coveredRectangles;
+    private int textureStagingBytes, textureStagingPeakBytes;
     private boolean textureUploadFailed, textureCapabilityFailed;
     private static final int SAMPLER_FLAGS =
             BGFX_SAMPLER_MIN_POINT
@@ -333,6 +334,14 @@ final class BgfxTerrainRenderer implements AutoCloseable {
                 activeAtlases, scene.tiles().size(), coveredRectangles, code);
     }
 
+    int textureStagingBytes() {
+        return textureStagingBytes;
+    }
+
+    int textureStagingPeakBytes() {
+        return textureStagingPeakBytes;
+    }
+
     private void uploadAtlases(GpuTerrainTextureAnnex.Decoded annex, BooleanSupplier canceled) {
         if (!bgfx_is_texture_valid(0, false, 1, BGFX_TEXTURE_FORMAT_RGBA8, BGFX_TEXTURE_NONE)) {
             textureCapabilityFailed = true;
@@ -342,6 +351,8 @@ final class BgfxTerrainRenderer implements AutoCloseable {
             check(canceled);
             short handle = INVALID;
             ByteBuffer staging = MemoryUtil.memAlloc(TerrainTextureBinding.PIXEL_BYTES);
+            textureStagingBytes += staging.capacity();
+            textureStagingPeakBytes = Math.max(textureStagingPeakBytes, textureStagingBytes);
             try {
                 staging.put(binding.pixels()).flip();
                 check(canceled);
@@ -372,6 +383,7 @@ final class BgfxTerrainRenderer implements AutoCloseable {
                 if (handle != INVALID) {
                     bgfx_destroy_texture(handle);
                 }
+                textureStagingBytes -= staging.capacity();
                 MemoryUtil.memFree(staging);
             }
         }

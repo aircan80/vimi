@@ -120,7 +120,7 @@ public final class GpuViewerMain {
                                     lifetime::stopping);
                 } catch (GpuTerrainTextureAnnex.Invalid invalid) {
                     textureInputFailure = invalid.code();
-                } catch (IOException unavailable) {
+                } catch (IOException | java.nio.file.InvalidPathException unavailable) {
                     textureInputFailure = TerrainTextureStatus.Code.INPUT_UNAVAILABLE;
                 }
             } else {

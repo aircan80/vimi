@@ -31,6 +31,10 @@ public final class TerrainTextureNativeProof {
                     for (var view : List.of(camera, camera.look(.7, .2), camera.look(-.8, .3))) {
                         int[] image = gpu.render(renderer, view);
                         frames++;
+                        require(
+                                renderer.textureStagingBytes() == 0
+                                        && renderer.textureStagingPeakBytes() == 1048576,
+                                "bounded one-atlas direct staging must drain before rendering");
                         assertGradient(image, view, offset);
                         require(
                                 renderer.textureStatus(TerrainTextureStatus.Code.NONE).state()
@@ -49,6 +53,20 @@ public final class TerrainTextureNativeProof {
                 int[] image = gpu.render(renderer, fogCamera);
                 frames++;
                 assertGradient(image, fogCamera, 0);
+            }
+            var nearScene = scene(1, 0);
+            var nearAtlas = annex(scratch, "near", nearScene, true, false, false);
+            var nearCamera = new TerrainCamera(-256, -256, .6, 0, -1.5);
+            try (var renderer = new BgfxTerrainRenderer(nearScene, nearAtlas, () -> false)) {
+                assertGradient(gpu.render(renderer, nearCamera), nearCamera, 0);
+                frames++;
+            }
+            var checks = new java.util.concurrent.atomic.AtomicInteger();
+            try {
+                new BgfxTerrainRenderer(nearScene, nearAtlas, () -> checks.incrementAndGet() > 5);
+                throw new AssertionError("upload cancellation ignored");
+            } catch (java.util.concurrent.CancellationException expected) {
+                // A new renderer immediately reuses the same context, with no orphaned handles.
             }
             var scene = scene(1, 0);
             var camera = new TerrainCamera(-256, -256, 100, 0, -1.5);
@@ -88,12 +106,244 @@ public final class TerrainTextureNativeProof {
                 }
             }
         }
+        inlineCases(scratch);
         Files.writeString(
                 scratch.resolve("terrain-texture-native.txt"),
                 "PASS "
                         + frames
-                        + " actual Vulkan frames: gradient axes at rebased cameras, alpha0 legacy fallback, opaque/source-order coplanar tiles.\n");
-        System.out.println("Terrain texture native proof PASS " + frames + " authored frames");
+                        + " actual Vulkan renderer frames plus five actual child sessions/nine mapped frames: gradient axes at rebased cameras, original fog, near clipping, alpha0 legacy fallback, opaque/source-order coplanar tiles; valid/partial/checksum/missing/binding ACK fallback, resize, CLOSE/EOF.\n");
+        System.out.println(
+                "Terrain texture native proof PASS "
+                        + frames
+                        + " authored frames plus5children/9mappedframes");
+    }
+
+    private static void inlineCases(Path scratch) throws Exception {
+        var report = new StringBuilder();
+        Path geometry = scratch.resolve("gradient-0.terrain");
+        Path valid = scratch.resolve("gradient-0.atlas");
+        Path sparse = scratch.resolve("sparse.atlas");
+        Path corrupt = scratch.resolve("corrupt.atlas");
+        byte[] bad = Files.readAllBytes(valid);
+        bad[56] ^= 1;
+        Files.write(corrupt, bad);
+        Path mismatched = scratch.resolve("mismatched.terrain");
+        GpuTerrainSceneFile.writeBound(mismatched, scene(1, 100), () -> false);
+        for (var selected : List.of(valid, sparse, corrupt, scratch.resolve("missing.atlas"))) {
+            try (var child = new Inline(geometry, selected, scratch)) {
+                child.send("WORLD 1 256 256 -256 -256 100 0 -1.5");
+                var first = child.await(0, 1);
+                child.awaitReady();
+                int[] copied = new int[256 * 256];
+                first.pixels().get(copied);
+                if (selected.equals(valid)) {
+                    assertGradient(copied, new TerrainCamera(-256, -256, 100, 0, -1.5), 0);
+                } else {
+                    require(
+                            copied[128 * 256 + 128] == 0xff426b3e,
+                            "optional fallback preserves independent flat-height color");
+                }
+                var status = child.textureStatus();
+                TerrainTextureStatus.State expected =
+                        selected.equals(valid)
+                                ? TerrainTextureStatus.State.READY
+                                : selected.equals(sparse)
+                                        ? TerrainTextureStatus.State.PARTIAL
+                                        : TerrainTextureStatus.State.UNAVAILABLE;
+                require(status.state() == expected, "optional child texture state " + status);
+                if (selected.equals(corrupt)) {
+                    require(
+                            status.code() == TerrainTextureStatus.Code.CHECKSUM,
+                            "checksum fallback code");
+                }
+                if (selected.getFileName().toString().equals("missing.atlas")) {
+                    require(
+                            status.code() == TerrainTextureStatus.Code.INPUT_UNAVAILABLE,
+                            "missing fallback code");
+                }
+                require(
+                        child.status().indexOf("VIMI_GPU TEXTURES ")
+                                < child.status().indexOf("VIMI_GPU READY "),
+                        "texture ACK must precede frame readiness");
+                child.send("WORLD 2 400 300 -256 -256 100 .2 -1.4");
+                var resized = child.await(first.sequence(), 2);
+                require(
+                        resized.width() == 400 && resized.height() == 300,
+                        "textured WORLD camera/resize");
+                child.send("CLOSE");
+                child.cleanExit();
+                report.append(selected.getFileName())
+                        .append(" pid=")
+                        .append(child.process.pid())
+                        .append(" ")
+                        .append(status.protocolLine())
+                        .append(" revisions=1,2 dimensions=256x256,400x300 CLOSED exit0\n");
+            }
+        }
+        try (var child = new Inline(mismatched, valid, scratch)) {
+            child.send("WORLD 1 256 256 -156 -156 100 0 -1.5");
+            child.await(0, 1);
+            child.awaitReady();
+            require(
+                    child.textureStatus().state() == TerrainTextureStatus.State.UNAVAILABLE
+                            && child.textureStatus().code() == TerrainTextureStatus.Code.BINDING,
+                    "geometry-pair mismatch keeps height renderer");
+            child.control.close();
+            child.cleanExit();
+            report.append("mismatched pid=")
+                    .append(child.process.pid())
+                    .append(" ")
+                    .append(child.textureStatus().protocolLine())
+                    .append(" revision=1 EOF CLOSED exit0\n");
+        }
+        Files.writeString(scratch.resolve("inline-texture-status.txt"), report);
+    }
+
+    private static final class Inline implements AutoCloseable {
+        private final GpuFrameFile frames;
+        private final Process process;
+        private final java.io.BufferedWriter control;
+        private final StringBuilder output = new StringBuilder();
+        private final Thread reader;
+        private final Path mapping;
+
+        Inline(Path geometry, Path textures, Path scratch) throws Exception {
+            mapping = Files.createTempFile(scratch, "mapping-", ".frames");
+            Files.delete(mapping);
+            frames = GpuFrameFile.create(mapping, 800, 500);
+            var command =
+                    List.of(
+                            Path.of(System.getProperty("java.home"), "bin", "java").toString(),
+                            "--enable-native-access=ALL-UNNAMED",
+                            "-cp",
+                            System.getProperty("java.class.path"),
+                            GpuViewerMain.class.getName(),
+                            "--terrain-scene",
+                            geometry.toString(),
+                            "--terrain-textures",
+                            textures.toString(),
+                            "--frames",
+                            mapping.toString(),
+                            "--parent-pid",
+                            Long.toString(ProcessHandle.current().pid()),
+                            "--backend",
+                            "vulkan");
+            var builder = new ProcessBuilder(command).redirectErrorStream(true);
+            builder.environment().remove("DISPLAY");
+            builder.environment().remove("WAYLAND_DISPLAY");
+            try {
+                process = builder.start();
+            } catch (Exception failure) {
+                frames.close();
+                Files.deleteIfExists(mapping);
+                throw failure;
+            }
+            control = process.outputWriter();
+            reader =
+                    Thread.ofPlatform()
+                            .daemon()
+                            .start(
+                                    () -> {
+                                        try (var stream = process.getInputStream()) {
+                                            byte[] buffer = new byte[1024];
+                                            int count;
+                                            while ((count = stream.read(buffer)) != -1) {
+                                                synchronized (output) {
+                                                    if (output.length() < 65536) {
+                                                        output.append(
+                                                                new String(
+                                                                        buffer,
+                                                                        0,
+                                                                        Math.min(
+                                                                                count,
+                                                                                65536
+                                                                                        - output
+                                                                                                .length()),
+                                                                        java.nio.charset
+                                                                                .StandardCharsets
+                                                                                .UTF_8));
+                                                    }
+                                                }
+                                            }
+                                        } catch (java.io.IOException ignored) {
+                                        }
+                                    });
+        }
+
+        String status() {
+            synchronized (output) {
+                return output.toString();
+            }
+        }
+
+        TerrainTextureStatus textureStatus() {
+            var lines =
+                    status().lines().filter(line -> line.startsWith("VIMI_GPU TEXTURES ")).toList();
+            require(lines.size() == 1, "exactly one texture ACK " + status());
+            return TerrainTextureStatus.parse(lines.getFirst());
+        }
+
+        void send(String line) throws Exception {
+            control.write(line);
+            control.newLine();
+            control.flush();
+        }
+
+        GpuFrameFile.Frame await(long sequence, long revision) throws Exception {
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(15);
+            while (System.nanoTime() < deadline) {
+                var frame = frames.readLatest(sequence);
+                if (frame != null && frame.controlRevision() == revision) {
+                    return frame;
+                }
+                require(process.isAlive(), "native child stopped: " + status());
+                Thread.sleep(2);
+            }
+            throw new AssertionError("native textured mapped frame timeout " + status());
+        }
+
+        void awaitReady() throws Exception {
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+            while (!status().contains("VIMI_GPU READY ") && System.nanoTime() < deadline) {
+                Thread.sleep(2);
+            }
+            require(
+                    status().contains("VIMI_GPU READY "),
+                    "native child missing READY: " + status());
+        }
+
+        void cleanExit() throws Exception {
+            require(
+                    process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS),
+                    "bounded child shutdown");
+            reader.join(2000);
+            require(
+                    process.exitValue() == 0
+                            && status().contains("VIMI_GPU CLOSED")
+                            && !status().contains("VIMI_GPU ERROR"),
+                    "clean child exit " + status());
+        }
+
+        public void close() throws java.io.IOException {
+            try {
+                if (process.isAlive()) {
+                    process.destroyForcibly();
+                    require(
+                            process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS),
+                            "child drain");
+                }
+                reader.join(2000);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new java.io.IOException("Interrupted native proof cleanup", interrupted);
+            }
+            try {
+                control.close();
+            } catch (java.io.IOException ignored) {
+            }
+            frames.close();
+            Files.deleteIfExists(mapping);
+        }
     }
 
     private static void assertGradient(int[] image, TerrainCamera camera, float origin) {
