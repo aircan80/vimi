@@ -1,9 +1,11 @@
 package com.vibeminer.rendering.bgfx;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -50,6 +52,21 @@ final class WorldFrameFileV2Test {
                 }
                 offset += written;
             }
+        }
+    }
+
+    @Test
+    void nativeOwnerRequiresMatchingFreshSessionBeforeAnyGpuAllocation() throws Exception {
+        Path path = directory.resolve("fresh-owner");
+        try (var file = WorldFrameFileV2.create(path, NONCE, SCOPE)) {
+            assertTrue(file.freshFor(new WorldStreamEnvelope.Session(NONCE, SCOPE, 1)));
+            assertFalse(
+                    file.freshFor(
+                            new WorldStreamEnvelope.Session(
+                                    new WorldStreamState.Nonce(3, 4), SCOPE, 1)));
+            assertFalse(file.freshFor(new WorldStreamEnvelope.Session(NONCE, "f".repeat(64), 1)));
+            file.write(ticket(1, 1, 0, 1, 1, 1), pixels(0xff123456));
+            assertFalse(file.freshFor(new WorldStreamEnvelope.Session(NONCE, SCOPE, 1)));
         }
     }
 

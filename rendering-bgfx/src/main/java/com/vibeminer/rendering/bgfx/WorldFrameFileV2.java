@@ -177,6 +177,13 @@ final class WorldFrameFileV2 implements AutoCloseable {
         }
     }
 
+    synchronized boolean freshFor(WorldStreamEnvelope.Session session) throws IOException {
+        checkOpen();
+        return nonce.equals(session.nonce())
+                && Arrays.equals(scope, HexFormat.of().parseHex(session.scope()))
+                && highestReserved() == 0;
+    }
+
     private void checkOpen() throws IOException {
         if (closed) {
             throw new IllegalStateException("World frame file closed");

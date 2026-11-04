@@ -298,3 +298,14 @@ tasks.register('verifyWorldStreamShaders', Exec) {
 }
 tasks.named('processResources') { dependsOn tasks.named('verifyWorldStreamShaders') }
 tasks.named('check') { dependsOn tasks.named('verifyWorldStreamShaders') }
+
+tasks.register('nativeGpuWorldStreamOwnerProof', JavaExec) {
+    group = 'verification'
+    description = 'Exercises persistent production World uploads, callback drain and v2 readback tickets.'
+    dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamNativeProof'
+    timeout = java.time.Duration.ofMinutes(2)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-world-stream-owner').get().asFile.absolutePath
+}

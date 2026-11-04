@@ -1,0 +1,384 @@
+package com.vibeminer.rendering.bgfx;
+
+import static org.lwjgl.bgfx.BGFX.BGFX_RENDERER_TYPE_VULKAN;
+
+import com.vibeminer.rendering.world.TerrainCamera;
+import com.vibeminer.rendering.world.TerrainGeometryFingerprint;
+import com.vibeminer.rendering.world.TerrainScene;
+import java.awt.image.BufferedImage;
+import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import javax.imageio.ImageIO;
+
+/** Authored real Vulkan/native/mmap proof only. No user data, window, pipe or GUI integration. */
+public final class WorldStreamNativeProof {
+    private static final WorldStreamState.Nonce NONCE = new WorldStreamState.Nonce(123, -456);
+    private static final String SCOPE = "cd".repeat(32);
+    private static final WorldStreamEnvelope.Session SESSION =
+            new WorldStreamEnvelope.Session(NONCE, SCOPE, 1);
+    private static final TerrainCamera CAMERA = new TerrainCamera(-100, -10, 50, 0, -.6);
+    private static final int WIDTH = 256, HEIGHT = 256;
+    private static long camera = 1, sequence;
+    private static int framesDuringUploads;
+
+    private WorldStreamNativeProof() {}
+
+    private static void require(boolean value, String message) {
+        if (!value) {
+            throw new AssertionError(message);
+        }
+    }
+
+    private static TerrainScene.Tile tile(int x, int y) {
+        var base = WorldStreamTileFileTest.full(false);
+        var vertices = new float[base.vertexCount() * 3];
+        base.vertices().get(vertices);
+        int[] indices = new int[196608];
+        int at = 0;
+        for (int chunk = 0; chunk < 256; chunk++) {
+            int start = chunk * 145;
+            for (int row = 0; row < 8; row++) {
+                for (int col = 0; col < 8; col++) {
+                    int a = start + row * 17 + col, b = a + 1, d = a + 17, e = d + 1, m = a + 9;
+                    for (int index : new int[] {a, m, b, b, m, e, e, m, d, d, m, a}) {
+                        indices[at++] = index;
+                    }
+                }
+            }
+        }
+        return TerrainScene.Tile.copyOf(x, y, vertices, indices, 256);
+    }
+
+    private static WorldStreamTileFile.Source structural(long id) {
+        return new WorldStreamTileFile.Source(
+                id, String.format("%032x", id), 128, 128L, 1 << 20, 0, 0, 0, null, 0, 0);
+    }
+
+    private static WorldStreamPackedTile prepare(
+            Path directory,
+            long tx,
+            WorldStreamState.Lease lease,
+            int x,
+            int y,
+            int red,
+            boolean textured)
+            throws Exception {
+        require(
+                !Thread.currentThread().getName().equals("main"),
+                "Packing must be off native owner");
+        var tile = tile(x, y);
+        var diffuse =
+                new WorldStreamTileFile.Source(
+                        4,
+                        "04".repeat(16),
+                        128,
+                        null,
+                        1 << 20,
+                        256,
+                        6,
+                        1,
+                        WorldStreamTileFile.Encoding.BC1,
+                        0,
+                        0);
+        var header =
+                new WorldStreamTileFile.Header(
+                        NONCE,
+                        SCOPE,
+                        tx,
+                        lease,
+                        x,
+                        y,
+                        256,
+                        tile.vertexCount(),
+                        tile.indexCount(),
+                        TerrainGeometryFingerprint.sha256(tile),
+                        textured ? "ef".repeat(32) : null,
+                        textured
+                                ? WorldStreamTileFile.Outcome.TEXTURED
+                                : WorldStreamTileFile.Outcome.HEIGHT_FALLBACK,
+                        textured
+                                ? WorldStreamTileFile.Reason.NONE
+                                : WorldStreamTileFile.Reason.TERMINAL_MATERIAL_UNAVAILABLE,
+                        textured ? new long[] {-1, -1, -1, -1} : new long[4],
+                        0,
+                        0,
+                        textured ? 1.0 / 32 : 0,
+                        structural(1),
+                        structural(2),
+                        textured ? structural(3) : null,
+                        textured ? List.of(diffuse) : List.of());
+        ByteBuffer atlas = null;
+        if (textured) {
+            atlas = ByteBuffer.allocate(1 << 20);
+            for (int i = 0; i < 512 * 512; i++) {
+                atlas.put((byte) red).put((byte) 20).put((byte) 30).put((byte) 255);
+            }
+            atlas.flip();
+            atlas = atlas.asReadOnlyBuffer();
+        }
+        var receipt = WorldStreamTileFile.write(directory, header, tile, atlas, () -> false);
+        var input =
+                WorldStreamTileFile.read(
+                        directory.resolve("tile-" + tx + ".wst"), receipt, () -> false);
+        return WorldStreamPackedTile.prepare(input, () -> false);
+    }
+
+    private static CompletableFuture<WorldStreamPackedTile> prepare(
+            ExecutorService worker,
+            Path path,
+            long tx,
+            WorldStreamState.Lease lease,
+            int x,
+            int y,
+            int red,
+            boolean textured) {
+        return CompletableFuture.supplyAsync(
+                () -> {
+                    try {
+                        return prepare(path, tx, lease, x, y, red, textured);
+                    } catch (Exception failure) {
+                        throw new java.util.concurrent.CompletionException(failure);
+                    }
+                },
+                worker);
+    }
+
+    private static WorldStreamControl.Camera command(
+            long revision, int width, int height, long policy) {
+        return new WorldStreamControl.Camera(NONCE, revision, policy, width, height, CAMERA);
+    }
+
+    private static WorldFrameFileV2.Frame read(WorldFrameFileV2 reader, long content, long floor)
+            throws Exception {
+        var frame =
+                reader.readLatest(
+                        sequence,
+                        new WorldFrameFileV2.Barrier(
+                                1, WIDTH, HEIGHT, 1, Long.MAX_VALUE, floor, content));
+        if (frame != null) {
+            sequence = frame.metadata().sequence();
+        }
+        return frame;
+    }
+
+    private static void upload(
+            WorldStreamNativeOwner owner,
+            WorldStreamPackedTile packed,
+            WorldFrameFileV2 reader,
+            long content,
+            boolean cancel)
+            throws Exception {
+        var upload = owner.begin(packed);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+        int steps = 0;
+        while (!upload.finished()) {
+            owner.submit(command(++camera, WIDTH, HEIGHT, 1));
+            int bytes = owner.step(upload);
+            require(bytes <= 262144, "Upload step bytes");
+            owner.advance();
+            var frame = read(reader, content, 0);
+            if (frame != null) {
+                framesDuringUploads++;
+                require(frame.metadata().content() <= content, "Uncommitted content label");
+            }
+            if (cancel && ++steps == 2) {
+                owner.cancel(upload);
+            }
+            require(System.nanoTime() < deadline, "Upload callbacks failed to drain");
+        }
+        require(upload.successful() != cancel, "Upload terminal state");
+    }
+
+    private static WorldFrameFileV2.Frame accepted(
+            WorldStreamNativeOwner owner, WorldFrameFileV2 reader, long content) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        // Reuse the same camera revision after COMMIT: standing-still content must produce a frame.
+        owner.submit(command(camera, WIDTH, HEIGHT, 1));
+        while (System.nanoTime() < deadline) {
+            owner.advance();
+            var frame = read(reader, content, content);
+            if (frame != null) {
+                require(frame.metadata().camera() == camera, "Camera ticket changed");
+                return frame;
+            }
+        }
+        throw new AssertionError("No accepted committed content frame");
+    }
+
+    private static void color(WorldFrameFileV2.Frame frame, int red) {
+        int pixel = frame.pixels().get(128 * WIDTH + 128);
+        require(
+                Math.abs((pixel >>> 16 & 255) - red) <= 1
+                        && Math.abs((pixel >>> 8 & 255) - 20) <= 1
+                        && Math.abs((pixel & 255) - 30) <= 1
+                        && pixel >>> 24 == 255,
+                "Committed pixels " + Integer.toHexString(pixel));
+    }
+
+    @SuppressWarnings("try")
+    public static void main(String[] args) throws Exception {
+        Path base = Path.of(args[0]);
+        Files.createDirectories(base);
+        Path directory = Files.createTempDirectory(base, "run-");
+        Path mapping = directory.resolve("frames-v2");
+        Files.deleteIfExists(mapping);
+        long pid = ProcessHandle.current().pid();
+        try (var worker =
+                        Executors.newSingleThreadExecutor(
+                                Thread.ofPlatform().daemon().name("world-proof-pack").factory());
+                var frames = WorldFrameFileV2.create(mapping, NONCE, SCOPE);
+                var reader = WorldFrameFileV2.open(mapping, NONCE, SCOPE)) {
+            var first =
+                    prepare(
+                                    worker,
+                                    directory,
+                                    1,
+                                    new WorldStreamState.Lease(0, 1, 1),
+                                    7,
+                                    19,
+                                    180,
+                                    true)
+                            .get(20, TimeUnit.SECONDS);
+            try (var owner =
+                    new WorldStreamNativeOwner(SESSION, frames, BGFX_RENDERER_TYPE_VULKAN)) {
+                upload(owner, first, reader, 0, false);
+                var active = new ArrayList<WorldStreamState.Lease>();
+                active.add(new WorldStreamState.Lease(0, 1, 1));
+                owner.commit(0, 1, active);
+                var frame = accepted(owner, reader, 1);
+                color(frame, 180);
+                var image = new BufferedImage(WIDTH, HEIGHT, BufferedImage.TYPE_INT_ARGB);
+                int[] pixels = new int[WIDTH * HEIGHT];
+                frame.pixels().get(pixels);
+                image.setRGB(0, 0, WIDTH, HEIGHT, pixels, 0, WIDTH);
+                ImageIO.write(image, "png", directory.resolve("world-stream-native.png").toFile());
+                long content = 1, tx = 2;
+                int incoming = 1;
+                for (int cycle = 0; cycle < 104; cycle++) {
+                    var lease = new WorldStreamState.Lease(incoming, cycle + 2, cycle + 2);
+                    var packed =
+                            prepare(worker, directory, tx++, lease, 7, 19, 80 + cycle % 100, true);
+                    while (!packed.isDone()) {
+                        owner.submit(command(++camera, WIDTH, HEIGHT, 1));
+                        owner.advance();
+                        read(reader, content, 0);
+                    }
+                    boolean cancel = cycle % 7 == 0;
+                    upload(owner, packed.get(20, TimeUnit.SECONDS), reader, content, cancel);
+                    if (!cancel) {
+                        owner.commit(content, content + 1, List.of(lease));
+                        content++;
+                        frame = accepted(owner, reader, content);
+                        color(frame, 80 + cycle % 100);
+                        incoming = incoming == 0 ? 1 : 0;
+                    }
+                    var stats = owner.stats();
+                    require(
+                            stats.dynamicBuffers() == 10
+                                    && stats.backingBuffers() == stats.contextBuffers() + 11,
+                            "Fixed native buffer counts " + stats);
+                    require(
+                            stats.textures() == stats.contextTextures() + 15,
+                            "Ten atlases plus five fixed target/readbacks");
+                    require(
+                            stats.upload().references() == 0
+                                    && stats.upload().liveUploadBytes() == 0,
+                            "Inputs not drained");
+                    require(stats.upload().peakUploadBytes() <= 4L << 20, "Producer buffer bound");
+                    require(ProcessHandle.current().pid() == pid, "Unexpected process replacement");
+                }
+                long drawnCamera = ++camera;
+                require(owner.submit(command(drawnCamera, 800, 500, 2)), "Resize submit");
+                require(
+                        !owner.submit(command(++camera, 800, 500, 2)),
+                        "Two draws in one bgfx frame");
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                WorldFrameFileV2.Frame resized = null;
+                while (resized == null && System.nanoTime() < deadline) {
+                    owner.advance();
+                    resized =
+                            reader.readLatest(
+                                    sequence,
+                                    new WorldFrameFileV2.Barrier(
+                                            2, 800, 500, drawnCamera, camera, content, content));
+                }
+                require(
+                        resized != null && resized.metadata().camera() == drawnCamera,
+                        "Readback was relabeled with a later undrawn camera");
+                require(resized.pixels().remaining() == 400000, "Fixed target max frame");
+                int pixel = resized.pixels().get(250 * 800 + 400);
+                require(Math.abs((pixel >>> 16 & 255) - 83) <= 1, "Resized actual pixels");
+                boolean relabeled = false;
+                try {
+                    owner.submit(
+                            new WorldStreamControl.Camera(
+                                    NONCE,
+                                    camera,
+                                    2,
+                                    800,
+                                    500,
+                                    new TerrainCamera(-99, -10, 50, 0, -.6)));
+                } catch (IllegalArgumentException expected) {
+                    relabeled = true;
+                }
+                require(relabeled, "Same camera revision changed its view");
+                require(
+                        framesDuringUploads > 20,
+                        "Camera frames were starved during incremental uploads");
+                var finalStats = owner.stats();
+                var closingInput =
+                        prepare(
+                                        worker,
+                                        directory,
+                                        tx,
+                                        new WorldStreamState.Lease(incoming, 1000, 1000),
+                                        7,
+                                        19,
+                                        60,
+                                        true)
+                                .get(20, TimeUnit.SECONDS);
+                var closingUpload = owner.begin(closingInput);
+                owner.step(closingUpload);
+                require(closingUpload.retainedInputBytes() == 4L << 20, "Closing upload owner");
+                owner.submit(command(++camera, 800, 500, 2));
+                owner.close();
+                require(
+                        closingUpload.finished() && !closingUpload.successful(),
+                        "Closing upload canceled");
+                require(
+                        closingUpload.outstandingReferences() == 0
+                                && closingUpload.issuedReferences()
+                                        == closingUpload.releasedReferences()
+                                && closingUpload.retainedInputBytes() == 0,
+                        "Shutdown callback/input drain");
+                System.out.println(
+                        "WORLD_NATIVE_OWNER_PASS pid="
+                                + pid
+                                + " replacements=104 content="
+                                + content
+                                + " framesDuringUploads="
+                                + framesDuringUploads
+                                + " stats="
+                                + finalStats);
+            }
+        }
+        // Fresh session mapping and completed prior shutdown are required for a successor context.
+        var nextNonce = new WorldStreamState.Nonce(789, -987);
+        var nextSession = new WorldStreamEnvelope.Session(nextNonce, SCOPE, 1);
+        try (var nextFrames =
+                        WorldFrameFileV2.create(
+                                directory.resolve("frames-successor"), nextNonce, SCOPE);
+                var successor =
+                        new WorldStreamNativeOwner(
+                                nextSession, nextFrames, BGFX_RENDERER_TYPE_VULKAN)) {
+            require(successor.stats().dynamicBuffers() == 10, "Successor context resources");
+        }
+    }
+}
