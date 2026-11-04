@@ -248,7 +248,10 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             setCenter(professions); professions.ensureLoaded(); return;
         }
         if (area.equals("Maps") && job.work() instanceof NativePreparationWork work) {
-            if (maps == null) maps = new MapsView(work::locationMapsHandle, work::revision, work::tablesHandle);
+            if (maps == null) {
+                maps = new MapsView(work::locationMapsHandle, work::revision, work::tablesHandle);
+                if (sources != null) attachMapRoles(maps, work);
+            }
             setCenter(maps); maps.ensureLoaded(); return;
         }
         if (area.equals("World")) {
@@ -307,5 +310,26 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
     private void showSourceTable(String table) {
         show("Tables");
         browsers.get("Tables").searchTable(table);
+    }
+
+    /** Quest/service overlays: local prepared Questie roles resolved by the selected build's maps. */
+    private void attachMapRoles(MapsView view, NativePreparationWork work) {
+        var build = job.build();
+        var locale = job.locale();
+        view.attachRoles(new MapRoleOverlay(token -> {
+            var source = work.locationMapsHandle();
+            if (source == null) throw new IllegalStateException("Selected-build map tables are unavailable.");
+            var catalog = sources.mapRoles(build, locale, token);
+            var locations = com.vibeminer.concepts.locations.MapRoles.locations(catalog);
+            // Bounded chunks let interactive artwork and location requests interleave on the shared worker.
+            var resolutions = new java.util.ArrayList<com.vibeminer.concepts.locations.MapTypes.Resolution>(locations.size());
+            for (int at = 0; at < locations.size(); at += 512) {
+                token.check();
+                resolutions.addAll(source.resolveAll(
+                        locations.subList(at, Math.min(locations.size(), at + 512)), token).join());
+            }
+            return com.vibeminer.concepts.locations.MapRoles.place(catalog, resolutions);
+        }, () -> java.util.Arrays.asList(sources.mapRolesKey(build), work.revision(),
+                work.locationMapsHandle()), view::redraw));
     }
 }

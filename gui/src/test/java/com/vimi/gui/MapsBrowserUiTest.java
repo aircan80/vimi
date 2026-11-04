@@ -43,6 +43,8 @@ public final class MapsBrowserUiTest {
     private static final TableRead MAPS = new TableRead(Table.UI_MAP, "a".repeat(32), "DB51D55F", ReadState.READY);
     private static final TableRead ASSIGNMENTS = new TableRead(Table.ASSIGNMENT, "b".repeat(32), "C9CC8DFB", ReadState.READY);
     private static final Rect FULL = new Rect(0, 0, 1, 1);
+    private static final AtomicInteger roleLoads = new AtomicInteger(), roleKey = new AtomicInteger();
+    private static final CountDownLatch roleCancelled = new CountDownLatch(1);
     private MapsBrowserUiTest() {}
 
     private static Node node(long id, String name, Parent parent) {
@@ -114,6 +116,22 @@ public final class MapsBrowserUiTest {
         try {
             fx(() -> {
                 view = new MapsView(handle::get, () -> 1L);
+                view.attachRoles(new MapRoleOverlay(token -> {
+                    require(!Platform.isFxApplicationThread(), "Role placement on FX");
+                    roleLoads.incrementAndGet();
+                    if (roleKey.get() == 2) {
+                        token.onCancel(() -> {
+                            require(!Platform.isFxApplicationThread(), "Role cancellation on FX");
+                            roleCancelled.countDown();
+                            throw new IllegalStateException("lower cancellation failure stays off FX");
+                        });
+                        while (!token.isCanceled()) Thread.onSpinWait();
+                        throw new java.util.concurrent.CancellationException();
+                    }
+                    return MapRoleOverlayTest.placement("v1.0.10", 947, List.of(
+                            MapRoleOverlayTest.npc(2, 4, null, 25, 25),
+                            MapRoleOverlayTest.npc(3, 0, List.of(7L), 75, 25)));
+                }, () -> roleKey.get(), view::redraw));
                 stage = new Stage(); stage.setScene(new Scene(view, 1100, 760)); stage.show();
                 view.ensureLoaded(); require(view.lookup("#maps-activity").isVisible(), "hierarchy activity");
             });
@@ -129,6 +147,39 @@ public final class MapsBrowserUiTest {
                 var snapshot = canvas.snapshot(null, null);
                 var color = snapshot.getPixelReader().getColor((int) (canvas.getWidth() * .7), (int) (canvas.getHeight() * .7));
                 require(color.getBlue() > color.getRed() + .3, "accepted authored pixels");
+                require(roleLoads.get() == 0, "overlays stay off until a layer is enabled");
+                view.roles().toggle(com.vibeminer.concepts.locations.MapRoles.Layer.VENDOR).setSelected(true);
+            });
+            await(() -> view.roles().drawn().size() == 1, "vendor marker placed off FX");
+            fx(() -> {
+                var status = view.roles().status().getText();
+                require(status.contains("1 vendors") && status.contains("not evaluated"), status);
+                var canvas = (Canvas) view.lookup("#maps-canvas");
+                var marker = view.roles().drawn().getFirst();
+                var snapshot = canvas.snapshot(null, null);
+                var image = (javafx.scene.image.Image) snapshot;
+                // Authored map fills the canvas width at fit zoom; locate the marker center.
+                double ratio = 64.0 / 42, w = Math.min(canvas.getWidth(), canvas.getHeight() * ratio), h = w / ratio;
+                int x = (int) (canvas.getWidth() / 2 - w / 2 + marker.x() * w);
+                int y = (int) (canvas.getHeight() / 2 - h / 2 + marker.y() * h);
+                var center = image.getPixelReader().getColor(x, y);
+                require(center.getGreen() > center.getBlue(), "vendor marker painted over artwork: " + center);
+                view.roles().toggle(com.vibeminer.concepts.locations.MapRoles.Layer.QUEST_GIVER).setSelected(true);
+                require(view.roles().drawn().size() == 2, "quest giver joins without reloading");
+                require(roleLoads.get() == 1, "one placement per source key");
+                roleKey.incrementAndGet(); view.redraw();
+                require(view.roles().drawn().isEmpty(), "changed source key retires markers");
+            });
+            await(() -> view.roles().drawn().size() == 2 && roleLoads.get() == 2, "changed key reloads");
+            fx(() -> { roleKey.incrementAndGet(); view.redraw(); });
+            await(() -> roleLoads.get() == 3, "held placement starts");
+            fx(() -> { roleKey.incrementAndGet(); view.redraw(); });
+            require(roleCancelled.await(2, TimeUnit.SECONDS), "held placement cancelled off FX");
+            await(() -> view.roles().drawn().size() == 2 && roleLoads.get() == 4, "newest key wins after held load");
+            fx(() -> {
+                view.roles().toggle(com.vibeminer.concepts.locations.MapRoles.Layer.VENDOR).setSelected(false);
+                view.roles().toggle(com.vibeminer.concepts.locations.MapRoles.Layer.QUEST_GIVER).setSelected(false);
+                require(view.roles().drawn().isEmpty() && view.roles().status().getText().contains("off"), "overlays off");
                 select(1429);
             });
             await(() -> !view.lookup("#maps-activity").isVisible(), "zone presentation");
@@ -173,7 +224,7 @@ public final class MapsBrowserUiTest {
             source.held.completeExceptionally(new java.util.concurrent.CancellationException());
             source.cancelRelease.countDown();
             fx(stage::close);
-            System.out.println("Maps browser UI: hierarchy/art activity, pixels, direct/Up/Back and off-FX held cancellation passed");
+            System.out.println("Maps browser UI: hierarchy/art activity, pixels, direct/Up/Back, role overlays and off-FX held cancellation passed");
         } finally {
             source.firstTile.complete(pixels());
             if (source.cancelRelease != null) source.cancelRelease.countDown();

@@ -28,7 +28,8 @@ evidence. Its tooltip/status explains configured source access may download.
 It uses the reviewed native-preparation backend, keeps progress truthful, then
 reloads strict navigation. Merely opening or capturing navigation never upgrades
 legacy graphs. Source details retain partial/unsupported diagnostics. Dungeon
-floors, marker overlays and cross-phase evaluation are not implemented here.
+floors and cross-phase evaluation are not implemented here. Quest giver, vendor,
+trainer and flight master overlays are described in `locations.md`.
 
 Authored display test `:gui:mapsBrowserUiTest` checks hierarchy/texture activity,
 accepted pixels, direct selection/Up/Back, same-revision handle replacement,

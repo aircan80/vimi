@@ -20,6 +20,7 @@ com.squareup.okio:okio:3.6.0=testRuntimeClasspath
 commons-beanutils:commons-beanutils:1.11.0=checkstyle
 commons-codec:commons-codec:1.15=checkstyle
 commons-collections:commons-collections:3.2.2=checkstyle
+fr.delthas:javamp3:1.0.1=testRuntimeClasspath
 info.picocli:picocli:4.7.7=checkstyle
 junit:junit:4.13.2=testRuntimeClasspath
 net.sf.saxon:Saxon-HE:12.5=checkstyle

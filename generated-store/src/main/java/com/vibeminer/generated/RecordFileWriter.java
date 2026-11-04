@@ -52,69 +52,68 @@ public final class RecordFileWriter implements AutoCloseable {
     }
 
     public CompletableFuture<Void> add(long id, byte[] record, Cancellation cancellation) {
-        byte[][] owned = new byte[1][];
+        return addAll(new long[] {id}, new byte[][] {record}, 1, cancellation);
+    }
+
+    /**
+     * Appends {@code ids[0..count)} with their records in one worker call, producing exactly the
+     * bytes and outcomes of the same {@link #add} calls made in order. The arrays may be reused
+     * once this returns. A rejected record (bad id, null, size or count bound) or a duplicate id
+     * fails the call after the records before it are appended and leaves the writer usable, as the
+     * individual {@code add} for that record would have; other failures finish the writer.
+     */
+    public CompletableFuture<Void> addAll(
+            long[] ids, byte[][] records, int count, Cancellation cancellation) {
+        Objects.checkFromIndexSize(0, count, ids.length);
+        Objects.checkFromIndexSize(0, count, records.length);
+        long[] ownedIds = Arrays.copyOf(ids, count);
+        byte[][] owned = new byte[count][];
+        RuntimeException[] rejected = new RuntimeException[1];
         return operation(
                 () -> {
                     cancellation.check();
-                    RecordFormat.id(id);
-                    Objects.requireNonNull(record);
-                    if (count >= options.maxRecords() || record.length > options.maxRecordBytes()) {
-                        throw RecordFormat.limit("Record count or size exceeds configured bound");
+                    for (int i = 0; i < count; i++) {
+                        try {
+                            RecordFormat.id(ownedIds[i]);
+                            Objects.requireNonNull(records[i]);
+                            if (this.count + i >= options.maxRecords()
+                                    || records[i].length > options.maxRecordBytes()) {
+                                throw RecordFormat.limit(
+                                        "Record count or size exceeds configured bound");
+                            }
+                        } catch (RuntimeException e) {
+                            if (i == 0) {
+                                throw e;
+                            }
+                            // Records before it are still appended, as by individual adds.
+                            rejected[0] = e;
+                            break;
+                        }
+                        owned[i] = records[i].clone();
                     }
-                    owned[0] = record.clone();
                 },
                 () -> {
                     // Validation failures leave the writer usable; failures after mutation finish
                     // it.
-                    append(id, owned[0], cancellation);
-                    return null;
-                },
-                false,
-                cancellation);
-    }
-
-    /**
-     * Appends {@code recordIds[i]} with {@code records[i]} for every index, in order, in one worker
-     * call. The file is byte-identical to calling {@link #add} for each pair. A failure on the
-     * first record leaves the writer usable exactly as {@code add} would; a failure after any
-     * record was appended finishes the writer, since the batch cannot be partially retried.
-     */
-    public CompletableFuture<Void> addAll(
-            List<Long> recordIds, List<byte[]> records, Cancellation cancellation) {
-        int size = recordIds.size();
-        long[] ownedIds = new long[size];
-        byte[][] owned = new byte[size][];
-        return operation(
-                () -> {
-                    cancellation.check();
-                    if (records.size() != size) {
-                        throw new IllegalArgumentException("Record and id counts differ");
-                    }
-                    if (size > options.maxRecords() - count) {
-                        throw RecordFormat.limit("Record count or size exceeds configured bound");
-                    }
-                    for (int i = 0; i < size; i++) {
-                        long id = recordIds.get(i);
-                        byte[] record = Objects.requireNonNull(records.get(i));
-                        RecordFormat.id(id);
-                        if (record.length > options.maxRecordBytes()) {
-                            throw RecordFormat.limit(
-                                    "Record count or size exceeds configured bound");
-                        }
-                        ownedIds[i] = id;
-                        owned[i] = record.clone();
-                    }
-                },
-                () -> {
-                    for (int i = 0; i < size; i++) {
-                        try {
-                            append(ownedIds[i], owned[i], cancellation);
-                        } catch (DuplicateId e) {
-                            if (i == 0) {
-                                throw e;
+                    for (int i = 0; i < count && owned[i] != null; i++) {
+                        if (i > 0) {
+                            try {
+                                // Where the next individual add would have checked admission.
+                                cancellation.check();
+                            } catch (RuntimeException e) {
+                                throw new Rejected(e);
                             }
-                            throw new IllegalArgumentException("Duplicate record id");
                         }
+                        append(ownedIds[i], owned[i], cancellation);
+                    }
+                    if (rejected[0] != null) {
+                        try {
+                            // The rejected record's own add would have checked admission first.
+                            cancellation.check();
+                        } catch (RuntimeException e) {
+                            throw new Rejected(e);
+                        }
+                        throw new Rejected(rejected[0]);
                     }
                     return null;
                 },
@@ -124,7 +123,7 @@ public final class RecordFileWriter implements AutoCloseable {
 
     private void append(long id, byte[] record, Cancellation cancellation) {
         if (duplicate((int) id)) {
-            throw new DuplicateId();
+            throw new Rejected(new IllegalArgumentException("Duplicate record id"));
         }
         cancellation.check();
         if (block.size() > 0 && record.length >= options.blockBytes()) {
@@ -224,9 +223,9 @@ public final class RecordFileWriter implements AutoCloseable {
                                     state.compareAndSet(1, 0);
                                 }
                                 return value;
-                            } catch (DuplicateId e) {
+                            } catch (Rejected e) {
                                 state.compareAndSet(1, 0);
-                                throw new IllegalArgumentException("Duplicate record id");
+                                throw e.reason;
                             } catch (Throwable e) {
                                 state.set(2);
                                 throw e;
@@ -241,8 +240,15 @@ public final class RecordFileWriter implements AutoCloseable {
                 });
     }
 
-    private static final class DuplicateId extends RuntimeException {
+    /** A record refused before it changed the writer; the writer stays usable. */
+    private static final class Rejected extends RuntimeException {
         private static final long serialVersionUID = 1L;
+        private final transient RuntimeException reason;
+
+        Rejected(RuntimeException reason) {
+            super(null, null, false, false);
+            this.reason = reason;
+        }
     }
 
     private boolean duplicate(int id) {

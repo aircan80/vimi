@@ -288,6 +288,45 @@ final class LocationMapsServiceTest {
     }
 
     @Test
+    void batchResolutionMatchesIndividualResolutionInOrder() {
+        try (var tables = open(fixture());
+                var service = new LocationMapsService(tables)) {
+            var batch = service.resolveAll(List.of(world(), area()), Cancellation.NONE).join();
+            assertEquals(2, batch.size());
+            assertEquals(service.resolve(world(), Cancellation.NONE).join(), batch.get(0));
+            assertEquals(service.resolve(area(), Cancellation.NONE).join(), batch.get(1));
+            assertTrue(service.resolveAll(List.of(), Cancellation.NONE).join().isEmpty());
+            var tooMany = java.util.Collections.nCopies(LocationMapsService.MAX_BATCH + 1, area());
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> service.resolveAll(tooMany, Cancellation.NONE));
+            BuildLocationMaps fallback =
+                    new BuildLocationMaps() {
+                        public java.util.concurrent.CompletableFuture<MapTypes.Resolution> resolve(
+                                LocationTypes.Location location, Cancellation token) {
+                            return service.resolve(location, token);
+                        }
+
+                        public java.util.concurrent.CompletableFuture<MapTypes.Artwork> artwork(
+                                long uiMapId, Cancellation token) {
+                            throw new AssertionError();
+                        }
+
+                        public java.util.concurrent.CompletableFuture<MapTypes.TileImage> tile(
+                                long uiMapId, long tileRowId, Cancellation token) {
+                            throw new AssertionError();
+                        }
+
+                        public java.util.concurrent.CompletableFuture<Void> closeAsync() {
+                            return java.util.concurrent.CompletableFuture.completedFuture(null);
+                        }
+                    };
+            assertEquals(
+                    batch, fallback.resolveAll(List.of(world(), area()), Cancellation.NONE).join());
+        }
+    }
+
+    @Test
     void worldProjectionUsesSwappedInvertedAxesAndMatchingMapOnly() {
         try (var tables = open(fixture());
                 var service = new LocationMapsService(tables)) {

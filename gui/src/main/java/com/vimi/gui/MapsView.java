@@ -80,6 +80,8 @@ final class MapsView extends BorderPane implements AutoCloseable {
     private MapNavigationTypes.UiMapId presented;
     private boolean setting;
     private double dragX, dragY;
+    private MapRoleOverlay roles;
+    private final VBox footer = new VBox(8);
 
     MapsView(Supplier<BuildLocationMaps> maps, LongSupplier revision) {
         this(maps, revision, () -> null);
@@ -112,7 +114,8 @@ final class MapsView extends BorderPane implements AutoCloseable {
         canvas.heightProperty().bind(viewport.heightProperty());
         canvas.widthProperty().addListener((o, a, b) -> draw());
         canvas.heightProperty().addListener((o, a, b) -> draw());
-        setCenter(viewport); setBottom(new VBox(8, status, source));
+        footer.getChildren().addAll(status, source);
+        setCenter(viewport); setBottom(footer);
         BorderPane.setMargin(viewport, new javafx.geometry.Insets(12));
         picker.setOnAction(e -> { if (!setting && picker.getValue() != null) open(picker.getValue().node().id()); });
         children.setOnMouseClicked(e -> { if (e.getClickCount() == 2 && children.getSelectionModel().getSelectedItem() != null)
@@ -160,6 +163,25 @@ final class MapsView extends BorderPane implements AutoCloseable {
         });
         overlapChoices.setPromptText("Choose overlapping map");
         busy(false); controls(); draw();
+    }
+
+    /** Mounts quest/service overlays; their controls join the footer and markers the canvas. */
+    void attachRoles(MapRoleOverlay overlay) {
+        if (roles != null) {
+            footer.getChildren().remove(roles.controls());
+            roles.close();
+        }
+        roles = overlay;
+        footer.getChildren().add(1, overlay.controls());
+        draw();
+    }
+
+    void redraw() {
+        draw();
+    }
+
+    MapRoleOverlay roles() {
+        return roles;
     }
 
     private boolean currentGraph() {
@@ -405,6 +427,7 @@ final class MapsView extends BorderPane implements AutoCloseable {
                         (r.maxX() - r.minX()) * box[2], (r.maxY() - r.minY()) * box[3]);
             }
         }
+        if (roles != null) roles.paint(gc, box, image != null && matching ? presented.value() : null);
     }
 
     private void publish(long request, long version, BuildLocationMaps source, Runnable action) {
@@ -464,6 +487,7 @@ final class MapsView extends BorderPane implements AutoCloseable {
             if (active != null && !active.cancelRequested) { active.cancelRequested = true; cancel = active; }
         }
         generation++; busy(false); image = null; graph = null; history = null; regions = null;
+        if (roles != null) roles.close();
         cancel(cancel); worker.shutdown(); cancellation.shutdown();
     }
 }

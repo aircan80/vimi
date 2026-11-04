@@ -604,8 +604,9 @@ public final class GeneratedTables implements GeneratedTableStore {
                 if (rows.isEmpty()) {
                     break;
                 }
-                var ids = new ArrayList<Long>(rows.size());
-                var encoded = new ArrayList<byte[]>(rows.size());
+                long[] ids = new long[rows.size()];
+                byte[][] encoded = new byte[rows.size()][];
+                int pending = 0;
                 for (var row : rows) {
                     content.validateRow(row);
                     for (var issue :
@@ -621,11 +622,11 @@ public final class GeneratedTables implements GeneratedTableStore {
                         }
                         evidenceBytes += bytes;
                     }
-                    ids.add(row.id());
-                    encoded.add(RowCodec.encode(row));
+                    ids[pending] = row.id();
+                    encoded[pending++] = RowCodec.encode(row);
                 }
                 // One writer hop per page; the record file is identical to per-row adds.
-                writer.addAll(ids, encoded, lower).join();
+                writer.addAll(ids, encoded, pending, lower).join();
                 first += rows.size();
             }
             Object published = metadata;
