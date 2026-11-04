@@ -82,3 +82,18 @@ examples fixed. Do not use the comparison website's70753 content as70707 truth.
 
 Status: pure container implementation and tests are isolated for review. No app
 activation, effective rows, keys, physical DB2 receipts or GUI behavior changed.
+
+## First-slice validation
+
+Frozen container fa718f74 passes full formats-tables checks:47tasks,14executed.
+Six authored tests cover physical repeats/order, unsigned IDs, exact same-stream
+SHA, strict header-only build refusal, chunk-boundary reads, malformed/version/
+state/reserved/range/row/body limits, original source failures, held lower-read
+cancellation, immutable-source association and selected-body mutation rejection.
+
+Read-only Java proof using that exact parser passes on the existing70450 cache:
+3827112bytes,49919entries, VALID16074/DELETE244/INVALID16068/NOT_PUBLIC17533.
+Five selected non-key bodies pass the actual body-SHA reread. The original file
+was opened READ/NOFOLLOW; no overlay/key activation or new game asset was written.
+Private diagnostic log: `/home/aircan/.cache/vimi-tmp/hotfix-container-proof/proof.log`.
+These are format/byte-read facts only, not evidence for the requested70707 rows.
