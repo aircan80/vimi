@@ -56,18 +56,32 @@ final class GpuFramePipeline implements AutoCloseable {
 
     GpuFramePipeline(GpuModelScene scene, Set<Integer> qualified, GpuFrameFile frames)
             throws IOException {
-        this(scene, qualified, null, frames, () -> false);
+        this(scene, qualified, null, null, frames, () -> false);
     }
 
     GpuFramePipeline(TerrainScene scene, GpuFrameFile frames, BooleanSupplier canceled)
             throws IOException {
-        this(null, Set.of(), scene, frames, canceled);
+        this(null, Set.of(), scene, null, frames, canceled);
+    }
+
+    GpuFramePipeline(
+            TerrainScene scene,
+            GpuTerrainTextureAnnex.Decoded textures,
+            GpuFrameFile frames,
+            BooleanSupplier canceled)
+            throws IOException {
+        this(null, Set.of(), scene, textures, frames, canceled);
+    }
+
+    TerrainTextureStatus textureStatus(TerrainTextureStatus.Code inputFailure) {
+        return terrainRenderer.textureStatus(inputFailure);
     }
 
     private GpuFramePipeline(
             GpuModelScene model,
             Set<Integer> qualified,
             TerrainScene terrain,
+            GpuTerrainTextureAnnex.Decoded textures,
             GpuFrameFile frames,
             BooleanSupplier canceled)
             throws IOException {
@@ -92,7 +106,8 @@ final class GpuFramePipeline implements AutoCloseable {
             throw new IOException("GPU backend does not support the inline frame bridge");
         }
         renderer = model == null ? null : new BgfxModelRenderer(model);
-        terrainRenderer = terrain == null ? null : new BgfxTerrainRenderer(terrain, canceled);
+        terrainRenderer =
+                terrain == null ? null : new BgfxTerrainRenderer(terrain, textures, canceled);
         int capacity =
                 Math.multiplyExact(Math.multiplyExact(frames.maxWidth(), frames.maxHeight()), 4);
         ByteBuffer flip = null;

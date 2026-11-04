@@ -10,29 +10,40 @@ import static org.lwjgl.bgfx.BGFX.BGFX_CAPS_INSTANCING;
 import static org.lwjgl.bgfx.BGFX.BGFX_CLEAR_COLOR;
 import static org.lwjgl.bgfx.BGFX.BGFX_CLEAR_DEPTH;
 import static org.lwjgl.bgfx.BGFX.BGFX_DISCARD_ALL;
+import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MAG_POINT;
+import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MIN_POINT;
+import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MIP_POINT;
+import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_U_CLAMP;
+import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_V_CLAMP;
 import static org.lwjgl.bgfx.BGFX.BGFX_STATE_DEPTH_TEST_ALWAYS;
 import static org.lwjgl.bgfx.BGFX.BGFX_STATE_DEPTH_TEST_GREATER;
 import static org.lwjgl.bgfx.BGFX.BGFX_STATE_WRITE_A;
 import static org.lwjgl.bgfx.BGFX.BGFX_STATE_WRITE_RGB;
 import static org.lwjgl.bgfx.BGFX.BGFX_STATE_WRITE_Z;
 import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_FORMAT_D32F;
+import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_FORMAT_RGBA8;
+import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_NONE;
 import static org.lwjgl.bgfx.BGFX.BGFX_TEXTURE_RT;
 import static org.lwjgl.bgfx.BGFX.BGFX_UNIFORM_TYPE_MAT4;
+import static org.lwjgl.bgfx.BGFX.BGFX_UNIFORM_TYPE_SAMPLER;
 import static org.lwjgl.bgfx.BGFX.BGFX_UNIFORM_TYPE_VEC4;
 import static org.lwjgl.bgfx.BGFX.BGFX_VIEW_MODE_SEQUENTIAL;
 import static org.lwjgl.bgfx.BGFX.bgfx_copy;
 import static org.lwjgl.bgfx.BGFX.bgfx_create_program;
 import static org.lwjgl.bgfx.BGFX.bgfx_create_shader;
+import static org.lwjgl.bgfx.BGFX.bgfx_create_texture_2d;
 import static org.lwjgl.bgfx.BGFX.bgfx_create_uniform;
 import static org.lwjgl.bgfx.BGFX.bgfx_create_vertex_buffer;
 import static org.lwjgl.bgfx.BGFX.bgfx_destroy_program;
 import static org.lwjgl.bgfx.BGFX.bgfx_destroy_shader;
+import static org.lwjgl.bgfx.BGFX.bgfx_destroy_texture;
 import static org.lwjgl.bgfx.BGFX.bgfx_destroy_uniform;
 import static org.lwjgl.bgfx.BGFX.bgfx_destroy_vertex_buffer;
 import static org.lwjgl.bgfx.BGFX.bgfx_get_caps;
 import static org.lwjgl.bgfx.BGFX.bgfx_is_texture_valid;
 import static org.lwjgl.bgfx.BGFX.bgfx_set_instance_data_from_vertex_buffer;
 import static org.lwjgl.bgfx.BGFX.bgfx_set_state;
+import static org.lwjgl.bgfx.BGFX.bgfx_set_texture;
 import static org.lwjgl.bgfx.BGFX.bgfx_set_uniform;
 import static org.lwjgl.bgfx.BGFX.bgfx_set_vertex_buffer;
 import static org.lwjgl.bgfx.BGFX.bgfx_set_view_clear;
@@ -45,6 +56,7 @@ import static org.lwjgl.bgfx.BGFX.bgfx_vertex_layout_end;
 
 import com.vibeminer.rendering.world.TerrainCamera;
 import com.vibeminer.rendering.world.TerrainScene;
+import com.vibeminer.rendering.world.TerrainTextureBinding;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
@@ -57,7 +69,10 @@ import org.lwjgl.bgfx.BGFXVertexLayout;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 
-/** Context-owned height-only terrain. Upload/close/render run on the initializing native thread. */
+/**
+ * Context-owned optionally textured terrain. Upload/close/render run on the initializing native
+ * thread.
+ */
 final class BgfxTerrainRenderer implements AutoCloseable {
     static final int MAX_WIDTH = 800, MAX_HEIGHT = 500;
     static final int INSTANCE_BYTES = 48;
@@ -70,15 +85,34 @@ final class BgfxTerrainRenderer implements AutoCloseable {
     private short eyeUniform = INVALID, projectionUniform = INVALID, skyUniform = INVALID;
     private long uploadedBytes;
     private boolean closed;
+    private short sampler = INVALID, atlasUniform = INVALID, dummy = INVALID;
+    private final short[] textures = new short[9];
+    private final TerrainTextureBinding.Metadata[] textureMetadata =
+            new TerrainTextureBinding.Metadata[9];
+    private int activeAtlases, coveredRectangles;
+    private boolean textureUploadFailed, textureCapabilityFailed;
+    private static final int SAMPLER_FLAGS =
+            BGFX_SAMPLER_MIN_POINT
+                    | BGFX_SAMPLER_MAG_POINT
+                    | BGFX_SAMPLER_MIP_POINT
+                    | BGFX_SAMPLER_U_CLAMP
+                    | BGFX_SAMPLER_V_CLAMP;
 
-    private record Draw(short instances, int triangles) {}
+    private record Draw(short instances, int triangles, int tileOrdinal) {}
 
     BgfxTerrainRenderer(TerrainScene scene) throws IOException {
         this(scene, () -> false);
     }
 
     BgfxTerrainRenderer(TerrainScene scene, BooleanSupplier canceled) throws IOException {
+        this(scene, null, canceled);
+    }
+
+    BgfxTerrainRenderer(
+            TerrainScene scene, GpuTerrainTextureAnnex.Decoded annex, BooleanSupplier canceled)
+            throws IOException {
         this.scene = Objects.requireNonNull(scene);
+        java.util.Arrays.fill(textures, INVALID);
         Objects.requireNonNull(canceled);
         try {
             check(canceled);
@@ -94,12 +128,33 @@ final class BgfxTerrainRenderer implements AutoCloseable {
             projectionUniform =
                     valid(bgfx_create_uniform("u_terrainProjection", BGFX_UNIFORM_TYPE_MAT4, 1));
             skyUniform = valid(bgfx_create_uniform("u_terrainMode", BGFX_UNIFORM_TYPE_VEC4, 1));
+            sampler = valid(bgfx_create_uniform("s_terrainAtlas", BGFX_UNIFORM_TYPE_SAMPLER, 1));
+            atlasUniform = valid(bgfx_create_uniform("u_terrainAtlas", BGFX_UNIFORM_TYPE_VEC4, 1));
+            try (var stack = MemoryStack.stackPush()) {
+                var pixel = stack.calloc(4);
+                dummy =
+                        valid(
+                                bgfx_create_texture_2d(
+                                        1,
+                                        1,
+                                        false,
+                                        1,
+                                        BGFX_TEXTURE_FORMAT_RGBA8,
+                                        BGFX_TEXTURE_NONE,
+                                        bgfx_copy(pixel),
+                                        0));
+            }
             template = template();
+            int ordinal = 0;
             for (var tile : scene.tiles()) {
                 check(canceled);
                 if (tile.triangleCount() != 0) {
-                    upload(tile, canceled);
+                    upload(tile, ordinal, canceled);
                 }
+                ordinal++;
+            }
+            if (annex != null) {
+                uploadAtlases(annex, canceled);
             }
             check(canceled);
         } catch (IOException | RuntimeException | Error failure) {
@@ -128,7 +183,8 @@ final class BgfxTerrainRenderer implements AutoCloseable {
         return uploadedBytes;
     }
 
-    private void upload(TerrainScene.Tile tile, BooleanSupplier canceled) throws IOException {
+    private void upload(TerrainScene.Tile tile, int ordinal, BooleanSupplier canceled)
+            throws IOException {
         long bytes = (long) tile.triangleCount() * INSTANCE_BYTES;
         if (bytes > (3L << 20) || uploadedBytes + bytes > MAX_INSTANCE_BYTES) {
             throw new IOException("Terrain upload budget exceeded");
@@ -185,7 +241,7 @@ final class BgfxTerrainRenderer implements AutoCloseable {
                                 bgfx_create_vertex_buffer(
                                         bgfx_copy(packed), layout, BGFX_BUFFER_NONE));
                 try {
-                    draws.add(new Draw(instances, tile.triangleCount()));
+                    draws.add(new Draw(instances, tile.triangleCount(), ordinal));
                 } catch (RuntimeException | Error failure) {
                     bgfx_destroy_vertex_buffer(instances);
                     throw failure;
@@ -228,6 +284,27 @@ final class BgfxTerrainRenderer implements AutoCloseable {
                     BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A | BGFX_STATE_DEPTH_TEST_ALWAYS, 0);
             bgfx_submit(0, skyProgram, 0, BGFX_DISCARD_ALL);
             for (var draw : draws) {
+                var meta = textureMetadata[draw.tileOrdinal()];
+                var atlasParameters = stack.mallocFloat(4);
+                if (meta == null) {
+                    atlasParameters.put(new float[] {0, 0, 3f / 1600, 0}).flip();
+                } else {
+                    atlasParameters
+                            .put(
+                                    new float[] {
+                                        (float) (meta.nativeMaxX() - scene.origin().x()),
+                                        (float) (meta.nativeMaxY() - scene.origin().y()),
+                                        3f / 1600,
+                                        1
+                                    })
+                            .flip();
+                }
+                bgfx_set_uniform(atlasUniform, atlasParameters, 1);
+                bgfx_set_texture(
+                        0,
+                        sampler,
+                        meta == null ? dummy : textures[draw.tileOrdinal()],
+                        SAMPLER_FLAGS);
                 bgfx_set_uniform(eyeUniform, eye, 1);
                 bgfx_set_uniform(projectionUniform, projection, 1);
                 bgfx_set_vertex_buffer(0, template, 0, 3);
@@ -239,6 +316,63 @@ final class BgfxTerrainRenderer implements AutoCloseable {
                                 | BGFX_STATE_DEPTH_TEST_GREATER,
                         0);
                 bgfx_submit(0, terrainProgram, 0, BGFX_DISCARD_ALL);
+            }
+        }
+    }
+
+    TerrainTextureStatus textureStatus(TerrainTextureStatus.Code inputFailure) {
+        var code =
+                inputFailure != TerrainTextureStatus.Code.NONE
+                        ? inputFailure
+                        : textureCapabilityFailed
+                                ? TerrainTextureStatus.Code.CAPABILITY
+                                : textureUploadFailed
+                                        ? TerrainTextureStatus.Code.UPLOAD
+                                        : TerrainTextureStatus.Code.NONE;
+        return TerrainTextureStatus.of(
+                activeAtlases, scene.tiles().size(), coveredRectangles, code);
+    }
+
+    private void uploadAtlases(GpuTerrainTextureAnnex.Decoded annex, BooleanSupplier canceled) {
+        if (!bgfx_is_texture_valid(0, false, 1, BGFX_TEXTURE_FORMAT_RGBA8, BGFX_TEXTURE_NONE)) {
+            textureCapabilityFailed = true;
+            return;
+        }
+        for (var binding : annex.bindings()) {
+            check(canceled);
+            short handle = INVALID;
+            ByteBuffer staging = MemoryUtil.memAlloc(TerrainTextureBinding.PIXEL_BYTES);
+            try {
+                staging.put(binding.pixels()).flip();
+                check(canceled);
+                handle =
+                        bgfx_create_texture_2d(
+                                512,
+                                512,
+                                false,
+                                1,
+                                BGFX_TEXTURE_FORMAT_RGBA8,
+                                BGFX_TEXTURE_NONE,
+                                bgfx_copy(staging),
+                                0);
+                if (handle == INVALID) {
+                    textureUploadFailed = true;
+                    continue;
+                }
+                int ordinal = binding.metadata().tileOrdinal();
+                textures[ordinal] = handle;
+                textureMetadata[ordinal] = binding.metadata();
+                handle = INVALID;
+                activeAtlases++;
+                var coverage = binding.metadata().rectangleCoverage();
+                while (coverage.hasRemaining()) {
+                    coveredRectangles += Long.bitCount(coverage.get());
+                }
+            } finally {
+                if (handle != INVALID) {
+                    bgfx_destroy_texture(handle);
+                }
+                MemoryUtil.memFree(staging);
             }
         }
     }
@@ -273,12 +407,23 @@ final class BgfxTerrainRenderer implements AutoCloseable {
             bgfx_destroy_program(skyProgram);
             skyProgram = INVALID;
         }
-        for (short uniform : new short[] {eyeUniform, projectionUniform, skyUniform}) {
+        for (short texture : textures) {
+            if (texture != INVALID) {
+                bgfx_destroy_texture(texture);
+            }
+        }
+        java.util.Arrays.fill(textures, INVALID);
+        if (dummy != INVALID) {
+            bgfx_destroy_texture(dummy);
+            dummy = INVALID;
+        }
+        for (short uniform :
+                new short[] {eyeUniform, projectionUniform, skyUniform, sampler, atlasUniform}) {
             if (uniform != INVALID) {
                 bgfx_destroy_uniform(uniform);
             }
         }
-        eyeUniform = projectionUniform = skyUniform = INVALID;
+        eyeUniform = projectionUniform = skyUniform = sampler = atlasUniform = INVALID;
     }
 
     private static void corner(

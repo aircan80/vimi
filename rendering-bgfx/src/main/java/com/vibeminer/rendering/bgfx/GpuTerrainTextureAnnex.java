@@ -38,6 +38,28 @@ public final class GpuTerrainTextureAnnex {
 
     private GpuTerrainTextureAnnex() {}
 
+    /**
+     * Bounded native fallback classification; contains no source paths or arbitrary protocol text.
+     */
+    public static final class Invalid extends IOException {
+        private static final long serialVersionUID = 1L;
+        private final TerrainTextureStatus.Code code;
+
+        private Invalid(TerrainTextureStatus.Code code, String message) {
+            super(message);
+            this.code = code;
+        }
+
+        private Invalid(TerrainTextureStatus.Code code, String message, Throwable cause) {
+            super(message, cause);
+            this.code = code;
+        }
+
+        public TerrainTextureStatus.Code code() {
+            return code;
+        }
+    }
+
     /** Owned decoded immutable pixels; independent of parent source pool claims. */
     public static final class Decoded {
         private final List<TerrainTextureBinding> bindings;
@@ -188,7 +210,7 @@ public final class GpuTerrainTextureAnnex {
             long size = channel.size();
             if (size < HEADER_BYTES + DESCRIPTOR_BYTES + TerrainTextureBinding.PIXEL_BYTES
                     || size > MAX_BYTES) {
-                throw new IOException("Annex size outside bounds");
+                throw new Invalid(TerrainTextureStatus.Code.BINDING, "Annex size outside bounds");
             }
             var sha = digest();
             var hashing =
@@ -200,16 +222,19 @@ public final class GpuTerrainTextureAnnex {
                     || integer(input) != 1
                     || integer(input) != 0
                     || number(input) != size) {
-                throw new IOException("Invalid annex header");
+                throw new Invalid(TerrainTextureStatus.Code.BINDING, "Invalid annex header");
             }
             if (!MessageDigest.isEqual(input.readNBytes(32), geometry.file().sha256())) {
-                throw new IOException("Annex belongs to different geometry bytes");
+                throw new Invalid(
+                        TerrainTextureStatus.Code.BINDING,
+                        "Annex belongs to different geometry bytes");
             }
             hashing.on(false);
             byte[] expected = input.readNBytes(32);
             hashing.on(true);
             if (expected.length != 32 || integer(input) != 1) {
-                throw new IOException("Invalid annex checksum/recipe");
+                throw new Invalid(
+                        TerrainTextureStatus.Code.BINDING, "Invalid annex checksum/recipe");
             }
             int count = integer(input);
             if (count < 1
@@ -225,7 +250,8 @@ public final class GpuTerrainTextureAnnex {
                                     + (long) count
                                             * (DESCRIPTOR_BYTES
                                                     + TerrainTextureBinding.PIXEL_BYTES)) {
-                throw new IOException("Invalid annex declaration or length");
+                throw new Invalid(
+                        TerrainTextureStatus.Code.BINDING, "Invalid annex declaration or length");
             }
             var declarations = new ArrayList<Declaration>(count);
             int previous = -1;
@@ -261,11 +287,14 @@ public final class GpuTerrainTextureAnnex {
                         || reserved != 0
                         || root.length != 16
                         || tex0.length != 16) {
-                    throw new IOException("Invalid annex tile descriptor");
+                    throw new Invalid(
+                            TerrainTextureStatus.Code.BINDING, "Invalid annex tile descriptor");
                 }
                 var tile = geometry.scene().tiles().get(ordinal);
                 if (tile.x() != x || tile.y() != y) {
-                    throw new IOException("Annex tile key differs from geometry");
+                    throw new Invalid(
+                            TerrainTextureStatus.Code.BINDING,
+                            "Annex tile key differs from geometry");
                 }
                 var sources =
                         new TerrainTextureBinding.Sources(
@@ -296,12 +325,14 @@ public final class GpuTerrainTextureAnnex {
                 bindings.add(binding);
             }
             if (input.read() != -1 || !MessageDigest.isEqual(expected, sha.digest())) {
-                throw new IOException("Annex checksum or EOF differs");
+                throw new Invalid(
+                        TerrainTextureStatus.Code.CHECKSUM, "Annex checksum or EOF differs");
             }
             check(canceled);
             return new Decoded(bindings);
         } catch (IllegalArgumentException | ArithmeticException invalid) {
-            throw new IOException("Invalid annex atlas/grid binding", invalid);
+            throw new Invalid(
+                    TerrainTextureStatus.Code.MAPPING, "Invalid annex atlas/grid binding", invalid);
         }
     }
 

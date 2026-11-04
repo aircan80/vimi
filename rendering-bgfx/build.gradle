@@ -244,3 +244,13 @@ tasks.register('nativeGpuTerrainInlineProof', JavaExec) {
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args layout.buildDirectory.dir('native-terrain-inline').get().asFile.absolutePath
 }
+
+tasks.register('nativeGpuTerrainTextureProof', JavaExec) {
+    group = 'verification'
+    description = 'Checks authored terrain atlas sampling, fog, fallback and source-order Vulkan frames.'
+    dependsOn testClasses, tasks.named('verifyTerrainShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.TerrainTextureNativeProof'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-terrain-textures').get().asFile.absolutePath
+}

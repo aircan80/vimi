@@ -301,7 +301,7 @@ public final class TerrainProductionAcceptance {
         pixel(gpu.render(List.of(panel(10, false)), ZERO), 128, 128, 0xff2c4729);
     }
 
-    private static final class Harness implements AutoCloseable {
+    static final class Harness implements AutoCloseable {
         private short color = -1, depth = -1, target = -1, staging = -1;
         private ByteBuffer pixels;
         private boolean initialized;

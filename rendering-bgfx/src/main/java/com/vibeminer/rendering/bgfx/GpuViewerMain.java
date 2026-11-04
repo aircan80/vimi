@@ -103,10 +103,31 @@ public final class GpuViewerMain {
         GpuModelScene modelScene = null;
         TerrainScene terrainScene = null;
         Set<Integer> qualified = Set.of();
+        GpuTerrainTextureAnnex.Decoded terrainTextures = null;
+        TerrainTextureStatus.Code textureInputFailure = TerrainTextureStatus.Code.NONE;
+        boolean textureRequested = options.containsKey("--terrain-textures");
         if (terrain) {
-            terrainScene =
-                    GpuTerrainSceneFile.read(
-                            Path.of(options.get("--terrain-scene")), lifetime::stopping);
+            if (textureRequested) {
+                var geometry =
+                        GpuTerrainSceneFile.readBound(
+                                Path.of(options.get("--terrain-scene")), lifetime::stopping);
+                terrainScene = geometry.scene();
+                try {
+                    terrainTextures =
+                            GpuTerrainTextureAnnex.read(
+                                    Path.of(options.get("--terrain-textures")),
+                                    geometry,
+                                    lifetime::stopping);
+                } catch (GpuTerrainTextureAnnex.Invalid invalid) {
+                    textureInputFailure = invalid.code();
+                } catch (IOException unavailable) {
+                    textureInputFailure = TerrainTextureStatus.Code.INPUT_UNAVAILABLE;
+                }
+            } else {
+                terrainScene =
+                        GpuTerrainSceneFile.read(
+                                Path.of(options.get("--terrain-scene")), lifetime::stopping);
+            }
         } else {
             var payload = GpuSceneFile.read(Path.of(options.get("--scene")));
             modelScene = GpuModelScene.create(payload.mesh(), payload.appearance());
@@ -148,8 +169,14 @@ public final class GpuViewerMain {
                 boolean announced = false;
                 try (var pipeline =
                         terrain
-                                ? new GpuFramePipeline(terrainScene, frames, lifetime::stopping)
+                                ? new GpuFramePipeline(
+                                        terrainScene, terrainTextures, frames, lifetime::stopping)
                                 : new GpuFramePipeline(modelScene, qualified, frames)) {
+                    if (textureRequested) {
+                        System.out.println(
+                                pipeline.textureStatus(textureInputFailure).protocolLine());
+                        System.out.flush();
+                    }
                     while (!lifetime.stopping()) {
                         var view = latest.get();
                         long now = System.nanoTime();
@@ -184,7 +211,9 @@ public final class GpuViewerMain {
     static boolean terrainMode(Map<String, String> options) {
         if (options.containsKey("--scene") == options.containsKey("--terrain-scene")
                 || !options.containsKey("--frames")
-                || !options.containsKey("--parent-pid")) {
+                || !options.containsKey("--parent-pid")
+                || options.containsKey("--terrain-textures")
+                        && !options.containsKey("--terrain-scene")) {
             throw new IllegalArgumentException(
                     "Inline GPU renderer requires exactly one model or terrain scene, frames and parent");
         }
@@ -224,6 +253,7 @@ public final class GpuViewerMain {
                     || !Set.of(
                                     "--scene",
                                     "--terrain-scene",
+                                    "--terrain-textures",
                                     "--frames",
                                     "--parent-pid",
                                     "--backend",
