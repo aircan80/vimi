@@ -11,7 +11,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
-/** Single-root MH2O source-qualified LOCAL cell facts only. No native XY transform or drawing. */
+/** Source-qualified flat single-root MH2O geometry. No scene or drawing. */
 final class WorldTerrainLiquids {
     static final String REVISION = "source-mh2o-local-root-inspection-v1";
 
@@ -91,6 +91,9 @@ final class WorldTerrainLiquids {
         private final CompletableFuture<Void> drained = new CompletableFuture<>();
         private Summary summary;
         private List<Layer> layers = List.of();
+        private float[] positions;
+        private byte[] depths;
+        private int[] indices;
         private int pins = 1;
         private boolean closing, qualified;
 
@@ -161,6 +164,9 @@ final class WorldTerrainLiquids {
                     return;
                 }
                 layers = List.of();
+                positions = null;
+                depths = null;
+                indices = null;
                 source = credit;
                 credit = null;
             }
@@ -252,6 +258,45 @@ final class WorldTerrainLiquids {
             return l.depth()[Objects.checkIndex(vertex, l.depth().length)] & 255;
         }
 
+        int vertexCount() {
+            var a = checked();
+            return a.depths == null ? 0 : a.depths.length;
+        }
+
+        int indexCount() {
+            var a = checked();
+            return a.indices == null ? 0 : a.indices.length;
+        }
+
+        private float coordinate(int vertex, int component) {
+            var a = checked();
+            Objects.checkIndex(vertex, a.depths == null ? 0 : a.depths.length);
+            return a.positions[vertex * 3 + component];
+        }
+
+        float vertexNorth(int vertex) {
+            return coordinate(vertex, 0);
+        }
+
+        float vertexWest(int vertex) {
+            return coordinate(vertex, 1);
+        }
+
+        float vertexUp(int vertex) {
+            return coordinate(vertex, 2);
+        }
+
+        int vertexDepth(int vertex) {
+            var a = checked();
+            return a.depths[Objects.checkIndex(vertex, a.depths == null ? 0 : a.depths.length)]
+                    & 255;
+        }
+
+        int index(int ordinal) {
+            var a = checked();
+            return a.indices[Objects.checkIndex(ordinal, a.indices == null ? 0 : a.indices.length)];
+        }
+
         private void expire() {
             owner = null;
         }
@@ -314,7 +359,9 @@ final class WorldTerrainLiquids {
             String key,
             long length,
             String geometry,
-            boolean malformed) {}
+            boolean malformed,
+            float[] anchors,
+            Cancellation token) {}
 
     private static Root root(WorldStreamScopes.TileAdmission admission) {
         try (var input = admission.readRecorded(WorldStreamScopes.RecordedInput.ROOT)) {
@@ -330,6 +377,15 @@ final class WorldTerrainLiquids {
                             ? TerrainGeometryFingerprint.sha256(
                                     admission.recorded().x(), admission.recorded().y(), grid)
                             : null;
+            float[] anchors = null;
+            if (canonical) {
+                anchors = new float[512];
+                for (var chunk : grid.chunks()) {
+                    int offset = (chunk.y() * 16 + chunk.x()) * 2;
+                    anchors[offset] = chunk.originX();
+                    anchors[offset + 1] = chunk.originY();
+                }
+            }
             WorldLiquids.RawLiquids raw;
             try {
                 raw = WorldLiquids.readMh2o(input.bytes(), token::isCanceled);
@@ -340,7 +396,9 @@ final class WorldTerrainLiquids {
                         input.contentKey(),
                         input.consumedLength(),
                         geometry,
-                        true);
+                        true,
+                        anchors,
+                        token);
             }
             return new Root(
                     raw,
@@ -348,7 +406,9 @@ final class WorldTerrainLiquids {
                     input.contentKey(),
                     input.consumedLength(),
                     geometry,
-                    false);
+                    false,
+                    anchors,
+                    token);
         }
     }
 
@@ -615,6 +675,7 @@ final class WorldTerrainLiquids {
             List<Layer> layers,
             int cells) {
         owner.layers = List.copyOf(layers);
+        geometry(owner, root, cells);
         owner.summary =
                 new Summary(
                         state,
@@ -627,5 +688,63 @@ final class WorldTerrainLiquids {
                         root.key(),
                         root.length(),
                         root.geometry());
+    }
+
+    private static void geometry(Owner owner, Root root, int cells) {
+        if (cells < 0 || cells > 8192 || owner.layers.size() > 128) {
+            throw new IllegalStateException("Liquid geometry count profile");
+        }
+        if (cells == 0) {
+            return;
+        }
+        if (root.anchors() == null || root.geometry() == null) {
+            throw new IllegalStateException("Liquid geometry lacks actual ROOT anchors");
+        }
+        int vertices = Math.multiplyExact(cells, 4), indexCount = Math.multiplyExact(cells, 6);
+        owner.positions = new float[Math.multiplyExact(vertices, 3)];
+        owner.depths = new byte[vertices];
+        owner.indices = new int[indexCount];
+        int vertex = 0, index = 0;
+        for (var layer : owner.layers) {
+            root.token().check();
+            float north = root.anchors()[layer.header() * 2];
+            float west = root.anchors()[layer.header() * 2 + 1];
+            for (int y = 0; y < layer.height(); y++) {
+                for (int x = 0; x < layer.width(); x++) {
+                    if ((layer.mask() & (1L << (y * layer.width() + x))) == 0) {
+                        continue;
+                    }
+                    root.token().check();
+                    int base = vertex;
+                    for (int corner = 0; corner < 4; corner++) {
+                        int row = y + corner / 2, column = x + corner % 2;
+                        int offset = vertex * 3;
+                        owner.positions[offset] =
+                                (float)
+                                        (north
+                                                - (2 * (layer.y() + row))
+                                                        * (WorldFormats.TILE_SIZE / 256));
+                        owner.positions[offset + 1] =
+                                (float)
+                                        (west
+                                                - (layer.x() + column)
+                                                        * (WorldFormats.TILE_SIZE / 128));
+                        owner.positions[offset + 2] = layer.usedHeight();
+                        owner.depths[vertex] = layer.depth()[row * (layer.width() + 1) + column];
+                        vertex++;
+                    }
+                    // Explicit NE--SW diagonal; winding is +nativeZ for native north/west axes.
+                    owner.indices[index++] = base;
+                    owner.indices[index++] = base + 2;
+                    owner.indices[index++] = base + 1;
+                    owner.indices[index++] = base + 1;
+                    owner.indices[index++] = base + 2;
+                    owner.indices[index++] = base + 3;
+                }
+            }
+        }
+        if (vertex != vertices || index != indexCount) {
+            throw new IllegalStateException("Liquid geometry counts changed");
+        }
     }
 }

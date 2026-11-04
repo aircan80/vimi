@@ -732,4 +732,111 @@ class WorldTerrainLiquidsTest {
             }
         }
     }
+
+    @Test
+    void flatGeometryUsesActualRootAnchorsUnsignedDepthAndExplicitPositiveUpDiagonal()
+            throws Exception {
+        try (var f = new Fixture()) {
+            f.payload(liquids(1, 0, 1, false));
+            try (var owner = f.inspect()) {
+                owner.withBorrow(
+                        v -> {
+                            assertEquals(4, v.vertexCount());
+                            assertEquals(6, v.indexCount());
+                            assertEquals(5, v.vertexUp(0));
+                            assertEquals(200, v.vertexDepth(0));
+                            assertEquals(201, v.vertexDepth(1));
+                            assertEquals(209, v.vertexDepth(2));
+                            assertEquals(210, v.vertexDepth(3));
+                            assertEquals(v.vertexNorth(0), v.vertexNorth(1));
+                            assertEquals(v.vertexWest(0), v.vertexWest(2));
+                            assertTrue(v.vertexNorth(2) < v.vertexNorth(0));
+                            assertTrue(v.vertexWest(1) < v.vertexWest(0));
+                            int[] expected = {0, 2, 1, 1, 2, 3};
+                            for (int n = 0; n < 6; n++) {
+                                assertEquals(expected[n], v.index(n));
+                            }
+                            float ax = v.vertexNorth(2) - v.vertexNorth(0),
+                                    ay = v.vertexWest(2) - v.vertexWest(0);
+                            float bx = v.vertexNorth(1) - v.vertexNorth(0),
+                                    by = v.vertexWest(1) - v.vertexWest(0);
+                            assertTrue(ax * by - ay * bx > 0);
+                            assertThrows(IndexOutOfBoundsException.class, () -> v.vertexDepth(4));
+                            return null;
+                        });
+            }
+        }
+    }
+
+    @Test
+    void geometryPrecountAllocatesExactMaximumWithoutTrimAndEmptyAllocatesNothing()
+            throws Exception {
+        try (var f = new Fixture()) {
+            var p = liquids(128, 0, -1L, false);
+            var b = ByteBuffer.wrap(p).order(ByteOrder.LITTLE_ENDIAN);
+            for (int header = 0; header < 256; header++) {
+                b.putInt(header * 12, 0).putInt(header * 12 + 4, 0);
+            }
+            for (int i = 0; i < 128; i++) {
+                b.putInt(i * 12, 3072 + i * 24).putInt(i * 12 + 4, 1);
+                b.putLong(3072 + 128 * 24 + i * 8, -1L);
+            }
+            f.payload(p);
+            try (var owner = f.inspect()) {
+                assertEquals(8192, owner.summary().cells());
+                owner.withBorrow(
+                        v -> {
+                            assertEquals(32768, v.vertexCount());
+                            assertEquals(49152, v.indexCount());
+                            assertEquals(32767, v.index(49151));
+                            assertEquals(5, v.vertexUp(32767));
+                            return null;
+                        });
+            }
+            f.payload(liquids(1, 0, 0, false));
+            try (var owner = f.inspect()) {
+                owner.withBorrow(
+                        v -> {
+                            assertEquals(0, v.vertexCount());
+                            assertEquals(0, v.indexCount());
+                            return null;
+                        });
+            }
+            assertEquals(0, f.scopes.liquidCredits());
+        }
+    }
+
+    @Test
+    void sourceGeometryUsesAsymmetricActualAnchorAndCellAxesWithoutTerrainBase() throws Exception {
+        try (var f = new Fixture()) {
+            var bytes = ByteBuffer.wrap(f.terrain).order(ByteOrder.LITTLE_ENDIAN);
+            while (bytes.hasRemaining()) {
+                int tag = bytes.getInt(), length = bytes.getInt(), start = bytes.position();
+                if (tag == 0x4d434e4b) {
+                    bytes.putFloat(start + 104, 1000)
+                            .putFloat(start + 108, -2000)
+                            .putFloat(start + 112, 300);
+                    break;
+                }
+                bytes.position(start + length);
+            }
+            f.payload(liquids(1, 0, 1L << 17, false));
+            try (var owner = f.inspect()) {
+                owner.withBorrow(
+                        v -> {
+                            assertEquals(4, v.vertexCount());
+                            assertEquals(
+                                    Float.floatToRawIntBits(
+                                            (float) (1000 - 4 * (WorldFormats.TILE_SIZE / 256))),
+                                    Float.floatToRawIntBits(v.vertexNorth(0)));
+                            assertEquals(
+                                    Float.floatToRawIntBits(
+                                            (float) (-2000 - 1 * (WorldFormats.TILE_SIZE / 128))),
+                                    Float.floatToRawIntBits(v.vertexWest(0)));
+                            assertEquals(5, v.vertexUp(0));
+                            return null;
+                        });
+            }
+        }
+    }
 }
