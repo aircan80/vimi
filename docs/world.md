@@ -23,7 +23,7 @@ highlighting and hit testing share that mapping. WDT tuple/file identities and
 outline: a read-only Eastern Kingdoms inventory spans42rows by23columns.
 An authored asymmetric-grid test verifies orientation and exact clicked fileID. Zone-map artwork and spawn/pickup markers are tracked separately in #116.
 
-Click the viewport to focus it. WASD moves horizontally, Space or E ascends and Q descends,
+Click the viewport to focus it. WASD moves horizontally, Space or E ascends and Q or X descends,
 mouse drag or arrow keys changes view direction, Shift increases movement speed,
 and the wheel changes speed. Back to map returns to tile selection. Leaving the
 World area cancels background requests and pauses movement/rendering; returning
@@ -173,7 +173,7 @@ The navigation regression uses an asymmetric origin and physically positioned
 fixture tiles. Thirteen moves cover both directions on both native axes, returns
 and all four diagonals, asserting both actual requested tiles and the retained
 3×3 neighborhood. Actual viewport key events and deterministic timer steps verify
-Space/E ascent, no doubled Space+E speed, Q descent and key release. Independent
+Space/E ascent, no doubled Space+E or Q+X speed, Q/X descent, opposing-key cancellation and key release. Independent
 negative controls fail for the previous swapped lookup and previous E-only input.
 Run it with `./gradlew :gui:worldNavigationUiTest` on a JavaFX-capable display.
 

@@ -109,7 +109,7 @@ public final class WorldNavigationUiTest {
         });
         try { DONE.get(25,TimeUnit.SECONDS); }
         finally { Platform.exit(); }
-        System.out.println("World navigation: native +/-X/Y, four diagonals, retained 3x3 tiles and Space/E/Q deterministic timer controls passed");
+        System.out.println("World navigation: native +/-X/Y, four diagonals, retained 3x3 tiles and Space/E and Q/X deterministic timer controls passed");
     }
 
     private static Set<String> keys(int dx,int dy) {
@@ -210,13 +210,13 @@ public final class WorldNavigationUiTest {
         // Prevent unrelated rendering/discovery while exercising the actual timer's movement branch.
         set(view,"lastRender",Long.MAX_VALUE);
         set(view,"lastNearby",Long.MAX_VALUE);
-        for(var keys:List.of(List.of(KeyCode.SPACE),List.of(KeyCode.E),List.of(KeyCode.SPACE,KeyCode.E),List.of(KeyCode.Q),List.of(KeyCode.SPACE,KeyCode.Q))) {
+        for(var keys:List.of(List.of(KeyCode.SPACE),List.of(KeyCode.E),List.of(KeyCode.SPACE,KeyCode.E),List.of(KeyCode.Q),List.of(KeyCode.X),List.of(KeyCode.Q,KeyCode.X),List.of(KeyCode.SPACE,KeyCode.Q),List.of(KeyCode.SPACE,KeyCode.X),List.of(KeyCode.E,KeyCode.X),List.of(KeyCode.SPACE,KeyCode.E,KeyCode.Q,KeyCode.X))) {
             set(view,"camera",new TerrainRenderer.Camera(10000-SIZE/2,20000-SIZE/2,500,0,0));
             set(view,"lastTick",0L);
             for(var key:keys) key(viewport,key,true);
             timer.handle(1_000_000_000L);
             timer.handle(1_100_000_000L);
-            double expected=keys.contains(KeyCode.Q) ? keys.contains(KeyCode.SPACE)?500:492 : 508;
+            double expected=500 + 8 * (((keys.contains(KeyCode.SPACE) || keys.contains(KeyCode.E)) ? 1 : 0) - ((keys.contains(KeyCode.Q) || keys.contains(KeyCode.X)) ? 1 : 0));
             double actual=((TerrainRenderer.Camera)get(view,"camera")).z();
             require(Math.abs(actual-expected)<1e-9,"Actual key/timer ascent "+keys+": "+actual+" expected "+expected);
             for(var key:keys) key(viewport,key,false);

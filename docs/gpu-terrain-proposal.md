@@ -14,7 +14,7 @@ to that earlier checkpoint, not a claim that GUI work remains unimplemented.
 
 Render the World Explorer's existing height-only terrain inline through the bgfx
 child process and frame bridge. Preserve its nine-tile neighborhood, native
-coordinates, initial camera, WASD/Q/E movement, drag/arrow look, speed controls,
+coordinates, initial camera, WASD/Q/X/E movement, drag/arrow look, speed controls,
 holes, sky, flat height/slope coloring, fog and depth behavior. Buildings, terrain
 textures, water, collision, animation and new acquisition behavior remain outside
 this slice. Keep the CPU renderer usable on unsupported or failed backends.

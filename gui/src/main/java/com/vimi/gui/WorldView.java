@@ -464,7 +464,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                         ((keys.contains(KeyCode.E) || keys.contains(KeyCode.SPACE))
                                                         ? 1
                                                         : 0)
-                                                - (keys.contains(KeyCode.Q) ? 1 : 0);
+                                                - ((keys.contains(KeyCode.Q) || keys.contains(KeyCode.X)) ? 1 : 0);
                         double
                                 turn =
                                         ((keys.contains(KeyCode.RIGHT) ? 1 : 0)
@@ -1019,7 +1019,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                 10,
                                 back,
                                 new Label(
-                                        "WASD move · Space/E up · Q down · drag or arrows to look · Shift"
+                                        "WASD move · Space/E up · Q/X down · drag or arrows to look · Shift"
                                                 + " faster · scroll changes speed")),
                         position,
                         new HBox(8, gpuEnabled, gpuActivity, retryGpu, gpuStatus)));
