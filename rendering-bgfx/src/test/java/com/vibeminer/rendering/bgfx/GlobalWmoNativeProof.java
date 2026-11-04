@@ -425,7 +425,7 @@ public final class GlobalWmoNativeProof {
         System.out.println(
                 "GLOBAL_NATIVE_PROOF PASS frames="
                         + acceptedFrames
-                        + " candidateProfiles=3 dx11=PENDING noSource=true noGui=true");
+                        + " candidateProfiles=4 dx11=COMPILED_UNTESTED noSource=true noGui=true");
     }
 
     private static void require(boolean value, String message) {

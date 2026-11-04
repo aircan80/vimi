@@ -193,7 +193,10 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             return;
         }
         if (area.equals("Dungeons") && job.work() instanceof NativePreparationWork work) {
-            if (dungeons == null) dungeons = new DungeonsView(work::dungeonsHandle, work::revision, job.build().version() + " · " + job.locale(), work::icon);
+            if (dungeons == null) {
+                dungeons = new DungeonsView(work::dungeonsHandle, work::revision, job.build().version() + " · " + job.locale(), work::icon);
+                dungeons.interiorOpener(d -> GlobalInteriorView.open(work::worldHandle, d.mapId(), d.name()));
+            }
             setCenter(dungeons); dungeons.ensureLoaded(); return;
         }
         if (area.equals("Mounts") && job.work() instanceof NativePreparationWork work) {
