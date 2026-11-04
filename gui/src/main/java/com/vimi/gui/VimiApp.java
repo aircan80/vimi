@@ -1,5 +1,7 @@
 package com.vimi.gui;
 
+import java.util.concurrent.CompletableFuture;
+
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -888,6 +890,60 @@ public final class VimiApp extends Application {
         }));
     }
 
+    private void changeClientHotfix(BuildPreparation.Job job, boolean useBase) {
+        var imports = service.hotfixImports();
+        if (imports == null || !(job.work() instanceof NativePreparationWork work)) return;
+        java.nio.file.Path selected = null;
+        if (!useBase) {
+            var chooser = new javafx.stage.FileChooser();
+            chooser.setTitle("Import client hotfix cache · " + job.build().version() + " · " + job.locale());
+            chooser.getExtensionFilters().add(new javafx.stage.FileChooser.ExtensionFilter(
+                    "Client hotfix cache (DBCache.bin)", "DBCache.bin", "*.bin"));
+            var file = chooser.showOpenDialog(root.getScene().getWindow());
+            if (file == null) return;
+            selected = file.toPath();
+        }
+        showDrainActivity(useBase ? "Selecting base data…" : "Importing and verifying client hotfix cache…");
+        var cancellation = new com.vibeminer.access.Cancellation();
+        final CompletableFuture<?> changed;
+        try {
+            changed = useBase ? imports.disable(work.hotfixScope(), cancellation)
+                    : imports.importCache(work.hotfixScope(), selected, cancellation);
+        } catch (RuntimeException | Error error) {
+            hideDrainActivity();
+            status.setText("Client hotfix cache could not be applied: " + ClientHotfixDetails.failure(error));
+            System.getLogger(VimiApp.class.getName()).log(System.Logger.Level.WARNING,
+                    "Client hotfix cache selection failed: {0}", ClientHotfixDetails.failure(error));
+            return;
+        }
+        changed.whenComplete((summary, error) -> Platform.runLater(() -> {
+            if (closing) return;
+            if (error != null) {
+                hideDrainActivity();
+                System.getLogger(VimiApp.class.getName()).log(System.Logger.Level.WARNING,
+                        "Client hotfix cache selection failed: {0}", ClientHotfixDetails.failure(error));
+                status.setText("Client hotfix cache could not be applied: " + ClientHotfixDetails.failure(error));
+                return;
+            }
+            viewedPreparation = null;
+            var pane = preparationPane;
+            preparationPane = null;
+            if (pane != null) pane.close();
+            service.preparation().release(job).whenComplete((ignored, retired) -> Platform.runLater(() -> {
+                if (closing) return;
+                hideDrainActivity();
+                if (retired != null) {
+                    status.setText("Build retirement failed; the new cache will apply when the workspace is reopened safely.");
+                    System.getLogger(VimiApp.class.getName()).log(System.Logger.Level.WARNING,
+                            "Client hotfix workspace retirement failed ({0})", retired.getClass().getName());
+                    return;
+                }
+                if (preparationFocus == job) preparationFocus = null;
+                startPreparation(job.build(), job.source(), job.locale());
+            }));
+        }));
+    }
+
     private void showPreparedWorkspace(BuildPreparation.Job job) {
         if (closing) return;
         navigationGeneration++;
@@ -897,7 +953,9 @@ public final class VimiApp extends Application {
                 var enriched = service.preparation().enrich(job.build(),job.source(),job.locale());
                 preparationFocus = enriched; showPreparedWorkspace(enriched);
             } catch (RuntimeException error) { status.setText(problem(error)); }
-        }, service.downloads(), service.dataSources());
+        }, service.downloads(), service.dataSources(),
+                service.hotfixImports() == null ? null : () -> changeClientHotfix(job, false),
+                service.hotfixImports() == null ? null : () -> changeClientHotfix(job, true));
         preparationPane.worldBookmarks(service.worldBookmarks());
         viewedPreparation = job;
         root.setTop(preparedOverviewHeader(job)); root.setCenter(preparationPane);

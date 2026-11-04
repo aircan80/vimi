@@ -249,6 +249,35 @@ public final class WorldFormats {
 
     private static ParsedAdt parseAdt(
             byte[] bytes, BooleanSupplier canceled, boolean geometry, boolean captureGrid) {
+        return parseAdt(bytes, canceled, geometry, captureGrid, ignored -> {});
+    }
+
+    /** Transient offsets from the same checked terrain walk; never retains caller bytes. */
+    static int[] checkedAdtPayload(byte[] bytes, int tag, BooleanSupplier canceled) {
+        int[] found = {-1, 0};
+        parseAdt(
+                bytes,
+                canceled,
+                false,
+                false,
+                c -> {
+                    if (c.tag == tag) {
+                        if (found[0] >= 0) {
+                            throw invalid("Duplicate ADT payload");
+                        }
+                        found[0] = c.start;
+                        found[1] = c.size;
+                    }
+                });
+        return found;
+    }
+
+    private static ParsedAdt parseAdt(
+            byte[] bytes,
+            BooleanSupplier canceled,
+            boolean geometry,
+            boolean captureGrid,
+            java.util.function.Consumer<Chunk> visitor) {
         var input = input(bytes);
         var grids = captureGrid ? new ArrayList<TerrainGrid.Chunk>() : null;
         var vertices = geometry ? new FloatBuilder() : null;
@@ -260,6 +289,7 @@ public final class WorldFormats {
         while (input.hasRemaining()) {
             check(canceled);
             var c = chunk(input, input.limit());
+            visitor.accept(c);
             if (c.tag == 0x4d564552) {
                 if (c.size != 4 || input.getInt(c.start) != 18 || version) {
                     throw invalid("ADT version");

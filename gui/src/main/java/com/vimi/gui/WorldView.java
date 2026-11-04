@@ -80,6 +80,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final ImageView image = new ImageView();
     private final StackPane viewport = new StackPane(image);
     private final WorldMinimap minimap = new WorldMinimap();
+    private WorldSpawnOverlay spawns;
     private final TerrainGpuPreview gpu;
     private final GpuPreviewService gpuService;
     private WorldStreamSourceController streaming;
@@ -1063,6 +1064,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void cancelRequests() {
+        if (spawns != null) spawns.suspend();
         retireTextures();
         currentArea.setText("Terrain area unavailable");
         minimap.hide();
@@ -1090,6 +1092,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     void activate() {
         active = true;
+        if (spawns != null && explorer) spawns.resume();
         ensureLoaded();
         areaButtons();
         if (explorer && inventory != null) {
@@ -1421,6 +1424,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void showInventory() {
+        if (spawns != null) spawns.suspend();
         resumeCamera = null;
         minimap.hide();
         retireGpu();
@@ -1515,7 +1519,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         position,
                         new HBox(8, gpuEnabled, gpuActivity, retryGpu, gpuStatus),
                         new HBox(8, textureActivity, textureStatus, retryTextures)));
+        if (spawns != null) ((VBox) content.getBottom()).getChildren().add(spawns.controls());
         status.setText("Loading terrain tile " + selected.key() + "…");
+        if (spawns != null) spawns.resume();
         show(firstFrameActivity, true);
         timer.start();
         streamingMode = gpuEnabled.isSelected() && gpuService != null
@@ -2279,7 +2285,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     () -> !stale(selection) && viewportActive() && controller == streaming,
                     () -> controller.presented(frame))) return;
             show(firstFrameActivity, false);
-            status.setText("Terrain explorer · persistent GPU terrain · buildings, water and collision are not rendered");
+            status.setText("Terrain explorer · persistent GPU terrain · static diagnostic water where qualified · buildings and collision are not rendered");
         } catch (RuntimeException failedUpload) {
             retireStreaming();
             show(firstFrameActivity, false);
@@ -2495,6 +2501,18 @@ final class WorldView extends BorderPane implements AutoCloseable {
         }
     }
 
+    /** Mounts declared NPC spawn markers over the presented explorer frame. FX thread. */
+    void attachSpawns(WorldSpawnOverlay overlay) {
+        if (spawns != null || closed) throw new IllegalStateException("Spawn overlay already attached");
+        spawns = java.util.Objects.requireNonNull(overlay);
+        viewport.getChildren().add(viewport.getChildren().indexOf(image) + 1, overlay);
+        overlay.bind(() -> {
+            if (closed || !active || !explorer || camera == null || inventory == null
+                    || !(image.getImage() instanceof javafx.scene.image.Image frame)) return null;
+            return new WorldSpawnOverlay.View(camera, inventory.map().id(), frame.getWidth(), frame.getHeight());
+        });
+    }
+
     @Override
     public void close() {
         closed = true;
@@ -2502,6 +2520,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         pendingJump = null;
         pendingBookmark = null;
         travel.close();
+        if (spawns != null) spawns.close();
         streamingImages.clear();
         minimap.close();
         if (gpu != null) gpu.close();

@@ -32,6 +32,11 @@ public final class BackendBuildService implements BuildService {
     private WorldBookmarkStore worldBookmarks;
     BackendBuildService withWorldBookmarks(WorldBookmarkStore value) { worldBookmarks=value; return this; }
     @Override public WorldBookmarkStore worldBookmarks() { return worldBookmarks; }
+    private ClientHotfixStore hotfixImports;
+    BackendBuildService withHotfixImports(ClientHotfixStore value) {
+        hotfixImports = Objects.requireNonNull(value); return this;
+    }
+    @Override public ClientHotfixStore hotfixImports() { return hotfixImports; }
     private BuildComparisons comparisons;
     BackendBuildService withComparisons(BuildComparisons value) { comparisons=value; return this; }
     @Override public BuildComparisons comparisons() { return comparisons; }

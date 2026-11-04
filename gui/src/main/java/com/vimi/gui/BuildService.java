@@ -25,6 +25,7 @@ public interface BuildService {
 
     default DataSourcesService dataSources() { return null; }
     default WorldBookmarkStore worldBookmarks() { return null; }
+    default ClientHotfixStore hotfixImports() { return null; }
 
     default BuildDownloads downloads() { return null; }
 

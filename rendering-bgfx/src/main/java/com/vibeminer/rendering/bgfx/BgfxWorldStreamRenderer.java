@@ -71,7 +71,15 @@ import org.lwjgl.system.MemoryUtil;
 
 /** Fixed-resource context-owned persistent terrain. All bgfx methods run on its native owner. */
 final class BgfxWorldStreamRenderer implements AutoCloseable {
-    static final int SLOT_COUNT = 10, MAX_TRIANGLES = 65536, INSTANCE_BYTES = 48;
+    static final int SLOT_COUNT = 10, INSTANCE_BYTES = 48;
+
+    /** Terrain 65536 plus optional static water 16384 instances in one per-slot buffer. */
+    static final int MAX_TRIANGLES = 65536 + WorldStreamPackedTile.MAX_WATER_TRIANGLES;
+
+    /** Constant 0.40 diagonal blend factor for diagnostic water over opaque terrain. */
+    static final int WATER_BLEND_FACTOR = 0x66666666;
+
+    private static final int MAX_TICKETS = 64;
     static final int GEOMETRY_CHUNK = 2048 * INSTANCE_BYTES, ATLAS_CHUNK = 32 * 512 * 4;
     private static final short INVALID = -1;
     private static final int SAMPLER_FLAGS =
@@ -140,7 +148,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private static final class Slot {
         short buffer = INVALID, texture = INVALID;
         WorldStreamState.Lease lease;
-        int triangles, x, y;
+        int triangles, water, x, y;
         float anchorX, anchorY;
         boolean textured, ready;
     }
@@ -355,6 +363,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         if (!upload.canceled) {
             var slot = slots[upload.lease.slot()];
             slot.triangles = upload.source.triangles;
+            slot.water = upload.source.waterTriangles;
             slot.x = upload.source.header.x();
             slot.y = upload.source.header.y();
             staged = upload.lease;
@@ -371,7 +380,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     }
 
     private org.lwjgl.bgfx.BGFXMemory reference(Upload upload, ByteBuffer data) {
-        if (upload.tickets >= 48) {
+        if (upload.tickets >= MAX_TICKETS) {
             throw new IllegalStateException("Upload references exceed bound");
         }
         int ticket = upload.tickets++;
@@ -388,7 +397,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
         int ticket = (int) (userData & 255);
         long bit = 1L << ticket;
-        if (ticket >= 48 || (upload.issued.get() & bit) == 0) {
+        if (ticket >= MAX_TICKETS || (upload.issued.get() & bit) == 0) {
             upload.failure = "Unknown callback ticket";
             return;
         }
@@ -506,6 +515,32 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                                 | BGFX_STATE_WRITE_Z
                                 | BGFX_STATE_DEPTH_TEST_GREATER,
                         0);
+                bgfx_submit(0, program, 0, BGFX_DISCARD_ALL);
+            }
+            // Static diagnostic water after ALL opaque terrain: nearest flat surface wins under
+            // strict reversed depth, so coincident duplicates cannot blend twice. RGB only keeps
+            // the opaque output alpha.
+            for (var lease : active) {
+                var slot = slots[lease.slot()];
+                if (slot.water == 0) {
+                    continue;
+                }
+                bgfx_set_uniform(eye, matrix, 1);
+                bgfx_set_uniform(projection, project, 1);
+                bgfx_set_uniform(rebase, shift, 1);
+                bgfx_set_uniform(atlasUniform, stack.floats(slot.anchorX, slot.anchorY, 0, 0), 1);
+                bgfx_set_texture(0, sampler, slot.texture, SAMPLER_FLAGS);
+                bgfx_set_vertex_buffer(0, template, 0, 3);
+                bgfx_set_instance_data_from_dynamic_vertex_buffer(
+                        slot.buffer, slot.triangles, slot.water);
+                bgfx_set_state(
+                        BGFX_STATE_WRITE_RGB
+                                | BGFX_STATE_WRITE_Z
+                                | BGFX_STATE_DEPTH_TEST_GREATER
+                                | org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_FUNC(
+                                        org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_FACTOR,
+                                        org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_INV_FACTOR),
+                        WATER_BLEND_FACTOR);
                 bgfx_submit(0, program, 0, BGFX_DISCARD_ALL);
             }
         }
