@@ -33,6 +33,14 @@ public final class ErrorWork {
         return planes;
     }
 
+    boolean reserveArithmetic(long groups) {
+        if (groups < 0 || groups > arithmeticLimit - arithmetic) {
+            return false;
+        }
+        arithmetic += groups;
+        return true;
+    }
+
     boolean arithmetic() {
         if (arithmetic == arithmeticLimit) {
             return false;
