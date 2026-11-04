@@ -3,7 +3,7 @@ package com.vibeminer.rendering.world;
 import java.nio.FloatBuffer;
 import java.util.Objects;
 
-/** Free-flight camera; GPU projection requires qualified zero-to-one reversed floating depth. */
+/** Native +X north/+Y west/+Z up camera; positive yaw turns left, positive strafe moves right. */
 public record TerrainCamera(double x, double y, double z, double yaw, double pitch) {
     public static final double NEAR = .5;
     public static final double WHOLE_TRIANGLE_FAR = 2200;
@@ -32,8 +32,8 @@ public record TerrainCamera(double x, double y, double z, double yaw, double pit
 
     public TerrainCamera move(double forward, double strafe, double vertical) {
         return new TerrainCamera(
-                x + Math.cos(yaw) * forward - Math.sin(yaw) * strafe,
-                y + Math.sin(yaw) * forward + Math.cos(yaw) * strafe,
+                x + Math.cos(yaw) * forward + Math.sin(yaw) * strafe,
+                y + Math.sin(yaw) * forward - Math.cos(yaw) * strafe,
                 z + vertical,
                 yaw,
                 pitch);
@@ -47,7 +47,7 @@ public record TerrainCamera(double x, double y, double z, double yaw, double pit
         double dx = worldX - x, dy = worldY - y, dz = worldZ - z;
         double cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
         double forward = cy * dx + sy * dy;
-        return new Eye(-sy * dx + cy * dy, cp * dz - sp * forward, sp * dz + cp * forward);
+        return new Eye(sy * dx - cy * dy, cp * dz - sp * forward, sp * dz + cp * forward);
     }
 
     /** Column-major transform of coordinates already rebased around this immutable scene origin. */
@@ -57,11 +57,11 @@ public record TerrainCamera(double x, double y, double z, double yaw, double pit
         double dx = origin.x() - x, dy = origin.y() - y, dz = origin.z() - z;
         return FloatBuffer.wrap(
                         new float[] {
-                            (float) -sy,
+                            (float) sy,
                             (float) (-sp * cy),
                             (float) (-cp * cy),
                             0,
-                            (float) cy,
+                            (float) -cy,
                             (float) (-sp * sy),
                             (float) (-cp * sy),
                             0,
@@ -69,7 +69,7 @@ public record TerrainCamera(double x, double y, double z, double yaw, double pit
                             (float) cp,
                             (float) -sp,
                             0,
-                            (float) (-sy * dx + cy * dy),
+                            (float) (sy * dx - cy * dy),
                             (float) (cp * dz - sp * (cy * dx + sy * dy)),
                             (float) (-sp * dz - cp * (cy * dx + sy * dy)),
                             1

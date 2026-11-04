@@ -75,6 +75,11 @@ final class WorldStreamTileFileTest {
                         WorldStreamTileFile.Encoding.BC1,
                         0,
                         0);
+        return header(tile, textured, diffuse);
+    }
+
+    private static WorldStreamTileFile.Header header(
+            TerrainScene.Tile tile, boolean textured, WorldStreamTileFile.Source diffuse) {
         return new WorldStreamTileFile.Header(
                 NONCE,
                 SCOPE,
@@ -126,6 +131,44 @@ final class WorldStreamTileFileTest {
                 LEASE,
                 bytes.length,
                 HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)));
+    }
+
+    @Test
+    void handmadeBc3DiffuseTupleSurvivesTexturedPacketRoundtrip() throws Exception {
+        var tile = full(false);
+        var diffuse =
+                new WorldStreamTileFile.Source(
+                        188808,
+                        "04".repeat(16),
+                        87408,
+                        null,
+                        1 << 20,
+                        256,
+                        6,
+                        2,
+                        WorldStreamTileFile.Encoding.BC3,
+                        8,
+                        7);
+        var expected =
+                WorldStreamTileFile.write(
+                        directory, header(tile, true, diffuse), tile, atlas(), () -> false);
+        var decoded = WorldStreamTileFile.read(path(), expected, () -> false);
+        assertEquals(diffuse, decoded.header().diffuse().getFirst());
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new WorldStreamTileFile.Source(
+                                188808,
+                                "04".repeat(16),
+                                87408,
+                                null,
+                                1 << 20,
+                                256,
+                                6,
+                                2,
+                                WorldStreamTileFile.Encoding.BC3,
+                                72,
+                                7));
     }
 
     @Test

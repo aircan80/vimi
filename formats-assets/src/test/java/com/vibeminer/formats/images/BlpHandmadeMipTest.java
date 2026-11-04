@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.formats.AssetSource;
@@ -46,6 +47,71 @@ final class BlpHandmadeMipTest {
         return bytes;
     }
 
+    private static byte[] handmadeBc3() {
+        var mips = new byte[9][];
+        for (int level = 0; level < mips.length; level++) {
+            int side = 256 >> level, blocks = ((side + 3) / 4) * ((side + 3) / 4);
+            var out = ByteBuffer.allocate(blocks * 16).order(ByteOrder.LITTLE_ENDIAN);
+            for (int block = 0; block < blocks; block++) {
+                out.put((byte) (17 + level * 23)).put(new byte[7]);
+                out.put(Blp2DecoderTest.block(0xf800, 0, 0));
+            }
+            mips[level] = out.array();
+        }
+        var bytes = Blp2DecoderTest.build(2, 8, 7, 256, 256, mips);
+        bytes[11] = 2;
+        return bytes;
+    }
+
+    @Test
+    void handmadeBc3ReportedTerrainHeaderDecodesEveryDeclaredMipAndAlpha() {
+        var bytes = handmadeBc3();
+        var mips =
+                Blp2Decoder.readMips(
+                                AssetSource.bytes(bytes),
+                                new Limits(),
+                                Cancellation.NONE,
+                                MipProfile.DECLARED_HANDMADE_V1)
+                        .join();
+        assertEquals(9, mips.size());
+        for (int level = 0; level < mips.size(); level++) {
+            int side = 256 >> level;
+            assertEquals(side, mips.get(level).width());
+            assertEquals(((side + 3) / 4L) * ((side + 3) / 4L) * 16, mips.get(level).byteLength());
+            var image =
+                    Blp2Decoder.decode(
+                                    AssetSource.bytes(bytes),
+                                    level,
+                                    new Limits(),
+                                    Cancellation.NONE,
+                                    MipProfile.DECLARED_HANDMADE_V1)
+                            .join();
+            var expected = new byte[side * side * 4];
+            for (int at = 0; at < expected.length; at += 4) {
+                expected[at] = (byte) 255;
+                expected[at + 3] = (byte) (17 + level * 23);
+            }
+            assertArrayEquals(expected, image.rgba());
+            assertEquals(Blp2Types.Encoding.BC3, image.encoding());
+            assertEquals(2, image.mipFlags());
+        }
+        var selected =
+                Blp2Decoder.decodeLargestWithin(
+                                AssetSource.bytes(bytes),
+                                4,
+                                new Limits(),
+                                Cancellation.NONE,
+                                MipProfile.DECLARED_HANDMADE_V1)
+                        .join();
+        assertEquals(6, selected.mipLevel());
+        assertEquals(4, selected.width());
+        Blp2DecoderTest.code("BLP_UNSUPPORTED", bytes, 0);
+        var wrongBlocks = bytes.clone();
+        put(wrongBlocks, 84, 32768);
+        refused("BLP_INVALID", wrongBlocks);
+        refused("BLP_INVALID", Arrays.copyOf(bytes, bytes.length - 1));
+    }
+
     private static void refused(String code, byte[] bytes) {
         for (boolean metadata : new boolean[] {false, true}) {
             var error =
@@ -73,6 +139,27 @@ final class BlpHandmadeMipTest {
             assertInstanceOf(BlpFormatException.class, error);
             assertEquals(code, ((BlpFormatException) error).code());
         }
+    }
+
+    @Test
+    void unsupportedHandmadeProfileReportsActualEncodingAndAlphaTuple() {
+        var bytes = handmadeBc3();
+        bytes[9] = 72;
+        var error =
+                AssetTasks.unwrap(
+                        assertThrows(
+                                RuntimeException.class,
+                                () ->
+                                        Blp2Decoder.readMips(
+                                                        AssetSource.bytes(bytes),
+                                                        new Limits(),
+                                                        Cancellation.NONE,
+                                                        MipProfile.DECLARED_HANDMADE_V1)
+                                                .join()));
+        assertInstanceOf(BlpFormatException.class, error);
+        assertTrue(error.getMessage().contains("colour encoding 2 (BC3)"));
+        assertTrue(error.getMessage().contains("alpha depth 72"));
+        assertTrue(error.getMessage().contains("alpha encoding 7"));
     }
 
     @Test
@@ -184,7 +271,7 @@ final class BlpHandmadeMipTest {
             bytes[11] = (byte) flag;
             refused("BLP_UNSUPPORTED", bytes);
         }
-        for (int[] tuple : new int[][] {{2, 4, 1}, {2, 8, 7}, {2, 0, 0}, {3, 8, 0}, {1, 8, 0}}) {
+        for (int[] tuple : new int[][] {{2, 4, 1}, {2, 72, 7}, {2, 0, 0}, {3, 8, 0}, {1, 8, 0}}) {
             var bytes = handmade();
             bytes[8] = (byte) tuple[0];
             bytes[9] = (byte) tuple[1];

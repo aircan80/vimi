@@ -36,8 +36,10 @@ final class RaceAppearancePlanTest {
             schema.add(
                     new TableSchema.SchemaColumn(
                             field,
-                            TableSchema.ColumnKind.INT,
-                            32,
+                            field.endsWith("_lang")
+                                    ? TableSchema.ColumnKind.LOCSTRING
+                                    : TableSchema.ColumnKind.INT,
+                            field.endsWith("_lang") ? null : 32,
                             true,
                             count,
                             relation.length == 1
@@ -45,7 +47,7 @@ final class RaceAppearancePlanTest {
                                     : new TableSchema.ForeignKey(relation[1], "ID"),
                             TableSchema.KeyStorage.NONE,
                             TableSchema.KeyStorage.NONE,
-                            false,
+                            field.endsWith("_lang"),
                             WowLocale.parse("enUS"),
                             null,
                             null));
@@ -53,7 +55,7 @@ final class RaceAppearancePlanTest {
                 columns.add(
                         new Db2Types.Column(
                                 count == 1 ? field : field + "[" + i + "]",
-                                "integer",
+                                field.endsWith("_lang") ? "string" : "integer",
                                 false,
                                 null,
                                 null));
@@ -381,6 +383,149 @@ final class RaceAppearancePlanTest {
                                 "2",
                                 "0")));
         return seed;
+    }
+
+    private static List<MemoryTables.FakeTable> nightElfFixture(
+            int model, int layout, int sex, String fallback, boolean base) {
+        var seed = new ArrayList<>(dwarfFixture(model, layout, sex, fallback));
+        replace(seed, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(4, "3")));
+        replace(
+                seed,
+                table(
+                        "CharacterLoadout",
+                        "713CE8BB",
+                        "ChrClassID,Purpose,Racemask:2",
+                        row(1, "1", "9", "8", "0")));
+        replace(
+                seed,
+                table(
+                        "ChrModelMaterial",
+                        "22469480",
+                        "CharComponentTextureLayoutsID,TextureType,Width,Height,Flags",
+                        row(1, Integer.toString(layout), "1", "2048", "1024", "0"),
+                        row(2, Integer.toString(layout), "6", "256", "256", "0"),
+                        row(3, Integer.toString(layout), "19", "256", "128", "0"),
+                        row(4, Integer.toString(layout), "10", "128", "256", "0")));
+        replace(
+                seed,
+                table(
+                        "ChrModelTextureLayer",
+                        "D0583FB4",
+                        "CharComponentTextureLayoutsID,TextureType,Layer,BlendMode,TextureSectionTypeBitMask,TextureSectionTypeBitMask2,Flags,ChrModelTextureTargetID:2",
+                        row(
+                                50,
+                                Integer.toString(layout),
+                                base ? "1" : "6",
+                                "0",
+                                "1",
+                                "-1",
+                                "-1",
+                                "0",
+                                "2",
+                                "0")));
+        return seed;
+    }
+
+    @Test
+    void nightElfPairRequiresItsExactTupleAndFullSelectedBaseSkin() {
+        for (int model : new int[] {7, 8}) {
+            var tables =
+                    new MemoryTables()
+                            .add(
+                                    BUILD,
+                                    "enUS",
+                                    nightElfFixture(model, model + 102, model - 7, "0", true))
+                            .forBuild(BUILD, "enUS", Cancellation.NONE)
+                            .join()
+                            .tables();
+            var service = new RacesService(tables);
+            try {
+                var plan =
+                        new RaceAppearancePlan(
+                                        service, new RaceMedia(service, tables, null, null), tables)
+                                .build(
+                                        4,
+                                        1,
+                                        new RaceMediaTypes.Variant(model, model - 7, 1, 1, 1),
+                                        Cancellation.NONE,
+                                        new ArrayList<>());
+                assertEquals(
+                        model == 7
+                                ? RaceAppearanceProfiles.Profile.NIGHT_ELF_MALE
+                                : RaceAppearanceProfiles.Profile.NIGHT_ELF_FEMALE,
+                        plan.profile());
+                assertTrue(
+                        plan.layers().stream()
+                                .anyMatch(
+                                        layer ->
+                                                RaceAppearancePlan.wholeBodyBase(
+                                                        layer, plan.canvases())));
+                assertEquals(
+                        new RaceAppearancePlan.Canvas(6, 256, 256),
+                        plan.canvases().stream()
+                                .filter(canvas -> canvas.type() == 6)
+                                .findFirst()
+                                .orElseThrow());
+            } finally {
+                service.closeAsync().join();
+                tables.closeAsync().join();
+            }
+        }
+        for (int change = 0; change < 8; change++) {
+            final int mutation = change;
+            var seed =
+                    new ArrayList<>(
+                            nightElfFixture(
+                                    7,
+                                    change == 0 ? 110 : 109,
+                                    change == 1 ? 1 : 0,
+                                    change == 2 ? "8" : change == 3 ? "00" : "0",
+                                    change != 7));
+            if (change == 4) {
+                var model =
+                        seed.stream()
+                                .filter(table -> table.entry().name().equals("ChrModel"))
+                                .findFirst()
+                                .orElseThrow();
+                var values = new ArrayList<>(model.rows().getFirst().values());
+                values.set(13, "8");
+                replace(
+                        seed,
+                        new MemoryTables.FakeTable(
+                                model.entry(),
+                                model.columns(),
+                                List.of(new Db2Types.Row(7, false, null, values, List.of())),
+                                model.schema(),
+                                Map.of(),
+                                true));
+            }
+            var tables =
+                    new MemoryTables()
+                            .add(BUILD, "enUS", seed)
+                            .forBuild(BUILD, "enUS", Cancellation.NONE)
+                            .join()
+                            .tables();
+            var service = new RacesService(tables);
+            try {
+                assertThrows(
+                        RacesService.Projection.class,
+                        () ->
+                                new RaceAppearancePlan(
+                                                service,
+                                                new RaceMedia(service, tables, null, null),
+                                                tables)
+                                        .build(
+                                                mutation == 5 ? 5 : 4,
+                                                1,
+                                                new RaceMediaTypes.Variant(
+                                                        7, mutation == 6 ? 1 : 0, 1, 1, 1),
+                                                Cancellation.NONE,
+                                                new ArrayList<>()));
+            } finally {
+                service.closeAsync().join();
+                tables.closeAsync().join();
+            }
+        }
     }
 
     @Test
@@ -1067,6 +1212,221 @@ final class RaceAppearancePlanTest {
                 service.closeAsync().join();
                 tables.closeAsync().join();
             }
+        }
+    }
+
+    @Test
+    void skinCatalogDerivesOnlyActualKnownEligibleModelMembers() {
+        var seed = new ArrayList<>(fixture(false, 9));
+        replace(seed, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(3, "2")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationOption",
+                        "DCC2A86E",
+                        "ChrModelID,Requirement,Name_lang",
+                        row(30, "5", "0", "Skin Color")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationChoice",
+                        "9559C358",
+                        "ChrCustomizationOptionID->ChrCustomizationOption,UiOrderIndex,ChrCustomizationReqID,ChrCustomizationVisReqID",
+                        row(524, "30", "0", "0", "0"),
+                        row(525, "30", "1", "0", "0"),
+                        row(526, "30", "2", "1", "0"),
+                        row(527, "30", "3", "0", "1"),
+                        row(528, "31", "4", "0", "0"),
+                        row(529, "30", "5", "2", "0")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationReq",
+                        "CA154412",
+                        "ReqType,ClassMask,RegionGroupMask,ReqAchievementID,ReqQuestID,OverrideArchive,ReqItemModifiedAppearanceID,RaceMasks:2",
+                        row(2, "3", "1", "0", "0", "0", "-1", "0", "4", "0")));
+        var tables =
+                new MemoryTables()
+                        .add(BUILD, "enUS", seed)
+                        .forBuild(BUILD, "enUS", Cancellation.NONE)
+                        .join()
+                        .tables();
+        var service = new RacesService(tables);
+        try {
+            assertTrue(
+                    service.customizations(3, 1, 5, Cancellation.NONE).join().options().isEmpty());
+            var projection = new RaceCustomization(new RaceMedia(service, tables, null, null));
+            var catalog = projection.catalog(3, 1, 5, Cancellation.NONE);
+            assertTrue(!catalog.options().isEmpty(), catalog.toString());
+            assertEquals(
+                    List.of(524L, 525L, 529L),
+                    catalog.options().getFirst().choices().stream()
+                            .map(RaceCustomizationTypes.Choice::id)
+                            .toList());
+            assertEquals("Skin Color", catalog.options().getFirst().label());
+            assertEquals(524, catalog.options().getFirst().defaultChoiceId());
+            assertEquals(
+                    List.of(524L, 525L),
+                    projection
+                            .catalog(3, 2, 5, Cancellation.NONE)
+                            .options()
+                            .getFirst()
+                            .choices()
+                            .stream()
+                            .map(RaceCustomizationTypes.Choice::id)
+                            .toList());
+            assertTrue(projection.catalog(3, 1, 6, Cancellation.NONE).options().isEmpty());
+            assertTrue(projection.catalog(1, 1, 5, Cancellation.NONE).options().isEmpty());
+            var customization = new RaceCustomization(new RaceMedia(service, tables, null, null));
+            assertEquals(
+                    Map.of(30L, 525L),
+                    customization.requested(
+                            new RaceCustomizationTypes.Request(
+                                    3, 1, 5, List.of(new RaceCustomizationTypes.Pick(30, 525))),
+                            Cancellation.NONE));
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    RacesService.Projection.class,
+                    () ->
+                            customization.requested(
+                                    new RaceCustomizationTypes.Request(
+                                            3,
+                                            2,
+                                            5,
+                                            List.of(new RaceCustomizationTypes.Pick(30, 529))),
+                                    Cancellation.NONE));
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    RacesService.Projection.class,
+                    () ->
+                            customization.requested(
+                                    new RaceCustomizationTypes.Request(
+                                            3,
+                                            1,
+                                            5,
+                                            List.of(new RaceCustomizationTypes.Pick(31, 528))),
+                                    Cancellation.NONE));
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
+        }
+    }
+
+    @Test
+    void selectedOptionVectorIsDetachedAndBoundToTheRenderingContext() {
+        var seed = new ArrayList<>(fixture(false, 9));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationOption",
+                        "DCC2A86E",
+                        "ChrModelID,Requirement",
+                        row(10, "1", "0")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationChoice",
+                        "9559C358",
+                        "ChrCustomizationOptionID->ChrCustomizationOption,UiOrderIndex,ChrCustomizationReqID,ChrCustomizationVisReqID",
+                        row(20, "10", "0", "0", "0"),
+                        row(21, "10", "0", "0", "0"),
+                        row(22, "10", "0", "1", "0"),
+                        row(23, "10", "0", "0", "1")));
+        var tables =
+                new MemoryTables()
+                        .add(BUILD, "enUS", seed)
+                        .forBuild(BUILD, "enUS", Cancellation.NONE)
+                        .join()
+                        .tables();
+        var service = new RacesService(tables);
+        try {
+            var media = new RaceMedia(service, tables, null, null);
+            var selection =
+                    new RaceCustomization(media)
+                            .select(1, 1, 1, Cancellation.NONE, new ArrayList<>());
+            assertEquals(selection.choices(), java.util.Set.copyOf(selection.byOption().values()));
+            assertEquals(Map.of(10L, 20L), selection.byOption());
+            var alternate =
+                    new RaceCustomization(media)
+                            .select(
+                                    1,
+                                    1,
+                                    1,
+                                    Cancellation.NONE,
+                                    new ArrayList<>(),
+                                    Map.of(10L, 21L));
+            assertEquals(Map.of(10L, 21L), alternate.byOption());
+            for (var invalid :
+                    List.of(
+                            Map.of(10L, 22L),
+                            Map.of(10L, 23L),
+                            Map.of(10L, 99L),
+                            Map.of(11L, 20L))) {
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        RacesService.Projection.class,
+                        () ->
+                                new RaceCustomization(media)
+                                        .select(
+                                                1,
+                                                1,
+                                                1,
+                                                Cancellation.NONE,
+                                                new ArrayList<>(),
+                                                invalid));
+            }
+            var oversized =
+                    new java.util.AbstractMap<Long, Long>() {
+                        @Override
+                        public int size() {
+                            return 4097;
+                        }
+
+                        @Override
+                        public java.util.Set<java.util.Map.Entry<Long, Long>> entrySet() {
+                            throw new AssertionError("No copy before count admission");
+                        }
+                    };
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            new RaceCustomization(media)
+                                    .select(
+                                            1,
+                                            1,
+                                            1,
+                                            Cancellation.NONE,
+                                            new ArrayList<>(),
+                                            oversized));
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    UnsupportedOperationException.class, () -> selection.byOption().clear());
+            selection.requireContext(media, 1, 1, 1);
+            for (long[] context : new long[][] {{2, 1, 1}, {1, 2, 1}, {1, 1, 2}}) {
+                org.junit.jupiter.api.Assertions.assertThrows(
+                        IllegalArgumentException.class,
+                        () -> selection.requireContext(media, context[0], context[1], context[2]));
+            }
+            var other = new RaceMedia(service, tables, null, null);
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalArgumentException.class, () -> selection.requireContext(other, 1, 1, 1));
+            var plan = new RaceAppearancePlan(service, media, tables);
+            var variant = new RaceMediaTypes.Variant(1, 0, 1, 1, 1);
+            assertEquals(
+                    plan.build(1, 1, variant, Cancellation.NONE, new ArrayList<>()),
+                    plan.build(1, 1, variant, Cancellation.NONE, new ArrayList<>(), selection));
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            plan.build(
+                                    1,
+                                    2,
+                                    variant,
+                                    Cancellation.NONE,
+                                    new ArrayList<>(),
+                                    selection));
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    IllegalArgumentException.class,
+                    () -> media.preview(1, 2, 1, Cancellation.NONE, selection));
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
         }
     }
 

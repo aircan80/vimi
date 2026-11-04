@@ -1109,6 +1109,11 @@ public final class WorldUiTest {
                                                                                         "#world-catalog-activity")
                                                                                 .isVisible(),
                                                                 () -> {
+                                                                    var placeholder = ((ListView<?>) view.lookup("#world-maps")).getPlaceholder();
+                                                                    require(placeholder instanceof javafx.scene.control.Label label
+                                                                                    && label.getText().contains("unavailable")
+                                                                                    && !label.getText().contains("Loading"),
+                                                                            "Failed catalog replaces its loading placeholder");
                                                                     replacement.catalogue =
                                                                             CompletableFuture
                                                                                     .completedFuture(
