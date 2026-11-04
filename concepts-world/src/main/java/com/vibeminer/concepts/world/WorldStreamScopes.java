@@ -286,6 +286,12 @@ final class WorldStreamScopes {
         BASIC_WMO
     }
 
+    enum DerivedKind {
+        WMO_ROOT,
+        WMO_GROUP,
+        WMO_IMAGE
+    }
+
     enum RecordedInput {
         ROOT,
         TEX0,
@@ -312,7 +318,9 @@ final class WorldStreamScopes {
         }
 
         byte[] bytes() {
-            if (source == null) throw new IllegalStateException("Input retired");
+            if (source == null) {
+                throw new IllegalStateException("Input retired");
+            }
             admission.check();
             return source.bytes();
         }
@@ -332,6 +340,7 @@ final class WorldStreamScopes {
         @Override
         public void close() {
             if (source != null) {
+                admission.checkThread();
                 source.close();
                 source = null;
                 admission.input = null;
@@ -347,7 +356,9 @@ final class WorldStreamScopes {
         private final UseProfile profile;
         private final ArrayList<Binding> bindings = new ArrayList<>();
         private Input input;
+        private final long threadId = Thread.currentThread().threadId();
         private boolean reserved;
+        private int roots, groups, images;
 
         private TileAdmission(
                 WorldStreamScopes engine,
@@ -363,8 +374,17 @@ final class WorldStreamScopes {
                     new Binding(proof.token().wdtId(), proof.token().wdtKey(), proof.wdtLength()));
         }
 
+        private void checkThread() {
+            if (Thread.currentThread().threadId() != threadId) {
+                throw new IllegalStateException("Admission belongs to source worker");
+            }
+        }
+
         private void check() {
-            if (engine == null) throw new IllegalStateException("Admission expired");
+            checkThread();
+            if (engine == null) {
+                throw new IllegalStateException("Admission expired");
+            }
             token.check();
         }
 
@@ -380,37 +400,90 @@ final class WorldStreamScopes {
                         case ROOT -> recorded.rootId();
                         case TEX0 -> recorded.tex0Id();
                         case OBJ0 -> {
-                            if (profile != UseProfile.BASIC_WMO)
+                            if (profile != UseProfile.BASIC_WMO) {
                                 throw new IllegalArgumentException("Wrong input profile");
+                            }
                             yield recorded.obj0Id();
                         }
                     };
-            if (id == 0) throw new IllegalArgumentException("Missing recorded input");
-            if (reserved || input != null) throw new IllegalStateException("Input credit busy");
-            if (bindings.size() >= (profile == UseProfile.TERRAIN_BASIC ? 67 : 11))
+            return readCandidate(id, 8 << 20);
+        }
+
+        /** Actual bytes only: private WMO factory must independently prove parent ancestry. */
+        Input readDerivedCandidate(long id, DerivedKind kind) {
+            check();
+            if (profile != UseProfile.BASIC_WMO) {
+                throw new IllegalArgumentException("Wrong derived profile");
+            }
+            if (reserved || input != null) {
+                throw new IllegalStateException("Input credit busy");
+            }
+            int limit =
+                    switch (Objects.requireNonNull(kind)) {
+                        case WMO_ROOT -> {
+                            if (roots >= 1) {
+                                throw new IllegalStateException("WMO root read limit");
+                            }
+                            roots++;
+                            yield 1 << 10;
+                        }
+                        case WMO_GROUP -> {
+                            if (groups >= 1) {
+                                throw new IllegalStateException("WMO group read limit");
+                            }
+                            groups++;
+                            yield 32 << 10;
+                        }
+                        case WMO_IMAGE -> {
+                            if (images >= 6) {
+                                throw new IllegalStateException("WMO image read limit");
+                            }
+                            images++;
+                            yield 64 << 10;
+                        }
+                    };
+            return readCandidate(id, limit);
+        }
+
+        private Input readCandidate(long id, int limit) {
+            if (id <= 0 || id > 0xffff_ffffL) {
+                throw new IllegalArgumentException("Missing or invalid input ID");
+            }
+            if (reserved || input != null) {
+                throw new IllegalStateException("Input credit busy");
+            }
+            if (bindings.size() >= (profile == UseProfile.TERRAIN_BASIC ? 67 : 11)) {
                 throw new IllegalStateException("Binding limit");
+            }
             // Reservation precedes even stat/open, and remains held through actual read drain.
             reserved = true;
             Source source = null;
             try {
-                source = engine.read(id, 8 << 20, token);
+                source = engine.read(id, limit, token);
                 var binding = new Binding(id, source.key(), source.bytes().length);
                 for (var prior : bindings) {
-                    if (prior.id() == id && !prior.equals(binding))
+                    if (prior.id() == id && !prior.equals(binding)) {
                         throw new IllegalStateException("Source changed");
+                    }
                 }
-                if (!bindings.contains(binding)) bindings.add(binding);
+                if (!bindings.contains(binding)) {
+                    bindings.add(binding);
+                }
                 input = new Input(source, this, binding);
                 source = null;
                 return input;
             } finally {
-                if (source != null) source.close();
+                if (source != null) {
+                    source.close();
+                }
                 reserved = false;
             }
         }
 
         private void expire() {
-            if (input != null) input.close();
+            if (input != null) {
+                input.close();
+            }
             bindings.clear();
             token = null;
             engine = null;
@@ -438,18 +511,23 @@ final class WorldStreamScopes {
             }
             validateProof(proof, token);
             int ordinal = caller.y() * 64 + caller.x();
-            if (!proof.present().get(ordinal))
+            if (!proof.present().get(ordinal)) {
                 throw new IllegalArgumentException("Unrecorded coordinate");
+            }
             var refs = references(caller);
             for (int i = 0; i < 8; i++) {
-                if (refs[i] != Integer.toUnsignedLong(proof.maid()[ordinal * 8 + i]))
+                if (refs[i] != Integer.toUnsignedLong(proof.maid()[ordinal * 8 + i])) {
                     throw new IllegalArgumentException("Caller differs from recorded MAID");
+                }
             }
             admission = new TileAdmission(this, token, caller, profile, proof);
             result = Objects.requireNonNull(use.prepare(admission), "Missing owned result");
-            if (admission.input != null || admission.reserved)
+            if (admission.input != null || admission.reserved) {
                 throw new IllegalStateException("Input not drained before transfer");
-            for (var binding : admission.bindings) validateBinding(binding, token);
+            }
+            for (var binding : admission.bindings) {
+                validateBinding(binding, token);
+            }
             validateProof(proof, token);
             synchronized (this) {
                 token.check();
@@ -460,7 +538,9 @@ final class WorldStreamScopes {
             }
         } finally {
             try {
-                if (admission != null) admission.expire();
+                if (admission != null) {
+                    admission.expire();
+                }
                 if (result != null) {
                     try {
                         result.close();
@@ -478,13 +558,15 @@ final class WorldStreamScopes {
         token.check();
         var fresh = stat(binding.id(), token);
         if (!binding.key().equals(fresh.contentKey())
-                || fresh.size() != null && fresh.size() != binding.length())
+                || fresh.size() != null && fresh.size() != binding.length()) {
             throw new IllegalStateException("Consumed source changed");
+        }
     }
 
     private void validateProof(Proof proof, Cancellation token) {
-        if (!revalidateMap(proof.map(), token))
+        if (!revalidateMap(proof.map(), token)) {
             throw new IllegalStateException("Map source changed");
+        }
         validateBinding(
                 new Binding(proof.token().wdtId(), proof.token().wdtKey(), proof.wdtLength()),
                 token);
@@ -1077,7 +1159,8 @@ final class WorldStreamScopes {
 
     private FileTypes.BuildFile stat(long id, Cancellation token) {
         var result = files.stat(FileTypes.FileRef.id(id), token).join();
-        if (result.file() == null
+        if (result.state() != FileTypes.FileLookupState.FOUND
+                || result.file() == null
                 || result.file().fileDataId() != id
                 || result.file().contentKey() == null
                 || !result.file().contentKey().matches("[0-9a-f]{32}")) {
