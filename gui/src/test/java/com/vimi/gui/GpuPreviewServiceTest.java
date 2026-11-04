@@ -47,6 +47,7 @@ public final class GpuPreviewServiceTest {
             inlineFramesAndCoalescedControls(root);
             terrainAndModelsShareOwnerAndKeepControlsTyped(root);
             streamingUsesTheSameOwnerAndWaitsHeldStarterDrain(root);
+            statusListenerErrorCannotReleaseStreamingOwnership(root);
             emptyTexturesKeepNativeHeightFallbackAndRejectedBatchesClose(root);
             terrainTextureAcknowledgementsStayBoundToQualifiedSourceAndDrainClaims(root);
             terrainReplacementWaitsForAcceptedFrameButNotTerminalFailure(root);
@@ -95,6 +96,47 @@ public final class GpuPreviewServiceTest {
         require(
                 seen.equals(List.of(1, 3)) && scheduled.isEmpty(),
                 "Newer publication during handoff wins without older-value reinsertion");
+    }
+
+    private static void statusListenerErrorCannotReleaseStreamingOwnership(Path root) throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var modelEntered = new CountDownLatch(1);
+        var directory = new AtomicReference<Path>();
+        var service = new GpuPreviewService(root, GpuPreviewServiceTest::write,
+                (scene, frames) -> { modelEntered.countDown(); return new FakeProcess(true); },
+                path -> new GpuPreviewService.Frames() {
+                    public GpuPreviewService.Frame readLatest(long after) { return null; }
+                    public void close() {}
+                }, Duration.ofSeconds(2), Duration.ofMillis(200), arguments -> {
+                    directory.set(Path.of(arguments.get(1)));
+                    entered.countDown();
+                    release.await();
+                    throw new IOException("Authored late no-child failure");
+                });
+        var worldOwner = new Object();
+        try {
+            service.openStreaming(worldOwner,
+                    new com.vibeminer.rendering.bgfx.WorldStreamTransport.Spec("ab".repeat(32), 1,
+                            com.vibeminer.rendering.bgfx.WorldStreamTransport.Backend.DEFAULT),
+                    session -> {}, status -> {
+                        if (status.state() == GpuPreviewService.State.STOPPING) {
+                            throw new AssertionError("Authored status delivery error");
+                        }
+                    });
+            await(entered);
+            service.open(new Object(), mesh(), null, Set.of(), ignored -> {});
+            require(!modelEntered.await(1, TimeUnit.SECONDS),
+                    "Listener Error must not release GPU owner while prior Starter/mapping is held");
+        } finally {
+            release.countDown();
+            service.closeAsync().get(5, TimeUnit.SECONDS);
+            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (directory.get() != null && Files.exists(directory.get()) && System.nanoTime() < until) {
+                Thread.sleep(5);
+            }
+            require(directory.get() == null || !Files.exists(directory.get()), "Owned old startup eventually drains");
+        }
     }
 
     private static void streamingUsesTheSameOwnerAndWaitsHeldStarterDrain(Path root)

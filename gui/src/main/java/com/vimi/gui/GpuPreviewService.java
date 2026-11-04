@@ -246,8 +246,8 @@ final class GpuPreviewService {
         void publish(State state, String message) {
             try {
                 listener.accept(new Status(state, message, textureStatus));
-            } catch (RuntimeException ignored) {
-                /* UI delivery cannot orphan the native process. */
+            } catch (RuntimeException | Error ignored) {
+                /* Observational UI delivery cannot interrupt native ownership/cleanup. */
             }
         }
     }
@@ -498,14 +498,16 @@ final class GpuPreviewService {
 
     CompletableFuture<Void> closeAsync() {
         Request pending = null;
+        boolean idle;
         synchronized (gate) {
             closed = true;
             if (active != null) active.stopping = true;
             if (desired != null && desired != active) pending = desired;
             desired = null;
-            if (!running) drained.complete(null);
+            idle = !running;
             gate.notifyAll();
         }
+        if (idle) drained.complete(null);
         if (pending != null) {
             pending.stopping = true;
             pending.publish(State.CLOSED, "GPU preview closed");
@@ -530,15 +532,16 @@ final class GpuPreviewService {
                 }
             }
         } finally {
+            boolean finish, restart;
             synchronized (gate) {
                 active = null;
                 running = false;
-                if (closed) drained.complete(null);
-                else if (desired != null) {
-                    running = true;
-                    Thread.ofVirtual().name("gpu-preview-lifecycle").start(this::run);
-                }
+                finish = closed;
+                restart = !closed && desired != null;
+                if (restart) running = true;
             }
+            if (finish) drained.complete(null);
+            else if (restart) Thread.ofVirtual().name("gpu-preview-lifecycle").start(this::run);
         }
     }
 
