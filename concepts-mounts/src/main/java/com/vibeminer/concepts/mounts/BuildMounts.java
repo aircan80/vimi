@@ -22,6 +22,14 @@ public interface BuildMounts extends AutoCloseable {
                         "Model previews unavailable"));
     }
 
+    /** Lazy idle qualification for the same recorded variant as {@link #preview}. */
+    default CompletableFuture<com.vibeminer.concepts.models.DisplayModelTypes.Idle> idle(
+            long mountId, long variantRecordId, Cancellation token) {
+        return CompletableFuture.completedFuture(
+                com.vibeminer.concepts.models.DisplayModelTypes.Idle.unavailable(
+                        "Idle animation unavailable"));
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override
