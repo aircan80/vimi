@@ -62,11 +62,14 @@ exclusive alternatives.
 ## Reviewed diffuse textures and starting clothing
 
 The reviewed character-composition profiles support current Human male/female
-models 1/2, Orc male/female models 3/4, Dwarf male/female models 5/6, and the
-isolated Tauren male/female models 11/12. The [Dwarf profile](races-dwarf-profile-proposal.md)
+models 1/2, Orc male/female models 3/4, Dwarf male/female models 5/6,
+Night Elf male/female models 7/8, and isolated Tauren male/female models 11/12. The [Dwarf profile](races-dwarf-profile-proposal.md)
 and [Tauren profile](races-tauren-profile-proposal.md) record their narrow source
-contracts. Orc, Dwarf and Tauren admissions additionally require their exact
-recorded model/sex/layout predicates.
+contracts. The [Night Elf source checkpoint](night-elf-undead-static-appearance-proposal.md)
+records its opaque body/hair policy and the separate unresolved Undead archive context.
+Orc, Dwarf, Night Elf and Tauren admissions additionally require their exact recorded
+model/sex/layout predicates. Night Elf also requires a selected, decoded full base skin;
+missing skin refuses the textured result instead of presenting an incomplete body.
 Other races/layouts retain the available static surface and report that their texture profile is unsupported. The GUI shows geometry first,
 then loads the textured sample asynchronously; rotation/zoom remain usable.
 
@@ -273,3 +276,31 @@ Other passes retain neutral shading and diagnostics, including the sampled eye
 and glow layers. Native normals, UVs, source geoset IDs and render budgets are
 unchanged. The generated composition policy is versioned so old incomplete Dwarf
 bindings cannot restore as the new profile.
+
+
+## Night Elf static appearance profile
+
+Race4 uses its recorded ChrModel7/8, sex0/1 and component layouts109/110, with
+layout03FAB755 literal-zero fallback guards. Its contextual draw profile admits only
+version272 one-batch body shader0/type1 and opaque hair shader0/type6. Exact batch,
+texture/material flags, implicitUV0, identity transforms and same-model full-opacity
+facts are required. Dwarf cutout admission and the general static model shader reader
+are unchanged. Native normals, UVs and SKIN-driven compact topology are retained.
+
+The existing opaque diffuse renderer is reused, with no new shader formula or higher
+mesh/texture limits. Auxiliary/multi-pass materials remain neutral with partial
+warnings. The appearance recipe is versioned6. Unknown unlock, archive and prerequisite
+conditions remain omitted; this is a static client-data sample, not account eligibility.
+
+Actual selected-build70755 male/female Warrior and Priest proofs checked current file
+keys,43k-or-fewer compact vertices,93/76 bound body/hair surfaces, complete consumed
+textures and byte-identical cold/warm/fresh-owner codec/warnings. Priest clothing
+selects the recorded robe geoset while preserving source rest poses. Private images
+show both coherent purple skin and recorded clothing. See the source checkpoint for
+exact provenance and execution limits.
+
+Undead raw geometry and opaque material tuples are readable, but its skin color depends
+on Skin Type choices gated by explicit archive0/1 and prerequisite rows. The current
+preview does not possess that context and does not ignore those guards. Undead texture
+composition therefore remains unsupported; a black/blank skin prototype is not counted
+as model support.

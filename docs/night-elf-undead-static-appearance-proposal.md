@@ -1,4 +1,4 @@
-# Night Elf and Undead static appearance source checkpoint
+# Night Elf static appearance checkpoint and Undead source blocker
 
 This extends the existing static character preview only where actual selected-build
 facts permit it. It does not add HD/SD pairing, animation, account/server unlock claims,
@@ -107,3 +107,46 @@ nonzero fallback, nonidentity transform, foreign-model opacity facts, nonstatic 
 multiple section batches, wrong shader/material/texture flags, and missing base skin.
 Actual production proof must retain ordinary partial-source diagnostics, show nonblack
 skin, preserve compact mesh identity and cold/warm/fresh parity for both sexes.
+
+
+## Production execution checkpoint
+
+Implementation8a68d24 keeps two explicit Night Elf profile values. The Dwarf-only
+wrapper still refuses other families; the shared strict draw shape now has an explicit
+Night Elf opaque case. Human/Orc/Tauren legacy admission and all input/output caps stay
+unchanged. Both the recipe and actual decoded-image stages require a full body base.
+The generated appearance policy is versioned6.
+
+The actual public service completed these cases through ordinary appearance preparation:
+
+| Class / model | Compact vertices / indices | Bound surfaces | Codec SHA256 |
+| --- | --- | --- | --- |
+| Warrior1 /7 | 41543 /150468 | 93 | 669a24cb4eb4680f153d87ba07834feb93f7cd7b3af58b0cdb06fae11a741523 |
+| Warrior1 /8 | 39349 /145512 | 76 | 94da125dfa6edf801eb15b499195843ae4c215034d3e286fe2685de8058e9fdd |
+| Priest5 /7 | 41543 /150468 | 93 | 4ef9714ea4da19c5c1d67cf630d154440ae35e2dcbd47edfbaf27fee640320a6 |
+| Priest5 /8 | 39349 /145512 | 76 | 5c9fa746015686e01254b3b6a6543be9ededf9c0422175eebfa79d3866c8b6ff |
+
+Each case completed cold, warm and fresh component restores with identical codec bytes
+and diagnostics. Final source runs reopen every asset store read-only and use localOnly
+with no network, writing only a new private generated-store scratch directory. No
+consumed texture may be absent in this proof. Images
+`production-{7,8}-class-{1,5}.png` were visually inspected: body skin is populated, hair
+and clothing are present, Priest robes change geoset1301→1302, and native male/female
+rest poses are preserved. Unsupported auxiliary materials remain honest partial notes.
+
+Private executable `NightElfProductionProof.java`, logs
+`production-8a68d24-final-readonly.log` and `production-exact-current.log`, and runtime
+classpath provenance live beside those images. The latter log uses only this checkout's
+Gradle-resolved module outputs/dependencies, not older proof JARs. Earlier source/body
+acquisition and research logs remain separate from this final execution record.
+
+Authored regressions exercise the exact family/sex/layout/fallback matrix and body/hair
+shape negatives, opacity identity, nonstatic weights, transforms, selectors, multipass,
+wrong flags/blends/shader and missing base recipes. A real missing diffuse through
+MemoryFiles/BlpImages must produce no appearance and no generated payload. An actual
+opaque hair-over-body pixel fixture proves alpha0 is ignored and depth is retained.
+Removing only the full-base recipe guard makes its authored regression fail (expected
+Projection absent); restoring exact production source passes the checks. Logs are
+`missing-base-negative-control.log`, `restored-full-check.log`, `final-source-check.log`.
+These tests contain only authored assets. This checkpoint grants no Undead archive or
+prerequisite policy, new controls, animation, or full client shader parity.
