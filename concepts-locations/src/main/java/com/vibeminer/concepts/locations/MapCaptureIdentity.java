@@ -102,8 +102,8 @@ final class MapCaptureIdentity {
         for (var c : r.schema().columns()) {
             add(128);
             text(c.name(), 128, false);
-            text(c.columnComment(), 256, true);
-            text(c.fieldComment(), 256, true);
+            text(c.columnComment(), 1024, true);
+            text(c.fieldComment(), 1024, true);
             if (c.foreignKey() != null) {
                 text(c.foreignKey().table(), 128, false);
                 text(c.foreignKey().column(), 128, false);

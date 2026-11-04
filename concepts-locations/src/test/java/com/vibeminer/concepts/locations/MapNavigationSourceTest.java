@@ -450,6 +450,7 @@ final class MapNavigationSourceTest {
         final CapturedRowsTypes.Receipt original;
         String graph, source;
         List<Db2Types.Column> columns;
+        TableSchema schema;
         Db2Types.Header header;
         List<Db2Types.Section> sections;
         List<String> holes;
@@ -460,6 +461,7 @@ final class MapNavigationSourceTest {
             graph = r.graphIdentity();
             source = r.sourceIdentity();
             columns = r.columns();
+            schema = r.schema();
             header = r.header();
             sections = r.sections();
             holes = r.holeKeys();
@@ -472,7 +474,7 @@ final class MapNavigationSourceTest {
                     r.build(),
                     r.locale(),
                     r.table(),
-                    r.schema(),
+                    schema,
                     columns,
                     r.definitionSha256(),
                     r.blockIdentity(),
@@ -669,5 +671,68 @@ final class MapNavigationSourceTest {
                         UnsupportedOperationException.class,
                         () -> MapCaptureIdentity.validate(bad));
         assertTrue(refusal.getMessage().contains("Oversized scalar"));
+    }
+
+    private static void schemaComment(ReceiptEdit b, int count) {
+        var fields = new ArrayList<>(b.schema.columns());
+        var c = fields.getFirst();
+        fields.set(
+                0,
+                new TableSchema.SchemaColumn(
+                        c.name(),
+                        c.kind(),
+                        c.bits(),
+                        c.unsigned(),
+                        c.arrayLength(),
+                        c.foreignKey(),
+                        c.id(),
+                        c.relation(),
+                        c.verifiedName(),
+                        c.locale(),
+                        "x".repeat(count),
+                        c.fieldComment()));
+        b.schema =
+                new TableSchema(
+                        fields,
+                        b.schema.layoutHashes(),
+                        b.schema.match(),
+                        b.schema.locale(),
+                        b.schema.comment());
+    }
+
+    @Test
+    void boundedLongSchemaCommentsRemainUsableWithoutChangingAggregateCeiling() {
+        var f = new Fixture();
+        f.initialEdit = r -> edit(r, b -> schemaComment(b, 500));
+        f.finalEdit = f.initialEdit;
+        assertEquals(
+                MapNavigationSourceTypes.State.READY,
+                MapNavigationSource.read(f.tables(), Cancellation.NONE).state());
+        var r = receipt("UiMap", "c", false, false);
+        var tooLong = edit(r, b -> schemaComment(b, 1025));
+        var refusal =
+                assertThrows(
+                        UnsupportedOperationException.class,
+                        () -> MapCaptureIdentity.validate(tooLong));
+        assertTrue(refusal.getMessage().contains("Oversized scalar"));
+        var aggregate =
+                edit(
+                        r,
+                        b -> {
+                            schemaComment(b, 1024);
+                            var field = b.schema.columns().getFirst();
+                            b.schema =
+                                    new TableSchema(
+                                            java.util.Collections.nCopies(128, field),
+                                            b.schema.layoutHashes(),
+                                            b.schema.match(),
+                                            b.schema.locale(),
+                                            null);
+                        });
+        var totalRefusal =
+                assertThrows(
+                        UnsupportedOperationException.class,
+                        () -> MapCaptureIdentity.validate(aggregate));
+        assertTrue(totalRefusal.getMessage().contains("aggregate bound"));
     }
 }
