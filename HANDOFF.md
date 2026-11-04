@@ -1,5 +1,19 @@
 # vimi development handoff
 
+## Current alpha21 delivery gate — pool retry correction
+
+Newest runtime/integration checkpoint is dfe9817, superseding9dbad51 only with
+reviewed typed material-pool backoffd34bfee and deterministic pressure tests. A
+hosted Mac failure exposed actual churn: late unused CREDIT and same-resident
+camera acknowledgements reopened a resource refusal without freeing pool owners.
+The fix wakes only on500ms/new demand/actual successful source retirement; parent,
+file and12-owner pressure behavior is unchanged. Root+independent controller tests
+and full check/assemble/installDist/C#interop/eight FX suites pass485tasks:
+`/home/aircan/.cache/vimi-tmp/world-alpha21-pool-final-check.log`.
+Rerun hosted checks before merging/publishing. Other latest9dbad51 hosted Linux,
+Windows, Mac unit and one Mac integration passed; the failed duplicate is not waived.
+No G2/water feature code is included in this alpha21 candidate. Continue after release.
+
 ## Latest Linux checkpoint — alpha21 candidate passes final local gates
 
 Published application remains alpha20; alpha21 publication is next, after hosted
