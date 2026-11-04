@@ -319,6 +319,13 @@ tasks.register('worldSpawnsTest', JavaExec) {
 }
 check.dependsOn worldSpawnsTest
 
+tasks.register('mapRolesTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.MapRoleOverlayTest'
+}
+check.dependsOn mapRolesTest
+
 // Authored spawn-marker lifecycle over a live JavaFX scene; opt in because this requires a display.
 tasks.register('worldSpawnsUiTest', JavaExec) {
     dependsOn testClasses
