@@ -97,3 +97,26 @@ Five selected non-key bodies pass the actual body-SHA reread. The original file
 was opened READ/NOFOLLOW; no overlay/key activation or new game asset was written.
 Private diagnostic log: `/home/aircan/.cache/vimi-tmp/hotfix-container-proof/proof.log`.
 These are format/byte-read facts only, not evidence for the requested70707 rows.
+
+## Explicit conservative effective-row policy v1
+
+Root review pins an application policy rather than claiming exact DBCD/client
+parity. Stable signed push order and physical ordinal break ties. VALID nonempty
+bodies add/replace only after layout decoding. NOT_PUBLIC masks as protected;
+INVALID, NOT_SET, empty VALID and unsupported bodies mask as unknown, so stale
+base values never masquerade as effective data. Explicit DELETE is a known
+negative, subject only to the narrow cached exception below.
+
+For TactKey DF2F53CF and BroadcastText021826BB only, preserve an already selected
+VALID nonempty cached(Push=-1) row when the SAME record ID later has a cached
+Push=-1 DELETE/INVALID/NOT_SET/empty-VALID entry. NOT_PUBLIC still masks. A real
+positive-push update/deletion follows normal policy; an unrelated cached-valid ID
+never suppresses another ID's operation. This intentionally differs from DBCD's
+global table-wide exception and must be named in effective-source provenance and
+regression tests. TactKeyLookup has no such exception.
+
+[TrinityCore's HotfixHandler](https://github.com/TrinityCore/TrinityCore/blob/master/src/server/game/Handlers/HotfixHandler.cpp)
+also distinguishes missing/invalid hotfix data from explicit record removal. This
+supports keeping unknown states separate from known absence, but does not prove
+our masking policy is byte-for-byte client behavior. Local cache incompleteness
+and region/product/build/locale association remain explicit limitations.
