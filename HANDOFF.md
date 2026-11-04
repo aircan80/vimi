@@ -17,7 +17,8 @@ No city/instance/NPC/music/hotstreaming/characterUI feature is claimed delivered
 
 Maps PR158 is FF-merged on main at590aa0e. Current-head hosted gates and allfive
 platform packaging dry run41778802552 passed. Immutable alpha20 tag points at590;
-publication run41780488095 is IN PROGRESS, not yet verified. Frozen local preview
+publication run41780488095 is VERIFIED SUCCESS: allfive platform jobs,18assets,
+explicit prerelease/notdraft. Release https://github.com/aircan80/vimi/releases/tag/v0.1.0-alpha.20 Frozen local preview
 `.local/apps/preview-590aa0e/bin/vimi-gui-prototype` passes packaged UI/native24shader
 smoke. Do not move tags or overwrite frozen launchers. Authored placeholder-only
 review screenshot is in docs/screenshots; actual game-art proof images stay PRIVATE.
