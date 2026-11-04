@@ -25,6 +25,138 @@ class WorldStreamTransportTest {
             new WorldStreamTransport.Spec("ab".repeat(32), 1, WorldStreamTransport.Backend.VULKAN);
 
     @Test
+    void closedIsNotPermissionToIgnoreTrailingProtocolBytes() throws Exception {
+        var child = new WorldStreamLaunchOwnerTest.Child();
+        var prepared = WorldStreamTransport.prepare(directory, spec);
+        var session =
+                prepared.launch(
+                        arguments -> {
+                            var descriptor =
+                                    WorldStreamEnvelope.decodeSession(
+                                            Files.readAllBytes(
+                                                    Path.of(arguments.get(1))
+                                                            .resolve("session.wss")),
+                                            arguments.get(3));
+                            String prefix =
+                                    "WS2 "
+                                            + HexFormat.of().toHexDigits(descriptor.nonce().high())
+                                            + HexFormat.of().toHexDigits(descriptor.nonce().low())
+                                            + " ";
+                            child.input =
+                                    new java.io.ByteArrayInputStream(
+                                            (prefix
+                                                            + "SESSION TERRAIN_BASIC_V1\n"
+                                                            + prefix
+                                                            + "CLOSED\n"
+                                                            + prefix
+                                                            + "CREDIT 1 0 1\n")
+                                                    .getBytes(
+                                                            java.nio.charset.StandardCharsets
+                                                                    .US_ASCII));
+                            return child;
+                        });
+        assertThrows(
+                java.util.concurrent.ExecutionException.class,
+                () -> session.completion().get(3, TimeUnit.SECONDS));
+        assertEquals(
+                0,
+                session.terminatedAndDrained().get(3, TimeUnit.SECONDS).exitCode().orElseThrow());
+        assertFalse(child.isAlive());
+    }
+
+    @Test
+    void actualExitBeforeBufferedClosedDoesNotCloseStatusReducerPrematurely() throws Exception {
+        var held = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var child = new WorldStreamLaunchOwnerTest.Child();
+        child.killAllowed = false;
+        var prepared = WorldStreamTransport.prepare(directory, spec);
+        var session =
+                prepared.launch(
+                        arguments -> {
+                            var descriptor =
+                                    WorldStreamEnvelope.decodeSession(
+                                            Files.readAllBytes(
+                                                    Path.of(arguments.get(1))
+                                                            .resolve("session.wss")),
+                                            arguments.get(3));
+                            String prefix =
+                                    "WS2 "
+                                            + HexFormat.of().toHexDigits(descriptor.nonce().high())
+                                            + HexFormat.of().toHexDigits(descriptor.nonce().low())
+                                            + " ";
+                            String initial =
+                                    prefix
+                                            + "SESSION TERRAIN_BASIC_V1\n"
+                                            + prefix
+                                            + "CREDIT 1 0 1\n";
+                            byte[] bytes =
+                                    (initial + prefix + "CLOSED\n")
+                                            .getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+                            child.input =
+                                    new java.io.InputStream() {
+                                        int index;
+
+                                        @Override
+                                        public int read() throws java.io.IOException {
+                                            if (index == initial.length()) {
+                                                held.countDown();
+                                                try {
+                                                    release.await();
+                                                } catch (InterruptedException error) {
+                                                    throw new java.io.IOException(error);
+                                                }
+                                            }
+                                            return index == bytes.length
+                                                    ? -1
+                                                    : bytes[index++] & 255;
+                                        }
+                                    };
+                            return child;
+                        });
+        try {
+            session.initialized().get(2, TimeUnit.SECONDS);
+            assertTrue(held.await(2, TimeUnit.SECONDS));
+            child.exit(0);
+            var field = WorldStreamTransport.Session.class.getDeclaredField("owner");
+            field.setAccessible(true);
+            var owner = (WorldStreamLaunchOwner.Handle) field.get(session);
+            owner.childExited().get(2, TimeUnit.SECONDS);
+            var lockField = WorldStreamTransport.Session.class.getDeclaredField("lock");
+            var exitField = WorldStreamTransport.Session.class.getDeclaredField("actualExit");
+            lockField.setAccessible(true);
+            exitField.setAccessible(true);
+            Object metadataLock = lockField.get(session);
+            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            boolean observed = false;
+            while (!observed && System.nanoTime() < until) {
+                synchronized (metadataLock) {
+                    observed = exitField.getBoolean(session);
+                }
+                if (!observed) {
+                    Thread.sleep(2);
+                }
+            }
+            assertTrue(observed);
+            assertFalse(session.terminatedAndDrained().isDone());
+            assertTrue(Files.exists(owner.files().framePath()));
+            release.countDown();
+            session.completion().get(2, TimeUnit.SECONDS);
+            assertEquals(
+                    0,
+                    session.terminatedAndDrained()
+                            .get(2, TimeUnit.SECONDS)
+                            .exitCode()
+                            .orElseThrow());
+            assertFalse(Files.exists(owner.files().directory()));
+        } finally {
+            release.countDown();
+            child.exit(0);
+            session.closeAsync();
+        }
+    }
+
+    @Test
     void failedExitObservationNeverAuthorizesDeletingAdvertisedInput() throws Exception {
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
