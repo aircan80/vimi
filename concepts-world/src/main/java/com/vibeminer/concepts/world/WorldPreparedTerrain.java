@@ -155,6 +155,9 @@ final class WorldPreparedTerrain {
         }
 
         private synchronized void check() {
+            if (source != null) {
+                source.scopes.requireHealthy();
+            }
             if (!isOpen()) {
                 throw new IllegalStateException("Terrain output closed");
             }
