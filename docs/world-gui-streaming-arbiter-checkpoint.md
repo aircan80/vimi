@@ -42,3 +42,15 @@ Vulkan child/100camera submissions/samePID/CLOSED/exit0/files-gone proof in
 No WorldView route is switched, no movement/FPS or visible streaming/buildings claim
 is made. The next steps remain concrete tile producer/commit/frame transport, fixed
 source packet bridge and actual inline controller presentation/cadence validation.
+
+Independent review reproduced a status-listener Error escaping the STOPPING delivery
+in streaming cleanup and allowing a successor before a held Starter drained. The
+isolated followup makes observational status delivery contain RuntimeException AND
+Error; controller opened callbacks remain fatal inside the protected lifecycle path.
+A causal held-Starter/error-listener fixture verifies no model successor starts during
+that hold. Full GUI checks still pass126tasks in
+`/tmp/vimi-world-gui-stream-listener-followup-check.log`. Idle service-close and run-finally
+future completion also move outside the service monitor. Standard CompletableFuture
+consumers must still post small metadata/offload blocking work; synchronous consumer
+continuations are not a separate bounded notification executor. Legacy reader join
+behavior is unchanged and is not newly claimed as full local-worker drain here.
