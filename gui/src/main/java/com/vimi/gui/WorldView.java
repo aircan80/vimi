@@ -460,11 +460,29 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         requestFrame();
                     }
                 });
-        viewport.setOnScroll(
-                e -> {
-                    speed = Math.clamp(speed * (e.getDeltaY() > 0 ? 1.2 : .8), 10, 800);
-                    e.consume();
-                });
+        viewport.setOnScroll(e -> {
+            double delta = e.getDeltaY();
+            if (Double.isFinite(delta) && delta != 0) {
+                if (e.isShiftDown()) {
+                    speed = Math.clamp(speed * (delta > 0 ? 1.2 : .8), 10, 800);
+                } else if (camera != null && terrainScene != null) {
+                    double step = Math.copySign(Math.min(Math.abs(delta) / 40, 3)
+                            * Math.clamp(speed * .1, 2, 32), delta);
+                    double horizontal = Math.cos(camera.pitch()) * step;
+                    var zoomed = new TerrainRenderer.Camera(
+                            Math.clamp(camera.x() + Math.cos(camera.yaw()) * horizontal, -1_000_000, 1_000_000),
+                            Math.clamp(camera.y() + Math.sin(camera.yaw()) * horizontal, -1_000_000, 1_000_000),
+                            Math.clamp(camera.z() + Math.sin(camera.pitch()) * step, -1_000_000, 1_000_000),
+                            camera.yaw(), camera.pitch());
+                    if (!zoomed.equals(camera)) {
+                        camera = zoomed;
+                        requestFrame();
+                        loadNext();
+                    }
+                }
+            }
+            e.consume();
+        });
         viewport.widthProperty().addListener((o, a, b) -> requestFrame());
         viewport.heightProperty().addListener((o, a, b) -> requestFrame());
         timer =
@@ -1061,7 +1079,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                 back,
                                 new Label(
                                         "WASD move · Space/E up · Q/X down · drag or arrows to look · Shift"
-                                                + " faster · scroll changes speed")),
+                                                + " faster · wheel zooms · Shift+wheel changes speed")),
                         currentArea,
                         position,
                         new HBox(8, gpuEnabled, gpuActivity, retryGpu, gpuStatus),

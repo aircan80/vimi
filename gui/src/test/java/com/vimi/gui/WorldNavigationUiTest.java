@@ -26,6 +26,8 @@ import javafx.scene.control.Button;
 import javafx.scene.control.ListView;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
+import javafx.scene.input.ScrollEvent;
+import javafx.scene.input.PickResult;
 import javafx.stage.Stage;
 import javafx.util.Duration;
 
@@ -231,6 +233,36 @@ public final class WorldNavigationUiTest {
             timer.handle(1_200_000_000L);
             require(((TerrainRenderer.Camera)get(view,"camera")).z()==actual,"Key release stops movement");
         }
+        var before = new TerrainRenderer.Camera(10000-SIZE/2,20000-SIZE/2,500,.7,-.8);
+        set(view,"camera",before);
+        double originalSpeed = (double)get(view,"speed");
+        scroll(viewport,40,false);
+        var zoomed = (TerrainRenderer.Camera)get(view,"camera");
+        double dx=zoomed.x()-before.x(),dy=zoomed.y()-before.y(),dz=zoomed.z()-before.z();
+        require(dx>0 && dy>0 && dz<0,"Wheel moves forward along pitched view, including native altitude");
+        require(Math.abs(Math.atan2(dy,dx)-before.yaw())<1e-8,"Wheel preserves view yaw");
+        require(Math.abs(dz/Math.hypot(dx,dy)-Math.tan(before.pitch()))<1e-8,"Wheel follows pitch rather than a flat strafe");
+        require((double)get(view,"speed")==originalSpeed,"Normal wheel preserves flight speed");
+        scroll(viewport,-40,false);
+        var restored=(TerrainRenderer.Camera)get(view,"camera");
+        require(Math.abs(restored.x()-before.x())<1e-8&&Math.abs(restored.y()-before.y())<1e-8&&Math.abs(restored.z()-before.z())<1e-8,"Reverse wheel restores view position");
+        scroll(viewport,40,true);
+        require(restored.equals(get(view,"camera")),"Shift+wheel does not zoom");
+        require((double)get(view,"speed")>originalSpeed,"Shift+wheel adjusts flight speed");
+        scroll(viewport,Double.NaN,false);
+        require(restored.equals(get(view,"camera")),"Nonfinite wheel input is ignored");
+        set(view,"camera",new TerrainRenderer.Camera(1_000_000,1_000_000,1_000_000,.7,.8));
+        scroll(viewport,Double.MAX_VALUE,false);
+        var bounded=(TerrainRenderer.Camera)get(view,"camera");
+        require(bounded.x()<=1_000_000&&bounded.y()<=1_000_000&&bounded.z()<=1_000_000,"Wheel remains within camera coordinate bounds");
+        set(view,"camera",before);
+        set(view,"speed",originalSpeed);
+    }
+
+    private static void scroll(Node target,double delta,boolean shift) {
+        Event.fireEvent(target,new ScrollEvent(ScrollEvent.SCROLL,10,10,10,10,shift,false,false,false,false,false,
+                0,delta,0,delta,ScrollEvent.HorizontalTextScrollUnits.NONE,0,
+                ScrollEvent.VerticalTextScrollUnits.NONE,0,0,new PickResult(target,10,10)));
     }
 
     private static void key(Node target,KeyCode key,boolean pressed) {

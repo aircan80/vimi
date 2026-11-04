@@ -226,3 +226,11 @@ larger mip levels: the minimap consumer explicitly downsamples a declared mip
 within512 pixels, while the generic decoder never invents or resizes mip levels.
 Larger-only unsupported sources retain the visible fallback. Actual game pixels
 remain private under `/tmp/vimi-live-mount79-proof`; none enter this repository.
+
+## View wheel controls
+
+The mouse wheel moves the free-fly camera forward or backward along its full
+view direction, including pitch. This is a bounded camera dolly, so nearby
+terrain grows or shrinks in view without changing the lens or orbiting a target.
+Shift+wheel changes flight speed. Fine trackpad input stays proportional, and
+large wheel events are capped. Terrain collision is not evaluated.
