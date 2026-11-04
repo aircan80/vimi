@@ -89,6 +89,7 @@ public final class NetworkActivityUiTest {
                                 !view.animating() && model.display().snapshot().active() == 1,
                                 "Reduced motion keeps static active state");
                         reducedMotion.set(false);
+                        long samplesBeforeHeaders = snapshots.get();
                         for (int i = 0; i < 100; i++) {
                             var old = view;
                             old.close();
@@ -96,6 +97,8 @@ public final class NetworkActivityUiTest {
                             header.getChildren().set(1, view);
                             require(!old.animating(), "Retired header animation stops");
                         }
+                        require(snapshots.get() == samplesBeforeHeaders,
+                                "Header replacements never create or sample another model");
                         require(
                                 model.sampling(),
                                 "One stage-owned sampler survives all header rebuilds");
@@ -104,6 +107,7 @@ public final class NetworkActivityUiTest {
                                 view.getAccessibleText().contains("network activity"),
                                 "Accessible purpose and phase");
                         saveScreenshot();
+                        verifyApplicationHeaders();
                         stage.hide();
                         require(
                                 !view.animating() && !model.sampling(),
@@ -117,6 +121,22 @@ public final class NetworkActivityUiTest {
             await(
                     () -> model.display().total().contains("2.0 MiB"),
                     "session total persists across hide");
+            fx(() -> {
+                // The window manager may immediately restore a newly shown/minimized window.
+                // Assert our policy against the actual property while this FX turn owns it,
+                // instead of assuming a fixed-duration native minimization under other tests.
+                stage.setIconified(true);
+                require(stage.isIconified() && !model.sampling() && !view.animating(),
+                        "Actual iconified stage stops animation and the polling timeline");
+                long iconifiedSamples = snapshots.get();
+                attempt.readFinished(1024);
+                require(snapshots.get() == iconifiedSamples,
+                        "Network updates do not publish/sample while iconified");
+                stage.setIconified(false);
+            });
+            await(() -> !stage.isIconified() && stage.isShowing() && model.sampling()
+                            && model.display().snapshot().receivedBytes() == (2 << 20) + 2048,
+                    "Uniconify resumes the sampler with accumulated session bytes");
             attempt.close();
             await(() -> model.display().status().equals("Network idle"), "terminal idle");
             fx(
@@ -131,7 +151,7 @@ public final class NetworkActivityUiTest {
                         stage.close();
                     });
             System.out.println(
-                    "NetworkActivityUiTest PASS: waiting/body bytes/rate/total, reduced motion, 100 header rebuilds, hidden/resume/close");
+                    "NetworkActivityUiTest PASS: waiting/body bytes/rate/total, reduced motion, 100 header rebuilds, actual generic/overview/prepared headers at 1000px, hidden/iconified/resume/close");
         } finally {
             fx(
                     () -> {
@@ -145,6 +165,9 @@ public final class NetworkActivityUiTest {
 
     private static void verifyApplicationHeaders() {
         var app = new VimiApp();
+        var headerStage = new Stage();
+        BuildPreparation pipeline = null;
+        NetworkActivityView current = null;
         try {
             var service = VimiApp.class.getDeclaredField("service");
             service.setAccessible(true);
@@ -155,23 +178,53 @@ public final class NetworkActivityUiTest {
             sampler.set(app, model);
             var generic = VimiApp.class.getDeclaredMethod("header", String.class, javafx.scene.Node.class);
             generic.setAccessible(true);
-            var first = (HBox) generic.invoke(app, null, null);
-            require(first.lookup("#network-activity") != null, "Generic app header retains activity");
             var overview = VimiApp.class.getDeclaredMethod("overviewHeader", BuildInfo.class);
             overview.setAccessible(true);
-            var second = (HBox) overview.invoke(app, mock.listBuilds().join().getFirst());
-            require(second.lookup("#network-activity") != null, "Overview wrapper retains activity");
-            var scene = new Scene(new VBox(second), 1000, 100);
+            var prepared = VimiApp.class.getDeclaredMethod("preparedOverviewHeader", BuildPreparation.Job.class);
+            prepared.setAccessible(true);
+            var source = new BuildInfo.RegionEvidence("us", "b".repeat(32), true, null, null);
+            var build = new BuildInfo("wow_classic_era", "Authored edition with a long name",
+                    "1.60.1.70755", "US", "a".repeat(32), BuildInfo.BuildSource.CURRENT,
+                    false, null, 0, "authored-header", null, null, java.util.List.of(source));
+            pipeline = new BuildPreparation((info, evidence, locale) -> {
+                throw new IllegalStateException("Authored unavailable preparation; no source IO");
+            }, Runnable::run);
+            var job = pipeline.start(build, source, "enUS");
+            var root = new VBox();
+            var scene = new Scene(root, 1000, 110);
             scene.getStylesheets().add(NetworkActivityUiTest.class.getResource("/vimi.css").toExternalForm());
-            scene.getRoot().applyCss(); scene.getRoot().layout();
-            var widget = second.lookup("#network-activity");
-            var bounds = widget.localToScene(widget.getBoundsInLocal());
-            require(bounds.getMaxX() <= 1000.5 && bounds.getMinX() >= 0,
-                    "Top-right activity stays within the 1000px minimum window");
-            ((NetworkActivityView) widget).close();
+            headerStage.setScene(scene);
+            headerStage.show();
+            for (int i = 0; i < 3; i++) {
+                var bar = (HBox) switch (i) {
+                    case 0 -> generic.invoke(app, null, null);
+                    case 1 -> overview.invoke(app, mock.listBuilds().join().getFirst());
+                    default -> prepared.invoke(app, job);
+                };
+                var old = current;
+                current = (NetworkActivityView) bar.lookup("#network-activity");
+                require(current != null, "Actual app header " + i + " retains activity");
+                root.getChildren().setAll(bar);
+                root.applyCss();
+                root.layout();
+                var bounds = current.localToScene(current.getBoundsInLocal());
+                require(current.isVisible() && current.isManaged() && bounds.getWidth() > 30,
+                        "Actual app header " + i + " presents a visible indicator");
+                require(bounds.getMaxX() <= scene.getWidth() + .5 && bounds.getMinX() >= 0,
+                        "Actual app header " + i + " indicator stays inside the minimum window");
+                require(bounds.getMinX() > scene.getWidth() * .5,
+                        "Actual app header " + i + " indicator is on the right");
+                require(current.isFocusTraversable() && current.getAccessibleText().contains("network activity"),
+                        "Actual app header " + i + " indicator is keyboard-accessible");
+                if (old != null) require(!old.animating(), "Actual header replacement retires its animation");
+                require(model.sampling(), "One sampler survives each actual wrapper replacement");
+            }
         } catch (ReflectiveOperationException error) {
             throw new IllegalStateException(error);
         } finally {
+            if (current != null) current.close();
+            headerStage.close();
+            if (pipeline != null) pipeline.closeAsync().join();
             try {
                 var field = VimiApp.class.getDeclaredField("preparations");
                 field.setAccessible(true);
