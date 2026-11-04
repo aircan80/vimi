@@ -585,3 +585,11 @@ tasks.register('worldHotLifecycleUiProof', JavaExec) {
     mainClass = 'com.vimi.gui.WorldHotLifecycleUiProof'
     jvmArgs '--enable-native-access=ALL-UNNAMED'
 }
+
+// Authored private cache import and physical file retirement; no live client data.
+tasks.register('clientHotfixStoreTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.ClientHotfixStoreTest'
+}
+check.dependsOn clientHotfixStoreTest
