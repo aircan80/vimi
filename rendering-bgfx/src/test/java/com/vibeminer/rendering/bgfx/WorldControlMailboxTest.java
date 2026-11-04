@@ -21,6 +21,36 @@ class WorldControlMailboxTest {
     }
 
     @Test
+    void establishedCancelAloneBypassesDeferredNewTransactionsWithoutReorderingThem() {
+        var mailbox = new WorldControlMailbox(NONCE);
+        var lease = new WorldStreamState.Lease(0, 1, 1);
+        var offer = new WorldStreamControl.Offer(NONCE, 1, lease, 4096, "00".repeat(32));
+        var commit = new WorldStreamControl.Commit(NONCE, 2, "00".repeat(32));
+        var unused = new WorldStreamControl.CancelUnused(NONCE, 3, lease);
+        var cancel = new WorldStreamControl.Cancel(NONCE, 1, 0, 1);
+        mailbox.offer(offer);
+        mailbox.offer(commit);
+        mailbox.offer(unused);
+        mailbox.offer(cancel);
+        assertEquals(cancel, mailbox.takeCancellation());
+        assertNull(mailbox.takeCancellation());
+        assertEquals(offer, mailbox.takeTransaction());
+        assertEquals(commit, mailbox.takeTransaction());
+        assertEquals(unused, mailbox.takeTransaction());
+        assertNull(mailbox.takeTransaction());
+        var second = new WorldStreamControl.Cancel(NONCE, 4, 1, 2);
+        mailbox.offer(cancel);
+        mailbox.offer(commit);
+        mailbox.offer(second);
+        assertEquals(cancel, mailbox.takeCancellation());
+        assertEquals(second, mailbox.takeCancellation());
+        assertEquals(commit, mailbox.takeTransaction());
+        mailbox.offer(cancel);
+        mailbox.offer(new WorldStreamControl.Close(NONCE));
+        assertNull(mailbox.takeCancellation());
+    }
+
+    @Test
     void cameraAndCloseAreIndependentOfFullTransactionQueue() {
         var mailbox = new WorldControlMailbox(NONCE);
         for (int i = 1; i <= 4; i++) {

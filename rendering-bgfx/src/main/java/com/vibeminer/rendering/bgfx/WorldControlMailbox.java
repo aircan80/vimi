@@ -77,6 +77,19 @@ final class WorldControlMailbox {
         return transactions.pollFirst();
     }
 
+    /** Established cancellation may bypass a deferred file decode; new transactions never do. */
+    synchronized WorldStreamControl.Cancel takeCancellation() {
+        var iterator = transactions.iterator();
+        while (iterator.hasNext()) {
+            var command = iterator.next();
+            if (command instanceof WorldStreamControl.Cancel cancel) {
+                iterator.remove();
+                return cancel;
+            }
+        }
+        return null;
+    }
+
     synchronized boolean closing() {
         return close;
     }
