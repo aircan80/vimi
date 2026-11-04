@@ -167,27 +167,41 @@ class RequiredGateTest(unittest.TestCase):
 
 
 class BroaderGateTest(unittest.TestCase):
-    def test_crash_and_interop_must_both_pass_or_both_be_deliberately_skipped(self):
+    def test_crash_interop_and_native_must_all_pass_or_all_be_deliberately_skipped(self):
         workflow = Path(__file__).resolve().parents[2] / ".github/workflows/storage-compatibility.yml"
         gate = textwrap.dedent(workflow.read_text(encoding="utf-8").split(
             "      - name: Require selected broader suites to pass", 1
         )[1].split("        run: |\n", 1)[1])
+        statuses = ["success", "failure", "cancelled", "skipped"]
         for selected in ["true", "false", ""]:
-            for selection_status in ["success", "failure", "cancelled", "skipped"]:
-                for crash in ["success", "failure", "cancelled", "skipped"]:
-                    for interop in ["success", "failure", "cancelled", "skipped"]:
-                        expected = selection_status == "success" and (
-                            (selected == "true" and crash == interop == "success")
-                            or (selected == "false" and crash == interop == "skipped")
-                        )
-                        with self.subTest(selected=selected, selection=selection_status,
-                                          crash=crash, interop=interop):
-                            result = subprocess.run(["bash", "-eo", "pipefail", "-c", gate], env={
-                                **os.environ, "OBJECT_STORE": selected,
-                                "SELECTION_RESULT": selection_status,
-                                "CRASH_RESULT": crash, "INTEROP_RESULT": interop,
-                            })
-                            self.assertEqual(expected, result.returncode == 0)
+            for selection_status in statuses:
+                for crash in statuses:
+                    for interop in statuses:
+                        for native in statuses:
+                            expected = selection_status == "success" and (
+                                (selected == "true" and crash == interop == native == "success")
+                                or (selected == "false"
+                                    and crash == interop == native == "skipped")
+                            )
+                            with self.subTest(selected=selected, selection=selection_status,
+                                              crash=crash, interop=interop, native=native):
+                                result = subprocess.run(
+                                    ["bash", "-eo", "pipefail", "-c", gate], env={
+                                        **os.environ, "OBJECT_STORE": selected,
+                                        "SELECTION_RESULT": selection_status,
+                                        "CRASH_RESULT": crash, "INTEROP_RESULT": interop,
+                                        "NATIVE_RESULT": native,
+                                    })
+                                self.assertEqual(expected, result.returncode == 0)
+
+    def test_native_platform_job_runs_object_store_crash_and_interop(self):
+        workflow = (Path(__file__).resolve().parents[2]
+                    / ".github/workflows/storage-compatibility.yml").read_text(encoding="utf-8")
+        native = workflow.split("  native:\n", 1)[1].split("\n  required:\n", 1)[0]
+        for expected in ["windows-2025", "macos-15", ":object-store:crashTest",
+                         ":object-store:interopTest", "native-storage-reports-"]:
+            self.assertIn(expected, native)
+        self.assertIn("needs: [changes, crash, interop, native]", workflow)
 
 
 class AssetWorkflowWiringTest(unittest.TestCase):
