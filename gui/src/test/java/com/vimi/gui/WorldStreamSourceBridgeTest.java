@@ -162,9 +162,15 @@ public final class WorldStreamSourceBridgeTest {
                     } catch (com.vibeminer.rendering.bgfx.WorldStreamTransport.PreparationRefusal expected) {
                         check(retired && expected.reason() == com.vibeminer.rendering.bgfx.WorldStreamTransport.Refusal.SOURCE_INVALIDATED,
                                 "Only actual source-origin retirement maps to transport refusal");
+                        check(producer.sourceRefusal() != null
+                                        && producer.sourceRefusal().reason()
+                                                == WorldTerrainStreaming.Refusal.Reason.SOURCE_INVALIDATED,
+                                "Closed bridge retains only actual clean source-origin metadata");
                     } catch (IllegalStateException expected) {
                         check(!retired && expected == providerFailure,
                                 "Unknown provider failure stays fatal, never a refusal");
+                        check(producer.sourceRefusal() == null,
+                                "Unknown failure cannot mint source-origin metadata");
                     }
                 }
             } finally {
