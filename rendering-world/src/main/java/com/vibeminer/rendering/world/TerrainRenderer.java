@@ -55,6 +55,28 @@ public final class TerrainRenderer {
 
     public static Frame render(
             Scene scene, Camera camera, int width, int height, BooleanSupplier canceled) {
+        return render(scene, camera, width, height, List.of(), canceled);
+    }
+
+    /**
+     * Consumes scoped texture borrows synchronously. The caller keeps all associated leases pinned
+     * until this method returns; neither this renderer nor Scene retains the bindings.
+     */
+    public static Frame render(
+            Scene scene,
+            Camera camera,
+            int width,
+            int height,
+            List<TerrainTextureBinding> textures,
+            BooleanSupplier canceled) {
+        var bindings = new TerrainTextureBinding[scene.surfaces.size()];
+        for (var binding : textures) {
+            int ordinal = binding.metadata().tileOrdinal();
+            if (ordinal < 0 || ordinal >= bindings.length || bindings[ordinal] != null) {
+                throw new IllegalArgumentException("Invalid terrain texture surface ordinal");
+            }
+            bindings[ordinal] = binding;
+        }
         if (width < 1 || height < 1 || width > 1200 || height > 800) {
             throw new IllegalArgumentException("Frame exceeds world preview bounds");
         }
@@ -72,7 +94,9 @@ public final class TerrainRenderer {
         long triangles = 0, work = 0;
         var clipped = new double[12];
         var original = new double[9];
+        int surfaceOrdinal = 0;
         for (var surface : scene.surfaces) {
+            var texture = bindings[surfaceOrdinal++];
             var vertices = surface.vertices;
             var indices = surface.triangles;
             double[] transformed = new double[vertices.length];
@@ -181,7 +205,20 @@ public final class TerrainRenderer {
                             int p = y * width + x;
                             if (z < depth[p]) {
                                 depth[p] = z;
-                                pixels[p] = color;
+                                int shaded = color;
+                                if (texture != null) {
+                                    double distance = 1 / inverse;
+                                    double horizontal = (x + .5 - width * .5) * distance / focal;
+                                    double vertical = (height * .5 - y - .5) * distance / focal;
+                                    double forward = cp * distance - sp * vertical;
+                                    double nativeX = camera.x() + cy * forward - sy * horizontal;
+                                    double nativeY = camera.y() + sy * forward + cy * horizontal;
+                                    int sample = texture.sample(nativeX, nativeY);
+                                    if ((sample >>> 24) == 255) {
+                                        shaded = textureColor(sample, far);
+                                    }
+                                }
+                                pixels[p] = shaded;
                             }
                         }
                     }
@@ -239,6 +276,14 @@ public final class TerrainRenderer {
                 g = (int) (((116 + rock * 10) * light) * (1 - fog) + 184 * fog),
                 bColor = (int) (((68 + rock * 57) * light) * (1 - fog) + 196 * fog);
         return 0xff000000 | r << 16 | g << 8 | bColor;
+    }
+
+    private static int textureColor(int sample, double distance) {
+        double fog = Math.clamp((distance - 600) / 1600, 0, .85);
+        int r = (int) (((sample >>> 16) & 255) * (1 - fog) + 153 * fog);
+        int g = (int) (((sample >>> 8) & 255) * (1 - fog) + 184 * fog);
+        int b = (int) ((sample & 255) * (1 - fog) + 196 * fog);
+        return 0xff000000 | r << 16 | g << 8 | b;
     }
 
     private static int sky(int y, int height) {
