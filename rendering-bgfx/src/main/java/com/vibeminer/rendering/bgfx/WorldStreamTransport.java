@@ -673,8 +673,8 @@ public final class WorldStreamTransport {
                 if (error != null
                         && !(error instanceof PreparationRefusal refusal
                                 && refusal.identity == destination.identity)
-                        && !(error instanceof java.util.concurrent.CancellationException
-                                && (reservation.stop || closing || owner.stopping()))) {
+                        && !WorldStreamProducerCancellation.cleanCancellation(
+                                error, reservation.stop || closing || owner.stopping())) {
                     throw WorldStreamLaunchOwner.Handle.detached(error);
                 }
                 if (error != null
