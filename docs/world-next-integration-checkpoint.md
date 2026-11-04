@@ -97,3 +97,23 @@ is still the latest published version; no tag was moved.
 Windows candidate shader workflow PR161, integrated here28d778b, generates actual
 DX11 artifacts with explicit opt-in. Eight-profile candidate completion is pending
 that job; six-test-resource/default-forty verification remains unchanged.
+
+Next integrated milestones:
+
+- Handmade BC3 terrain fix1dfa625e/6a371ad6: exact reported tuple now passes both
+  decoder and streaming packet guards, with v3 cache identity and nine-mip/source
+  atlas/packet regressions. Two independent reviewers approve; causal old-packet
+  restoration fails as expected. Ready-release PR162 includes the fix. Final
+  release sourcef68bda0f passes476tasks (107executed), actual stream owner proof
+  refs0/pending0; new hosted tests and five-platform dry run41882189215 run at
+  documentation head0bbe081e. Earlier6c418ee hosted Linux/Windows/macOS passed.
+- Actual Windows DX11 candidate binaries993f1147 have independently verified
+  pinned compiler/input provenance; all6 previous binaries unchanged. Raw digest
+  generation/checking and targeted LF checkout attributes fix CRLF corruption.
+  Root bgfx/Vulkan checks pass41tasks/19readbacks with eight test-only candidates.
+  No Windows GPU rendering claim or production forty-blob change.
+- Fixed global frame ownerd45aaf21+66a5ab44 is independently approved after sticky
+  native/cleanup-error hardening and deterministic timeout/free-failure tests.
+  Native independent proof passes12frames/48pixel oracles,3pending tickets and
+  actual read-issued-then-Error shutdown safety. Root integrated proof is running.
+  Design2f185ef4 separately pins explicit GLOBAL child/parent protocol; no GUI route.

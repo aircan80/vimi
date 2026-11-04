@@ -36,5 +36,5 @@ source/atlas qualification and the textured streaming packet roundtrip, while
 rejecting unreviewed handmade tuples. No acquired game texture is committed. The new
 regression reproduced the original BC2-only refusal before the fix.
 
-Status: implemented locally; independent review and release-candidate integration
-pending. Actual reported texture files and macOS runtime have not been rerun here.
+Status: independently reviewed and integrated into the alpha.22 candidate,
+PR162; final platform validation/publication pending. Actual reported texture files and macOS runtime have not been rerun here.
