@@ -46,6 +46,7 @@ final class GpuFramePipeline implements AutoCloseable {
     private final GpuFrameFile frames;
     private final BgfxModelRenderer renderer;
     private final BgfxTerrainRenderer terrainRenderer;
+    private final ColdWorldWmoOwner wmoOwner;
     private final Set<Integer> qualified;
     private final Slot[] slots = new Slot[3];
     private final ByteBuffer flipped;
@@ -85,7 +86,33 @@ final class GpuFramePipeline implements AutoCloseable {
             GpuFrameFile frames,
             BooleanSupplier canceled)
             throws IOException {
+        this(model, qualified, terrain, textures, null, null, null, frames, canceled);
+    }
+
+    GpuFramePipeline(
+            GpuTerrainSceneFile.Decoded base,
+            GpuTerrainTextureAnnex.Decoded textures,
+            java.nio.file.Path wmoAnnex,
+            ColdWorldWmoOwner wmoOwner,
+            GpuFrameFile frames,
+            BooleanSupplier canceled)
+            throws IOException {
+        this(null, Set.of(), base.scene(), textures, base, wmoAnnex, wmoOwner, frames, canceled);
+    }
+
+    private GpuFramePipeline(
+            GpuModelScene model,
+            Set<Integer> qualified,
+            TerrainScene terrain,
+            GpuTerrainTextureAnnex.Decoded textures,
+            GpuTerrainSceneFile.Decoded boundBase,
+            java.nio.file.Path wmoAnnex,
+            ColdWorldWmoOwner wmoOwner,
+            GpuFrameFile frames,
+            BooleanSupplier canceled)
+            throws IOException {
         this.frames = frames;
+        this.wmoOwner = wmoOwner;
         this.qualified = Set.copyOf(qualified);
         if (terrain != null
                 && (frames.maxWidth() > BgfxTerrainRenderer.MAX_WIDTH
@@ -116,11 +143,17 @@ final class GpuFramePipeline implements AutoCloseable {
                 slots[i] = new Slot(capacity);
             }
             flip = MemoryUtil.memAlloc(capacity);
+            if (wmoOwner != null) {
+                wmoOwner.attempt(wmoAnnex, boundBase, canceled);
+            }
         } catch (RuntimeException | Error failure) {
             for (var slot : slots) {
                 if (slot != null) {
                     MemoryUtil.memFree(slot.pixels);
                 }
+            }
+            if (flip != null) {
+                MemoryUtil.memFree(flip);
             }
             closeRenderer();
             throw failure;
@@ -158,6 +191,9 @@ final class GpuFramePipeline implements AutoCloseable {
         }
         if (view instanceof GpuWorldRequest world) {
             terrainRenderer.render(world.camera(), width, height);
+            if (wmoOwner != null) {
+                wmoOwner.draw(world.camera(), width, height);
+            }
         } else {
             var model = (GpuViewRequest) view;
             renderer.draw(
@@ -319,6 +355,9 @@ final class GpuFramePipeline implements AutoCloseable {
     }
 
     private void closeRenderer() {
+        if (wmoOwner != null) {
+            wmoOwner.close();
+        }
         if (renderer != null) {
             renderer.close();
         }
