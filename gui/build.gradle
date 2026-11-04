@@ -547,3 +547,25 @@ tasks.register('worldStreamSourceControllerTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldStreamSourceControllerTest'
 }
 check.dependsOn worldStreamSourceControllerTest
+
+// Off-FX display feedback and actual legacy-work retirement, without live data or a GPU.
+tasks.register('worldStreamBackgroundTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldStreamBackgroundTest'
+}
+check.dependsOn worldStreamBackgroundTest
+
+tasks.register('legacyWorldActivityTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.LegacyWorldActivityTest'
+}
+check.dependsOn legacyWorldActivityTest
+
+// Authored CPU failure/retirement checks require a display; no live assets or GPU child.
+tasks.register('worldCpuRetirementUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldCpuRetirementUiTest'
+}
