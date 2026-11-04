@@ -189,6 +189,8 @@ final class WorldStreamSourceController {
             new LinkedHashMap<>();
     private boolean initialBlocked;
     private long initialRetryAt, blockedAt;
+    private boolean blockedOnMaterialPool;
+    private long sourceRetirementRevision, blockedSourceRetirement;
     private long blockedCapacity = -1, blockedPresentation = -1, blockedDemand = -1;
     private volatile Throwable terminal;
     private volatile String unavailableDetail;
@@ -531,6 +533,9 @@ final class WorldStreamSourceController {
                         wake.set(true);
                         return;
                     }
+                    // This refusal's own unused-credit ACK is not a source-pool wakeup.
+                    blockedOnMaterialPool = origin != null && origin.site().equals("MATERIAL_POOL");
+                    blockedSourceRetirement = sourceRetirementRevision;
                     blockedAt = clock.getAsLong();
                     blockedCapacity = session.capacityRevision();
                     synchronized (lock) {
@@ -616,8 +621,10 @@ final class WorldStreamSourceController {
             return;
         }
         synchronized (lock) {
-            if (blockedCapacity == session.capacityRevision()
-                    && blockedPresentation == presentationRevision
+            if ((blockedOnMaterialPool || blockedCapacity == session.capacityRevision())
+                    && (blockedOnMaterialPool
+                            ? blockedSourceRetirement == sourceRetirementRevision
+                            : blockedPresentation == presentationRevision)
                     && blockedDemand == demandRevision
                     && clock.getAsLong() - blockedAt < RETRY_NANOS) return;
         }
@@ -676,6 +683,7 @@ final class WorldStreamSourceController {
                 publish(Phase.WAITING_CAPACITY, "Waiting for GPU upload capacity");
                 return;
             }
+            blockedOnMaterialPool = false;
             pending = new Pending(tile, reservation.orElseThrow(), source, scope);
             pending.result = pending.reservation.produce(pending.producer);
             pending.result.whenComplete((ignored, failure) -> kick());
@@ -871,6 +879,7 @@ final class WorldStreamSourceController {
         }
         for (var entry : remove) {
             entry.source().close();
+            sourceRetirementRevision++;
             entries.remove(entry.resident());
         }
     }

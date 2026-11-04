@@ -117,6 +117,11 @@ public final class AuthoredWorldControllerChild {
                     content = commit.next();
                     if(!state.available) state.grant();
                 } else if (command instanceof WorldStreamControl.CancelUnused cancel) {
+                    var holdUnused = directory.getParent().resolve("authored-hold-unused-credit");
+                    if (Files.exists(holdUnused)) {
+                        Files.writeString(directory.getParent().resolve("authored-held-unused-credit"), "held");
+                        while (Files.exists(holdUnused)) Thread.sleep(2);
+                    }
                     state.canceled(cancel.transaction(), cancel.lease());
                 } else if (command instanceof WorldStreamControl.Cancel cancel) {
                     state.canceled(cancel.transaction(), state.lease);

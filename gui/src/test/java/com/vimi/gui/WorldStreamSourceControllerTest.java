@@ -47,6 +47,7 @@ public final class WorldStreamSourceControllerTest {
         missingNearestIsFiniteUnavailableWithoutFillingOutputUnion();
         heldPresentationBackpressuresTwelveUniqueOwnersAndKeepsFinalFrame();
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
+        sameResidentCameraFrameDoesNotRetryMaterialPool();
         queuedGpuOwnerLateCloseIsPartOfControllerDrain();
         closeDuringActualInitialWdtQualificationIsCleanAndWaitsSourceDrain();
     }
@@ -728,26 +729,74 @@ public final class WorldStreamSourceControllerTest {
         }
     }
 
+    private static void sameResidentCameraFrameDoesNotRetryMaterialPool() throws Exception {
+        var fixture=new Fixture(new AuthoredTerrainSource.Files(),2);
+        AutoCloseable held=null;
+        try {
+            fixture.start();fixture.until(() -> fixture.controller.snapshot().seed()!=null);
+            fixture.camera(1);
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
+            held=AuthoredTerrainPoolPressure.holdAvailable(fixture.pool);
+            fixture.controller.neighborhood(fixture.tiles);
+            var blocked=WorldStreamSourceController.class.getDeclaredField("blockedOnMaterialPool");blocked.setAccessible(true);
+            fixture.until(() -> {try{return blocked.getBoolean(fixture.controller)
+                    && fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.WAITING_CAPACITY;}
+                    catch(IllegalAccessException e){throw new AssertionError(e);}});
+            var ticket=fixture.gpu.session.getClass().getDeclaredField("tile");ticket.setAccessible(true);
+            Object refused=ticket.get(fixture.gpu.session);
+            var sequence=WorldStreamSourceController.class.getDeclaredField("acceptedSequence");sequence.setAccessible(true);
+            long before=sequence.getLong(fixture.controller);
+            fixture.camera(2);
+            fixture.untilPresented(() -> {try{return sequence.getLong(fixture.controller)>before;}
+                    catch(IllegalAccessException e){throw new AssertionError(e);}});
+            fixture.pump();
+            var worker=WorldStreamSourceController.class.getDeclaredField("worker");worker.setAccessible(true);
+            ((java.util.concurrent.ExecutorService)worker.get(fixture.controller)).submit(() -> {}).get(3,TimeUnit.SECONDS);
+            check(ticket.get(fixture.gpu.session)==refused,
+                    "Accepted same-resident camera pixels release no pool owner and must not reopen source pressure");
+        } finally {if(held!=null)held.close();fixture.close();}
+    }
+
     @SuppressWarnings("try")
     private static void poolReleaseRetriesWithoutDemandOrParentCapacityChange() throws Exception {
         var fixture = new Fixture(new AuthoredTerrainSource.Files(), 1);
         var held = AuthoredTerrainPoolPressure.hold(fixture.pool);
         try {
+            Files.writeString(fixture.directory.resolve("authored-hold-unused-credit"), "hold");
             fixture.start();
             fixture.until(
                     () ->
                             fixture.controller.snapshot().phase()
                                     == WorldStreamSourceController.Phase.WAITING_CAPACITY);
-            // Let both refusal/unused-credit acknowledgements settle without advancing retry time.
-            for (int i = 0; i < 50; i++) {
-                fixture.pump();
-                Thread.sleep(2);
-            }
+            fixture.until(() -> Files.exists(fixture.directory.resolve("authored-held-unused-credit")));
+            var poolBlockedField=WorldStreamSourceController.class.getDeclaredField("blockedOnMaterialPool");
+            poolBlockedField.setAccessible(true);
+            check(poolBlockedField.getBoolean(fixture.controller),
+                    "Actual clean source refusal identifies MATERIAL_POOL, not generic parent pressure");
+            var reservationField=fixture.gpu.session.getClass().getDeclaredField("tile");
+            reservationField.setAccessible(true);
+            Object refusedReservation=reservationField.get(fixture.gpu.session);
+            long beforeCredit=fixture.gpu.session.capacityRevision();
+            Files.delete(fixture.directory.resolve("authored-hold-unused-credit"));
+            fixture.until(() -> fixture.gpu.session.capacityRevision()>beforeCredit);
+            // Process the late CREDIT causally, then fence the actual controller actor.
+            fixture.pump();
+            var workerField=WorldStreamSourceController.class.getDeclaredField("worker");
+            workerField.setAccessible(true);
+            ((java.util.concurrent.ExecutorService)workerField.get(fixture.controller))
+                    .submit(() -> {}).get(3,TimeUnit.SECONDS);
+            check(reservationField.get(fixture.gpu.session)==refusedReservation,
+                    "Refusal's own late parent credit must not churn another material attempt at frozen clock");
             long capacity = fixture.gpu.session.capacityRevision();
             held.close();
             check(
                     fixture.gpu.session.capacityRevision() == capacity,
                     "Pool release itself sends no parent capacity event");
+            fixture.pump();
+            ((java.util.concurrent.ExecutorService)workerField.get(fixture.controller))
+                    .submit(() -> {}).get(3,TimeUnit.SECONDS);
+            check(reservationField.get(fixture.gpu.session)==refusedReservation,
+                    "Settled parent work and released pool alone do not bypass the frozen retry clock");
             fixture.clock.set(600_000_000L);
             fixture.until(() -> fixture.controller.snapshot().seed() != null);
             fixture.camera(1);
@@ -759,6 +808,7 @@ public final class WorldStreamSourceControllerTest {
                     fixture.pool.stats().leaseClaims() == 1,
                     "Bounded retry recovers actual source material without new demand");
         } finally {
+            Files.deleteIfExists(fixture.directory.resolve("authored-hold-unused-credit"));
             held.close();
             fixture.close();
         }

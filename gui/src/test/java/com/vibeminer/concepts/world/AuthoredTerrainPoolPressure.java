@@ -6,6 +6,18 @@ import java.util.ArrayList;
 public final class AuthoredTerrainPoolPressure {
     private AuthoredTerrainPoolPressure() {}
 
+    public static AutoCloseable holdAvailable(TerrainAtlasPool pool) {
+        var held = new ArrayList<TerrainAtlasPool.Reservation>();
+        try {
+            java.util.Optional<TerrainAtlasPool.Reservation> next;
+            while ((next = pool.reserve()).isPresent()) held.add(next.orElseThrow());
+        } catch (RuntimeException | Error failure) {
+            held.forEach(TerrainAtlasPool.Reservation::close);
+            throw failure;
+        }
+        return () -> held.forEach(TerrainAtlasPool.Reservation::close);
+    }
+
     public static AutoCloseable hold(TerrainAtlasPool pool) {
         var held = new ArrayList<TerrainAtlasPool.Reservation>();
         try {
