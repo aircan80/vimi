@@ -44,7 +44,8 @@ successful bounded complete selected-row scan.
 During scope creation, first scan validates the full unique selected row and
 captures its stamp. Read/parse the checked WDT/MAID as today, explicitly retire
 that phase's input, then open a fresh native capture and revalidate the receipt
-stamp with zero row reads. Equal stamp proves that the original completed selected
+stamp with zero decoded/data ordinal reads. The fresh capture must also pass the
+bounded EOF capability probe below. Equal stamp proves that the original completed selected
 row/uniqueness proof still belongs to the same immutable source graph. Any change
 rejects this in-progress scope; it does not rescan and silently publish a different
 binding under the old WDT work.
@@ -57,6 +58,18 @@ stamp invalidates the old scope immediately and requires an explicit replacement
 scope/session; do not repair its proof or silently switch bindings. Unknown,
 unsupported, limit-refused or unavailable capture cannot reuse the old stamp and
 must reject new preparation while the last accepted image may remain visible.
+
+A matching receipt alone does not prove that the new handle supports the optional
+bounded API. On every fresh capture used for stamp reuse, make exactly one
+`readOrdinalPage(receipt.rowCount(), 1, READ_LIMITS, token)` EOF metadata probe.
+Require READ, the same graph identity, firstOrdinal=rowCount, zero rows, zero
+cellIssues and nextOrdinal=null. Unsupported default, canceled/closed/invalidated
+or LIMIT_EXCEEDED refuses new preparation, even with an equal receipt. Never use
+the legacy method as fallback or reflection to infer implementation capability.
+For the actual native handle this count-zero path decodes no ordinal/record and
+does no RecordFile payload IO. Report one bounded EOF API probe, not zero API
+calls. The initial complete strict scan established that the same immutable graph's
+actual rows fit the policy; the new probe validates the fresh handle's capability.
 
 Fresh capture remains mandatory on every operation: it is responsible for current
 source/root/table identity and native certificate validation. No TTL, cached old
@@ -85,14 +98,17 @@ freshness and immutable-graph guarantees. Required authored tests:
 - Existing genuine changed-Map-row native fixture, forged caller WDT, all-eight
   MAID mismatch, changed WDT CK and stale/foreign/closed token negatives still fail.
 - Held fresh capture, source cancellation/close and absent bounded/native
-  capability cannot fall back to unchecked cached success.
+  capability cannot fall back to unchecked cached success. Include a fresh wrapper
+  returning a genuine unchanged receipt but default/explicit Unsupported bounded
+  API; equal stamp must still reject. EOF wrong identity/ordinal, nonempty
+  rows/issues/next, closed/canceled/LIMIT responses each reject.
 
-Instrument capture opens, ordinal reads and source-stage elapsed time outside the
+Instrument capture opens, bounded EOF probes, actual ordinal reads and source-stage elapsed time outside the
 native owner. Compare the baseline engine and candidate using the same authored
 large Map graph and a private prepared-game source, with unchanged scopes and
 source-change cases. Report row/capture work counts plus median/p95/max elapsed
-preparation for fixed repeated runs. The acceptance gate is zero repeated ordinal
-reads for a stamp-equal scope, unchanged freshness negatives and bounded complete
+preparation for fixed repeated runs. The acceptance gate is exactly one successful bounded EOF metadata probe and
+zero repeated decoded/data ordinal reads for a stamp-equal scope, unchanged freshness negatives and bounded complete
 owner drain. An observed lower preparation time is diagnostic evidence; this
 stage cannot establish game-like frame pacing until the persistent renderer and
 GUI coordinator are wired and tested separately.
