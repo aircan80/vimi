@@ -2031,8 +2031,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
             return;
         }
         if (streamingRetirement.isCompletedExceptionally() || legacyRetirement.isCompletedExceptionally()) {
-            streamingUnavailable(streamingRetirement.isCompletedExceptionally()
-                    ? streamingRetirement.exceptionNow() : legacyRetirement.exceptionNow());
+            streamingUnavailable(WorldDiagnostics.failureOf(
+                    streamingRetirement.isCompletedExceptionally() ? streamingRetirement : legacyRetirement));
             return;
         }
         streamingPaused = false;

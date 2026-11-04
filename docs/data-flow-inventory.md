@@ -155,7 +155,7 @@ and [EgLinkRepository](../eg-link/src/main/java/com/vibeminer/eglink/EgLinkRepos
   before sharing it; deleting the library does not necessarily delete those reports.
 - World failure records (`com.vimi.gui.World`, `WorldStreamTransport`) contain
   bounded exception messages, code locations, helper pid/exit status and a sanitized
-  40-line helper stderr tail; URL query strings are redacted and no payload bytes or
+  40-line helper stderr tail; URL query strings and control characters are redacted and no payload bytes or
   keys are recorded. See [world-diagnostics-checkpoint.md](world-diagnostics-checkpoint.md).
 
 Evidence: [GpuPreviewService](../gui/src/main/java/com/vimi/gui/GpuPreviewService.java),

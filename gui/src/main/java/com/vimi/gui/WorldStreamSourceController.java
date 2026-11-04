@@ -403,6 +403,7 @@ final class WorldStreamSourceController {
         }
         try { qualificationCancellation.cancel(); }
         catch(RuntimeException|Error cancelFailure) {
+            WorldDiagnostics.warn("World qualification cancellation failed", cancelFailure);
             synchronized(lock) {
                 if(terminal==null) terminal=cancelFailure;
                 else if(terminal!=cancelFailure) terminal.addSuppressed(cancelFailure);
@@ -965,9 +966,11 @@ final class WorldStreamSourceController {
         if (pending != null) pending.producer.close();
         if (!physical.isDone()) return;
         Throwable failure = terminal;
+        boolean retirementProblem = false;
         try {
             physical.join();
         } catch (RuntimeException problem) {
+            retirementProblem = true;
             if (failure == null) failure = problem;
             else failure.addSuppressed(problem);
         }
@@ -982,6 +985,7 @@ final class WorldStreamSourceController {
             try {
                 entry.source().close();
             } catch (RuntimeException | Error problem) {
+                retirementProblem = true;
                 if (failure == null) failure = problem;
                 else failure.addSuppressed(problem);
             }
@@ -998,7 +1002,7 @@ final class WorldStreamSourceController {
         }
         // The original terminal failure was logged when it occurred; log again only for new
         // retirement problems so a hung physical close cannot hide the first cause.
-        if (failure != null && (failure != terminal || failure.getSuppressed().length > 0))
+        if (failure != null && retirementProblem)
             WorldDiagnostics.warn("World viewer retired after failure", failure);
         publish(
                 failure != null

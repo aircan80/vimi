@@ -12,9 +12,10 @@ public final class WorldDiagnosticsTest {
         redactsUrlQueriesAndControlCharacters();
         cancellationIsLifecycleNotAFault();
         cyclicCausesTerminate();
-        originalRetirementFailureSurvivesIntoBlockedInventoryRequests();
-        System.out.println("World diagnostics: cause chains, bounds, redaction, cancellation and"
-                + " retirement reasons passed");
+        retirementBlockedCarriesTheOriginalReason();
+        untrustedExceptionAccessorsAreNeverInvoked();
+        System.out.println("World diagnostics: cause chains, bounds, redaction, cancellation,"
+                + " untrusted accessors and retirement reasons passed");
     }
 
     private static void assertTrue(boolean value, String... message) {
@@ -60,6 +61,36 @@ public final class WorldDiagnosticsTest {
         assertFalse(WorldDiagnostics.brief(failure).contains("secret"));
     }
 
+    private static void untrustedExceptionAccessorsAreNeverInvoked() {
+        final class Hostile extends RuntimeException {
+            private static final long serialVersionUID = 1L;
+
+            @Override
+            public String getMessage() {
+                throw new AssertionError("message accessor invoked");
+            }
+
+            @Override
+            public synchronized Throwable getCause() {
+                throw new AssertionError("cause accessor invoked");
+            }
+
+            @Override
+            public StackTraceElement[] getStackTrace() {
+                throw new AssertionError("stack accessor invoked");
+            }
+        }
+        var hostile = new CompletionException("wrapper", new Hostile());
+        assertTrue(WorldDiagnostics.summary(hostile).contains("Hostile"));
+        assertEquals("Hostile", WorldDiagnostics.brief(hostile));
+        assertFalse(WorldDiagnostics.cancellation(hostile));
+        assertNull(WorldDiagnostics.retirementMessage(hostile));
+        WorldDiagnostics.warn("hostile", hostile);
+        var line = new IOException("a\u2028b\u0085c");
+        assertFalse(WorldDiagnostics.summary(line).contains("\u2028"));
+        assertFalse(WorldDiagnostics.summary(line).contains("\u0085"));
+    }
+
     private static void cancellationIsLifecycleNotAFault() {
         assertTrue(WorldDiagnostics.cancellation(
                 new CompletionException(new CancellationException("closed"))));
@@ -75,7 +106,7 @@ public final class WorldDiagnosticsTest {
         WorldDiagnostics.brief(a);
     }
 
-    private static void originalRetirementFailureSurvivesIntoBlockedInventoryRequests() {
+    private static void retirementBlockedCarriesTheOriginalReason() {
         var original = new IOException("World child exited without successful CLOSED (exit 134)");
         var retirement = CompletableFuture.allOf(CompletableFuture.failedFuture(original));
         Throwable observed = retirement.handle((ignored, failure) -> failure).join();

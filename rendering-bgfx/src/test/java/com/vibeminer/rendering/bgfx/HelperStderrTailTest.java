@@ -46,6 +46,16 @@ class HelperStderrTailTest {
     }
 
     @Test
+    void redactsUrlQueriesInCompleteAndPartialLines() {
+        var tail = new HelperStderrTail();
+        feed(tail, "GET https://cdn.invalid/a?sig=secret1 failed\nhttp://x.invalid/b#tok=secret2");
+        String snapshot = tail.snapshot();
+        assertFalse(snapshot.contains("secret"), snapshot);
+        assertTrue(snapshot.contains("https://cdn.invalid/a?<redacted> failed"), snapshot);
+        assertEquals("a b", HelperStderrTail.redact("a\u2028b"));
+    }
+
+    @Test
     void emptyTailReportsEmpty() {
         var tail = new HelperStderrTail();
         assertTrue(tail.isEmpty());

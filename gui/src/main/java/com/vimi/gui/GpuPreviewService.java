@@ -583,7 +583,7 @@ final class GpuPreviewService {
                     }
                     if (!failureShown && protocol.isCompletedExceptionally()) {
                         failureShown = true;
-                        Throwable reason = protocol.exceptionNow();
+                        Throwable reason = WorldDiagnostics.failureOf(protocol);
                         WorldDiagnostics.warn("GPU World protocol failed", reason);
                         request.publish(State.FAILED, "GPU World unavailable ("
                                 + WorldDiagnostics.brief(reason) + "); waiting for renderer cleanup…");

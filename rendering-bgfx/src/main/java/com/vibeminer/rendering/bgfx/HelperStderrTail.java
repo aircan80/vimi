@@ -1,6 +1,7 @@
 package com.vibeminer.rendering.bgfx;
 
 import java.util.ArrayDeque;
+import java.util.regex.Pattern;
 
 /**
  * Bounded, sanitized tail of native helper stderr. Only the last lines are retained for an
@@ -10,6 +11,10 @@ import java.util.ArrayDeque;
 public final class HelperStderrTail {
     public static final int MAX_LINES = 40;
     public static final int MAX_LINE_CHARS = 240;
+
+    private static final Pattern QUERY =
+            Pattern.compile("(?i)(\\b[a-z][a-z0-9+.-]*://[^\\s?#]*)[?#]\\S*");
+    private static final Pattern CONTROL = Pattern.compile("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]");
 
     private final ArrayDeque<String> lines = new ArrayDeque<>(MAX_LINES);
     private final StringBuilder current = new StringBuilder(MAX_LINE_CHARS);
@@ -43,7 +48,9 @@ public final class HelperStderrTail {
             result.append(line).append('\n');
         }
         if (!current.isEmpty()) {
-            result.append(current).append(currentTruncated ? "..." : "").append('\n');
+            result.append(redact(current.toString()))
+                    .append(currentTruncated ? "..." : "")
+                    .append('\n');
         }
         return result.toString();
     }
@@ -52,12 +59,20 @@ public final class HelperStderrTail {
         return lines.isEmpty() && current.isEmpty() && omittedLines == 0;
     }
 
+    /**
+     * Replaces control/line-separator characters and URL query strings or fragments, which can be
+     * transient bearer capabilities.
+     */
+    public static String redact(String text) {
+        return QUERY.matcher(CONTROL.matcher(text).replaceAll(" ")).replaceAll("$1?<redacted>");
+    }
+
     private void endLine() {
         if (lines.size() == MAX_LINES) {
             lines.removeFirst();
             omittedLines++;
         }
-        lines.addLast(current + (currentTruncated ? "..." : ""));
+        lines.addLast(redact(current.toString()) + (currentTruncated ? "..." : ""));
         current.setLength(0);
         currentTruncated = false;
     }

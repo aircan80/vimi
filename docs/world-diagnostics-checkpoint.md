@@ -25,7 +25,12 @@ rendering.
   lifecycle, protocol, controller, frame-upload, GPU-request, retirement and
   catalog/inventory/tile request failures. Each record gives the cause chain (up to
   6 causes, messages cut to 200 characters, at most 2 KiB) and up to 4 code
-  locations. Cancellation is not logged. Logging is limited to 30 records a minute,
+  locations. Only JDK exception classes have their message, cause, suppressed and
+  stack accessors read. Any other failure contributes just its class name, which
+  follows the existing detached-failure rule in the World lifecycle. Many request
+  failures are already detached to a class name upstream, so their records stay
+  brief. The helpers never throw into lifecycle or FX code. Cancellation is not
+  logged. Logging is limited to 30 records a minute,
   and the next record that gets through says how many were dropped.
 - **Original cause survives.** `WorldStreamGpuOwner` keeps the cause instead of
   replacing it. A queued request that is blocked because the previous World
@@ -39,8 +44,9 @@ rendering.
 
 Records contain exception types, bounded messages, code locations, pid/exit status
 and sanitized helper stderr. They never contain payload bytes, table rows or keys.
-URL query strings and fragments are replaced by `?<redacted>`, because signed
-query strings can be bearer capabilities. Helper stderr can still contain local
+In both the GUI records and the helper stderr tail, URL query strings and fragments
+are replaced by `?<redacted>`, because signed query strings can be bearer
+capabilities. Control and line-separator characters are replaced too. Helper stderr can still contain local
 paths, for example from a JVM crash notice. That matches the existing guidance in
 [data-flow-inventory.md](data-flow-inventory.md): review diagnostics before
 sharing them.
@@ -53,9 +59,11 @@ sharing them.
   - `WorldStreamTransportDiagnosticsTest` covers a helper crash with about 600 KB
     of stderr (exit code, failure, bounded tail), a clean CLOSED with no record,
     and a no-child start failure.
-- `:gui:worldDiagnosticsTest` covers cause-chain bounds, redaction, cancellation,
-  cyclic causes, and the original exit code surviving into a blocked inventory
-  request.
+- `:gui:worldDiagnosticsTest` covers cause-chain bounds, redaction (including
+  Unicode line separators), cancellation, cyclic causes, never calling accessors
+  on untrusted exceptions, and `RetirementBlocked` carrying the original exit
+  reason into the UI text. The `WorldView` inventory wiring itself is covered only
+  by the hosted UI tasks.
 
 ## Not in this slice (remaining for #166)
 

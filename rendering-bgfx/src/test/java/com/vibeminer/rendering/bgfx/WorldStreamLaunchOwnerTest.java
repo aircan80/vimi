@@ -501,6 +501,8 @@ class WorldStreamLaunchOwnerTest {
         volatile OutputStream output = new ByteArrayOutputStream();
         volatile InputStream input = new ByteArrayInputStream(new byte[0]);
         volatile InputStream error = new ByteArrayInputStream(new byte[0]);
+        final java.util.concurrent.CountDownLatch errorRequested =
+                new java.util.concurrent.CountDownLatch(1);
         private final ProcessHandle handle =
                 new ProcessHandle() {
                     @Override
@@ -580,6 +582,7 @@ class WorldStreamLaunchOwnerTest {
 
         @Override
         public InputStream getErrorStream() {
+            errorRequested.countDown();
             return error;
         }
 

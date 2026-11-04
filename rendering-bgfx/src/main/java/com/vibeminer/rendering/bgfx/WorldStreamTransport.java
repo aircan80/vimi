@@ -589,6 +589,7 @@ public final class WorldStreamTransport {
                             statusesDrained();
                         }
                     });
+            stderrAttached = true;
             handle.runWorker("stderr", () -> drainErrors(process));
             handle.runWorker("producer-files", () -> files(handle));
             handle.runWorker("frames", () -> pollFrames(handle));
@@ -1441,7 +1442,6 @@ public final class WorldStreamTransport {
             // Keep draining so the helper never blocks on a full pipe; retain only a bounded,
             // sanitized tail for an abnormal-exit log record.
             byte[] scratch = new byte[4096];
-            stderrAttached = true;
             var errors = process.getErrorStream();
             int read;
             while ((read = errors.read(scratch)) != -1) {
@@ -1476,7 +1476,10 @@ public final class WorldStreamTransport {
             if (cause != null) {
                 // Only the already detached, bounded transport message; never a nested chain.
                 text.append("; failure: ")
-                        .append(WorldStreamLaunchOwner.Handle.detached(cause).getMessage());
+                        .append(
+                                HelperStderrTail.redact(
+                                        WorldStreamLaunchOwner.Handle.detached(cause)
+                                                .getMessage()));
             }
             text.append(
                     !stderrAttached

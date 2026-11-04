@@ -21,7 +21,7 @@ final class WorldDiagnostics {
     private static final int MAX_FRAMES = 4;
     private static final int RECORDS_PER_MINUTE = 30;
     private static final Pattern QUERY = Pattern.compile("(?i)(\\b[a-z][a-z0-9+.-]*://[^\\s?#]*)[?#]\\S*");
-    private static final Pattern CONTROL = Pattern.compile("[\\p{Cntrl}\\p{Cf}]");
+    private static final Pattern CONTROL = Pattern.compile("[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]");
     private static final System.Logger LOG = System.getLogger("com.vimi.gui.World");
     private static final Object RATE = new Object();
     private static long windowStart;
@@ -41,71 +41,111 @@ final class WorldDiagnostics {
 
     /** UI text carrying the original retirement reason, or null for other failures. */
     static String retirementMessage(Throwable failure) {
-        var blocked = find(failure, RetirementBlocked.class);
-        return blocked == null ? null : "Previous World renderer did not shut down cleanly ("
-                + brief(blocked.getCause()) + "); reload the workspace.";
+        try {
+            var blocked = find(failure, RetirementBlocked.class);
+            return blocked == null ? null : "Previous World renderer did not shut down cleanly ("
+                    + brief(blocked.getCause()) + "); reload the workspace.";
+        } catch (Throwable unreadable) {
+            return null;
+        }
+    }
+
+    /**
+     * Only JDK (bootstrap) exception classes and this file's own type have trusted accessors.
+     * Other failures contribute their class name only: no overridable message, cause, suppressed
+     * or stack accessor is invoked on them, matching the World lifecycle's detached-failure rule.
+     */
+    private static boolean trusted(Throwable failure) {
+        Class<?> type = failure.getClass();
+        return type.getClassLoader() == null || type == RetirementBlocked.class;
+    }
+
+    private static Throwable cause(Throwable failure) {
+        return trusted(failure) ? failure.getCause() : null;
     }
 
     /** Cancellation is lifecycle, not a fault: unwrap completion wrappers to decide. */
     static boolean cancellation(Throwable failure) {
-        for (int i = 0; failure != null && i < MAX_CAUSES; i++) {
-            if (failure instanceof CancellationException) return true;
-            if (!(failure instanceof CompletionException || failure instanceof ExecutionException))
-                return false;
-            failure = failure.getCause();
+        try {
+            for (int i = 0; failure != null && i < MAX_CAUSES; i++) {
+                if (failure instanceof CancellationException) return true;
+                if (!(failure instanceof CompletionException || failure instanceof ExecutionException))
+                    return false;
+                failure = cause(failure);
+            }
+        } catch (Throwable unreadable) {
+            return false;
         }
         return false;
     }
 
-    /** Multi-cause bounded summary for the application log. */
+    /** Multi-cause bounded summary for the application log. Never throws. */
     static String summary(Throwable failure) {
         if (failure == null) return "no failure detail";
         var text = new StringBuilder();
-        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
-        Throwable root = failure;
-        for (int i = 0; failure != null && i < MAX_CAUSES && seen.add(failure); i++) {
-            if (i > 0) text.append(" | caused by ");
-            text.append(describe(failure));
-            if (failure.getSuppressed().length > 0)
-                text.append(" [+").append(failure.getSuppressed().length).append(" suppressed: ")
-                        .append(describe(failure.getSuppressed()[0])).append(']');
-            root = failure;
-            failure = failure.getCause();
-        }
-        var frames = root.getStackTrace();
-        for (int i = 0; i < Math.min(MAX_FRAMES, frames.length); i++) {
-            var frame = frames[i];
-            text.append(i == 0 ? " at " : " < ")
-                    .append(frame.getClassName()).append('.').append(frame.getMethodName())
-                    .append(':').append(frame.getLineNumber());
+        try {
+            Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+            Throwable root = failure;
+            for (int i = 0; failure != null && i < MAX_CAUSES && seen.add(failure); i++) {
+                if (i > 0) text.append(" | caused by ");
+                text.append(describe(failure));
+                if (trusted(failure) && failure.getSuppressed().length > 0)
+                    text.append(" [+").append(failure.getSuppressed().length).append(" suppressed: ")
+                            .append(describe(failure.getSuppressed()[0])).append(']');
+                root = failure;
+                failure = cause(failure);
+            }
+            var frames = trusted(root) ? root.getStackTrace() : new StackTraceElement[0];
+            for (int i = 0; i < Math.min(MAX_FRAMES, frames.length); i++) {
+                var frame = frames[i];
+                text.append(i == 0 ? " at " : " < ")
+                        .append(frame.getClassName()).append('.').append(frame.getMethodName())
+                        .append(':').append(frame.getLineNumber());
+            }
+        } catch (Throwable unreadable) {
+            text.append(" [failure detail unreadable]");
         }
         return cap(text.toString(), MAX_SUMMARY_CHARS);
     }
 
-    /** One short reason for UI status text: the innermost non-wrapper failure. */
+    /** One short reason for UI status text: the innermost non-wrapper failure. Never throws. */
     static String brief(Throwable failure) {
         if (failure == null) return "unknown reason";
         Throwable chosen = failure;
-        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
-        for (int i = 0; failure != null && i < MAX_CAUSES && seen.add(failure); i++) {
-            if (!(failure instanceof CompletionException || failure instanceof ExecutionException)
-                    || failure.getCause() == null) chosen = failure;
-            failure = failure.getCause();
-        }
         try {
-            String message = chosen.getMessage();
+            Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+            for (int i = 0; failure != null && i < MAX_CAUSES && seen.add(failure); i++) {
+                var next = cause(failure);
+                if (!(failure instanceof CompletionException || failure instanceof ExecutionException)
+                        || next == null) chosen = failure;
+                failure = next;
+            }
+            String message = trusted(chosen) ? chosen.getMessage() : null;
             return cap(message == null || message.isBlank()
                     ? chosen.getClass().getSimpleName() : clean(message), MAX_BRIEF_CHARS);
-        } catch (RuntimeException unreadable) {
+        } catch (Throwable unreadable) {
             return chosen.getClass().getSimpleName();
         }
     }
 
+    /** The failure of a completed future, or null; unlike exceptionNow, never throws. */
+    static Throwable failureOf(java.util.concurrent.CompletableFuture<?> future) {
+        try {
+            return future.handle((ignored, failure) -> failure).getNow(null);
+        } catch (Throwable unreadable) {
+            return unreadable;
+        }
+    }
+
     static <T extends Throwable> T find(Throwable failure, Class<T> type) {
-        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
-        for (int i = 0; failure != null && i < MAX_CAUSES && seen.add(failure); i++) {
-            if (type.isInstance(failure)) return type.cast(failure);
-            failure = failure.getCause();
+        try {
+            Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+            for (int i = 0; failure != null && i < MAX_CAUSES && seen.add(failure); i++) {
+                if (type.isInstance(failure)) return type.cast(failure);
+                failure = cause(failure);
+            }
+        } catch (Throwable unreadable) {
+            return null;
         }
         return null;
     }
@@ -117,8 +157,8 @@ final class WorldDiagnostics {
 
     /** As {@link #warn(String, Throwable)} with an already bounded, sanitized detail block. */
     static void warn(String context, Throwable failure, String detail) {
-        if (cancellation(failure)) return;
         try {
+            if (cancellation(failure)) return;
             long dropped;
             synchronized (RATE) {
                 long now = System.nanoTime();
@@ -138,18 +178,20 @@ final class WorldDiagnostics {
                     + summary(failure)
                     + (dropped == 0 ? "" : " (" + dropped + " earlier World records rate-limited)")
                     + (detail == null ? "" : "; " + detail));
-        } catch (RuntimeException | Error ignored) {
+        } catch (Throwable ignored) {
             // Diagnostics cannot interrupt World lifecycle or JavaFX delivery.
         }
     }
 
     private static String describe(Throwable failure) {
-        String message = failure.getMessage();
+        String message = trusted(failure) ? failure.getMessage() : null;
         return failure.getClass().getName()
                 + (message == null || message.isBlank() ? "" : ": " + cap(clean(message), MAX_MESSAGE_CHARS));
     }
 
     static String clean(String message) {
+        // Pre-truncate so a huge message cannot make regex work expensive on the FX thread.
+        if (message.length() > 4 * MAX_SUMMARY_CHARS) message = message.substring(0, 4 * MAX_SUMMARY_CHARS);
         return QUERY.matcher(CONTROL.matcher(message).replaceAll(" ")).replaceAll("$1?<redacted>");
     }
 

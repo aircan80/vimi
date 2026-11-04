@@ -48,13 +48,13 @@ class WorldStreamTransportDiagnosticsTest {
                 WorldStreamTransport.prepare(directory, spec)
                         .launch(
                                 arguments -> {
-                                    // Exit only after the parent has attached its drains.
+                                    // Exit only after the parent's stderr drain has started.
                                     child.killAllowed = false;
                                     Thread.ofVirtual()
                                             .start(
                                                     () -> {
                                                         try {
-                                                            Thread.sleep(200);
+                                                            child.errorRequested.await();
                                                         } catch (InterruptedException ignored) {
                                                             Thread.currentThread().interrupt();
                                                         }
