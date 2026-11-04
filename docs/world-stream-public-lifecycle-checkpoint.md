@@ -68,3 +68,20 @@ buffered CLOSED. It requires successful protocol completion and actual cleanup. 
 control making processExited run before status-finally fails with `Status after terminal`;
 the restored gate passes. A separate negative control interpreting failed drain as processExited
 fails the live-child advertised-input-retirement guard. Neither control requires native hardware.
+
+## Public timeout and fatal diagnostic publication
+
+The launch owner now exposes a side-effect-free view of its existing bounded-close future.
+Registering it does not request close. If an autonomous startup timeout enters close while the
+Starter remains held, the existing close deadline fails public initialization and completion,
+without waiting for actual drain. Actual resource drain, files and permit remain pending until
+the real Starter/child/workers finish. A package-private short timing seam lets the public test
+exercise 50ms startup plus 100ms close deadlines without weakening production ten/five-second
+settings. The fixture never explicitly requests close before observing failed initialization.
+
+Unexpected diagnostic encoding invokes no arbitrary Throwable accessor. Only exact JDK IOException,
+IllegalStateException and IllegalArgumentException classes retain their bounded message; unknown
+classes use their class name, never cause/message/toString. Starter/worker catch paths request close
+in finally around encoding. Session failure requests close before encoding or public future callbacks.
+Hostile Starter RuntimeException and worker IOException-subclass getMessage traps prove failure is
+recorded and cleanup happens without invoking those overrides.
