@@ -77,10 +77,12 @@ jobs:
         env:
           SQLITE_LIBRARY: ${{ steps.sqlite.outputs.library }}
           JAVAFX_REPOSITORY: ${{ steps.javafx.outputs.repository }}
+          JAVAFX_NATIVE: ${{ steps.javafx.outputs.native }}
         run: |
           args=()
           if [ -n "$JAVAFX_REPOSITORY" ]; then args+=("-PjavafxSdkRepository=$JAVAFX_REPOSITORY"); fi
-          ./gradlew check :gui:installDist "-PsqliteLibrary=$SQLITE_LIBRARY" "${args[@]}" --no-daemon --console=plain
+          if [ -n "$JAVAFX_NATIVE" ]; then args+=("-PjavafxNativeLibrary=$JAVAFX_NATIVE"); fi
+          ./gradlew check :gui:installDist "-PsqliteLibrary=$SQLITE_LIBRARY" "${args[@]}" --no-daemon --console=plain --stacktrace
       - name: Build installers and test packaged GUI
         env:
           SQLITE_LIBRARY: ${{ steps.sqlite.outputs.library }}

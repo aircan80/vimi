@@ -24,8 +24,8 @@ public final class TerrainRenderer {
 
         public Camera move(double forward, double strafe, double vertical) {
             return new Camera(
-                    x + Math.cos(yaw) * forward - Math.sin(yaw) * strafe,
-                    y + Math.sin(yaw) * forward + Math.cos(yaw) * strafe,
+                    x + Math.cos(yaw) * forward + Math.sin(yaw) * strafe,
+                    y + Math.sin(yaw) * forward - Math.cos(yaw) * strafe,
                     z + vertical,
                     yaw,
                     pitch);
@@ -188,7 +188,7 @@ public final class TerrainRenderer {
                         dy = vertices.get(at + 1) - camera.y(),
                         dz = vertices.get(at + 2) - camera.z(),
                         forward = cy * dx + sy * dy;
-                transformed[at] = -sy * dx + cy * dy;
+                transformed[at] = sy * dx - cy * dy;
                 transformed[at + 1] = cp * dz - sp * forward;
                 transformed[at + 2] = sp * dz + cp * forward;
             }
@@ -293,8 +293,8 @@ public final class TerrainRenderer {
                                     double horizontal = (x + .5 - width * .5) * distance / focal;
                                     double vertical = (height * .5 - y - .5) * distance / focal;
                                     double forward = cp * distance - sp * vertical;
-                                    double nativeX = camera.x() + cy * forward - sy * horizontal;
-                                    double nativeY = camera.y() + sy * forward + cy * horizontal;
+                                    double nativeX = camera.x() + cy * forward + sy * horizontal;
+                                    double nativeY = camera.y() + sy * forward - cy * horizontal;
                                     int sample = texture.sample(nativeX, nativeY);
                                     if ((sample >>> 24) == 255) {
                                         shaded = textureColor(sample, far);

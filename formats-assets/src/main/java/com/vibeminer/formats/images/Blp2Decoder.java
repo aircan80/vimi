@@ -16,7 +16,7 @@ import java.util.concurrent.CompletableFuture;
 
 /** Bounded BLP2 decoder. Authentication belongs to the caller; sources remain caller owned. */
 public final class Blp2Decoder {
-    public static final String REVISION = "blp2-rgba8-v2";
+    public static final String REVISION = "blp2-rgba8-v3";
     public static final int HEADER_BYTES = 148;
 
     private Blp2Decoder() {}
@@ -209,8 +209,21 @@ public final class Blp2Decoder {
                             + " is not supported.");
         }
         boolean handmade = flags == 2 && profile == MipProfile.DECLARED_HANDMADE_V1;
-        if (handmade && (encoding != Encoding.BC2 || depth != 8 || alpha != 1)) {
-            throw error("UNSUPPORTED", "Declared handmade v1 admits only the reviewed BC2 tuple.");
+        if (handmade
+                && !(depth == 8
+                        && (encoding == Encoding.BC2 && alpha == 1
+                                || encoding == Encoding.BC3 && alpha == 7))) {
+            throw error(
+                    "UNSUPPORTED",
+                    "Declared handmade v1 does not support colour encoding "
+                            + (header[8] & 255)
+                            + " ("
+                            + encoding
+                            + "), alpha depth "
+                            + depth
+                            + " and alpha encoding "
+                            + alpha
+                            + "; reviewed tuples are BC2/8/1 and BC3/8/7.");
         }
         if (!isMipFlags(flags) && !handmade) {
             throw error(

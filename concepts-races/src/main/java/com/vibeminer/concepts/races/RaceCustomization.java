@@ -5,14 +5,40 @@ import com.vibeminer.formats.db2.Db2Types;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 
 /** Known-player sample selection only; unknown unlock/prerequisite requirements are not guessed. */
 final class RaceCustomization {
-    record Selection(Set<Long> choices, Set<Long> allChoices) {
+    record Selection(
+            RaceMedia owner,
+            long raceId,
+            long classId,
+            long modelId,
+            Map<Long, Long> byOption,
+            Set<Long> choices,
+            Set<Long> allChoices) {
+        Selection(
+                RaceMedia owner,
+                long raceId,
+                long classId,
+                long modelId,
+                Map<Long, Long> byOption,
+                Set<Long> allChoices) {
+            this(owner, raceId, classId, modelId, byOption, Set.of(), allChoices);
+        }
+
         Selection {
-            choices = Set.copyOf(choices);
+            byOption = java.util.Collections.unmodifiableMap(new TreeMap<>(byOption));
+            choices = Set.copyOf(byOption.values());
             allChoices = Set.copyOf(allChoices);
+        }
+
+        void requireContext(RaceMedia media, long race, long characterClass, long model) {
+            if (owner != media || raceId != race || classId != characterClass || modelId != model) {
+                throw new IllegalArgumentException("Customization selection context changed");
+            }
         }
     }
 
@@ -75,6 +101,28 @@ final class RaceCustomization {
 
     Selection select(
             long raceId, long classId, long modelId, Cancellation token, List<String> issues) {
+        return select(raceId, classId, modelId, token, issues, Map.of());
+    }
+
+    Selection select(
+            long raceId,
+            long classId,
+            long modelId,
+            Cancellation token,
+            List<String> issues,
+            Map<Long, Long> requested) {
+        if (requested.size() > 4096) {
+            throw new IllegalArgumentException("Too many customization overrides");
+        }
+        var overrides = Map.copyOf(requested);
+        for (var entry : overrides.entrySet()) {
+            if (entry.getKey() < 1
+                    || entry.getKey() > 0xffffffffL
+                    || entry.getValue() < 1
+                    || entry.getValue() > 0xffffffffL) {
+                throw new IllegalArgumentException("Invalid customization IDs");
+            }
+        }
         var options = media.data("ChrCustomizationOption", 4096, token, issues);
         var choices = media.data("ChrCustomizationChoice", 40000, token, issues);
         var requirements = media.data("ChrCustomizationReq", 4096, token, issues);
@@ -112,7 +160,7 @@ final class RaceCustomization {
         if (bit < 0 || bit > 63) {
             throw races.unsupported("Unreviewed playable-race bit");
         }
-        var selected = new HashSet<Long>();
+        var selected = new TreeMap<Long, Long>();
         var all = new HashSet<Long>();
         for (var option : options.rows) {
             token.check();
@@ -150,16 +198,136 @@ final class RaceCustomization {
                                                             requirements,
                                                             prerequisites,
                                                             issues))
+                            .filter(
+                                    row ->
+                                            !overrides.containsKey(option.id())
+                                                    || row.id() == overrides.get(option.id()))
                             .findFirst();
+            if (overrides.containsKey(option.id()) && match.isEmpty()) {
+                throw options.unsupported("Requested choice is not a known eligible option member");
+            }
             if (match.isPresent()) {
-                selected.add(match.get().id());
+                selected.put(option.id(), match.get().id());
             } else {
                 note(
                         issues,
                         "Some customization options have no known eligible readable sample choice.");
             }
         }
-        return new Selection(selected, all);
+        if (!selected.keySet().containsAll(overrides.keySet())) {
+            throw options.unsupported("Requested option is not eligible for this model");
+        }
+        return new Selection(media, raceId, classId, modelId, selected, all);
+    }
+
+    RaceCustomizationTypes.Catalog catalog(
+            long raceId, long classId, long modelId, Cancellation token) {
+        var issues = new java.util.ArrayList<String>();
+        try {
+            if (raceId != 3 || modelId != 5) {
+                throw new RacesService.Projection(
+                        RaceTypes.State.UNSUPPORTED,
+                        "Appearance controls currently support Dwarf male Skin Color only.");
+            }
+            var selection = select(raceId, classId, modelId, token, issues);
+            var defaultChoice = selection.byOption().get(30L);
+            if (defaultChoice == null) {
+                throw new RacesService.Projection(
+                        RaceTypes.State.UNSUPPORTED,
+                        "Skin Color has no known eligible default in this context.");
+            }
+            var options = media.data("ChrCustomizationOption", 4096, token, issues);
+            var choices = media.data("ChrCustomizationChoice", 40000, token, issues);
+            var requirements = media.data("ChrCustomizationReq", 4096, token, issues);
+            var prerequisites = media.data("ChrCustomizationReqChoice", 4096, token, issues);
+            var races = media.data("ChrRaces", 512, token, issues);
+            options.field("Name_lang", false);
+            var optionRows = options.rows.stream().filter(row -> row.id() == 30).toList();
+            if (optionRows.size() != 1
+                    || options.number(optionRows.getFirst(), "ChrModelID") != modelId) {
+                throw options.unsupported("Skin Color option/model binding is unavailable");
+            }
+            var race =
+                    races.rows.stream().filter(row -> row.id() == raceId).findFirst().orElseThrow();
+            int bit = Math.toIntExact(races.number(race, "PlayableRaceBit"));
+            var members = new java.util.ArrayList<RaceCustomizationTypes.Choice>();
+            var seen = new HashSet<Long>();
+            for (var choice :
+                    choices.rows.stream()
+                            .sorted(Comparator.comparingLong(Db2Types.Row::id))
+                            .toList()) {
+                token.check();
+                if (choices.number(choice, "ChrCustomizationOptionID") != 30) {
+                    continue;
+                }
+                if (!seen.add(choice.id())) {
+                    throw choices.unsupported("Ambiguous Skin Color choice identity");
+                }
+                if (choices.number(choice, "ChrCustomizationVisReqID") != 0
+                        || !eligible(
+                                choices.number(choice, "ChrCustomizationReqID"),
+                                classId,
+                                bit,
+                                requirements,
+                                prerequisites,
+                                issues)) {
+                    continue;
+                }
+                if (members.size() == 64) {
+                    throw choices.unsupported("Skin Color choices exceed preview bounds");
+                }
+                members.add(
+                        new RaceCustomizationTypes.Choice(choice.id(), "Choice #" + choice.id()));
+            }
+            String label = options.text(optionRows.getFirst(), "Name_lang");
+            if (label == null || label.isBlank() || label.length() > 256) {
+                throw options.unsupported("Skin Color option label is unavailable");
+            }
+            if (issues.size() < 32) {
+                issues.add(
+                        "Dwarf male Skin Color preview; other appearance options are not yet exposed.");
+            }
+            return new RaceCustomizationTypes.Catalog(
+                    RaceTypes.State.PARTIAL,
+                    raceId,
+                    classId,
+                    modelId,
+                    List.of(new RaceCustomizationTypes.Option(30, label, members, defaultChoice)),
+                    issues,
+                    null);
+        } catch (RacesService.Projection failure) {
+            return new RaceCustomizationTypes.Catalog(
+                    failure.state,
+                    raceId,
+                    classId,
+                    modelId,
+                    List.of(),
+                    List.of(),
+                    failure.getMessage());
+        }
+    }
+
+    Map<Long, Long> requested(RaceCustomizationTypes.Request request, Cancellation token) {
+        if (request.picks().isEmpty()) {
+            return Map.of();
+        }
+        var catalog = catalog(request.raceId(), request.classId(), request.modelId(), token);
+        var result = new TreeMap<Long, Long>();
+        for (var pick : request.picks()) {
+            var option =
+                    catalog.options().stream()
+                            .filter(value -> value.id() == pick.optionId())
+                            .findFirst();
+            if (option.isEmpty()
+                    || option.get().choices().stream()
+                            .noneMatch(value -> value.id() == pick.choiceId())) {
+                throw new RacesService.Projection(
+                        RaceTypes.State.UNSUPPORTED,
+                        "Requested choice is not in the eligible customization catalog.");
+            }
+            result.put(pick.optionId(), pick.choiceId());
+        }
+        return Map.copyOf(result);
     }
 
     private static boolean eligible(

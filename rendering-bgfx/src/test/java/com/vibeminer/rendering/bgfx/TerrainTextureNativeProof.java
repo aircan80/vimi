@@ -359,12 +359,12 @@ public final class TerrainTextureNativeProof {
                         camera.x()
                                 + d
                                         * (Math.cos(camera.yaw()) * forward
-                                                - Math.sin(camera.yaw()) * right);
+                                                + Math.sin(camera.yaw()) * right);
                 double nativeY =
                         camera.y()
                                 + d
                                         * (Math.sin(camera.yaw()) * forward
-                                                + Math.cos(camera.yaw()) * right);
+                                                - Math.cos(camera.yaw()) * right);
                 double u = (origin - nativeY) * .96, v = (origin - nativeX) * .96;
                 if (u < 1
                         || u > 510

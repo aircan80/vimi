@@ -46,6 +46,10 @@ final class RaceAppearance {
         plans = new RaceAppearancePlan(owner, media, tables);
     }
 
+    boolean available() {
+        return files != null && generated != null;
+    }
+
     record Prepared(
             RaceMediaTypes.Preview base,
             RaceAppearancePlan.Plan plan,
@@ -58,20 +62,37 @@ final class RaceAppearance {
     }
 
     Prepared prepare(long raceId, long classId, long modelId, Cancellation token) {
+        return prepare(raceId, classId, modelId, token, java.util.Map.of());
+    }
+
+    Prepared prepare(
+            long raceId,
+            long classId,
+            long modelId,
+            Cancellation token,
+            java.util.Map<Long, Long> requested) {
         var issues = new ArrayList<String>();
         try {
             if (files == null || generated == null) {
                 return prepareFailure(
                         issues, "Texture preparation is unavailable for this workspace.");
             }
-            var base = media.preview(raceId, classId, modelId, token);
+            var selection =
+                    new RaceCustomization(media)
+                            .select(raceId, classId, modelId, token, issues, requested);
+            var base = media.preview(raceId, classId, modelId, token, selection);
             base.issues().stream()
                     .filter(issue -> !issue.startsWith("Static native rest positions"))
+                    .filter(issue -> requested.isEmpty() || !issue.startsWith("Sample look uses"))
                     .forEach(issues::add);
+            if (!requested.isEmpty()) {
+                issues.add(
+                        "Requested known eligible choices and recorded defaults are shown; unknown unlock requirements are omitted.");
+            }
             if (base.mesh() == null || base.variant() == null) {
                 return prepareFailure(issues, base.message());
             }
-            var plan = plans.build(raceId, classId, base.variant(), token, issues);
+            var plan = plans.build(raceId, classId, base.variant(), token, issues, selection);
             base =
                     new RaceMediaTypes.Preview(
                             base.state(),
@@ -96,12 +117,15 @@ final class RaceAppearance {
                             .append('\n')
                             .append(Blp2Decoder.REVISION)
                             .append(
-                                    "\nstraight-alpha-source-over-nearest-v1\nhuman-orc-dwarf-tauren-clothing-geosets-v5\n")
+                                    "\nstraight-alpha-source-over-nearest-v1\nhuman-orc-dwarf-night-elf-tauren-clothing-geosets-v6\n")
                             .append(files.build())
                             .append('\n')
                             .append(files.locale())
                             .append('\n')
                             .append(stat.file().contentKey())
+                            .append('\n')
+                            .append("choice-vector-v1\n")
+                            .append(selection.byOption())
                             .append('\n')
                             .append(plan)
                             .append('\n')
@@ -192,6 +216,16 @@ final class RaceAppearance {
                                     | (rgba[i * 4 + 2] & 255);
                 }
                 decoded.put(fid, new MeshAppearance.Texture(image.width(), image.height(), argb));
+            }
+            if (RaceAppearanceProfiles.nightElf(plan.profile())
+                    && plan.layers().stream()
+                            .noneMatch(
+                                    layer ->
+                                            RaceAppearancePlan.wholeBodyBase(layer, plan.canvases())
+                                                    && decoded.containsKey(layer.fileDataId()))) {
+                return failed(
+                        issues,
+                        "The base skin texture is unavailable; no incomplete body is presented.");
             }
             var textures = new ArrayList<MeshAppearance.Texture>();
             var textureTypes = new HashMap<Integer, Integer>();
@@ -287,9 +321,9 @@ final class RaceAppearance {
                 sectionBatches.merge(batch.sectionIndex(), 1, Integer::sum);
             }
             for (var batch : skin.skin().batches()) {
-                boolean dwarf = plan.profile() != RaceAppearanceProfiles.Profile.LEGACY;
-                if (dwarf
-                        && !RaceAppearanceProfiles.dwarfDraw(
+                boolean contextual = plan.profile() != RaceAppearanceProfiles.Profile.LEGACY;
+                if (contextual
+                        && !RaceAppearanceProfiles.reviewedDraw(
                                 plan.profile(),
                                 model.model(),
                                 batch,
@@ -298,7 +332,7 @@ final class RaceAppearance {
                     continue;
                 }
                 if (batch.textureCount() != 1
-                        || !dwarf && batch.shaderId() != 0
+                        || !contextual && batch.shaderId() != 0
                         || batch.colorIndex() != -1) {
                     continue;
                 }

@@ -3,10 +3,12 @@ package com.vimi.gui;
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.races.BuildRaces;
 import com.vibeminer.concepts.races.RaceMediaTypes;
+import com.vibeminer.concepts.races.RaceCustomizationTypes;
 import com.vibeminer.concepts.races.RaceTypes;
 
 import javafx.application.Platform;
 import javafx.scene.control.ComboBox;
+import javafx.scene.control.Button;
 import javafx.scene.control.Label;
 import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.TitledPane;
@@ -31,6 +33,16 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
     private final ProgressIndicator activity = new ProgressIndicator(-1);
     private final VBox evidence = new VBox(7);
     private final RaceVoicePanel voices;
+    private final LegacyWorldActivity requests = new LegacyWorldActivity("race-model-requests", true);
+    private final VBox appearanceControls = new VBox(8);
+    private final Label controlsState = new Label("Select a model to inspect appearance choices.");
+    private final Button resetAppearance = new Button("Reset appearance");
+    private final java.util.Map<Long, Long> picks = new java.util.TreeMap<>();
+    private final java.util.Map<Long, ComboBox<RaceCustomizationTypes.Choice>> pickers = new java.util.HashMap<>();
+    private RaceCustomizationTypes.Catalog customization;
+    private long shownModel = -1, shownClass = -1;
+    private boolean updatingChoices, waitingForRequests;
+
     private Cancellation token = new Cancellation();
     private long generation;
     private boolean closed, initializing = true;
@@ -104,7 +116,30 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
         activity.setAccessibleText("Preparing textures and starting clothing");
         activity.setVisible(false);
         activity.managedProperty().bind(activity.visibleProperty());
-        getChildren().addAll(choices, new HBox(9, activity, state), viewer, voices, source);
+        classes.setId("race-model-class");
+        variants.setId("race-model-variant");
+        state.setId("race-model-state");
+        appearanceControls.setId("race-appearance-controls");
+        controlsState.setWrapText(true);
+        controlsState.getStyleClass().add("muted");
+        resetAppearance.setId("race-appearance-reset");
+        resetAppearance.setDisable(true);
+        resetAppearance.setOnAction(event -> {
+            picks.clear();
+            updatingChoices = true;
+            if (customization != null) for (var option : customization.options()) {
+                var picker = pickers.get(option.id());
+                if (picker != null) picker.getSelectionModel().select(option.choices().stream().filter(choice -> choice.id() == option.defaultChoiceId()).findFirst().orElse(null));
+            }
+            updatingChoices = false;
+            resetAppearance.setDisable(true);
+            queueLoad();
+        });
+        var appearanceHeading = new Label("Appearance");
+        appearanceHeading.getStyleClass().add("section-title");
+        var appearanceCard = new VBox(10, new HBox(12, appearanceHeading, resetAppearance), controlsState, appearanceControls);
+        appearanceCard.getStyleClass().add("card");
+        getChildren().addAll(choices, appearanceCard, new HBox(9, activity, state), viewer, voices, source);
         viewer.loading("Loading model variants…");
         long variantsRequest = generation;
         request(() -> handle.modelVariants(raceId, token))
@@ -135,20 +170,59 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
 
     private void load() {
         if (stale(generation)) return;
+        picks.clear();
+        pickers.clear();
+        customization = null;
+        appearanceControls.getChildren().clear();
+        resetAppearance.setDisable(true);
+        controlsState.setText("Inspecting recorded appearance choices…");
+        queueLoad();
+    }
+
+    private void queueLoad() {
+        if (stale(generation)) return;
+        ++generation;
+        activity.setVisible(true);
+        state.setText("Preparing selected appearance…");
+        if (waitingForRequests) return;
+        waitingForRequests = true;
+        requests.pauseAndDrain().whenComplete((ignored, failure) -> Platform.runLater(() -> {
+            waitingForRequests = false;
+            if (stale(generation)) return;
+            if (failure != null) {
+                activity.setVisible(false);
+                state.setText("Previous model work could not retire safely. Reload model records.");
+                appearanceControls.setDisable(true);
+                return;
+            }
+            requests.resume();
+            token = new Cancellation();
+            startLoad();
+        }));
+    }
+
+    private void startLoad() {
         var model = variants.getValue();
         if (model == null) {
+            activity.setVisible(false);
+            state.setText("No recorded model is selected.");
             return;
         }
-        token.cancel();
-        token = new Cancellation();
-        long request = ++generation;
-        state.setText("Loading model surface…");
-        activity.setVisible(false);
-        evidence.getChildren().clear();
-        viewer.loading("Loading static model…");
+        long request = generation;
         var selected = classes.getValue();
         long classId = selected == null ? 0 : selected.id();
+        if (shownModel == model.chrModelId() && shownClass == classId && customization != null) {
+            state.setText("Preparing selected appearance…");
+            viewer.appearanceLoading("Preparing selected textures…");
+            loadAppearance(model, classId, request);
+            return;
+        }
+        state.setText("Loading model surface…");
+        activity.setVisible(true);
+        evidence.getChildren().clear();
+        viewer.loading("Loading static model…");
         voices.selection(raceId, classId, model.sex());
+        if (customization == null) loadCustomizations(model, classId, request);
         request(() -> handle.preview(raceId, classId, model.chrModelId(), token))
                 .whenComplete(
                         (result, error) ->
@@ -165,6 +239,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                                                 ? result.message()
                                                                 : "Model surface is unavailable.");
                                                 viewer.clear("No static surface is available");
+                                                activity.setVisible(false);
                                                 return;
                                             }
                                             state.setText(
@@ -195,6 +270,8 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                             }
                                             activity.setVisible(true);
                                             viewer.setMesh(result.mesh(), result.visibleParts());
+                                            shownModel = model.chrModelId();
+                                            shownClass = classId;
                                             viewer.appearanceLoading(
                                                     "Preparing textures and starting clothing…");
                                             loadAppearance(model, classId, request);
@@ -202,7 +279,11 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
     }
 
     private void loadAppearance(RaceMediaTypes.Variant model, long classId, long request) {
-        request(() -> handle.appearance(raceId, classId, model.chrModelId(), token))
+        var selection = new RaceCustomizationTypes.Request(raceId, classId, model.chrModelId(),
+                picks.entrySet().stream().map(entry -> new RaceCustomizationTypes.Pick(entry.getKey(), entry.getValue())).toList());
+        request(() -> selection.picks().isEmpty()
+                        ? handle.appearance(raceId, classId, model.chrModelId(), token)
+                        : handle.appearance(selection, token))
                 .whenComplete(
                         (result, error) ->
                                 Platform.runLater(
@@ -298,13 +379,53 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                         }));
     }
 
-    private static <T> java.util.concurrent.CompletableFuture<T> request(
+    private void loadCustomizations(RaceMediaTypes.Variant model, long classId, long request) {
+        request(() -> handle.customizations(raceId, classId, model.chrModelId(), token))
+                .whenComplete((catalog, failure) -> Platform.runLater(() -> {
+                    if (stale(request)) return;
+                    if (failure != null || catalog == null
+                            || (catalog.state() != RaceTypes.State.READY && catalog.state() != RaceTypes.State.PARTIAL)
+                            || catalog.raceId() != raceId
+                            || catalog.classId() != classId || catalog.modelId() != model.chrModelId()
+                            || catalog.options().isEmpty()) {
+                        controlsState.setText(catalog != null && catalog.message() != null
+                                ? catalog.message() : "Appearance choices are unavailable for this model.");
+                        return;
+                    }
+                    customization = catalog;
+                    updatingChoices = true;
+                    appearanceControls.getChildren().clear();
+                    pickers.clear();
+                    for (var option : catalog.options()) {
+                        var picker = new ComboBox<RaceCustomizationTypes.Choice>();
+                        picker.setId("race-appearance-option-" + option.id());
+                        picker.setAccessibleText(option.label());
+                        picker.getItems().setAll(option.choices());
+                        picker.setMaxWidth(Double.MAX_VALUE);
+                        picker.setConverter(new javafx.util.StringConverter<>() {
+                            public String toString(RaceCustomizationTypes.Choice value) { return value == null ? "Select a choice" : value.label(); }
+                            public RaceCustomizationTypes.Choice fromString(String value) { throw new UnsupportedOperationException(); }
+                        });
+                        picker.getSelectionModel().select(option.choices().stream().filter(choice -> choice.id() == option.defaultChoiceId()).findFirst().orElse(null));
+                        picker.setOnAction(event -> {
+                            if (updatingChoices || picker.getValue() == null) return;
+                            if (picker.getValue().id() == option.defaultChoiceId()) picks.remove(option.id());
+                            else picks.put(option.id(), picker.getValue().id());
+                            resetAppearance.setDisable(picks.isEmpty());
+                            queueLoad();
+                        });
+                        pickers.put(option.id(), picker);
+                        appearanceControls.getChildren().add(new VBox(4, new Label(option.label()), picker));
+                    }
+                    updatingChoices = false;
+                    controlsState.setText("Recorded choices · static texture preview; other appearance options are not yet exposed.");
+                }));
+    }
+
+    private <T> java.util.concurrent.CompletableFuture<T> request(
             Supplier<java.util.concurrent.CompletableFuture<T>> action) {
-        try {
-            return action.get();
-        } catch (RuntimeException error) {
-            return java.util.concurrent.CompletableFuture.failedFuture(error);
-        }
+        var currentToken = token;
+        return requests.invoke(currentToken, currentToken::cancel, action);
     }
 
     private boolean workspaceStale() {
@@ -330,7 +451,9 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
         voices.setDisable(true);
         viewer.setDisable(true);
         generation++;
-        token.cancel();
+        requests.closeAsync();
+        appearanceControls.setDisable(true);
+        resetAppearance.setDisable(true);
         activity.setVisible(false);
         viewer.close();
         voices.close();

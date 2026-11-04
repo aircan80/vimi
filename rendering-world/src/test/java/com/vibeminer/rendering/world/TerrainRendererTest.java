@@ -37,7 +37,7 @@ class TerrainRendererTest {
     void cameraMotionKeepsNativeZVertical() {
         var c = new TerrainRenderer.Camera(0, 0, 0, 0, 0).move(2, 3, 4);
         assertEquals(2, c.x(), 1e-8);
-        assertEquals(3, c.y(), 1e-8);
+        assertEquals(-3, c.y(), 1e-8);
         assertEquals(4, c.z(), 1e-8);
         assertEquals(1.5, c.look(0, 100).pitch());
     }

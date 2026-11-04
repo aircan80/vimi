@@ -33,7 +33,7 @@ public final class PreparationStatusTest {
                         "Closed must not report active preparation");
                 boolean files = ready.ordinal() >= BuildPreparation.Ready.FILES_READY.ordinal();
                 require(PreparationStatus.available("Files", ready) == files, "Files milestone");
-                for (String area : List.of("Tables", "Items", "Creatures", "Talents", "Races", "Dungeons", "Mounts", "Professions", "World")) {
+                for (String area : List.of("Tables", "Items", "Creatures", "Talents", "Races", "Dungeons", "Mounts", "Professions", "World", "Maps")) {
                     require(
                             PreparationStatus.available(area, ready)
                                     == (ready == BuildPreparation.Ready.TABLES_READY),
@@ -42,6 +42,12 @@ public final class PreparationStatusTest {
                         require(
                                 !PreparationStatus.tab(area, snapshot, false).contains("Loading"),
                                 "Terminal state must not animate loading");
+                }
+                if (ready == BuildPreparation.Ready.TABLES_READY) {
+                    require(PreparationStatus.tab("Maps", snapshot, false).equals("Maps"),
+                            "Ready Maps tab must stop loading even during later background enrichment");
+                    require(PreparationStatus.tab("Maps", snapshot, true).equals("Maps"),
+                            "Name enrichment must not keep ready Maps disabled or loading");
                 }
                 if (ready == BuildPreparation.Ready.TABLES_READY && snapshot.busy())
                     require(
