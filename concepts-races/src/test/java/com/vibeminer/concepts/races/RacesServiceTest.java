@@ -132,8 +132,12 @@ final class RacesServiceTest {
         try {
             var variants = service.modelVariants(1, Cancellation.NONE).join();
             assertEquals(RaceTypes.State.PARTIAL, variants.state());
+            assertEquals(1, variants.variants().size());
+            var variant = variants.variants().getFirst();
             assertEquals(
-                    List.of(new RaceMediaTypes.Variant(10, 1, 20, 30, 1234)), variants.variants());
+                    new RaceMediaTypes.Variant(10, 1, 20, 30, 1234, variant.definition()), variant);
+            assertEquals(RaceMediaTypes.DefinitionState.UNREADABLE, variant.definition().state());
+            assertEquals("Female", variant.label());
             assertFalse(variants.issues().isEmpty());
             var unavailable = service.preview(1, 1, 10, Cancellation.NONE).join();
             assertEquals(RaceTypes.State.UNAVAILABLE, unavailable.state());

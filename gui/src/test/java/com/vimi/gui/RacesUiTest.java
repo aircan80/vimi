@@ -112,7 +112,12 @@ public final class RacesUiTest {
                                                         List.of(
                                                                 new com.vibeminer.concepts.races
                                                                         .RaceMediaTypes.Variant(
-                                                                        1, 0, 1, 1, 1)),
+                                                                        1,
+                                                                        0,
+                                                                        1,
+                                                                        1,
+                                                                        1,
+                                                                        authoredDefinition())),
                                                         List.of(),
                                                         null));
                                     }
@@ -413,6 +418,27 @@ public final class RacesUiTest {
                                         require(
                                                 labels(view).contains("Authored Diplomacy"),
                                                 "Readable partial racial card displayed");
+                                        require(
+                                                labels(view)
+                                                                .contains(
+                                                                        "Model definition: HD ·"
+                                                                                + " ChrRaces #1"
+                                                                                + " HighResMaleDisplayID")
+                                                        && view.lookup("#race-model-variant")
+                                                                        instanceof
+                                                                        javafx.scene.control
+                                                                                        .ComboBox<?>
+                                                                                combo
+                                                        && combo.getValue()
+                                                                instanceof
+                                                                com.vibeminer.concepts.races
+                                                                                .RaceMediaTypes
+                                                                                .Variant
+                                                                        selectedModel
+                                                        && selectedModel.label().equals("Male · HD"),
+                                                "Source-stated definition and its field are"
+                                                        + " shown: "
+                                                        + labels(view));
                                         require(
                                                 !view.lookupAll(".image-view").isEmpty()
                                                         || descendantsImage(view),
@@ -1327,5 +1353,17 @@ public final class RacesUiTest {
 
     private static void require(boolean value, String message) {
         if (!value) throw new AssertionError(message);
+    }
+
+    /** Authored explicit pair: display 1 is the recorded high-resolution male display. */
+    private static com.vibeminer.concepts.races.RaceMediaTypes.Definition authoredDefinition() {
+        return new com.vibeminer.concepts.races.RaceMediaTypes.Definition(
+                com.vibeminer.concepts.races.RaceMediaTypes.DefinitionState.SELECTED,
+                com.vibeminer.concepts.races.RaceMediaTypes.Quality.HD,
+                "ChrRaces #1 HighResMaleDisplayID",
+                2,
+                1,
+                "Display 1 is the recorded high-resolution display; its SD counterpart is display"
+                        + " 2.");
     }
 }

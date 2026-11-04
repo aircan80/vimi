@@ -57,6 +57,16 @@ final class RaceMedia {
             displays.reference("ModelID", "CreatureModelData");
             var modelData = owner.schema("CreatureModelData", token, issues);
             modelData.field("FileDataID", true);
+            // Definition evidence is advisory: its failures refuse a label, never a variant.
+            var definitionNotes = new ArrayList<String>();
+            RacesService.Data races = null;
+            com.vibeminer.formats.db2.Db2Types.Row race = null;
+            try {
+                races = owner.schema("ChrRaces", token, definitionNotes);
+                race = get(races, raceId, token, definitionNotes);
+            } catch (RacesService.Projection unavailable) {
+                races = null;
+            }
             for (var row : joins.rows) {
                 token.check();
                 if (joins.number(row, "ChrRacesID") != raceId) {
@@ -82,13 +92,15 @@ final class RaceMedia {
                     issue(issues, "A race model has no valid file reference.");
                     continue;
                 }
+                int sex = (int) models.number(model, "Sex");
                 result.add(
                         new RaceMediaTypes.Variant(
                                 modelId,
-                                (int) models.number(model, "Sex"),
+                                sex,
                                 displayId,
                                 modelDataId,
-                                fid));
+                                fid,
+                                RaceModelDefinitions.assess(races, raceId, race, sex, displayId)));
             }
             result.sort(
                     java.util.Comparator.comparingInt(RaceMediaTypes.Variant::sex)
