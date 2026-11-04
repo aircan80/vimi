@@ -150,3 +150,24 @@ Projection absent); restoring exact production source passes the checks. Logs ar
 `missing-base-negative-control.log`, `restored-full-check.log`, `final-source-check.log`.
 These tests contain only authored assets. This checkpoint grants no Undead archive or
 prerequisite policy, new controls, animation, or full client shader parity.
+
+### Actual Vulkan execution
+
+The same four public-service appearances were serialized into private model scenes
+using this checkout's Gradle-resolved rendering-bgfx/runtime dependencies. The existing
+production model child rendered24 actual800×600 Vulkan frames: two cameras and
+qualified/raw/textures-off modes for each of four scenes. Every frame was matched to
+its requested control revision. CPU/native foreground intersection-over-union was at
+least0.99990829; intersecting RGB mean absolute error was at most0.710152 byte units;
+all pixels were opaque. All four children exited0 after CLOSE, with six camera requests
+and no restart within each scene session. These are scene correctness diagnostics,
+not FPS, nine-tile or other-backend qualification claims. No shader blob was changed.
+
+Private executable `NightElfNativePayloads.java`, `NightElfNativeProof.java`, exact
+`source-classpath.txt`/`native-classpath.txt`, serialized scenes under
+`snapshots-exact-current/`, and `native-vulkan-exact-current.log` are retained beside
+the source proofs. CPU/GPU images are under `gpu-production-current/`; a native Priest
+female image was visually inspected. Qualified mode deliberately omits unadmitted
+auxiliary surfaces; raw mode retains their existing neutral fallback. Neither mode
+claims client eye/effect shader parity. The two scene sizes were10586724 and10496088
+bytes, within the existing model snapshot bound. No private payload/image is committed.
