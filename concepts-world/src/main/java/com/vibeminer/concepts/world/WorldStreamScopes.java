@@ -895,12 +895,28 @@ final class WorldStreamScopes {
     }
 
     private void invalidateFailedProof(Scope scope, Cancellation token, Throwable failure) {
-        if (!token.isCanceled()
-                && !(failure instanceof java.util.concurrent.CancellationException)) {
+        if (!token.isCanceled() && !wrappedCancellation(failure)) {
             synchronized (this) {
                 invalidate(scope);
             }
         }
+    }
+
+    private static boolean wrappedCancellation(Throwable failure) {
+        // Only standard async wrappers, at most eight links. Never walk arbitrary causes.
+        for (int depth = 0; depth < 8; depth++) {
+            if (failure instanceof java.util.concurrent.CancellationException) {
+                return true;
+            }
+            if (failure == null
+                    || failure.getClass() != java.util.concurrent.CompletionException.class
+                            && failure.getClass()
+                                    != java.util.concurrent.ExecutionException.class) {
+                return false;
+            }
+            failure = failure.getCause();
+        }
+        return failure instanceof java.util.concurrent.CancellationException;
     }
 
     /** Metadata only: no capture, stat, source access or preparation. */
@@ -972,7 +988,11 @@ final class WorldStreamScopes {
     }
 
     private CapturedRows openMap(Cancellation token) {
+        token.check();
         var capture = tables.capturePreparedLocal(TableTypes.Ref.forName("Map"), token).join();
+        if (capture.state() == CapturedRowsTypes.CaptureState.CANCELED) {
+            throw new java.util.concurrent.CancellationException();
+        }
         if (capture.rows() == null) {
             throw new UnsupportedOperationException("Prepared native Map capture unavailable");
         }
