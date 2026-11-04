@@ -11,6 +11,7 @@ final class WorldSourceRefusals {
 
     enum Site {
         OUTPUT_CREDIT(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
+        GLOBAL_ASSET_CAPACITY(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
         GEOMETRY_CREDIT(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
         SOURCE_WORKER(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
         MATERIAL_POOL(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),

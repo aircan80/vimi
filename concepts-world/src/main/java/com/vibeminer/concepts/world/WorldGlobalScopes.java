@@ -139,6 +139,7 @@ final class WorldGlobalScopes {
     private boolean working, closed, inputReserved;
     private Lane active;
     private Throwable cleanupFault;
+    private final java.util.ArrayList<PayloadCredit> payloads = new java.util.ArrayList<>(2);
 
     WorldGlobalScopes(BuildTables tables, BuildFiles files) {
         maps = new WorldMapProofs(tables, files);
@@ -567,20 +568,112 @@ final class WorldGlobalScopes {
         return (current == null ? 0 : 1) + (replacement == null ? 0 : 1);
     }
 
+    /** One of exactly two source-owned payload reservations, including construction and pins. */
+    static final class PayloadCredit {
+        private final WorldGlobalScopes source;
+        private final GlobalScope scope;
+        private WorldGlobalAssetFactory.OwnedAsset asset;
+        private boolean closing;
+
+        private PayloadCredit(WorldGlobalScopes source, GlobalScope scope) {
+            this.source = source;
+            this.scope = scope;
+        }
+
+        void pin(WorldGlobalAssetFactory.OwnedAsset expected) {
+            source.pinPayload(this, expected);
+        }
+
+        void retired() {
+            source.retirePayload(this);
+        }
+    }
+
+    synchronized PayloadCredit reservePayload(GlobalScope scope) {
+        resolve(scope);
+        if (payloads.size() == 2) {
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.GLOBAL_ASSET_CAPACITY);
+        }
+        var credit = new PayloadCredit(this, scope);
+        payloads.add(credit);
+        return credit;
+    }
+
+    synchronized void attachPayload(
+            PayloadCredit credit, WorldGlobalAssetFactory.OwnedAsset asset) {
+        if (!payloads.contains(credit) || credit.asset != null) {
+            throw new IllegalStateException("Invalid global payload reservation");
+        }
+        credit.asset = asset;
+        if (credit.closing || closed) {
+            throw new CancellationException();
+        }
+    }
+
+    synchronized void publishPayload(
+            PayloadCredit credit, WorldGlobalAssetFactory.OwnedAsset asset) {
+        resolve(credit.scope);
+        if (!payloads.contains(credit) || credit.asset != asset || credit.closing) {
+            throw new IllegalStateException("Global payload reservation retired");
+        }
+        asset.publish(); // Fixed private metadata only, source -> owner lock order.
+    }
+
+    private synchronized void pinPayload(
+            PayloadCredit credit, WorldGlobalAssetFactory.OwnedAsset asset) {
+        resolve(credit.scope);
+        if (!payloads.contains(credit) || credit.asset != asset || credit.closing) {
+            throw new IllegalStateException("Global payload unavailable");
+        }
+        asset.pin(); // No callbacks/IO; never acquire source while holding owner.
+    }
+
+    private void retirePayload(PayloadCredit credit) {
+        boolean finish;
+        Throwable failure;
+        synchronized (this) {
+            payloads.remove(credit);
+            credit.asset = null;
+            finish = closed && !working && payloads.isEmpty();
+            failure = cleanupFault;
+        }
+        if (finish) {
+            completeDrain(failure);
+        }
+    }
+
+    synchronized int payloadCredits() {
+        return payloads.size();
+    }
+
     CompletableFuture<Void> closeAsync() {
         Lane lane;
         boolean finish;
         Throwable failure;
+        java.util.List<WorldGlobalAssetFactory.OwnedAsset> owners;
         synchronized (this) {
             closed = true;
             current = null;
             replacement = null;
             lane = active;
-            finish = !working;
+            finish = !working && payloads.isEmpty();
             failure = cleanupFault;
+            owners = new java.util.ArrayList<>(2);
+            for (var credit : payloads) {
+                credit.closing = true;
+                if (credit.asset != null) {
+                    owners.add(credit.asset);
+                }
+            }
         }
-        if (lane != null) {
-            lane.request();
+        try {
+            if (lane != null) {
+                lane.request();
+            }
+        } finally {
+            for (var asset : owners) {
+                asset.close();
+            }
         }
         if (finish) {
             completeDrain(failure);
@@ -685,7 +778,7 @@ final class WorldGlobalScopes {
             }
             active = null;
             working = false;
-            finish = closed;
+            finish = closed && payloads.isEmpty();
             finalFault = cleanupFault;
         }
         if (finish) {
