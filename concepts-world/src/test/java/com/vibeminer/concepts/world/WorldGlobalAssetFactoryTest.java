@@ -667,4 +667,47 @@ class WorldGlobalAssetFactoryTest {
             assertEquals(f.files.totalOpens(), f.files.closed.get());
         }
     }
+
+    @Test
+    void lastDerivedFinalStatCannotChangeMapOrWdtAfterFinalAuthorityCheck() throws Exception {
+        for (boolean map : List.of(false, true)) {
+            var writerDone = new java.util.concurrent.atomic.AtomicBoolean();
+            var tables = new AtomicReference<WorldStreamScopesTest.Tables>();
+            var files =
+                    new Files() {
+                        @Override
+                        FileTypes.FileStat stat(long id, Cancellation token) {
+                            var result = super.stat(id, token);
+                            if (writerDone.get() && id == 301) {
+                                if (map) {
+                                    tables.get().identity = "changed-final-map-receipt";
+                                } else {
+                                    changedId = 1;
+                                    changeAfterRead = true;
+                                }
+                            }
+                            return result;
+                        }
+                    };
+            try (var f = new Fixture(files)) {
+                tables.set(f.tables);
+                var closed = new AtomicInteger();
+                assertThrows(
+                        WorldTerrainStreaming.Refusal.class,
+                        () -> {
+                            try (var result =
+                                    f.factory.inspectSources(
+                                            f.scope,
+                                            SELECT,
+                                            Cancellation.NONE,
+                                            b -> {
+                                                writerDone.set(true);
+                                                return (AutoCloseable) closed::incrementAndGet;
+                                            })) {}
+                        });
+                assertEquals(1, closed.get());
+                assertFalse(f.scopes.isKnown(f.scope));
+            }
+        }
+    }
 }
