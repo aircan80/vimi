@@ -76,6 +76,13 @@ final class WorldGeometryCache {
             }
         }
 
+        synchronized WorldFormats.Tile recorded() {
+            if (closed || owner.closed) {
+                throw new IllegalStateException("Geometry output closed");
+            }
+            return entry.loaded.tile();
+        }
+
         synchronized WorldFormats.AreaMetadata areas() {
             if (closed || owner.closed) {
                 throw new IllegalStateException("Geometry output closed");

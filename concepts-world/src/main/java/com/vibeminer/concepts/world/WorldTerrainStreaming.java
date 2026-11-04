@@ -478,6 +478,14 @@ public final class WorldTerrainStreaming {
         }
     }
 
+    static <T extends AutoCloseable> T withWaterJoin(
+            WrittenTile<?> terrain,
+            WorldPreparedTerrain expected,
+            java.util.function.BiFunction<WorldStreamScopes.Scope, WorldPreparedTerrain.Borrow, T>
+                    use) {
+        return Objects.requireNonNull(terrain).tile.withWaterJoin(expected, use);
+    }
+
     private volatile WorldPreparedTerrain source;
 
     private WorldTerrainStreaming(WorldPreparedTerrain source) {

@@ -84,7 +84,7 @@ final class WorldLiquidTables {
     static final class Observed {
         private final Profile profile;
         private final NativeIdReceiptFingerprint.CanonicalStamp stamp;
-        private final String key;
+        private final String key, receiptSha;
         private final long length;
         private final Map<Long, Integer> values;
 
@@ -92,11 +92,13 @@ final class WorldLiquidTables {
                 Profile profile,
                 NativeIdReceiptFingerprint.CanonicalStamp stamp,
                 String key,
+                String receiptSha,
                 long length,
                 Map<Long, Integer> values) {
             this.profile = profile;
             this.stamp = stamp;
             this.key = key;
+            this.receiptSha = receiptSha;
             this.length = length;
             this.values = Map.copyOf(values);
         }
@@ -107,6 +109,10 @@ final class WorldLiquidTables {
 
         String sourceKey() {
             return key;
+        }
+
+        String receiptSha() {
+            return receiptSha;
         }
 
         long sourceLength() {
@@ -191,6 +197,7 @@ final class WorldLiquidTables {
                             profile,
                             context.stamp(),
                             receipt.table().contentKey(),
+                            NativeIdReceiptFingerprint.sha256(receipt),
                             receipt.completion().consumedBytes(),
                             Map.of());
             var values = new HashMap<Long, Integer>();
@@ -248,6 +255,7 @@ final class WorldLiquidTables {
                     profile,
                     context.stamp(),
                     receipt.table().contentKey(),
+                    NativeIdReceiptFingerprint.sha256(receipt),
                     receipt.completion().consumedBytes(),
                     values);
         }

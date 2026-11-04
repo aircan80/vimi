@@ -143,8 +143,23 @@ public final class WorldService implements BuildWorld {
         this.minimaps = new WorldMinimaps(files);
     }
 
+    private WorldWaterPreview waterFacade;
     private WorldGlobalScopes globalCore;
     private WorldGlobalScenes globalFacade;
+
+    @Override
+    public synchronized java.util.Optional<WorldWaterPreview> waterPreview() {
+        if (closing != null) {
+            throw new IllegalStateException("World workspace closed");
+        }
+        if (atlasPool == null || files == null) {
+            return java.util.Optional.empty();
+        }
+        if (waterFacade == null) {
+            waterFacade = new WorldWaterPreview(preparedTerrain());
+        }
+        return java.util.Optional.of(waterFacade);
+    }
 
     @Override
     public synchronized java.util.Optional<WorldGlobalScenes> globalScenes() {
@@ -658,6 +673,9 @@ public final class WorldService implements BuildWorld {
             }
             if (streamingFacade != null) {
                 streamingFacade.invalidate();
+            }
+            if (waterFacade != null) {
+                waterFacade.invalidate();
             }
         }
         Thread.startVirtualThread(
