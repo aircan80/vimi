@@ -32,9 +32,245 @@ public final class TerrainGpuPreviewTest {
         acceptedUploadAndBarriers();
         retiredScenesHideAndOwners();
         failureSuppressionAndRetry();
+        texturePresentationAndDeferredReplacement();
+        textureFailureGenerationAndRetiredAck();
+        textureCallbackReordering();
+        partialTextureCoverage();
         System.out.println(
                 "Terrain GPU controller: accepted-upload readiness, dimension/generation barriers,"
-                    + " continuous lag, coalescing, owner isolation and explicit fallback passed");
+                    + " continuous lag, coalescing, owner isolation, typed texture coverage and"
+                    + " deferred texture presentation passed");
+    }
+
+    private static final com.vibeminer.rendering.bgfx.TerrainTextureStatus FULL_TEXTURES =
+            com.vibeminer.rendering.bgfx.TerrainTextureStatus.of(
+                    1, 1, 256, com.vibeminer.rendering.bgfx.TerrainTextureStatus.Code.NONE);
+
+    private static void textureReady(
+            Fixture fixture,
+            int child,
+            com.vibeminer.rendering.bgfx.TerrainTextureStatus acknowledgement)
+            throws Exception {
+        fixture.child(child)
+                .send(
+                        "VIMI_GPU HELLO Vulkan\n"
+                                + acknowledgement.protocolLine()
+                                + "\nVIMI_GPU READY Vulkan\n");
+        fixture.awaitFx(() -> acknowledgement.equals(fixture.controller.textureStatus()));
+    }
+
+    private static void texturePresentationAndDeferredReplacement() throws Exception {
+        try (var textures = new TerrainGpuPreviewTextureFixture();
+                var fixture = new Fixture()) {
+            var first = textures.snapshot();
+            var latest = textures.snapshot();
+            var scene = textures.scene;
+            var controller = fixture.controller;
+            controller.request(scene, CAMERA, 40, 30);
+            fixture.ready(0);
+            // Source completion must not kill the owner before its first actual geometry upload.
+            controller.request(scene, first, CAMERA.move(1, 0, 0), 40, 30);
+            controller.request(scene, latest, CAMERA.move(2, 0, 0), 40, 30);
+            fixture.drain();
+            require(
+                    fixture.children.size() == 1,
+                    "Early atlas arrivals cannot starve geometry's first frame");
+            require(
+                    textures.stats().leaseClaims() == 2,
+                    "Deferred snapshots must not acquire hidden controller claims");
+            await(() -> fixture.children.getFirst().controls.toString().contains("WORLD 3 "));
+            fixture.upload.set(true);
+            fixture.source(0).offer(1, 3, 40, 30);
+            fixture.awaitFx(controller::ready);
+            controller.request(scene, latest, CAMERA, 40, 30);
+            fixture.child(1);
+            require(
+                    !controller.ready() && fixture.statuses.getLast().busy(),
+                    "Texture owner replacement stays visibly pending");
+            textureReady(fixture, 1, FULL_TEXTURES);
+            require(
+                    !controller.ready() && fixture.statuses.getLast().busy(),
+                    "Native textured READY is not actual viewport presentation");
+            require(
+                    FULL_TEXTURES.equals(fixture.statuses.getLast().textures()),
+                    "Typed target ACK is retained while awaiting upload");
+            fixture.upload.set(false);
+            fixture.source(1).offer(1, 4, 40, 30);
+            fixture.awaitFx(() -> fixture.attempts.size() == 2);
+            require(
+                    !controller.ready() && fixture.statuses.getLast().busy(),
+                    "Rejected textured upload cannot retire activity");
+            fixture.upload.set(true);
+            controller.request(scene, latest, CAMERA.move(1, 0, 0), 40, 30);
+            fixture.source(1).offer(2, 5, 40, 30);
+            fixture.awaitFx(controller::ready);
+            require(
+                    FULL_TEXTURES.equals(controller.textureStatus())
+                            && fixture.statuses
+                                    .getLast()
+                                    .message()
+                                    .contains("Basic terrain textures"),
+                    "Accepted textured frame exposes honest typed coverage");
+            controller.request(scene, latest, CAMERA.move(2, 0, 0), 40, 30);
+            fixture.drain();
+            require(
+                    fixture.children.size() == 2,
+                    "Stable snapshot camera updates never restart child");
+            controller.request(scene, first, CAMERA, 40, 30);
+            fixture.child(2);
+            var unavailable =
+                    com.vibeminer.rendering.bgfx.TerrainTextureStatus.of(
+                            0,
+                            1,
+                            0,
+                            com.vibeminer.rendering.bgfx.TerrainTextureStatus.Code.CHECKSUM);
+            textureReady(fixture, 2, unavailable);
+            fixture.source(2).offer(1, 7, 40, 30);
+            fixture.awaitFx(controller::ready);
+            require(
+                    fixture.statuses.getLast().message().contains("Height shading")
+                            && fixture.statuses.getLast().textures().equals(unavailable),
+                    "Accepted fallback frame cannot claim textured success");
+        }
+    }
+
+    private static void textureFailureGenerationAndRetiredAck() throws Exception {
+        try (var textures = new TerrainGpuPreviewTextureFixture();
+                var fixture = new Fixture()) {
+            var first = textures.snapshot();
+            var second = textures.snapshot();
+            var scene = textures.scene;
+            var controller = fixture.controller;
+            fixture.upload.set(true);
+            controller.request(scene, first, CAMERA, 40, 30);
+            textureReady(fixture, 0, FULL_TEXTURES);
+            fixture.child(0).send("VIMI_GPU ERROR AUTHORED_TEXTURE_FAILURE\n");
+            fixture.awaitFx(() -> fixture.fallbacks.get() == 1);
+            require(
+                    !controller.request(scene, first, CAMERA, 40, 30),
+                    "Failed exact scene+texture generation remains memoized");
+            require(
+                    controller.request(scene, second, CAMERA, 40, 30),
+                    "New texture generation can recover without geometry identity change");
+            textureReady(fixture, 1, FULL_TEXTURES);
+            fixture.source(1).offer(1, 2, 40, 30);
+            fixture.awaitFx(controller::ready);
+            // Pause delivery after old owner queues a READY acknowledgement; a newer owner must
+            // not inherit coverage or ready flags from that callback.
+            controller.request(scene, first, CAMERA, 40, 30);
+            fixture.child(2);
+            fixture.child(2)
+                    .send(
+                            "VIMI_GPU HELLO Vulkan\n"
+                                    + FULL_TEXTURES.protocolLine()
+                                    + "\nVIMI_GPU READY Vulkan\n");
+            await(() -> fixture.fx.size() >= 2);
+            controller.hide();
+            controller.request(scene, second, CAMERA, 40, 30);
+            fixture.child(3);
+            fixture.drain();
+            require(
+                    controller.textureStatus() == null && !controller.ready(),
+                    "Retired owner ACK cannot label new pending owner");
+            textureReady(fixture, 3, FULL_TEXTURES);
+            fixture.source(3).offer(1, 4, 40, 30);
+            fixture.awaitFx(controller::ready);
+            controller.close();
+            fixture.drain();
+            require(
+                    controller.textureStatus() == null && !controller.ready(),
+                    "Close retires typed coverage");
+        }
+    }
+
+    private static List<Runnable> takeFx(Fixture fixture) {
+        var queued = new ArrayList<Runnable>();
+        Runnable task;
+        while ((task = fixture.fx.poll()) != null) {
+            queued.add(task);
+        }
+        return queued;
+    }
+
+    private static void textureCallbackReordering() throws Exception {
+        try (var textures = new TerrainGpuPreviewTextureFixture();
+                var fixture = new Fixture()) {
+            var snapshot = textures.snapshot();
+            fixture.upload.set(true);
+            fixture.controller.request(textures.scene, snapshot, CAMERA, 40, 30);
+            fixture.child(0)
+                    .send(
+                            "VIMI_GPU HELLO Vulkan\n"
+                                    + FULL_TEXTURES.protocolLine()
+                                    + "\nVIMI_GPU READY Vulkan\n");
+            // Initial owner has precisely PREPARING, STARTING and READY callbacks. Simulate FX
+            // scheduling the independently produced frame task before those status tasks.
+            await(() -> fixture.fx.size() == 3);
+            fixture.source(0).offer(1, 1, 40, 30);
+            await(() -> fixture.fx.size() == 4);
+            var queued = takeFx(fixture);
+            queued.getLast().run();
+            require(
+                    !fixture.controller.ready() && fixture.attempts.isEmpty(),
+                    "Frame arriving before its typed ACK waits without claiming presentation");
+            for (int i = 0; i < 3; i++) {
+                queued.get(i).run();
+            }
+            require(
+                    fixture.controller.ready()
+                            && fixture.accepted.size() == 1
+                            && FULL_TEXTURES.equals(fixture.statuses.getLast().textures()),
+                    "Delayed ACK presents the one retained current frame without requiring another"
+                            + " camera request");
+        }
+        try (var textures = new TerrainGpuPreviewTextureFixture();
+                var fixture = new Fixture()) {
+            var first = textures.snapshot();
+            var second = textures.snapshot();
+            fixture.upload.set(true);
+            fixture.controller.request(textures.scene, first, CAMERA, 40, 30);
+            fixture.child(0)
+                    .send(
+                            "VIMI_GPU HELLO Vulkan\n"
+                                    + FULL_TEXTURES.protocolLine()
+                                    + "\nVIMI_GPU READY Vulkan\n");
+            await(() -> fixture.fx.size() == 3);
+            var retired = takeFx(fixture);
+            fixture.controller.hide();
+            fixture.controller.request(textures.scene, second, CAMERA, 40, 30);
+            fixture.child(1);
+            for (var callback : retired) {
+                callback.run();
+            }
+            require(
+                    fixture.controller.textureStatus() == null && !fixture.controller.ready(),
+                    "Actually queued retired READY/ACK cannot label successor");
+            textureReady(fixture, 1, FULL_TEXTURES);
+            fixture.source(1).offer(1, 2, 40, 30);
+            fixture.awaitFx(fixture.controller::ready);
+        }
+    }
+
+    private static void partialTextureCoverage() throws Exception {
+        try (var textures = new TerrainGpuPreviewTextureFixture(true);
+                var fixture = new Fixture()) {
+            var snapshot = textures.snapshot();
+            fixture.upload.set(true);
+            fixture.controller.request(textures.scene, snapshot, CAMERA, 40, 30);
+            var partial =
+                    com.vibeminer.rendering.bgfx.TerrainTextureStatus.of(
+                            1, 1, 128, com.vibeminer.rendering.bgfx.TerrainTextureStatus.Code.NONE);
+            textureReady(fixture, 0, partial);
+            require(
+                    fixture.statuses.getLast().busy(),
+                    "Partial atlas READY still awaits actual upload");
+            fixture.source(0).offer(1, 1, 40, 30);
+            fixture.awaitFx(fixture.controller::ready);
+            require(
+                    fixture.statuses.getLast().message().contains("128/256 regions")
+                            && partial.equals(fixture.statuses.getLast().textures()),
+                    "Accepted partial coverage stays explicitly partial");
+        }
     }
 
     private static TerrainScene scene(int tile) {
