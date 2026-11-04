@@ -31,6 +31,8 @@ public final class WorldStreamSourceControllerTest {
         failedFxWakeStillCancelsHeldInitialSourceQualification();
         returningNearestCanProgressWhenAllNeverPresentedNeighborsRemainWanted();
         newNearestCanProgressWhenAllNeverPresentedNeighborsRemainWanted();
+        skyOnlyFeedbackPreservesPixelsWithoutSuppressingForegroundOrUserSky();
+        skyOnlyFullUnionAdmitsMissingLookaheadBeforeReacquiringVictim();
         explicitUnsupportedSourceHasCleanNoOwnerDrain();
         fullPresentationUnionRecoversBackDemandWithoutAcceptingUnwantedPixels(false);
         fullPresentationUnionRecoversBackDemandWithoutAcceptingUnwantedPixels(true);
@@ -91,6 +93,63 @@ public final class WorldStreamSourceControllerTest {
             fixture.until(() -> fixture.commitLines().size() >= 14);
             check(fixture.pool.stats().leaseClaims() <= 12, "No thirteenth source owner while useful nearest is restored");
         } finally { fixture.close(); }
+    }
+
+    private static void skyOnlyFullUnionAdmitsMissingLookaheadBeforeReacquiringVictim() throws Exception {
+        var fixture=new Fixture(new AuthoredTerrainSource.Files(),13);
+        try {
+            fixture.start();
+            fixture.until(()->fixture.controller.snapshot().seed()!=null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0,9));
+            fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared()==9);
+            Files.writeString(fixture.directory.resolve("authored-sky-until-y"),Integer.toString(fixture.tiles.get(12).y()));
+            fixture.controller.neighborhood(fixture.tiles.subList(4,13));
+            fixture.until(()->fixture.files.opens(1024)>0);
+            check(fixture.pool.stats().leaseClaims()<=12,"Sky-blocked relief keeps source owner limit");
+            fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
+            check(fixture.controller.snapshot().prepared()==9,"Useful lookahead pixels unblock victim reacquisition");
+            check(fixture.pool.stats().leaseClaims()==9,"Final useful frame retires old presentation pins");
+        } finally { fixture.close(); }
+    }
+
+    private static void skyOnlyFeedbackPreservesPixelsWithoutSuppressingForegroundOrUserSky() throws Exception {
+        var entered=new CompletableFuture<Void>();
+        var release=new CompletableFuture<Void>();
+        var fixture=new Fixture(new AuthoredTerrainSource.Files() {
+            @Override FileTypes.FileStat stat(long id,Cancellation token) {
+                if(id==1002) { entered.complete(null); release.join(); token.check(); }
+                return super.stat(id,token);
+            }
+        },2);
+        try {
+            fixture.start();
+            fixture.until(()->fixture.controller.snapshot().seed()!=null);
+            fixture.camera(1);
+            fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
+            fixture.controller.neighborhood(fixture.tiles);
+            fixture.until(entered::isDone);
+            Files.write(fixture.directory.resolve("authored-sky"),new byte[0]);
+            fixture.camera(2);
+            fixture.until(()->fixture.controller.snapshot().detail().equals("Loading terrain in viewing direction"));
+            check(fixture.controller.takePresentation().isEmpty(),"Known all-sky pending frame cannot overwrite prior useful pixels");
+            var initial=fixture.controller.snapshot().seed().camera();
+            fixture.controller.camera(new WorldStreamTransport.Camera(3,1,80,50,
+                    new TerrainCamera(initial.x(),initial.y(),initial.z(),initial.yaw(),.3)));
+            var up=fixture.nextFrame();
+            try { check(fixture.controller.mayPresent(up),"User upward sky remains intentional while neighbor pending");
+                fixture.controller.presented(up); } finally { fixture.controller.discard(up); }
+            Files.delete(fixture.directory.resolve("authored-sky"));
+            fixture.camera(4);
+            var useful=fixture.nextFrame();
+            try { check(fixture.controller.mayPresent(useful),"Foreground camera frames remain live during held source");
+                fixture.controller.presented(useful); } finally { fixture.controller.discard(useful); }
+            Files.write(fixture.directory.resolve("authored-sky"),new byte[0]);
+            release.complete(null);
+            fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
+            check(fixture.pool.stats().leaseClaims()==2,"All-wanted-ready sky does not suppress valid final receipt");
+        } finally { release.complete(null); fixture.close(); }
     }
 
     private static void explicitUnsupportedSourceHasCleanNoOwnerDrain() throws Exception {

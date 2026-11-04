@@ -194,6 +194,10 @@ final class WorldStreamSourceController {
     private volatile String unavailableDetail;
     private CompletableFuture<Void> physicalClosing;
     private boolean initialized;
+    private boolean skySuppressed;
+    private WorldFormats.Tile creditTarget;
+    private boolean retryCommit;
+    private long commitRetryAt, commitRetryCapacity;
 
     WorldStreamSourceController(
             Request request, GpuStarter starter, Events events, Consumer<Runnable> fxPost) {
@@ -464,6 +468,7 @@ final class WorldStreamSourceController {
         pollFrame();
         updateArea();
         var wanted = demand();
+        if(creditTarget!=null && !contains(wanted,creditTarget)) creditTarget=null;
         unavailable.keySet().removeIf(key -> wanted.stream().noneMatch(tile -> key(tile) == key));
         if (pending != null) {
             if (!contains(wanted, pending.tile) && pending.cancellation == null) {
@@ -482,6 +487,7 @@ final class WorldStreamSourceController {
                 try {
                     var resident = pending.result.join();
                     var prepared = pending.producer.takePrepared();
+                    if(creditTarget!=null && same(creditTarget,pending.tile)) creditTarget=null;
                     staged = new Entry(resident, prepared);
                     entries.put(resident, staged);
                     seed(prepared);
@@ -494,6 +500,8 @@ final class WorldStreamSourceController {
                             || refusal.getSuppressed().length != 0) throw failure;
                     var origin = pending.producer.sourceRefusal();
                     int failedTile = key(pending.tile);
+                    if(creditTarget!=null && same(creditTarget,pending.tile)
+                            && refusal.reason()!=WorldStreamTransport.Refusal.RETRY_LATER) creditTarget=null;
                     pending.producer.close();
                     pending = null;
                     if (origin != null && !origin.reason().name().equals(refusal.reason().name()))
@@ -534,15 +542,38 @@ final class WorldStreamSourceController {
                 pending = null;
             }
         }
+        if(retryCommit) {
+            if(session.capacityRevision()==commitRetryCapacity && clock.getAsLong()-commitRetryAt<RETRY_NANOS) return;
+            commit=session.commit(camera.policy(),committing.stream().map(Entry::resident)
+                    .toArray(WorldStreamTransport.Resident[]::new));
+            retryCommit=false;
+            commit.whenComplete((ignored,failure)->kick());
+            publish(Phase.COMMITTING,"Activating prepared terrain");
+            return;
+        }
         if (commit != null) {
             if (!commit.isDone()) return;
             synchronized (lock) {
                 if (borrowed != null) return;
             }
-            var receipt = commit.join();
+            WorldStreamTransport.CommitReceipt receipt;
+            try { receipt=commit.join(); }
+            catch(CompletionException failure) {
+                if(failure.getClass()!=CompletionException.class || failure.getSuppressed().length!=0
+                        || !(failure.getCause() instanceof WorldStreamTransport.PreparationRefusal refusal)
+                        || refusal.reason()!=WorldStreamTransport.Refusal.RETRY_LATER
+                        || refusal.getCause()!=null || refusal.getSuppressed().length!=0) throw failure;
+                commit=null;
+                retryCommit=true;
+                commitRetryAt=clock.getAsLong();
+                commitRetryCapacity=session.capacityRevision();
+                publish(Phase.WAITING_CAPACITY,"Waiting for commit input retirement");
+                return;
+            }
             synchronized (lock) {
                 current = committing;
                 currentReceipt = receipt;
+                skySuppressed=false;
                 committing = List.of();
             }
             commit = null;
@@ -594,21 +625,24 @@ final class WorldStreamSourceController {
             // Any missing center needs a source credit, even if never previously presented.
             boolean missingCenter=!wanted.isEmpty() && current.stream().noneMatch(
                     entry->same(wanted.getFirst(),entry.resident()));
+            boolean needsUsefulFrame=missingCenter || skySuppressed;
             var subset=new ArrayList<>(current.stream().filter(
                     entry->containsResident(wanted,entry.resident())).toList());
             boolean releases=current.stream().anyMatch(entry->!subset.contains(entry) && !presented.contains(entry));
-            if(missingCenter && !releases) {
+            if(needsUsefulFrame && !releases) {
                 Entry victim=null;
                 int farthest=-1;
                 for(var entry:current) {
-                    if(presented.contains(entry)) continue;
+                    if(presented.contains(entry) || !wanted.isEmpty() && same(wanted.getFirst(),entry.resident())) continue;
                     int rank=wanted.size();
                     for(int i=0;i<wanted.size();i++) if(same(wanted.get(i),entry.resident())) { rank=i; break; }
                     if(rank>farthest) { farthest=rank; victim=entry; }
                 }
                 if(victim!=null) { subset.remove(victim); releases=true; }
             }
-            if(missingCenter && releases && camera!=null) {
+            if(needsUsefulFrame && releases && camera!=null) {
+                creditTarget=wanted.stream().filter(tile->!unavailable.containsKey(key(tile))
+                        && current.stream().noneMatch(entry->same(tile,entry.resident()))).findFirst().orElse(null);
                 committing=List.copyOf(subset);
                 commit=session.commit(camera.policy(),subset.stream().map(Entry::resident)
                         .toArray(WorldStreamTransport.Resident[]::new));
@@ -619,7 +653,14 @@ final class WorldStreamSourceController {
             publish(Phase.WAITING_CAPACITY, "Waiting for accepted viewport pixels");
             return;
         }
-        for (var tile : wanted) {
+        var admissionOrder=new ArrayList<>(wanted);
+        boolean centerMissing=!wanted.isEmpty() && current.stream().noneMatch(entry->same(wanted.getFirst(),entry.resident()));
+        if(!centerMissing && creditTarget!=null && contains(admissionOrder,creditTarget)) {
+            var priority=creditTarget;
+            admissionOrder.removeIf(tile->same(tile,priority));
+            admissionOrder.addFirst(priority);
+        }
+        for (var tile : admissionOrder) {
             if (unavailable.containsKey(key(tile))) continue;
             boolean found = false;
             for (var entry : current)
@@ -697,6 +738,23 @@ final class WorldStreamSourceController {
         }
         var frame = session.takeLatestFrame();
         if (frame.isPresent()) {
+            var candidate=frame.orElseThrow();
+            if(candidate.content()!=currentReceipt) return;
+            var latest=camera;
+            boolean pendingWanted, hasPresented;
+            synchronized(lock) {
+                hasPresented=acceptedSequence>0;
+                pendingWanted=desired.stream().anyMatch(tile->!unavailable.containsKey(key(tile))
+                        && current.stream().noneMatch(entry->same(tile,entry.resident())));
+            }
+            if(hasPresented && latest!=null && latest.view().pitch()<0 && pendingWanted
+                    && WorldStreamBackground.matchesBasicSky(candidate.pixels(),candidate.width(),
+                            candidate.height(),()->closing)) {
+                skySuppressed=true;
+                publish(Phase.PREPARING,"Loading terrain in viewing direction");
+                return;
+            }
+            skySuppressed=false;
             synchronized (lock) {
                 if (!closing)
                     queued = new Presentation(frame.orElseThrow(), request.viewGeneration());

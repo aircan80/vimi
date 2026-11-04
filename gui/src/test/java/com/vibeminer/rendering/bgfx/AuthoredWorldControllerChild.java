@@ -66,6 +66,7 @@ public final class AuthoredWorldControllerChild {
                                             offer.sha256()),
                                     () -> false)) {
                         var h = payload.header();
+                        state.tileY.put(offer.lease().slot(),h.y());
                         int covered = 0;
                         for (long word : h.coverage()) covered += Long.bitCount(word);
                         state.send("INPUT_CONSUMED " + offer.transaction() + " TILE");
@@ -122,7 +123,18 @@ public final class AuthoredWorldControllerChild {
                     var pixels =
                             ByteBuffer.allocate(camera.width() * camera.height() * 4)
                                     .order(ByteOrder.LITTLE_ENDIAN);
-                    while (pixels.hasRemaining()) pixels.putInt(0xff008000 | (int) content);
+                    boolean sky=Files.exists(directory.getParent().resolve("authored-sky"));
+                    var until=directory.getParent().resolve("authored-sky-until-y");
+                    if(Files.exists(until)) {
+                        int targetY=Integer.parseInt(Files.readString(until));
+                        sky=state.members.stream().noneMatch(slot->state.tileY.getOrDefault(slot,-1)==targetY);
+                    }
+                    for(int row=0;row<camera.height();row++) {
+                        float t=(float)row/camera.height();
+                        int color=sky ? 0xff000000|((int)(91+80*t)<<16)|((int)(141+60*t)<<8)|(int)(177+37*t)
+                                : 0xff008000|(int)content;
+                        for(int column=0;column<camera.width();column++) pixels.putInt(color);
+                    }
                     pixels.flip();
                     frames.write(
                             new WorldStreamFrameGate.Frame(
@@ -142,6 +154,7 @@ public final class AuthoredWorldControllerChild {
     private static final class State {
         final String prefix;
         final Set<Integer> members = new HashSet<>();
+        final java.util.Map<Integer,Integer> tileY=new java.util.HashMap<>();
         final long[] generations = new long[10];
         long serial;
         boolean available;

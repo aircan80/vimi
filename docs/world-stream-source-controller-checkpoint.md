@@ -252,3 +252,21 @@ center. Accepting useful center pixels then releases old presentation pins and a
 neighbor to be reacquired. The same twelve-output/source and native-slot caps remain unchanged.
 Both independently authored RED cases (returning center1 and never-presented center12 while all
 new neighbors remain wanted) now pass through actual source/packet/parent/frame fixtures.
+
+Display-usefulness feedback uses the reviewed BASIC sky-gradient helper on the controller worker,
+with immutable detached readonly pixels and no clone. Only downward-looking, still-pending wanted
+terrain with prior accepted pixels can suppress a matching all-sky candidate. Foreground differences,
+intentional upward sky and all-wanted-ready sky remain displayable. This changes display feedback,
+never source authority, material outcome or qualified bindings. Historical receipt frames are not
+classified; sky suppression resets on actual new COMMITTED receipt. Active sky feedback can also
+request bounded credit relief when the under-camera center is resident but a useful lookahead is
+missing. One bounded creditTarget remembers the missing tile that motivated relief, so the dropped
+farthest neighbor is not immediately reloaded ahead of it. Fresh useful pixels then release old
+presentation pins and allow the dropped neighbor back. A thirteen-tile authored sky-until-lookahead
+fixture proves this cycle within twelve owners; held-source foreground/upward/final sky cases pass.
+
+COMMITTED success and actual commit-file retirement remain separate. If an immediate subsequent
+commit receives the exact clean parent RETRY_LATER refusal, the controller retains the immutable
+committing target and retries only on capacity revision or the existing 500ms cadence. It neither
+turns pressure into source failure nor spins/reuses retired residents. Physical stopped-commit
+normalization dependency051e99 is included separately.
