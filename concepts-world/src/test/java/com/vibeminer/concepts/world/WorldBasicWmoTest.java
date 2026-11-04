@@ -9,6 +9,7 @@ import com.vibeminer.access.Cancellation;
 import com.vibeminer.files.FileReadStream;
 import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.tables.AuthoredNativeMap;
+import com.vibeminer.formats.world.WmoFormats;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.rendering.world.TerrainScene;
 import java.io.ByteArrayOutputStream;
@@ -212,6 +213,46 @@ class WorldBasicWmoTest {
             assertThrows(IllegalArgumentException.class, () -> captured[0].positions());
             result.close();
             assertTrue(closed.get());
+        }
+    }
+
+    @Test
+    void recordedNoLiquidDescriptorDoesNotAdmitLiquidBodiesOrOtherGroupFlags() throws Exception {
+        for (int descriptor : new int[] {0, 15}) {
+            try (var f = new Fixture()) {
+                var bytes = group();
+                patch(bytes, "MOGP", 52, descriptor);
+                f.files.sources.put(6L, bytes);
+                assertEquals(
+                        descriptor, WmoFormats.group(bytes, () -> false).header().liquidType());
+                var called = new AtomicBoolean();
+                f.run(
+                                (borrow, scene, token) -> {
+                                    called.set(true);
+                                    assertEquals(1, borrow.imageCount());
+                                    return (AutoCloseable) () -> {};
+                                })
+                        .close();
+                assertTrue(called.get());
+            }
+        }
+        for (int mode = 0; mode < 3; mode++) {
+            try (var f = new Fixture()) {
+                var bytes = mode == 1 ? group(chunk("MLIQ", new byte[32])) : group();
+                patch(bytes, "MOGP", 52, mode == 0 ? 1 : 15);
+                if (mode == 2) {
+                    patch(bytes, "MOGP", 8, 0x1009);
+                }
+                f.files.sources.put(6L, bytes);
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () ->
+                                f.run(
+                                        (borrow, scene, token) -> {
+                                            throw new AssertionError(
+                                                    "Unsupported liquid/profile reached output");
+                                        }));
+            }
         }
     }
 
