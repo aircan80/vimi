@@ -12,6 +12,7 @@ final class WorldStreamParentState {
         final long transaction;
         final int x, y;
         boolean producerStarted, producerDrained, offered, inputConsumed, fileRetired = true;
+        boolean commitResolved;
         boolean cancelRequested,
                 cancelSent,
                 cancelResolved,
@@ -152,15 +153,18 @@ final class WorldStreamParentState {
             return null;
         }
         requireTicket(value);
-        value.cancelRequested = true;
+        if (value.resident != null && commit != null && !commit.terminal) {
+            return null;
+        }
         if (value.credited
                 || value.canceled
                 || value.rejected
-                || value.committed
+                || value.commitResolved
                 || value.cancelSent
                 || value.unusedSent) {
             return null;
         }
+        value.cancelRequested = true;
         if (value.offered) {
             value.cancelSent = true;
             return new WorldStreamControl.Cancel(
@@ -222,6 +226,7 @@ final class WorldStreamParentState {
                             && (active.contains(member)
                                     || ticket != null
                                             && ticket.resident == member
+                                            && !ticket.commitResolved
                                             && !ticket.cancelRequested
                                             && !ticket.canceled
                                             && !ticket.rejected
@@ -272,7 +277,7 @@ final class WorldStreamParentState {
                 require(
                         ticket.producerDrained
                                 && (ticket.offered ? ticket.inputConsumed : ticket.fileRetired)
-                                && (ticket.committed || ticket.canceled || ticket.rejected),
+                                && (ticket.commitResolved || ticket.canceled || ticket.rejected),
                         "Credit before old owners drain");
                 ticket.credited = true;
             }
@@ -331,8 +336,9 @@ final class WorldStreamParentState {
             active = commit.ordered;
             content = commit.next;
             commit.terminal = commit.accepted = true;
-            if (ticket != null && ticket.resident != null && active.contains(ticket.resident)) {
-                ticket.committed = true;
+            if (ticket != null && ticket.resident != null) {
+                ticket.commitResolved = true;
+                ticket.committed = active.contains(ticket.resident);
             }
             return Change.COMMITTED;
         }
@@ -395,6 +401,7 @@ final class WorldStreamParentState {
         CANCELED,
         REJECTED,
         COMMITTED,
+        COMMIT_PENDING,
         RETIRED
     }
 
@@ -406,8 +413,11 @@ final class WorldStreamParentState {
         if (value.rejected && (!value.cancelSent || value.cancelResolved)) {
             return Cancellation.REJECTED;
         }
-        if (value.committed) {
+        if (value.commitResolved) {
             return active.contains(value.resident) ? Cancellation.COMMITTED : Cancellation.RETIRED;
+        }
+        if (value == ticket && value.resident != null && commit != null && !commit.terminal) {
+            return Cancellation.COMMIT_PENDING;
         }
         if (value.credited && !value.canceled && !value.rejected) {
             return Cancellation.RETIRED;

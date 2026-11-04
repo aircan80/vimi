@@ -72,6 +72,7 @@ public final class WorldStreamTransport {
 
     public enum CancellationReason {
         ALREADY_COMMITTED,
+        COMMIT_PENDING,
         PACKET_REJECTED,
         ALREADY_RETIRED
     }
@@ -548,6 +549,7 @@ public final class WorldStreamTransport {
             return new CancellationRefusal(
                     switch (terminal) {
                         case COMMITTED -> CancellationReason.ALREADY_COMMITTED;
+                        case COMMIT_PENDING -> CancellationReason.COMMIT_PENDING;
                         case REJECTED -> CancellationReason.PACKET_REJECTED;
                         case RETIRED -> CancellationReason.ALREADY_RETIRED;
                         default -> throw new IllegalArgumentException("Nonterminal cancellation");

@@ -113,3 +113,19 @@ remains and no successor construction is admitted. Releasing the lane deletes th
 only then completes cancellation; repeating old cancellation is bounded. The old immediate-ack
 publication fails this unchanged fixture causally. The rejection/queued-cancel pipe fixture also
 checks a repeated old ticket cancellation returns typed PACKET_REJECTED after successor credit.
+
+## Commit disposition prerequisite
+
+The private reducer now distinguishes commitResolved from committed-active. A successful COMMIT
+resolves an incoming STAGED ticket whether selected or excluded; excluded candidates report
+ALREADY_RETIRED, cannot be remixed into a later table and allow next credit only after actual
+COMMITTED plus the existing producer/file barriers. Selected candidates remain active committed
+and require replacement through COMMIT. A wrong commit acknowledgement does not resolve them;
+a rejected commit leaves them staged/cancelable and keeps the prior table unchanged.
+
+A staged candidate during any in-flight COMMIT reports typed COMMIT_PENDING before cancel flag
+mutation. There is no deferred cancellation queue. The controller waits for real commit resolution,
+then removes via next COMMIT or retries cancellation after a rejection. Three deterministic reducer
+fixtures cover exclusion preserving an old table/new credit, wrong ack and forbidden remix,
+commit rejection and pending cancel non-mutation, and empty-table resolution retaining the actual
+input deletion barrier. Public commit/frame methods are still the next implementation milestone.
