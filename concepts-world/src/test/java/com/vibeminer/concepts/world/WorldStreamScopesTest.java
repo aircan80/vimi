@@ -328,11 +328,44 @@ final class WorldStreamScopesTest {
         }
     }
 
+    @Test
+    void fullUniqueMapProofRejectsSkippedAndEmptyJumpedOrdinals() {
+        for (boolean empty : new boolean[] {false, true}) {
+            var files = new WorldTerrainTextureSourceTest.Files();
+            var tables = new Tables(files);
+            tables.rowCount = 3;
+            tables.skipPage = !empty;
+            tables.emptyMiddle = empty;
+            var source = new WorldStreamScopes(tables.handle(), files.files());
+            try {
+                assertThrows(
+                        IllegalStateException.class,
+                        () -> source.create(REQUEST, Cancellation.NONE));
+                assertEquals(
+                        0,
+                        files.totalOpens(),
+                        "Incomplete uniqueness proof never authorizes WDT access");
+                assertEquals(0, source.retainedProofs());
+                tables.skipPage = false;
+                tables.emptyMiddle = false;
+                assertEquals(
+                        1,
+                        source.create(REQUEST, Cancellation.NONE).wdtId(),
+                        "Complete genuine traversal remains usable");
+            } finally {
+                source.closeAsync().join();
+                tables.close();
+            }
+        }
+    }
+
     private static final class Tables {
         final WorldTerrainTextureSourceTest.Files files;
         final AtomicInteger pages = new AtomicInteger();
         final CountDownLatch entered = new CountDownLatch(1);
         volatile long mapId = 7;
+        volatile int rowCount = 1;
+        volatile boolean skipPage, emptyMiddle;
         volatile String wdt = "1", identity = "owned-map-row";
         volatile boolean duplicate,
                 qualified = true,
@@ -351,9 +384,23 @@ final class WorldStreamScopesTest {
         }
 
         CapturedRowsTypes.Page page() {
+            return page(0);
+        }
+
+        CapturedRowsTypes.Page page(long first) {
             var original =
-                    last.readOrdinalPage(0, 1, WorldStreamScopes.READ_LIMITS, Cancellation.NONE)
+                    last.readOrdinalPage(first, 1, WorldStreamScopes.READ_LIMITS, Cancellation.NONE)
                             .join();
+            if (emptyMiddle && first == 1) {
+                return new CapturedRowsTypes.Page(
+                        original.identity(),
+                        first,
+                        CapturedRowsTypes.ReadState.READ,
+                        List.of(),
+                        2L,
+                        null,
+                        null);
+            }
             var row = original.rows().getFirst();
             if (mapId != 7 || !wdt.equals("1")) {
                 row =
@@ -375,7 +422,7 @@ final class WorldStreamScopesTest {
                     pageState == TableTypes.PageState.OK
                             ? (duplicate ? List.of(row, row) : List.of(row))
                             : List.of(),
-                    null,
+                    skipPage && first == 0 ? Long.valueOf(2) : original.nextOrdinal(),
                     null,
                     null);
         }
@@ -399,7 +446,8 @@ final class WorldStreamScopesTest {
                                                                             key.getBytes(
                                                                                     java.nio.charset
                                                                                             .StandardCharsets
-                                                                                            .UTF_8))));
+                                                                                            .UTF_8))),
+                                            rowCount);
                                 } catch (java.security.NoSuchAlgorithmException impossible) {
                                     throw new AssertionError(impossible);
                                 }
@@ -493,7 +541,9 @@ final class WorldStreamScopesTest {
                             assertEquals(1, count, "Map proof never requests a wide generic page");
                             pages.incrementAndGet();
                             entered.countDown();
-                            return held != null ? held : CompletableFuture.completedFuture(page());
+                            return held != null
+                                    ? held
+                                    : CompletableFuture.completedFuture(page(first));
                         }
 
                         public CompletableFuture<Void> closeAsync() {

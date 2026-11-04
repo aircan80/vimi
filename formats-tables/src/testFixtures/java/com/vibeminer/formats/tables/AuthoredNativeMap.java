@@ -29,6 +29,10 @@ public final class AuthoredNativeMap implements AutoCloseable {
     }
 
     public AuthoredNativeMap(BuildFiles borrowed, String contentKey) {
+        this(borrowed, contentKey, 1);
+    }
+
+    public AuthoredNativeMap(BuildFiles borrowed, String contentKey, int rowCount) {
         var base = new Db2Types.Limits();
         var limits =
                 new Db2Types.Limits(
@@ -54,8 +58,7 @@ public final class AuthoredNativeMap implements AutoCloseable {
                         "int ID\nint WdtFileDataID", "$id,noninline$ID<u32>\nWdtFileDataID<u32>");
         var decoded =
                 Db2Reader.open(
-                                Db2ByteSource.memory(
-                                        Db2Fixture.numeric("WDC5", 0, 32, 1, new long[0], false)),
+                                Db2ByteSource.memory(numericRows(rowCount)),
                                 document,
                                 "1.2.3.4",
                                 limits,
@@ -158,6 +161,27 @@ public final class AuthoredNativeMap implements AutoCloseable {
                         options,
                         new BackgroundBuilds(),
                         new ProtectedIds());
+    }
+
+    private static byte[] numericRows(int rows) {
+        if (rows < 1 || rows > 10_000) {
+            throw new IllegalArgumentException("Authored Map row bound");
+        }
+        byte[] template = Db2Fixture.numeric("WDC5", 0, 32, 1, new long[0], false);
+        var original = java.nio.ByteBuffer.wrap(template).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        int start = original.getInt(212);
+        var out =
+                java.nio.ByteBuffer.allocate(start + rows * 12)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        out.put(template, 0, start);
+        out.putInt(136, rows).putInt(216, rows).putInt(228, rows * 4);
+        for (int i = 0; i < rows; i++) {
+            out.putLong(1);
+        }
+        for (int i = 0; i < rows; i++) {
+            out.putInt(7 + i);
+        }
+        return out.array();
     }
 
     public BuildTables tables() {

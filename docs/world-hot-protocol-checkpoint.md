@@ -670,3 +670,10 @@ remains valid. An authored enrichment regression passes; restoring whole-object
 equality fails it. Changed CK/FileDataID/known consumed length still rejects.
 Repeated close calls share the existing active-operation drain and do not dispatch
 additional cancellation workers; the held-IO fixture repeats close32 times.
+
+The initial uniqueness proof requires contiguous ordinal consumption: exactly
+min(1,remaining) rows and exactly next=first+count until the receipt's rowCount,
+then null. A nonadvancing, skipped or empty-jumped middle page cannot certify a
+unique requested Map ID. The real native fixture supports multiple rows; crafted
+skip/empty-middle pages reject before WDT IO, while complete traversal succeeds.
+Restoring merely increasing nextOrdinal checks makes the regression fail.
