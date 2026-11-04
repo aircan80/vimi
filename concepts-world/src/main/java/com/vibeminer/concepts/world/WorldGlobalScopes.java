@@ -484,12 +484,23 @@ final class WorldGlobalScopes {
             var data = ByteBuffer.allocate((int) length);
             while (data.hasRemaining()) {
                 token.check();
-                if (WorldSourceFutures.await(stream.read(data, token)) <= 0) {
+                int position = data.position();
+                int count = WorldSourceFutures.await(stream.read(data, token));
+                if (data.limit() != length || count != data.position() - position) {
+                    throw new IllegalStateException("Global source read progress differs");
+                }
+                if (count <= 0) {
                     throw unavailable();
                 }
             }
             token.check();
-            if (WorldSourceFutures.await(stream.read(ByteBuffer.allocate(1), token)) != -1) {
+            if (data.position() != length || data.limit() != length) {
+                throw new IllegalStateException("Global source consumption differs");
+            }
+            var eof = ByteBuffer.allocate(1);
+            int extra = WorldSourceFutures.await(stream.read(eof, token));
+            token.check();
+            if (extra != -1 || eof.position() != 0 || eof.limit() != 1) {
                 throw new IllegalStateException("Asset source EOF differs");
             }
             var receipt =
@@ -777,12 +788,23 @@ final class WorldGlobalScopes {
             var bytes = ByteBuffer.allocate((int) length);
             while (bytes.hasRemaining()) {
                 token.check();
-                if (WorldSourceFutures.await(stream.read(bytes, token)) <= 0) {
+                int position = bytes.position();
+                int count = WorldSourceFutures.await(stream.read(bytes, token));
+                if (bytes.limit() != length || count != bytes.position() - position) {
+                    throw new IllegalStateException("Global source read progress differs");
+                }
+                if (count <= 0) {
                     throw unavailable();
                 }
             }
             token.check();
-            if (WorldSourceFutures.await(stream.read(ByteBuffer.allocate(1), token)) != -1) {
+            if (bytes.position() != length || bytes.limit() != length) {
+                throw new IllegalStateException("Global source consumption differs");
+            }
+            var eof = ByteBuffer.allocate(1);
+            int extra = WorldSourceFutures.await(stream.read(eof, token));
+            token.check();
+            if (extra != -1 || eof.position() != 0 || eof.limit() != 1) {
                 throw new IllegalStateException("Global source EOF differs");
             }
             var result = parse(map, before.contentKey(), before.size(), bytes.array(), token);
