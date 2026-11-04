@@ -36,8 +36,10 @@ final class RaceAppearancePlanTest {
             schema.add(
                     new TableSchema.SchemaColumn(
                             field,
-                            TableSchema.ColumnKind.INT,
-                            32,
+                            field.endsWith("_lang")
+                                    ? TableSchema.ColumnKind.LOCSTRING
+                                    : TableSchema.ColumnKind.INT,
+                            field.endsWith("_lang") ? null : 32,
                             true,
                             count,
                             relation.length == 1
@@ -45,7 +47,7 @@ final class RaceAppearancePlanTest {
                                     : new TableSchema.ForeignKey(relation[1], "ID"),
                             TableSchema.KeyStorage.NONE,
                             TableSchema.KeyStorage.NONE,
-                            false,
+                            field.endsWith("_lang"),
                             WowLocale.parse("enUS"),
                             null,
                             null));
@@ -53,7 +55,7 @@ final class RaceAppearancePlanTest {
                 columns.add(
                         new Db2Types.Column(
                                 count == 1 ? field : field + "[" + i + "]",
-                                "integer",
+                                field.endsWith("_lang") ? "string" : "integer",
                                 false,
                                 null,
                                 null));
@@ -1067,6 +1069,101 @@ final class RaceAppearancePlanTest {
                 service.closeAsync().join();
                 tables.closeAsync().join();
             }
+        }
+    }
+
+    @Test
+    void skinCatalogDerivesOnlyActualKnownEligibleModelMembers() {
+        var seed = new ArrayList<>(fixture(false, 9));
+        replace(seed, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(3, "2")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationOption",
+                        "DCC2A86E",
+                        "ChrModelID,Requirement,Name_lang",
+                        row(30, "5", "0", "Skin Color")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationChoice",
+                        "9559C358",
+                        "ChrCustomizationOptionID->ChrCustomizationOption,UiOrderIndex,ChrCustomizationReqID,ChrCustomizationVisReqID",
+                        row(524, "30", "0", "0", "0"),
+                        row(525, "30", "1", "0", "0"),
+                        row(526, "30", "2", "1", "0"),
+                        row(527, "30", "3", "0", "1"),
+                        row(528, "31", "4", "0", "0"),
+                        row(529, "30", "5", "2", "0")));
+        replace(
+                seed,
+                table(
+                        "ChrCustomizationReq",
+                        "CA154412",
+                        "ReqType,ClassMask,RegionGroupMask,ReqAchievementID,ReqQuestID,OverrideArchive,ReqItemModifiedAppearanceID,RaceMasks:2",
+                        row(2, "3", "1", "0", "0", "0", "-1", "0", "4", "0")));
+        var tables =
+                new MemoryTables()
+                        .add(BUILD, "enUS", seed)
+                        .forBuild(BUILD, "enUS", Cancellation.NONE)
+                        .join()
+                        .tables();
+        var service = new RacesService(tables);
+        try {
+            var catalog = service.customizations(3, 1, 5, Cancellation.NONE).join();
+            assertTrue(!catalog.options().isEmpty(), catalog.toString());
+            assertEquals(
+                    List.of(524L, 525L, 529L),
+                    catalog.options().getFirst().choices().stream()
+                            .map(RaceCustomizationTypes.Choice::id)
+                            .toList());
+            assertEquals("Skin Color", catalog.options().getFirst().label());
+            assertEquals(524, catalog.options().getFirst().defaultChoiceId());
+            assertEquals(
+                    List.of(524L, 525L),
+                    service
+                            .customizations(3, 2, 5, Cancellation.NONE)
+                            .join()
+                            .options()
+                            .getFirst()
+                            .choices()
+                            .stream()
+                            .map(RaceCustomizationTypes.Choice::id)
+                            .toList());
+            assertTrue(
+                    service.customizations(3, 1, 6, Cancellation.NONE).join().options().isEmpty());
+            assertTrue(
+                    service.customizations(1, 1, 5, Cancellation.NONE).join().options().isEmpty());
+            var customization = new RaceCustomization(new RaceMedia(service, tables, null, null));
+            assertEquals(
+                    Map.of(30L, 525L),
+                    customization.requested(
+                            new RaceCustomizationTypes.Request(
+                                    3, 1, 5, List.of(new RaceCustomizationTypes.Pick(30, 525))),
+                            Cancellation.NONE));
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    RacesService.Projection.class,
+                    () ->
+                            customization.requested(
+                                    new RaceCustomizationTypes.Request(
+                                            3,
+                                            2,
+                                            5,
+                                            List.of(new RaceCustomizationTypes.Pick(30, 529))),
+                                    Cancellation.NONE));
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    RacesService.Projection.class,
+                    () ->
+                            customization.requested(
+                                    new RaceCustomizationTypes.Request(
+                                            3,
+                                            1,
+                                            5,
+                                            List.of(new RaceCustomizationTypes.Pick(31, 528))),
+                                    Cancellation.NONE));
+        } finally {
+            service.closeAsync().join();
+            tables.closeAsync().join();
         }
     }
 

@@ -115,3 +115,24 @@ The proof uses the current checkout's compiled concepts-races classes before dep
 JARs. No game bodies, images or generated derivatives are committed. Existing partial
 character-table/neutral-surface warnings remain honest; this does not establish full
 client shader parity, animations, other race admission or a GUI control implementation.
+
+## Public bounded catalog and preparation API
+
+`BuildRaces.customizations(race,class,model,token)` and
+`appearance(RaceCustomizationTypes.Request,token)` are optional; custom providers
+return unavailable unless they implement them. An unavailable provider never receives
+an override through the old default-sample method. Requests contain at most16 unique
+OptionID→ChoiceID picks, while catalogs contain at most16 options,64 choices per option
+and256 choices total. Labels/messages are capped256 characters and diagnostics32.
+All list snapshots check both reported size and actual iteration before copying.
+
+The native service currently exposes only race3/model5/option30. Its actual source row
+must bind to model5 and supply a verified nonempty name. Choices are derived from the
+actual option foreign key and existing known requirement/visibility policy;524/525 are
+proof samples, not a hardcoded membership list. More than64 eligible members refuses
+the catalog. Default is the same selected choice as the full shared vector. Unknown
+requirements, nonzero visibility requirements and another option's rows are excluded.
+Public nonempty requests must belong to that catalog and are revalidated by the same
+selection path during appearance preparation. Empty requests retain default behavior.
+This does not make the catalog a native-membership certificate or promise full client
+customization support. Other race/model/control contexts remain explicitly unsupported.
