@@ -22,6 +22,21 @@ public final class RecordFile {
     public static final int MAX_PAGE_RECORDS = 1 << 16;
     static final int RUN_BYTES = 256 << 10;
 
+    /** Optional per-block/per-record ceilings; page callers still bound their row count. */
+    public record ReadLimits(
+            int maxCompressedBlockBytes, int maxDecodedBlockBytes, int maxRecordBytes) {
+        public ReadLimits {
+            if (maxCompressedBlockBytes < 1
+                    || maxCompressedBlockBytes > GeneratedTypes.MAX_OBJECT_BYTES
+                    || maxDecodedBlockBytes < 1
+                    || maxDecodedBlockBytes > GeneratedTypes.MAX_OBJECT_BYTES
+                    || maxRecordBytes < 1
+                    || maxRecordBytes > GeneratedTypes.MAX_OBJECT_BYTES) {
+                throw new IllegalArgumentException("Invalid record read limits");
+            }
+        }
+    }
+
     public record Record(long ordinal, long id, byte[] bytes) {
         public Record {
             bytes = bytes.clone();
@@ -107,6 +122,16 @@ public final class RecordFile {
 
     public CompletableFuture<List<Record>> read(
             long firstOrdinal, int count, Cancellation cancellation) {
+        return readPage(firstOrdinal, count, null, cancellation);
+    }
+
+    public CompletableFuture<List<Record>> read(
+            long firstOrdinal, int count, ReadLimits limits, Cancellation cancellation) {
+        return readPage(firstOrdinal, count, Objects.requireNonNull(limits), cancellation);
+    }
+
+    private CompletableFuture<List<Record>> readPage(
+            long firstOrdinal, int count, ReadLimits limits, Cancellation cancellation) {
         return RecordTasks.submit(
                 () -> {
                     position(firstOrdinal);
@@ -125,7 +150,12 @@ public final class RecordFile {
                         int skip = (int) (firstOrdinal + result.size() - block.first()),
                                 take = (int) Math.min(n - result.size(), recordsIn(b) - skip);
                         result.addAll(
-                                parseBlock(b, frame(block.frame(), cancellation), skip, take));
+                                parseBlock(
+                                        b,
+                                        frame(block.frame(), cancellation, limits),
+                                        skip,
+                                        take,
+                                        limits));
                     }
                     return List.copyOf(result);
                 });
@@ -336,6 +366,10 @@ public final class RecordFile {
     }
 
     private List<Record> parseBlock(int b, byte[] body, int skip, int take) {
+        return parseBlock(b, body, skip, take, null);
+    }
+
+    private List<Record> parseBlock(int b, byte[] body, int skip, int take, ReadLimits limits) {
         long n = recordsIn(b);
         if (n > body.length / 2 || skip < 0 || take < 0 || (long) skip + take > n) {
             throw RecordFormat.corrupt("Impossible block record count");
@@ -348,6 +382,9 @@ public final class RecordFile {
                 throw RecordFormat.corrupt("Record extends beyond block");
             }
             if (i >= skip && i < skip + take) {
+                if (limits != null && length > limits.maxRecordBytes()) {
+                    throw new GeneratedStoreException(GeneratedTypes.LIMIT, "Record read limit");
+                }
                 byte[] bytes = new byte[(int) length];
                 in.get(bytes);
                 result.add(new Record(manifest.blocks().get(b).first() + i, id, bytes));
@@ -396,6 +433,15 @@ public final class RecordFile {
     }
 
     private byte[] frame(Frame frame, Cancellation cancellation) {
+        return frame(frame, cancellation, null);
+    }
+
+    private byte[] frame(Frame frame, Cancellation cancellation, ReadLimits limits) {
+        if (limits != null
+                && (frame.compressed() > limits.maxCompressedBlockBytes()
+                        || frame.length() > limits.maxDecodedBlockBytes())) {
+            throw new GeneratedStoreException(GeneratedTypes.LIMIT, "Record block read limit");
+        }
         return RecordFormat.decompress(
                 segment(frame.segment(), frame.offset(), frame.compressed(), cancellation),
                 frame.length());
