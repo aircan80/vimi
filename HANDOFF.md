@@ -1,49 +1,59 @@
 # vimi development handoff
 
-## Alpha.19 parser allocation release candidate
+## Current Linux checkpoint — alpha20 released, persistent World integration active
 
-Focused release worktree `/tmp/vimi-terrain-parser-release`, branch
-`fix/terrain-parser-release`, includes independently approved8e57ff1+f0bba22.
-Only terrain geometry accumulation changed: bounded primitive buffers replace
-boxing/per-fan arrays. Five authored old-parser geometry/area goldens and actual
-three-ADT hashes/counts agree. Fulltile measuredallocation13.3MB→5.3MB;
-actualthree-source5.3–6.1MB, noFPS/wholeheapclaim. Root andindependentreviews pass.
-Full combined/hosted/package gates still required before alpha.19 tag; alpha.18
-remains the latest verified published prerelease until publication is checked.
-No city/instance/NPC/music/hotstreaming/characterUI feature is claimed delivered.
+The user stayed on Linux and explicitly requested continued overnight work with parallel
+agents and prereleases. Latest VERIFIED release is
+[alpha20](https://github.com/aircan80/vimi/releases/tag/v0.1.0-alpha.20), source
+590aa0e, publication run41780488095: five platforms,18assets, prerelease/notdraft.
+Main47e05bf records verification. Frozen launcher
+`.local/apps/preview-590aa0e/bin/vimi-gui-prototype` passes packaged UI/native smoke.
+Never move published tags or overwrite frozen launchers. Older checkpoint sections below
+are historical when they conflict with this section. Acquired assets/proof images stay
+private; the committed Maps screenshot contains only authored placeholder artwork.
 
+Draft PR153 is `/tmp/vimi-world-streaming-integration`, branch
+`feature/world-streaming-integration`. Reviewed native core1bd1aa5/93cf11f/186c01f
+is integrated througha39c15c. Independent root Vulkan proof passes:104replacement/
+cancelcycles, actual camera frames during uploads, reference drain and bounded producer
+memory. Fix186c01f handles uint32 readback fence wrap and prevents an upload after an
+old draw was queued in the same bgfx frame. Legacy shader blobs remain unchanged;
+eight new streaming blobs are separately verified. This is not yet the GUI renderer.
 
-## Alpha20 publication and active streaming checkpoint
+Actor2d83f6f and pure status/state/mailbox checkpoints are independently reviewed and
+integrated through7af3c68. Root actual rerun passes39tasks in
+`/tmp/vimi-world-session-root-review.log`: same GPU child3commits/15camera revisions,
+stationary-camera content changes,800x500resize, actual pixels, cancellation, replay
+rejection and clean CLOSE/EOF. A separate real unread stdout pipe fills after573commands/
+1147completedwrites; independent watchdog terminates that owned child after11.884s.
+No GUI/source integration, nine-tile movement FPS or Metal/D3D runtime claim is made.
+Combined concepts/formats/rendering/GUI integration validation is running; inspect
+`/tmp/vimi-world-actor-integration-check.log` before promoting the branch.
 
-Maps PR158 is FF-merged on main at590aa0e. Current-head hosted gates and allfive
-platform packaging dry run41778802552 passed. Immutable alpha20 tag points at590;
-publication run41780488095 is VERIFIED SUCCESS: allfive platform jobs,18assets,
-explicit prerelease/notdraft. Release https://github.com/aircan80/vimi/releases/tag/v0.1.0-alpha.20 Frozen local preview
-`.local/apps/preview-590aa0e/bin/vimi-gui-prototype` passes packaged UI/native24shader
-smoke. Do not move tags or overwrite frozen launchers. Authored placeholder-only
-review screenshot is in docs/screenshots; actual game-art proof images stay PRIVATE.
+Reviewed source pieces already integrated:12-version geometry cache34cf891,
+off-caller WorldService close1b7fc64, detached actual admission metadata8100e1f,
+owned material drain/strict errorsb7837ad+184fcd1, raw WMO facts5dbc64c,
+private BASIC_WMO source factorya22b82d+unknown-size fixture01ddd9e.
+Cold neutral WMO annexf6ce9c2 in `/tmp/vimi-wmo-basic-source` is under independent
+review. No buildings, instance viewer, NPCs, music or character creator is delivered.
 
-All3agents are actively implementing, not stopped: architect production native
-core93cf11f after1bd1aa5 (/tmp/vimi-persistent-world-native-owner) passes actual
-Vulkan104replacement/cancelcycles SAMEprocess,1469camera frames duringupload,
-4410callbacksdrained,4MiBproducerpeak; independent review pending and no parentGUI/
-controlpipes wired yet. Rootstreamingintegration currentc2a69a4+ownedhelperb7837ad/
-testcleanup184fcd1 combines reviewed tile/frame/control/cache/deadline/source pieces.
-WorldBasicWmoa22b82d+unknown-sizefixture01ddd9e source-only checkpoint is root-review
-pending (/tmp/vimi-wmo-basic-source); neutral coldannex23ecedb+a4b9e12 designapproved
-for implementation. No visible buildings/instances delivered yet.
+Actual70755 Map table is VERIFIED_NATIVE but PARTIAL73/81 with3encryptedsections/
+8excludedrecords. Do NOT blanket-allow PARTIAL or mistake an issue certificate for
+membership. Narrow selected-ID witness design40c7c31+explicit source access3659343
+is approved; implementation in `/tmp/vimi-partial-map-id-witness` remains uncommitted
+and must be independently reviewed. Candidate actual readonly-source proof passes
+Map0→WDT775971→root777947,37120vertices/256areas, geometrySHA
+c032876b1c24752cb8f2bedf95e710510402addf9ee98e89b6bff675601ae6df,
+with repeated geometry reusing one root read. Required negative/cancel/lifetime
+qualification is still being completed. Actual BASIC_WMO factory proof follows this gate.
 
-CRITICAL actual-source gate: source proof `/tmp/vimi-world-source-live-proof/proof3.log`
-finds actualselected70755 Map VERIFIED_NATIVE but PARTIAL73/81,3encryptedsections/
-8excludedrecords, layoutD43AFAC3, textIssueCount0, scopeunencryptedSections. Existing
-Scopes READY+zeroexcluded policy blocks evenreadableMap0. Do NOT blanketallowPARTIAL
-or treat nativeissuecertificate as membership. Worker proposal40c7c31 approved for
-narrow native per-ID-domain inspection: complete explicit excluded IDs, zero copies,
-WDC4/5, private selected-row witness bound to samecapture/source/keys/definitions,
-<=1MiBsource and4MiBphase. Add explicit CONFIGURED_SOURCE access parameter (may
-acquire Map source, but no tableprepare/repair/definitionfetch/whole-rowdecode).
-ActualMap0 scope/root/WMO proof must pass afterward before hot GUI/sourcepromotion.
-Legacyviewer/Mapsalpha20 remain functional. Sourceworker is implementing this now.
+Next: review/promote the partial Map witness and cold WMO annex, implement combined
+source-owned material/packet transaction, parent process transport and inline coordinator,
+then prove real movement without renderer restart or temporary untextured replacements.
+Global-instance transform/source proposal runs separately in
+`/tmp/vimi-world-global-instance-source`; do not reuse ADT offset transforms or invent tiles.
+Remaining race/sex models and character customization follow current World milestones;
+independent immersive extras must not indefinitely postpone that work.
 
 ## Overnight continuation — Maps alpha20 candidate
 

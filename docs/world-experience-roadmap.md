@@ -7,11 +7,11 @@ The user authorized all items below and autonomous continued work, including ove
 | Work | Current state | Delivery gate |
 | --- | --- | --- |
 | Terrain textures/navigation/download feedback | Released alpha.18 | BASIC diffuse/tint/fog; larger material fidelity remains below |
-| Continuous world GPU streaming | Active; approved pure protocol/state, Vulkan feasibility and precision; source scopes reviewed; frame v2 codec and bounded command/mailbox independently approved | Persistent same-child terrain changes, accepted content/camera provenance, cancellation/drain and real movement proof |
+| Continuous world GPU streaming | Active; persistent native owner and opt-in child actor independently pass actual Vulkan content/camera/resize/cancellation and real blocked-pipe shutdown; parent/source/inline integration pending | Persistent same-child terrain changes, accepted content/camera provenance, cancellation/drain and real movement proof |
 | Greater view distance | 49-source planner/test-emitter checkpoint; integration pending | Independent seam/error/cap review, multi-source geometry/material representation and bounded streaming |
 | Terrain load allocation | Released alpha.19 | Primitive parser preserves exact geometry/area; cold neighborhood renderer handoff remains |
 | Terrain visual quality | Planned | Higher-resolution GPU material sampling, filtering/mips and qualified blending; no claim of client parity |
-| Cities/buildings/doodads | Active source/design; real WMO root/group/texture proof | Qualified transforms/materials, culling, same-world depth/camera and combined GPU ledger |
+| Cities/buildings/doodads | Private BASIC_WMO source factory reviewed; cold neutral annex under independent review; visible native pass pending | Qualified transforms/materials, culling, same-world depth/camera and combined GPU ledger |
 | Dungeons/raids | Raw WDT scene facts merged; actual global instance source proofs | Qualified global transforms/materials and scene mode integration; first actual instance, interior navigation and safe camera framing |
 | Water | Source/design preserved | Qualified source/layout and bounded visible rendering |
 | NPC/monster placement | Authorized | Verified spawn coordinate domains, model/display mapping, height/floor/phase provenance, bounded instances; static placement first |
