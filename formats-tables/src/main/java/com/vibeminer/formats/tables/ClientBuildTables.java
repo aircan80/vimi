@@ -44,8 +44,9 @@ final class ClientBuildTables implements BuildTables {
     private final Map<Long, CompletableFuture<Void>> background = new HashMap<>();
     private final Object gate = new Object();
     private final java.util.Set<Cancellation> preloads = new java.util.HashSet<>();
-    private boolean closed;
-    private int active;
+    private boolean closed, closeStarted, closeCallbacks, filesClosing;
+    private Throwable closeFailure;
+    private int active, closeCaptureDrains;
     private final java.util.Set<CapturedRowsHandle> captures = new java.util.HashSet<>();
     private final java.util.Set<Cancellation> captureRequests = new java.util.HashSet<>();
     java.util.function.BiConsumer<CapturedRowsTypes.Capture, CompletableFuture<Void>>
@@ -510,15 +511,52 @@ final class ClientBuildTables implements BuildTables {
     }
 
     private void finish() {
-        boolean done;
         synchronized (gate) {
             active--;
-            done = closed && active == 0;
         }
-        if (done) {
+        retireFilesIfReady();
+    }
+
+    private void recordCloseFailure(Throwable failure) {
+        synchronized (gate) {
+            if (closeFailure == null) {
+                closeFailure = failure;
+            } else if (closeFailure != failure) {
+                closeFailure.addSuppressed(failure);
+            }
+        }
+    }
+
+    private void retireFilesIfReady() {
+        synchronized (gate) {
+            if (!closed
+                    || closeCallbacks
+                    || active != 0
+                    || closeCaptureDrains != 0
+                    || filesClosing) {
+                return;
+            }
+            filesClosing = true;
+        }
+        try {
             files.close();
-            drained.complete(null);
+        } catch (RuntimeException | Error failure) {
+            recordCloseFailure(failure);
         }
+        Throwable failure;
+        synchronized (gate) {
+            failure = closeFailure;
+        }
+        if (failure == null) {
+            drained.complete(null);
+        } else {
+            drained.completeExceptionally(
+                    new IllegalStateException("Table close cleanup failed", failure));
+        }
+    }
+
+    CompletableFuture<Void> whenClosed() {
+        return drained.copy();
     }
 
     private TableTypes.Entry entry(
@@ -1934,26 +1972,56 @@ final class ClientBuildTables implements BuildTables {
 
     @Override
     public CompletableFuture<Void> closeAsync() {
-        boolean close;
         List<Cancellation> stopping;
         List<CapturedRowsHandle> stoppingCaptures;
         synchronized (gate) {
+            if (closeStarted) {
+                return drained.copy();
+            }
             closed = true;
+            closeStarted = true;
+            closeCallbacks = true;
             var stoppingAll = new ArrayList<>(preloads);
             stoppingAll.addAll(captureRequests);
             stopping = List.copyOf(stoppingAll);
             stoppingCaptures = List.copyOf(captures);
-            close = active == 0;
         }
-        for (var cancellation : stopping) {
-            cancellation.cancel();
-        }
-        for (var capture : stoppingCaptures) {
-            capture.closeAsync();
-        }
-        if (close) {
-            files.close();
-            drained.complete(null);
+        try {
+            for (var cancellation : stopping) {
+                try {
+                    cancellation.cancel();
+                } catch (RuntimeException | Error failure) {
+                    recordCloseFailure(failure);
+                }
+            }
+            for (var capture : stoppingCaptures) {
+                synchronized (gate) {
+                    closeCaptureDrains++;
+                }
+                try {
+                    capture.closeAsync()
+                            .whenComplete(
+                                    (ignored, failure) -> {
+                                        if (failure != null) {
+                                            recordCloseFailure(failure);
+                                        }
+                                        synchronized (gate) {
+                                            closeCaptureDrains--;
+                                        }
+                                        retireFilesIfReady();
+                                    });
+                } catch (RuntimeException | Error failure) {
+                    recordCloseFailure(failure);
+                    synchronized (gate) {
+                        closeCaptureDrains--;
+                    }
+                }
+            }
+        } finally {
+            synchronized (gate) {
+                closeCallbacks = false;
+            }
+            retireFilesIfReady();
         }
         return drained.copy();
     }
