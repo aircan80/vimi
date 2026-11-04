@@ -96,12 +96,15 @@ public final class WorldStreamTileWriter {
 }
 ```
 
-Data is explicitly descriptive, bounded, forgeable structural data: map/tile facts,
-terminal outcome/reason, source tuples/diffuse encoding/cache digest and recipe.
+Data is explicitly descriptive, bounded, forgeable structural data: expected scope
+SHA, map/tile facts, terminal outcome/reason, source tuples/diffuse encoding/cache digest and recipe.
 It has no verified/source-positive flag. Bound all fixed/count/string fields before
 copying, use the existing exact numeric mapping and validate against the same codec.
 The adapter takes nonce/scope/transaction/slot/generation and exact private path
-ONLY from the opaque PacketDestination, never caller protocol setters. It streams
+ONLY from the opaque PacketDestination, never caller protocol setters. It requires
+Data.expectedScopeSha256 to equal the destination's internal scope digest before
+writing. The fixed GUI callback supplies that expectation only from actual checked
+source facts; no new public raw context/counter getters are needed. It streams
 from synchronous borrowed buffers using the existing bounded writer, closes/drains
 its channel before return, and retains no Data/geometry/atlas/source view. Output
 is a source-neutral file capability containing only exact destination identity,
@@ -177,7 +180,9 @@ Do not interpret union/atlas/native slot pressure as terminal source height.
 A BooleanSupplier alone cannot cancel a blocked source read before the producer
 reaches its next poll. Waiting for terminatedAndDrained to cancel is circular when
 that drain itself includes the producer. Use root's approved direction for a small
-opaque PacketDestination.onStopping(Runnable requestCancellation) registration:
+opaque PacketDestination.onStopping(Runnable requestCancellation) registration.
+Its returned opaque StoppingRegistration has a nonblocking metadata-only close;
+transport retains the independent callback-drain bookkeeping after unregister:
 
 - At most ONE active callback for its one producer. Register/unregister is metadata
   only. Already stopping schedules callback off caller; callbacks are coalesced once.
