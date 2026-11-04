@@ -1,4 +1,4 @@
-"""Global candidate shader wrapper checks keep DX11 opt-in and production resources untouched."""
+"""Global candidate shader wrapper checks keep DX11 opt-in, verify the committed eight binaries and leave production resources untouched."""
 import sys
 import unittest
 from unittest.mock import patch
@@ -22,14 +22,15 @@ class GlobalCandidateShaderWrapperTests(unittest.TestCase):
             item.start()
             self.addCleanup(item.stop)
 
-    def test_default_verification_checks_committed_six_binaries_without_dx11(self):
-        run("--verify")
-        self.assertNotIn("dx11", compiler.PROFILES)
+    def test_opted_in_verification_checks_committed_eight_binaries(self):
+        run("--include-dx11", "--verify")
+        self.assertIn("dx11", compiler.PROFILES)
         self.assertEqual("world-global", compiler.SOURCES.name)
 
-    def test_dx11_verification_requires_generated_dx11_binaries(self):
+    def test_default_verification_rejects_committed_dx11_without_opt_in(self):
         with self.assertRaises(ValueError):
-            run("--include-dx11", "--verify")
+            run("--verify")
+        self.assertNotIn("dx11", compiler.PROFILES)
 
     def test_dx11_generation_without_opt_in_is_rejected(self):
         with patch.object(compiler, "compile_profiles") as compile_profiles, self.assertRaises(SystemExit):
