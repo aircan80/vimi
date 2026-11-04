@@ -1,6 +1,6 @@
 # First visible WMO city buildings
 
-Status: source/design checkpoint only. No parser, renderer, protocol, GUI or application-library changes. The goal is actual textured building exteriors in the existing World Explorer, with honest partial coverage, rather than city labels or bounding-box substitutes.
+Status: source/design checkpoint only. The narrower [one-asset BASIC_WMO_PREVIEW proposal](world-wmo-basic-preview-budget.md) can deliver a first exterior within the existing immutable world path; it does not require hot streaming or the general32MiB envelope below. No parser, renderer, protocol, GUI or application-library changes. The goal is actual textured building exteriors in the existing World Explorer, with honest partial coverage, rather than city labels or bounding-box substitutes.
 
 ## Why cities are absent and what can be reused
 
