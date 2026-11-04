@@ -1,0 +1,25 @@
+# Raw MH2O formats checkpoint
+
+This implements only the first formats-world slice of the approved world-liquids proposal. `WorldLiquids.readMh2o` validates ADT18 through the existing `WorldFormats.parseAdt` walker, receives transient MH2O offsets, validates all 256 headers and instance metadata, and copies only that payload once. The new package-private walker hook preserves existing geometry/grid/area behavior. Invalid ADT/MH2O raises `WorldLiquids.FormatException`; cancellation propagates separately. ABSENT and present-empty are distinct.
+
+Private-constructed `RawLiquids` retains immutable descriptors and one payload of at most 2 MiB. Public descriptor values cannot become a decoder owner. Counts are at most four instances per header and 1024 total. Header attributes are parsed once and shared by that header's descriptors; distinct header attribute aliases, tables, bitmaps and known geometry overlaps reject. Unknown vertex formats retain offsets without a guessed tail. On decode, known direct-layout0 ranges plus the requested layout0 range are checked again; unresolved starts may not alias these intervals, but unknown lengths do not certify nonoverlap.
+
+`decodeHeightDepth0(owner, ordinal, canceled)` is a low-level layout reader, **not LVF or source qualification**. It implements height floats followed by depth bytes, X-first/LSB-first cell masks and effective full 8×8 rectangles for secondary≥42 while retaining raw rectangle fields. Zero bitmap follows the raw all-present layout rule; its source-profile admission remains the concepts owner's responsibility. Zero vertex data throws unsupported, with no equal-bounds or sea-level fill. Every height is finite and within the existing ±1,000,000 coordinate policy; only vertices referenced by present cells must lie within the declared min/max. Masked finite padding remains unchanged. There is no native/world coordinate transform, triangulation, table resolver, source IO, scene integration or water draw.
+
+The implementation follows the pinned TrinityCore struct, planar reader and bit traversal references already recorded in [the approved proposal](world-liquids-proposal.md). The current parser supplies raw facts only, including for unknown formats or raw type2; a caller asking the low-level reader to interpret layout0 does not authorize that layout for the source.
+
+## Bounded ownership
+
+No source-read worker, root cache or whole-root clone is introduced. The caller's existing root buffer is borrowed during the checked walk. Retained ownership is one MH2O payload ≤2 MiB plus a conservative 256 KiB logical metadata envelope: ≤1024 layer records charged 192 B each, ≤256 attribute records charged 64 B each, ≤513 fixed intervals charged 32 B each, bounded reference arrays/list headers and the raw owner. These are explicit logical allowances, not measured JVM RSS. Construction/decode interval scratch is independently bounded by 256 KiB (≤256 tables, ≤256 attributes, ≤1024 bitmaps and ≤1024 known layout ranges). A detached decoded layer owns ≤81 floats and 81 depth bytes, charged 1 KiB including its scalar descriptor and immutable buffer wrappers; repeated caller-retained decode results remain caller-owned. Existing shared ADT area-walk transient ownership stays in the existing root-parser subsystem and is not claimed inside the new payload envelope. Future concepts integration must charge simultaneous raw/decoded/cache ownership before enabling it.
+
+## Verification
+
+Run `JAVA_HOME=/usr/lib/jvm/java-25-openjdk ./gradlew :formats-world:check`.
+
+Authored gates cover absent/present-empty, exact planar arrays, unsigned depth, bit axes, detached read-only views, indirect effective rectangle, missing vertex data, unused zero padding, used bound violations/nonfinite data, malformed count/offset/table/attribute/bitmap/geometry aliases, oversized/truncated payloads, duplicate chunks, unknown vertex lengths, maximum 1024 descriptors, shared header attributes, explicit-clear/zero-offset bitmap distinction, cancellation and unchanged terrain-grid samples/holes.
+
+Read-only private source proof used existing `/tmp/vimi-terrain-texture-proof/root-777952.adt` and `root-778147.adt`, with no acquisition, writes or Git assets. Results: root777952 PRESENT/12076 payload bytes/20 instances/819 layout0 cells; root778147 PRESENT/14834 bytes/26 instances/682 cells. These match the proposal's recorded sums. The low-level proof does not qualify LiquidType→Material/LVF or assert rendered water. Private harness/log: `/home/aircan/.cache/vimi-tmp/liquids-raw-proof/`.
+
+## Root integration review
+
+Root reviewed the bounded raw parser and shared checked ADT walk, then integrated 1ec4e89 as 73608b8 in the next-feature branch after alpha.21 was tagged. Independent Maps-agent checks and actual raw source counts passed. Root `:formats-world:check` passed 7 tasks. This grants raw parsing only; table qualification, combined ownership, coordinates and rendering remain separate gates.

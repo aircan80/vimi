@@ -9,6 +9,7 @@ import com.vibeminer.concepts.world.WorldTerrainTextureSource;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.rendering.bgfx.WorldStreamTransport;
 import com.vibeminer.rendering.world.TerrainCamera;
+import com.vibeminer.rendering.world.TerrainGround;
 
 import java.lang.ref.WeakReference;
 import java.nio.IntBuffer;
@@ -142,10 +143,13 @@ final class WorldStreamSourceController {
                 WorldFormats.Tile tile,
                 WorldStreamTransport.TileReservation reservation,
                 WorldTerrainStreaming source,
+                com.vibeminer.concepts.world.WorldWaterPreview water,
                 WorldTerrainStreaming.Scope scope) {
             this.tile = tile;
             this.reservation = reservation;
-            producer = new WorldStreamSourceBridge.Producer(source, scope, tile, () -> useful);
+            producer =
+                    new WorldStreamSourceBridge.Producer(
+                            source, water, scope, tile, () -> useful);
         }
     }
 
@@ -175,6 +179,10 @@ final class WorldStreamSourceController {
     // Worker owns every source/transport owner below. FX sees only immutable table aliases under
     // lock.
     private WorldTerrainStreaming source;
+    private com.vibeminer.concepts.world.WorldWaterPreview water;
+    private CompletableFuture<Boolean> waterTables;
+    private long waterTablesStarted;
+    private static final long WATER_TABLE_WAIT_NANOS = 15_000_000_000L;
     private WorldTerrainStreaming.Scope scope;
     private GpuOwner gpu;
     private CompletableFuture<WorldStreamTransport.Session> opening;
@@ -182,6 +190,10 @@ final class WorldStreamSourceController {
     private final IdentityHashMap<WorldStreamTransport.Resident, Entry> entries =
             new IdentityHashMap<>();
     private List<Entry> current = List.of(), presented = List.of(), committing = List.of();
+    // Worker-owned compact heights of current residents; FX reads only the immutable aggregate.
+    private final IdentityHashMap<Entry, Optional<TerrainGround.Tile>> heights =
+            new IdentityHashMap<>();
+    private volatile TerrainGround ground = TerrainGround.empty();
     private CompletableFuture<WorldStreamTransport.CommitReceipt> commit;
     private WorldStreamTransport.CommitReceipt currentReceipt, acceptedReceipt;
     private Entry staged;
@@ -268,6 +280,11 @@ final class WorldStreamSourceController {
         synchronized (lock) {
             return snapshot;
         }
+    }
+
+    /** Rendered-surface heights of the current resident tiles; never source or payload handles. */
+    TerrainGround ground() {
+        return closing ? TerrainGround.empty() : ground;
     }
 
     Optional<Presentation> takePresentation() {
@@ -420,6 +437,15 @@ final class WorldStreamSourceController {
                     return;
                 }
                 source=capability.orElseThrow();
+                // Static diagnostic water joins each actual terrain tile; disable with
+                // -Dvimi.world.water=false.
+                if(!"false".equals(System.getProperty("vimi.world.water")))
+                    water=request.world().waterPreview().orElse(null);
+                if(water!=null) {
+                    waterTablesStarted=clock.getAsLong();
+                    waterTables=request.world().prepareWaterTables(qualificationCancellation);
+                    waterTables.whenComplete((ignored, failure) -> kick());
+                }
             }
             try {
                 if (scope == null)
@@ -669,6 +695,12 @@ final class WorldStreamSourceController {
             admissionOrder.removeIf(tile->same(tile,priority));
             admissionOrder.addFirst(priority);
         }
+        if(waterTables!=null && !waterTables.isDone()
+                && clock.getAsLong()-waterTablesStarted<WATER_TABLE_WAIT_NANOS) {
+            // Bounded wait so the first tiles can carry water; terrain proceeds after timeout.
+            publish(Phase.PREPARING, "Preparing water tables");
+            return;
+        }
         for (var tile : admissionOrder) {
             if (unavailable.containsKey(key(tile))) continue;
             boolean found = false;
@@ -684,7 +716,7 @@ final class WorldStreamSourceController {
                 return;
             }
             blockedOnMaterialPool = false;
-            pending = new Pending(tile, reservation.orElseThrow(), source, scope);
+            pending = new Pending(tile, reservation.orElseThrow(), source, waterReady() ? water : null, scope);
             pending.result = pending.reservation.produce(pending.producer);
             pending.result.whenComplete((ignored, failure) -> kick());
             publish(Phase.PREPARING, "Preparing terrain, textures and upload");
@@ -706,10 +738,17 @@ final class WorldStreamSourceController {
                                         : "Waiting for accepted viewport pixels");
     }
 
+    private boolean waterReady() {
+        if(water==null || waterTables==null || !waterTables.isDone()) return false;
+        try { return waterTables.getNow(false); }
+        catch(RuntimeException failed) { return false; }
+    }
+
     private String readyDetail() {
-        int textured = 0, partial = 0, height = 0;
+        int textured = 0, partial = 0, height = 0, watered = 0;
         String reason = "";
         for (var entry : current) {
+            if (entry.source().waterCells() > 0) watered++;
             var facts = entry.source().facts();
             if (facts.outcome() == WorldTerrainStreaming.Outcome.TEXTURED) {
                 textured++;
@@ -732,6 +771,10 @@ final class WorldStreamSourceController {
                 + height
                 + " height fallback"
                 + (reason.isEmpty() ? "" : "; " + reason)
+                + (watered == 0 ? "" : "; static diagnostic water on " + watered)
+                + (water != null && waterTables != null && waterTables.isDone() && !waterReady()
+                        ? "; water tables unavailable"
+                        : "")
                 + (unavailable.isEmpty()
                         ? ""
                         : "; "
@@ -819,7 +862,28 @@ final class WorldStreamSourceController {
         changed();
     }
 
+    private void updateGround() {
+        var live = java.util.Collections.newSetFromMap(new IdentityHashMap<Entry, Boolean>());
+        live.addAll(current);
+        heights.keySet().retainAll(live);
+        var tiles = new ArrayList<TerrainGround.Tile>();
+        for (var entry : current) {
+            var known = heights.get(entry);
+            if (known == null) {
+                // Current residents are never retired here; borrow failures surface like updateArea.
+                TerrainGround.Tile[] built = {null};
+                entry.source().withPayload(
+                        borrow -> built[0] = TerrainGround.Tile.of(borrow.geometry()));
+                known = Optional.ofNullable(built[0]);
+                heights.put(entry, known);
+            }
+            known.ifPresent(tiles::add);
+        }
+        ground = TerrainGround.of(tiles);
+    }
+
     private void updateArea() {
+        updateGround();
         var latest = camera;
         if (latest == null) return;
         long[] selected = {0};
@@ -984,6 +1048,8 @@ final class WorldStreamSourceController {
         }
         entries.clear();
         source = null;
+        water = null;
+        waterTables = null;
         scope = null;
         opening = null;
         session = null;

@@ -159,145 +159,229 @@ public final class NativeIdReceiptFingerprint {
 
     // Canonical v1 stamp streams into SHA-256; no full-schema serialization buffer is retained.
     public static String sha256(CapturedRowsTypes.Receipt r) {
-        profileMetadata(r);
-        if (!NativeIssueIdentity.columns(r.columns())
-                .equals(r.issueChannelEvidence().actualColumnsSha256())) {
-            throw new IllegalStateException("Captured native columns differ");
-        }
+        validateStampInputs(r);
         try {
             var hash = MessageDigest.getInstance("SHA-256");
             try (var out =
                     new DataOutputStream(
                             new DigestOutputStream(OutputStream.nullOutputStream(), hash))) {
-                out.writeUTF("vimi-native-id-capture-receipt-v1");
-                var build = r.build();
-                for (var value :
-                        new String[] {
-                            build.product(),
-                            build.buildConfig(),
-                            build.cdnConfig(),
-                            build.region(),
-                            r.locale()
-                        }) {
-                    text(out, value);
-                }
-                var table = r.table();
-                out.writeLong(table.fileDataId());
-                text(out, table.name());
-                out.writeBoolean(table.checked());
-                text(out, table.state().name());
-                text(out, table.contentKey());
-                var counts = table.counts();
-                out.writeLong(counts.declaredRows());
-                out.writeLong(counts.readableRows());
-                out.writeInt(counts.excludedSections());
-                out.writeLong(counts.excludedRecords());
-                text(out, counts.format());
-                text(out, counts.layoutHash());
-                for (var value :
-                        new String[] {
-                            r.definitionSha256(),
-                            r.blockIdentity(),
-                            r.graphIdentity(),
-                            r.sourceIdentity(),
-                            r.readerOptions(),
-                            r.readerRevision(),
-                            r.rowEncoding(),
-                            r.encodingScope(),
-                            r.retention().name(),
-                            r.membership().name()
-                        }) {
-                    text(out, value);
-                }
-                var schema = r.schema();
-                text(out, schema.match().name());
-                text(out, schema.locale().name());
-                text(out, schema.comment());
-                out.writeInt(schema.layoutHashes().size());
-                for (var value : schema.layoutHashes()) {
-                    text(out, value);
-                }
-                out.writeInt(schema.columns().size());
-                for (var field : schema.columns()) {
-                    text(out, field.name());
-                    text(out, field.kind() == null ? null : field.kind().name());
-                    number(out, field.bits());
-                    bool(out, field.unsigned());
-                    out.writeInt(field.arrayLength());
-                    out.writeBoolean(field.foreignKey() != null);
-                    if (field.foreignKey() != null) {
-                        text(out, field.foreignKey().table());
-                        text(out, field.foreignKey().column());
-                    }
-                    text(out, field.id() == null ? null : field.id().name());
-                    text(out, field.relation() == null ? null : field.relation().name());
-                    out.writeBoolean(field.verifiedName());
-                    text(out, field.locale() == null ? null : field.locale().name());
-                    text(out, field.columnComment());
-                    text(out, field.fieldComment());
-                }
-                var e = r.issueChannelEvidence();
-                for (var value :
-                        new String[] {
-                            e.state().name(),
-                            e.policyId(),
-                            e.producerId(),
-                            e.graphIdentity(),
-                            e.sourceIdentitySha256(),
-                            e.resolvedBlockSha256(),
-                            e.readerOptionsSha256(),
-                            e.actualColumnsSha256()
-                        }) {
-                    text(out, value);
-                }
-                var header = r.header();
-                out.writeLong(header.schemaVersion());
-                text(out, header.tableHash());
-                text(out, header.layoutHash());
-                out.writeLong(header.declaredRecords());
-                out.writeLong(header.declaredCopyRecords());
-                out.writeInt(header.recordSize());
-                text(out, header.format());
-                // Header/receipt columns equality and native actual-columns digest were verified
-                // first.
-                text(out, e.actualColumnsSha256());
-                out.writeLong(r.rowCount());
-                var completion = r.completion();
-                out.writeLong(completion.declaredRecords());
-                out.writeLong(completion.physicalRows());
-                out.writeLong(completion.copyRows());
-                out.writeInt(completion.excludedEncryptedSections());
-                out.writeLong(completion.excludedPhysicalRecords());
-                out.writeLong(completion.excludedCopyRecords());
-                text(out, completion.scope());
-                out.writeLong(completion.consumedBytes());
-                out.writeLong(completion.textIssueCount());
-                out.writeInt(r.sections().size());
-                for (var section : r.sections()) {
-                    out.writeInt(section.index());
-                    out.writeInt(section.recordCount());
-                    out.writeInt(section.copyCount());
-                    text(out, section.key());
-                    out.writeBoolean(section.isEncrypted());
-                    out.writeInt(section.protectedCopyCount());
-                    out.writeInt(section.unresolvedCopyCount());
-                    out.writeBoolean(section.isDecrypted());
-                }
-                out.writeInt(r.holeKeys().size());
-                for (var key : r.holeKeys()) {
-                    text(out, key);
-                }
-                out.writeInt(r.effectiveKeys().size());
-                for (var key : r.effectiveKeys()) {
-                    text(out, key.name());
-                    text(out, key.fingerprint());
-                }
+                writeStamp(out, r);
             }
             return HexFormat.of().formatHex(hash.digest());
         } catch (IOException impossible) {
             throw new AssertionError(impossible);
         } catch (NoSuchAlgorithmException impossible) {
             throw new AssertionError(impossible);
+        }
+    }
+
+    /** Bounded descriptive identity only; not a native certificate or membership capability. */
+    public static final class CanonicalStamp {
+        private final byte[] bytes;
+
+        private CanonicalStamp(byte[] bytes) {
+            this.bytes = bytes;
+        }
+
+        public int encodedBytes() {
+            return bytes.length;
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            return other instanceof CanonicalStamp stamp
+                    && java.util.Arrays.equals(bytes, stamp.bytes);
+        }
+
+        @Override
+        public int hashCode() {
+            return java.util.Arrays.hashCode(bytes);
+        }
+    }
+
+    /** Exact detached equality without retaining a receipt/schema graph or exposing its bytes. */
+    public static CanonicalStamp canonicalStamp(CapturedRowsTypes.Receipt receipt) {
+        validateStampInputs(receipt);
+        var bounded = new StampOutput();
+        try (var out = new DataOutputStream(bounded)) {
+            writeStamp(out, receipt);
+        } catch (IOException impossible) {
+            throw new AssertionError(impossible);
+        }
+        return new CanonicalStamp(bounded.take());
+    }
+
+    private static final class StampOutput extends OutputStream {
+        private static final int MAX = 128 << 10;
+        private byte[] bytes = new byte[512];
+        private int size;
+
+        private void reserve(int count) {
+            if (count > MAX - size) {
+                throw new UnsupportedOperationException("Native receipt stamp exceeds bound");
+            }
+            int needed = size + count;
+            if (needed > bytes.length) {
+                bytes =
+                        java.util.Arrays.copyOf(
+                                bytes, Math.min(MAX, Math.max(needed, bytes.length * 2)));
+            }
+        }
+
+        @Override
+        public void write(int value) {
+            reserve(1);
+            bytes[size++] = (byte) value;
+        }
+
+        @Override
+        public void write(byte[] value, int offset, int length) {
+            java.util.Objects.checkFromIndexSize(offset, length, value.length);
+            reserve(length);
+            System.arraycopy(value, offset, bytes, size, length);
+            size += length;
+        }
+
+        byte[] take() {
+            var result = java.util.Arrays.copyOf(bytes, size);
+            bytes = new byte[0];
+            size = 0;
+            return result;
+        }
+    }
+
+    private static void validateStampInputs(CapturedRowsTypes.Receipt receipt) {
+        profileMetadata(receipt);
+        if (!NativeIssueIdentity.columns(receipt.columns())
+                .equals(receipt.issueChannelEvidence().actualColumnsSha256())) {
+            throw new IllegalStateException("Captured native columns differ");
+        }
+    }
+
+    private static void writeStamp(DataOutputStream out, CapturedRowsTypes.Receipt r)
+            throws IOException {
+        out.writeUTF("vimi-native-id-capture-receipt-v1");
+        var build = r.build();
+        for (var value :
+                new String[] {
+                    build.product(),
+                    build.buildConfig(),
+                    build.cdnConfig(),
+                    build.region(),
+                    r.locale()
+                }) {
+            text(out, value);
+        }
+        var table = r.table();
+        out.writeLong(table.fileDataId());
+        text(out, table.name());
+        out.writeBoolean(table.checked());
+        text(out, table.state().name());
+        text(out, table.contentKey());
+        var counts = table.counts();
+        out.writeLong(counts.declaredRows());
+        out.writeLong(counts.readableRows());
+        out.writeInt(counts.excludedSections());
+        out.writeLong(counts.excludedRecords());
+        text(out, counts.format());
+        text(out, counts.layoutHash());
+        for (var value :
+                new String[] {
+                    r.definitionSha256(),
+                    r.blockIdentity(),
+                    r.graphIdentity(),
+                    r.sourceIdentity(),
+                    r.readerOptions(),
+                    r.readerRevision(),
+                    r.rowEncoding(),
+                    r.encodingScope(),
+                    r.retention().name(),
+                    r.membership().name()
+                }) {
+            text(out, value);
+        }
+        var schema = r.schema();
+        text(out, schema.match().name());
+        text(out, schema.locale().name());
+        text(out, schema.comment());
+        out.writeInt(schema.layoutHashes().size());
+        for (var value : schema.layoutHashes()) {
+            text(out, value);
+        }
+        out.writeInt(schema.columns().size());
+        for (var field : schema.columns()) {
+            text(out, field.name());
+            text(out, field.kind() == null ? null : field.kind().name());
+            number(out, field.bits());
+            bool(out, field.unsigned());
+            out.writeInt(field.arrayLength());
+            out.writeBoolean(field.foreignKey() != null);
+            if (field.foreignKey() != null) {
+                text(out, field.foreignKey().table());
+                text(out, field.foreignKey().column());
+            }
+            text(out, field.id() == null ? null : field.id().name());
+            text(out, field.relation() == null ? null : field.relation().name());
+            out.writeBoolean(field.verifiedName());
+            text(out, field.locale() == null ? null : field.locale().name());
+            text(out, field.columnComment());
+            text(out, field.fieldComment());
+        }
+        var e = r.issueChannelEvidence();
+        for (var value :
+                new String[] {
+                    e.state().name(),
+                    e.policyId(),
+                    e.producerId(),
+                    e.graphIdentity(),
+                    e.sourceIdentitySha256(),
+                    e.resolvedBlockSha256(),
+                    e.readerOptionsSha256(),
+                    e.actualColumnsSha256()
+                }) {
+            text(out, value);
+        }
+        var header = r.header();
+        out.writeLong(header.schemaVersion());
+        text(out, header.tableHash());
+        text(out, header.layoutHash());
+        out.writeLong(header.declaredRecords());
+        out.writeLong(header.declaredCopyRecords());
+        out.writeInt(header.recordSize());
+        text(out, header.format());
+        // Header/receipt columns equality and native actual-columns digest were verified
+        // first.
+        text(out, e.actualColumnsSha256());
+        out.writeLong(r.rowCount());
+        var completion = r.completion();
+        out.writeLong(completion.declaredRecords());
+        out.writeLong(completion.physicalRows());
+        out.writeLong(completion.copyRows());
+        out.writeInt(completion.excludedEncryptedSections());
+        out.writeLong(completion.excludedPhysicalRecords());
+        out.writeLong(completion.excludedCopyRecords());
+        text(out, completion.scope());
+        out.writeLong(completion.consumedBytes());
+        out.writeLong(completion.textIssueCount());
+        out.writeInt(r.sections().size());
+        for (var section : r.sections()) {
+            out.writeInt(section.index());
+            out.writeInt(section.recordCount());
+            out.writeInt(section.copyCount());
+            text(out, section.key());
+            out.writeBoolean(section.isEncrypted());
+            out.writeInt(section.protectedCopyCount());
+            out.writeInt(section.unresolvedCopyCount());
+            out.writeBoolean(section.isDecrypted());
+        }
+        out.writeInt(r.holeKeys().size());
+        for (var key : r.holeKeys()) {
+            text(out, key);
+        }
+        out.writeInt(r.effectiveKeys().size());
+        for (var key : r.effectiveKeys()) {
+            text(out, key.name());
+            text(out, key.fingerprint());
         }
     }
 

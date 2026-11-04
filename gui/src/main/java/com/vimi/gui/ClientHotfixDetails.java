@@ -80,13 +80,27 @@ final class ClientHotfixDetails {
             com.vibeminer.concepts.talents.TalentTypes.Talent talent,
             String version, Cancellation token) {
         long spell = talent.rankSpells().getFirst();
-        var node = row(tables, "Talent", talent.id(), "Tree record", version, token);
-        var name = row(tables, "SpellName", spell, "Name", version, token);
-        var description = row(tables, "Spell", spell, "Description", version, token);
-        var icon = icon(tables, spell, talent.iconFileDataId(), version, token);
-        return CompletableFuture.allOf(node, name, description, icon)
-                .thenApply(ignored -> List.of(node.join(), name.join(), description.join(), icon.join(),
-                        "Local client caches may be incomplete. Cache absence does not prove server absence."));
+        var origin = talent.origin();
+        var records = new java.util.ArrayList<CompletableFuture<String>>();
+        if (origin.model() == com.vibeminer.concepts.talents.TalentTypes.Model.TRAIT_TREE) {
+            records.add(row(tables, "TraitNode", talent.id(), "Trait node record", version, token));
+            if (origin.traitNodeEntryId() != null)
+                records.add(row(tables, "TraitNodeEntry", origin.traitNodeEntryId(), "Trait entry record", version, token));
+            if (origin.traitDefinitionId() != null)
+                records.add(row(tables, "TraitDefinition", origin.traitDefinitionId(), "Trait definition record", version, token));
+        } else {
+            records.add(row(tables, "Talent", talent.id(), "Tree record", version, token));
+        }
+        records.add(row(tables, "SpellName", spell, "Name", version, token));
+        records.add(row(tables, "Spell", spell, "Description", version, token));
+        records.add(icon(tables, spell, talent.iconFileDataId(), version, token));
+        return CompletableFuture.allOf(records.toArray(CompletableFuture[]::new))
+                .thenApply(ignored -> {
+                    var lines = new java.util.ArrayList<String>();
+                    for (var record : records) lines.add(record.join());
+                    lines.add("Local client caches may be incomplete. Cache absence does not prove server absence.");
+                    return List.copyOf(lines);
+                });
     }
 
     private static CompletableFuture<String> icon(BuildTables tables, long spell, Long icon,

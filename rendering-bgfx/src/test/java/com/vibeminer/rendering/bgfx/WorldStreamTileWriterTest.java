@@ -315,4 +315,77 @@ class WorldStreamTileWriterTest {
                 changing);
         assertEquals(1, calls.get());
     }
+
+    private static WorldStreamTileWriter.Water publicWater(int cells, float offsetX) {
+        var wire = WorldStreamTileWaterTest.water(cells, offsetX);
+        return new WorldStreamTileWriter.Water(
+                wire.positions(), wire.depths(), wire.indices(), wire.layers());
+    }
+
+    @Test
+    void waterMovesInsideItsTerrainPacketAndDecodesInTheChild() throws Exception {
+        var target = destination(directory.resolve("water"));
+        var tile = WorldStreamTileFileTest.full(false);
+        var output =
+                WorldStreamTileWriter.writeUnadvertised(
+                        target, data(tile, SCOPE, null, "BASIC_V1"), tile, null, () -> false);
+        try (var moved = output.move(publicWater(4, 0), () -> false)) {
+            assertTrue(output.waterAttached());
+            assertFalse(output.waterDropped());
+            try (var decoded = read(target)) {
+                assertEquals(4, decoded.water().cells());
+            }
+        }
+    }
+
+    @Test
+    void offTileWaterIsDroppedBeforeAppendSoTerrainStillMoves() throws Exception {
+        var target = destination(directory.resolve("offtile"));
+        var tile = WorldStreamTileFileTest.full(false);
+        var output =
+                WorldStreamTileWriter.writeUnadvertised(
+                        target, data(tile, SCOPE, null, "BASIC_V1"), tile, null, () -> false);
+        long terrainOnly = Files.size(target.path());
+        try (var moved = output.move(publicWater(1, 2000), () -> false)) {
+            assertFalse(output.waterAttached());
+            assertTrue(output.waterDropped());
+            assertEquals(terrainOnly, Files.size(target.path()));
+            try (var decoded = read(target)) {
+                assertEquals(null, decoded.water());
+            }
+        }
+    }
+
+    @Test
+    void canceledWaterMovePropagatesAndLeavesTheTerrainPacketOwned() throws Exception {
+        var target = destination(directory.resolve("canceled"));
+        var tile = WorldStreamTileFileTest.full(false);
+        var output =
+                WorldStreamTileWriter.writeUnadvertised(
+                        target, data(tile, SCOPE, null, "BASIC_V1"), tile, null, () -> false);
+        long terrainOnly = Files.size(target.path());
+        assertThrows(CancellationException.class, () -> output.move(publicWater(2, 0), () -> true));
+        assertEquals(terrainOnly, Files.size(target.path()));
+        output.close();
+        assertFalse(Files.exists(target.path()));
+    }
+
+    @Test
+    void changedUnadvertisedPacketIsNeverMovedWithOrWithoutWater() throws Exception {
+        var target = destination(directory.resolve("changed"));
+        var tile = WorldStreamTileFileTest.full(false);
+        var output =
+                WorldStreamTileWriter.writeUnadvertised(
+                        target, data(tile, SCOPE, null, "BASIC_V1"), tile, null, () -> false);
+        try (var channel =
+                java.nio.channels.FileChannel.open(
+                        target.path(), java.nio.file.StandardOpenOption.WRITE)) {
+            channel.write(ByteBuffer.wrap(new byte[] {9}), 5000);
+        }
+        assertThrows(
+                java.io.UncheckedIOException.class,
+                () -> output.move(publicWater(2, 0), () -> false));
+        output.close();
+        assertFalse(Files.exists(target.path()));
+    }
 }

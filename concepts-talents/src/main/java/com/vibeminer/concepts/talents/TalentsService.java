@@ -40,10 +40,12 @@ public final class TalentsService implements BuildTalents {
     private final Cancellation lifetime = new Cancellation();
     private final Object gate = new Object();
     private CompletableFuture<Void> closing;
-    private Data classes, tabs, talents, spellNames, spellDescriptions;
-    private final Map<Long, Long> icons = new HashMap<>();
+    private Data classes, tabs, talents;
+    Data spellNames, spellDescriptions;
+    final Map<Long, Long> icons = new HashMap<>();
+    private final TraitTrees traits = new TraitTrees(this);
     private final java.util.Set<Long> checkedIcons = new HashSet<>();
-    private final java.util.Set<String> partialTables = new HashSet<>();
+    final java.util.Set<String> partialTables = new HashSet<>();
     private final List<String> coreIssues = new ArrayList<>();
     private final List<String> metadataIssues = new ArrayList<>();
     private boolean metadataSchemasLoaded;
@@ -88,6 +90,9 @@ public final class TalentsService implements BuildTalents {
                                 "This build does not use the supported Classic three-tree talent model.");
                     }
                     try {
+                        if (traits.selected(tables.build().product(), version, token)) {
+                            return traits.catalog(token);
+                        }
                         core(token);
                         var all = playerClasses();
                         return new TalentTypes.Catalog(
@@ -124,6 +129,9 @@ public final class TalentsService implements BuildTalents {
                                 "This build requires a different talent layout.");
                     }
                     try {
+                        if (traits.selected(tables.build().product(), version, token)) {
+                            return traits.trees(classId, token);
+                        }
                         core(token);
                         var player =
                                 playerClasses().stream().filter(c -> c.id() == classId).findFirst();
@@ -304,14 +312,15 @@ public final class TalentsService implements BuildTalents {
                                 result,
                                 issues,
                                 null,
-                                null);
+                                null,
+                                TalentTypes.Model.LEGACY_TALENT);
                     } catch (Projection failure) {
                         return failed(failure.state, failure.code, failure.getMessage());
                     }
                 });
     }
 
-    private TalentTypes.ClassTrees failed(TalentTypes.State state, String code, String message) {
+    static TalentTypes.ClassTrees failed(TalentTypes.State state, String code, String message) {
         return new TalentTypes.ClassTrees(state, null, List.of(), List.of(), code, message);
     }
 
@@ -359,29 +368,31 @@ public final class TalentsService implements BuildTalents {
                     && !partialTables.contains("TalentTab")) {
                 continue;
             }
-            String name = classes.text(row, "Name_lang");
-            Long icon = classes.optionalPositive(row, "IconFileDataID");
-            String color = null;
-            Long red = classes.optionalPositiveOrZero(row, "ClassColorR"),
-                    green = classes.optionalPositiveOrZero(row, "ClassColorG"),
-                    blue = classes.optionalPositiveOrZero(row, "ClassColorB");
-            if (red != null
-                    && green != null
-                    && blue != null
-                    && red <= 255
-                    && green <= 255
-                    && blue <= 255) {
-                color = String.format(java.util.Locale.ROOT, "#%02x%02x%02x", red, green, blue);
-            }
-            result.add(
-                    new TalentTypes.PlayerClass(
-                            row.id(), name.isEmpty() ? "Class #" + row.id() : name, icon, color));
+            result.add(playerClass(classes, row));
         }
         return List.copyOf(result);
     }
 
-    private void optionalMetadata(
-            Cancellation token, List<String> issues, java.util.Set<Long> wanted) {
+    static TalentTypes.PlayerClass playerClass(Data classes, Db2Types.Row row) {
+        String name = classes.text(row, "Name_lang");
+        Long icon = classes.optionalPositive(row, "IconFileDataID");
+        String color = null;
+        Long red = classes.optionalPositiveOrZero(row, "ClassColorR"),
+                green = classes.optionalPositiveOrZero(row, "ClassColorG"),
+                blue = classes.optionalPositiveOrZero(row, "ClassColorB");
+        if (red != null
+                && green != null
+                && blue != null
+                && red <= 255
+                && green <= 255
+                && blue <= 255) {
+            color = String.format(java.util.Locale.ROOT, "#%02x%02x%02x", red, green, blue);
+        }
+        return new TalentTypes.PlayerClass(
+                row.id(), name.isEmpty() ? "Class #" + row.id() : name, icon, color);
+    }
+
+    void optionalMetadata(Cancellation token, List<String> issues, java.util.Set<Long> wanted) {
         if (!metadataSchemasLoaded) {
             try {
                 spellNames = schema("SpellName", token, metadataIssues);
@@ -443,8 +454,7 @@ public final class TalentsService implements BuildTalents {
         }
     }
 
-    private String optionalText(
-            Data data, long id, String field, Cancellation token, List<String> issues) {
+    String optionalText(Data data, long id, String field, Cancellation token, List<String> issues) {
         try {
             var row = optionalRow(data, id, token, issues);
             return row == null ? null : data.text(row, field);
@@ -485,7 +495,7 @@ public final class TalentsService implements BuildTalents {
     }
 
     /** Every readable partial table contributes its available rows and an explicit diagnostic. */
-    private Data schema(String name, Cancellation token, List<String> optionalIssues) {
+    Data schema(String name, Cancellation token, List<String> optionalIssues) {
         token.check();
         var result =
                 tables.schema(TableTypes.Ref.forName(name), TableTypes.Priority.INTERACTIVE, token)
@@ -514,17 +524,40 @@ public final class TalentsService implements BuildTalents {
                 optionalIssues.add(issue);
             }
         }
-        return new Data(name, result.columns(), result.schema(), List.of());
+        String layout =
+                result.table().counts() == null ? null : result.table().counts().layoutHash();
+        return new Data(
+                name,
+                result.columns(),
+                result.schema(),
+                List.of(),
+                layout != null && layout.equalsIgnoreCase(TraitTrees.REVIEWED_LAYOUTS.get(name)));
     }
 
     private Data read(String name, int bound, Cancellation token) {
-        Data data = schema(name, token);
-        var rows = new ArrayList<Db2Types.Row>();
-        stream(data, bound, token, rows::add);
-        return new Data(name, data.columns, data.schema, List.copyOf(rows));
+        return read(name, bound, token, coreIssues);
     }
 
-    private void stream(
+    Data read(String name, int bound, Cancellation token, List<String> issues) {
+        Data data = schema(name, token, issues);
+        var rows = new ArrayList<Db2Types.Row>();
+        stream(data, bound, token, rows::add);
+        return data.withRows(rows);
+    }
+
+    TableTypes.SchemaResult probe(String name, Cancellation token) {
+        token.check();
+        return tables.schema(TableTypes.Ref.forName(name), TableTypes.Priority.INTERACTIVE, token)
+                .join();
+    }
+
+    TableTypes.RowResult get(String name, long id, Cancellation token) {
+        token.check();
+        return tables.get(TableTypes.Ref.forName(name), id, TableTypes.Priority.INTERACTIVE, token)
+                .join();
+    }
+
+    void stream(
             Data data,
             int bound,
             Cancellation token,
@@ -627,7 +660,7 @@ public final class TalentsService implements BuildTalents {
         }
     }
 
-    private static void visit(
+    static void visit(
             TalentTypes.Talent node,
             Map<Long, TalentTypes.Talent> byId,
             java.util.Set<Long> path,
@@ -648,21 +681,21 @@ public final class TalentsService implements BuildTalents {
         complete.add(node.id());
     }
 
-    private static int integer(long value, int min, int max, String field) {
+    static int integer(long value, int min, int max, String field) {
         if (value < min || value > max) {
             throw invalid(field + " is out of range");
         }
         return (int) value;
     }
 
-    private static long unsigned(long value, String field) {
+    static long unsigned(long value, String field) {
         if (value < 0 || value > 0xffffffffL) {
             throw invalid(field + " is not uint32");
         }
         return value;
     }
 
-    private static long mask(long value) {
+    static long mask(long value) {
         if (value < Integer.MIN_VALUE || value > 0xffffffffL) {
             throw invalid("ClassMask is not a 32-bit mask");
         }
@@ -672,11 +705,11 @@ public final class TalentsService implements BuildTalents {
         return value;
     }
 
-    private static Projection invalid(String message) {
+    static Projection invalid(String message) {
         return new Projection(TalentTypes.State.INVALID, "TALENTS_DATA_INVALID", message);
     }
 
-    private static final class Projection extends RuntimeException {
+    static final class Projection extends RuntimeException {
         private static final long serialVersionUID = 1L;
         final TalentTypes.State state;
         final String code;
@@ -688,21 +721,30 @@ public final class TalentsService implements BuildTalents {
         }
     }
 
-    private static final class Data {
+    static final class Data {
         final String name;
         final List<Db2Types.Column> columns;
         final TableSchema schema;
         final List<Db2Types.Row> rows;
 
+        /** The table's physical layout is in the reviewed trait profile; see TraitTrees. */
+        final boolean reviewedLayout;
+
         Data(
                 String name,
                 List<Db2Types.Column> columns,
                 TableSchema schema,
-                List<Db2Types.Row> rows) {
+                List<Db2Types.Row> rows,
+                boolean reviewedLayout) {
             this.name = name;
             this.columns = columns;
             this.schema = schema;
             this.rows = rows;
+            this.reviewedLayout = reviewedLayout;
+        }
+
+        Data withRows(List<Db2Types.Row> retained) {
+            return new Data(name, columns, schema, List.copyOf(retained), reviewedLayout);
         }
 
         TableSchema.SchemaColumn field(String name, int count, boolean integer) {
@@ -711,7 +753,7 @@ public final class TalentsService implements BuildTalents {
                 throw unsupported(name + " is not one verified field");
             }
             var field = fields.getFirst();
-            if (!field.verifiedName()
+            if (!field.verifiedName() && !reviewedLayout
                     || field.arrayLength() != count
                     || integer != (field.kind() == TableSchema.ColumnKind.INT)
                     || integer
@@ -725,12 +767,18 @@ public final class TalentsService implements BuildTalents {
             for (int i = 0; i < count; i++) {
                 var column = columns.get(index(count == 1 ? name : name + "[" + i + "]"));
                 if (!column.kind().equals(integer ? "integer" : "string")
-                        || column.interpretation() != null
+                        || column.interpretation() != null && !rawPhysical(column)
                         || column.isId()) {
                     throw unsupported(name + " is not a plain matching column");
                 }
             }
             return field;
+        }
+
+        /** Reviewed layouts may keep a raw physical integer wider than the provider candidate. */
+        private boolean rawPhysical(Db2Types.Column column) {
+            return reviewedLayout
+                    && "raw-physical-integer-v1".equals(column.interpretation().policy());
         }
 
         void integerField(String name, int count) {
