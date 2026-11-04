@@ -677,3 +677,13 @@ then null. A nonadvancing, skipped or empty-jumped middle page cannot certify a
 unique requested Map ID. The real native fixture supports multiple rows; crafted
 skip/empty-middle pages reject before WDT IO, while complete traversal succeeds.
 Restoring merely increasing nextOrdinal checks makes the regression fail.
+
+Map metadata is checked before identity encodings/hashes: at most128 actual/schema
+columns,32 layout hashes, bounded names/kinds/interpretation warnings/comments and
+source tuple scalars, and a conservative64KiB aggregate input profile. UTF-8
+scratch uses a four-bytes-per-UTF16-unit upper bound without encoding oversized
+inputs first. Build/locale scalar caps precede scope digest serialization. Hash
+workspace stays within the existing4MiB Map phase; oversized prepared metadata
+remains an unsupported hot source, not a helper-budget loophole. Eleven negative
+metadata cases refuse before ordinal/source IO; removing this prehash guard makes
+the regression fail instead of merely rejecting after allocation/hash mismatch.

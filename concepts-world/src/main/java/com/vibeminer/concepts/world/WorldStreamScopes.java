@@ -1,6 +1,7 @@
 package com.vibeminer.concepts.world;
 
 import com.vibeminer.access.Cancellation;
+import com.vibeminer.builds.BuildTypes.BuildRef;
 import com.vibeminer.files.BuildFiles;
 import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.db2.NativeIssueIdentity;
@@ -91,6 +92,8 @@ final class WorldStreamScopes {
 
     private final BuildTables tables;
     private final BuildFiles files;
+    private final BuildRef build;
+    private final String locale;
     private final long owner;
     private final AtomicBoolean working = new AtomicBoolean();
     private final Cancellation lifetime = new Cancellation();
@@ -102,11 +105,13 @@ final class WorldStreamScopes {
     WorldStreamScopes(BuildTables tables, BuildFiles files) {
         this.tables = Objects.requireNonNull(tables);
         this.files = Objects.requireNonNull(files);
-        if (!Objects.equals(tables.build(), files.build())
-                || !Objects.equals(tables.locale(), files.locale())) {
+        build = Objects.requireNonNull(tables.build());
+        locale = tables.locale();
+        profileBuild(build, locale);
+        if (!Objects.equals(build, files.build()) || !Objects.equals(locale, files.locale())) {
             throw new IllegalArgumentException("Source build/locale mismatch");
         }
-        WowLocale.parse(files.locale());
+        WowLocale.parse(locale);
         long nonce;
         do {
             nonce = new SecureRandom().nextLong();
@@ -330,8 +335,8 @@ final class WorldStreamScopes {
         try (var rows = capture.rows()) {
             var receipt = rows.receipt();
             requireEntry(receipt.table());
-            if (!receipt.build().equals(files.build())
-                    || !receipt.locale().equals(files.locale())
+            if (!receipt.build().equals(build)
+                    || !receipt.locale().equals(locale)
                     || receipt.rowCount() > 10_000
                     || receipt.completion().excludedEncryptedSections() != 0
                     || receipt.completion().excludedPhysicalRecords() != 0
@@ -435,6 +440,7 @@ final class WorldStreamScopes {
     }
 
     private static void validateNative(CapturedRowsTypes.Receipt r) {
+        profileMetadata(r);
         var e = r.issueChannelEvidence();
         if (e.state() != CapturedRowsTypes.IssueChannelState.VERIFIED_NATIVE
                 || !e.graphIdentity().equals(r.graphIdentity())
@@ -467,6 +473,103 @@ final class WorldStreamScopes {
             }
         }
         throw new IllegalStateException("Map native issue identity differs");
+    }
+
+    private static void profileBuild(BuildRef build, String locale) {
+        profileString(build.product(), 32, false);
+        profileString(build.buildConfig(), 32, false);
+        profileString(build.cdnConfig(), 32, false);
+        profileString(build.region(), 32, true);
+        profileString(locale, 16, false);
+    }
+
+    // Bound all variable inputs BEFORE allocating canonical identity encodings or tuple scratch.
+    private static void profileMetadata(CapturedRowsTypes.Receipt r) {
+        profileBuild(r.build(), r.locale());
+        if (r.columns().size() > 128
+                || r.schema().columns().size() > 128
+                || r.schema().layoutHashes().size() > 32) {
+            throw new UnsupportedOperationException("Map metadata shape exceeds hot profile");
+        }
+        long bytes = 1024;
+        bytes += profileString(r.sourceIdentity(), 8256, false);
+        bytes += profileString(r.definitionSha256(), 64, false);
+        bytes += profileString(r.graphIdentity(), 32, false);
+        bytes += profileString(r.blockIdentity(), 64, false);
+        bytes += profileString(r.readerOptions(), 64, false);
+        bytes += profileString(r.readerRevision(), 128, false);
+        bytes += profileString(r.rowEncoding(), 64, false);
+        bytes += profileString(r.encodingScope(), 256, true);
+        bytes += profileString(r.schema().comment(), 1024, true);
+        for (var layout : r.schema().layoutHashes()) {
+            bytes += profileString(layout, 8, false);
+        }
+        for (var column : r.columns()) {
+            bytes +=
+                    64
+                            + profileString(column.name(), 128, false)
+                            + profileString(column.kind(), 32, false);
+            if (column.interpretation() != null) {
+                bytes +=
+                        64
+                                + profileString(column.interpretation().policy(), 128, false)
+                                + profileString(column.interpretation().warning(), 256, false);
+            }
+            if (bytes > 64 << 10) {
+                throw new UnsupportedOperationException("Map metadata exceeds hot profile");
+            }
+        }
+        for (var column : r.schema().columns()) {
+            bytes +=
+                    128
+                            + profileString(column.name(), 128, false)
+                            + profileString(column.columnComment(), 256, true)
+                            + profileString(column.fieldComment(), 256, true);
+            if (column.foreignKey() != null) {
+                bytes +=
+                        profileString(column.foreignKey().table(), 128, false)
+                                + profileString(column.foreignKey().column(), 128, false);
+            }
+            if (bytes > 64 << 10) {
+                throw new UnsupportedOperationException("Map metadata exceeds hot profile");
+            }
+        }
+        if (bytes > 64 << 10) {
+            throw new UnsupportedOperationException("Map metadata exceeds hot profile");
+        }
+        var e = r.issueChannelEvidence();
+        long tuple = 64;
+        for (var value :
+                new String[] {
+                    GeneratedTableSource.NATIVE_IDENTITY_FORMAT,
+                    e.policyId(),
+                    e.producerId(),
+                    r.locale(),
+                    r.table().contentKey(),
+                    r.blockIdentity(),
+                    r.readerOptions(),
+                    r.readerRevision(),
+                    r.rowEncoding(),
+                    r.encodingScope()
+                }) {
+            tuple += 5 + profileString(value, 256, true);
+        }
+        if (tuple > 4096) {
+            throw new UnsupportedOperationException("Map source tuple exceeds hot profile");
+        }
+    }
+
+    private static long profileString(String value, int maximumChars, boolean nullable) {
+        if (value == null) {
+            if (nullable) {
+                return 0;
+            }
+            throw new UnsupportedOperationException("Missing hot source metadata");
+        }
+        if (value.length() > maximumChars) {
+            throw new UnsupportedOperationException("Hot source metadata scalar exceeds profile");
+        }
+        return 16L + 4L * value.length();
     }
 
     private static String mapLayout(TableTypes.SchemaResult schema) {
@@ -560,13 +663,9 @@ final class WorldStreamScopes {
             var bytes = new ByteArrayOutputStream();
             try (var out = new DataOutputStream(bytes)) {
                 out.writeUTF("vimi-world-stream-scope-v1");
-                var build = tables.build();
+                profileBuild(build, locale);
                 for (String value :
-                        List.of(
-                                build.product(),
-                                build.buildConfig(),
-                                build.cdnConfig(),
-                                tables.locale())) {
+                        List.of(build.product(), build.buildConfig(), build.cdnConfig(), locale)) {
                     out.writeUTF(value);
                 }
                 out.writeBoolean(build.region() != null);
