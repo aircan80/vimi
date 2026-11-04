@@ -374,6 +374,209 @@ final class CapturedRowsTest {
         }
     }
 
+    private static final class NativeCase implements AutoCloseable {
+        final Fixture fixture =
+                new Fixture(
+                        true,
+                        false,
+                        false,
+                        "before",
+                        null,
+                        true,
+                        Db2Fixture.definition(
+                                "int ID\nint Value", "$id,noninline$ID<u32>\nValue<u32>"),
+                        Db2Fixture.numeric("WDC5", 0, 32, 9, new long[0], true));
+        final AtomicReference<String> content = new AtomicReference<>(CKEY);
+        final AtomicInteger statCalls = new AtomicInteger();
+        final AtomicInteger finalOpens = new AtomicInteger();
+        final CompletableFuture<Void> opened = new CompletableFuture<>();
+        final CompletableFuture<Void> release = new CompletableFuture<>();
+        volatile boolean hold;
+        volatile int mutation;
+        final ClientBuildTables tables;
+
+        NativeCase() {
+            var files =
+                    (BuildFiles)
+                            Proxy.newProxyInstance(
+                                    BuildFiles.class.getClassLoader(),
+                                    new Class<?>[] {BuildFiles.class},
+                                    (proxy, method, args) -> {
+                                        if (method.getName().equals("stat")) {
+                                            statCalls.incrementAndGet();
+                                            var file =
+                                                    new FileTypes.BuildFile(
+                                                            100,
+                                                            "dbfilesclient/numbers.db2",
+                                                            FileTypes.FilePathSource.LISTFILE,
+                                                            null,
+                                                            content.get(),
+                                                            FileTypes.FileFormat.DB2,
+                                                            FileTypes.FileFormatSource.EXTENSION,
+                                                            FileTypes.FileStorage.STORED,
+                                                            false);
+                                            return CompletableFuture.completedFuture(
+                                                    new FileTypes.FileStat(
+                                                            FileTypes.FileLookupState.FOUND, file));
+                                        }
+                                        try {
+                                            return method.invoke(fixture.files, args);
+                                        } catch (InvocationTargetException failure) {
+                                            throw failure.getCause();
+                                        }
+                                    });
+            var generated =
+                    (com.vibeminer.formats.generated.GeneratedTableStore)
+                            Proxy.newProxyInstance(
+                                    com.vibeminer.formats.generated.GeneratedTableStore.class
+                                            .getClassLoader(),
+                                    new Class<?>[] {
+                                        com.vibeminer.formats.generated.GeneratedTableStore.class
+                                    },
+                                    (proxy, method, args) -> {
+                                        if (method.getName().equals("openPreparedLocal")) {
+                                            finalOpens.incrementAndGet();
+                                            opened.complete(null);
+                                            if (hold) {
+                                                release.join();
+                                            }
+                                            var table =
+                                                    fixture.writable
+                                                            .openPreparedLocal(
+                                                                    (GeneratedTableSource) args[0],
+                                                                    (com.vibeminer.formats.generated
+                                                                                    .KeyStatus)
+                                                                            args[1],
+                                                                    (Cancellation) args[2])
+                                                            .join();
+                                            if (mutation == 1) {
+                                                content.set("2".repeat(32));
+                                            }
+                                            if (mutation == 2 || mutation == 3) {
+                                                var field =
+                                                        table.getClass()
+                                                                .getDeclaredField(
+                                                                        mutation == 2
+                                                                                ? "source"
+                                                                                : "issueCertificate");
+                                                field.setAccessible(true);
+                                                field.set(
+                                                        table,
+                                                        mutation == 2
+                                                                ? table.source().legacy()
+                                                                : null);
+                                            }
+                                            return CompletableFuture.completedFuture(table);
+                                        }
+                                        try {
+                                            return method.invoke(fixture.writable, args);
+                                        } catch (InvocationTargetException failure) {
+                                            throw failure.getCause();
+                                        }
+                                    });
+            tables =
+                    new ClientBuildTables(
+                            null,
+                            files,
+                            "1.2.3.4",
+                            fixture.definitions,
+                            generated,
+                            fixture.options,
+                            new BackgroundBuilds(),
+                            new ProtectedIds());
+        }
+
+        CompletableFuture<NativePreparationTypes.Result> prepare(
+                java.util.function.Consumer<NativePreparationTypes.Progress> progress,
+                Cancellation token) {
+            return tables.prepareNativeEvidence(
+                    REF,
+                    TableTypes.Priority.INTERACTIVE,
+                    NativePreparationTypes.SourceAccess.CONFIGURED_SOURCE,
+                    progress,
+                    token);
+        }
+
+        @Override
+        public void close() {
+            release.complete(null);
+            tables.close();
+        }
+    }
+
+    @Test
+    void finalNativePreparationRejectsChangedSourceAndSameIdentityWrongProof() {
+        for (int mutation = 1; mutation <= 3; mutation++) {
+            try (var fixture = new NativeCase()) {
+                fixture.mutation = mutation;
+                var result = fixture.prepare(ignored -> {}, Cancellation.NONE).join();
+                assertEquals(
+                        NativePreparationTypes.State.SOURCE_CHANGED,
+                        result.state(),
+                        "Mutation " + mutation);
+                assertNull(result.stamp());
+                assertEquals(1, fixture.finalOpens.get());
+                if (mutation == 1) {
+                    assertEquals(3, fixture.statCalls.get());
+                }
+            }
+        }
+    }
+
+    @Test
+    void preparationCallbackFailureAndCancellationDoNotPublishFalseReady() {
+        try (var fixture = new NativeCase()) {
+            var failure =
+                    fixture.prepare(
+                            progress -> {
+                                if (progress.phase() == NativePreparationTypes.Phase.VALIDATING) {
+                                    throw new IllegalStateException("authored callback failure");
+                                }
+                            },
+                            Cancellation.NONE);
+            assertThrows(java.util.concurrent.CompletionException.class, failure::join);
+            var cancel = new Cancellation();
+            var canceled =
+                    fixture.prepare(
+                            progress -> {
+                                if (progress.phase() == NativePreparationTypes.Phase.VALIDATING) {
+                                    cancel.cancel();
+                                }
+                            },
+                            cancel);
+            assertThrows(java.util.concurrent.CompletionException.class, canceled::join);
+            assertEquals(
+                    NativePreparationTypes.State.READY,
+                    fixture.prepare(ignored -> {}, Cancellation.NONE).join().state());
+        }
+    }
+
+    @Test
+    void heldFinalValidationCloseDrainsAndConcurrentOrdinaryReadCannotSupplyLegacyResult()
+            throws Exception {
+        try (var fixture = new NativeCase()) {
+            fixture.hold = true;
+            var preparing = fixture.prepare(ignored -> {}, Cancellation.NONE);
+            fixture.opened.get(5, TimeUnit.SECONDS);
+            assertFalse(preparing.isDone());
+            assertEquals(
+                    TableTypes.State.READY,
+                    fixture.tables
+                            .check(REF, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                            .join()
+                            .state());
+            var closing = fixture.tables.closeAsync();
+            assertFalse(closing.isDone());
+            fixture.release.complete(null);
+            assertEquals(
+                    NativePreparationTypes.State.READY, preparing.get(5, TimeUnit.SECONDS).state());
+            closing.get(5, TimeUnit.SECONDS);
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> fixture.prepare(ignored -> {}, Cancellation.NONE));
+        }
+    }
+
     @Test
     void explicitNativePreparationCoexistsWithLegacyAndRetainedUnknownCapture() {
         var fixture = new Fixture(true, true, false);
@@ -453,7 +656,29 @@ final class CapturedRowsTest {
                                     REF,
                                     TableTypes.Priority.INTERACTIVE,
                                     NativePreparationTypes.SourceAccess.CONFIGURED_SOURCE,
-                                    progress -> phases.add(progress.phase()),
+                                    progress -> {
+                                        phases.add(progress.phase());
+                                        if (progress.phase()
+                                                == NativePreparationTypes.Phase.PREPARING) {
+                                            assertEquals(
+                                                    TableTypes.State.READY,
+                                                    tables.check(
+                                                                    REF,
+                                                                    TableTypes.Priority.INTERACTIVE,
+                                                                    Cancellation.NONE)
+                                                            .join()
+                                                            .state());
+                                            try (var simultaneous =
+                                                    tables.capturePreparedLocal(
+                                                                    REF, Cancellation.NONE)
+                                                            .join()
+                                                            .rows()) {
+                                                assertEquals(
+                                                        retained.receipt().graphIdentity(),
+                                                        simultaneous.receipt().graphIdentity());
+                                            }
+                                        }
+                                    },
                                     Cancellation.NONE)
                             .join();
             assertEquals(NativePreparationTypes.State.READY, result.state(), result.toString());
