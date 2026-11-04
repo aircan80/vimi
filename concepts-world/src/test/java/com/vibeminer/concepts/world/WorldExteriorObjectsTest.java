@@ -292,7 +292,8 @@ class WorldExteriorObjectsTest {
                             List.of(
                                     new Material(0, IMAGE, 0),
                                     new Material(1, IMAGE, 0), // alpha key: unsupported batch
-                                    new Material(0, IMAGE2, 6)))); // non-zero shader: texture1
+                                    // MOMT word 1 (shader) 6 is admitted, texture1 only.
+                                    new Material(0, IMAGE2, 6))));
             f.files.sources.put(
                     GROUP,
                     group(
@@ -442,7 +443,8 @@ class WorldExteriorObjectsTest {
                                 WorldExteriorObjects.Count.PLACEMENT_DRAWN, 1,
                                 WorldExteriorObjects.Count.PLACEMENT_FAILED_ROOT, 8,
                                 WorldExteriorObjects.Count.ROOT_DRAWN, 1,
-                                WorldExteriorObjects.Count.ROOT_FAILED, 4,
+                                WorldExteriorObjects.Count.ROOT_FAILED, 1,
+                                WorldExteriorObjects.Count.ROOT_UNSUPPORTED, 3,
                                 WorldExteriorObjects.Count.ROOT_UNAVAILABLE, 3,
                                 WorldExteriorObjects.Count.GROUP_DRAWN, 1,
                                 WorldExteriorObjects.Count.BATCH_DRAWN, 1,
@@ -735,8 +737,52 @@ class WorldExteriorObjectsTest {
             try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
                 f.files.changedId = id;
                 f.files.changeAfterRead = true;
-                assertThrows(RuntimeException.class, f::run, "id " + id);
+                // The key changes between open and the post-read stat: never an omission.
+                var refusal = assertThrows(WorldTerrainStreaming.Refusal.class, f::run, "id " + id);
+                assertEquals("SOURCE_BINDING", refusal.site(), "id " + id);
             }
+        }
+        // A short read of a found, unprotected group fails the whole set at SOURCE_INPUT; it is
+        // not counted as an unavailable group.
+        var truncated =
+                new WorldTerrainTextureSourceTest.Files() {
+                    @Override
+                    com.vibeminer.files.FileReadStream open(long id, Cancellation cancel) {
+                        var actual = super.open(id, cancel);
+                        if (id != GROUP) {
+                            return actual;
+                        }
+                        return new com.vibeminer.files.FileReadStream() {
+                            public long length() {
+                                return actual.length();
+                            }
+
+                            public long position() {
+                                return actual.position();
+                            }
+
+                            public void seek(long position) {
+                                actual.seek(position);
+                            }
+
+                            public List<com.vibeminer.files.FileTypes.FileHole> holes() {
+                                return actual.holes();
+                            }
+
+                            public java.util.concurrent.CompletableFuture<Integer> read(
+                                    ByteBuffer destination, Cancellation token) {
+                                return java.util.concurrent.CompletableFuture.completedFuture(-1);
+                            }
+
+                            public void close() {
+                                actual.close();
+                            }
+                        };
+                    }
+                };
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), truncated)) {
+            var refusal = assertThrows(WorldTerrainStreaming.Refusal.class, f::run);
+            assertEquals("SOURCE_INPUT", refusal.site());
         }
         var token = new Cancellation();
         var groupOpens = new AtomicInteger();
@@ -765,6 +811,76 @@ class WorldExteriorObjectsTest {
             var set = f.run();
             set.close();
             assertThrows(IllegalStateException.class, set::placements);
+        }
+    }
+
+    @Test
+    void indexAndRangeCapsOmitWholeRootsBeforeImagesAreRead() {
+        // Seven groups of 16,384 triangles (49,152 indices each) exceed 294,912 indices.
+        try (var f = new Fixture(List.of(Modf.of(710, 1, 0x8), Modf.of(ROOT, 2, 0x8)))) {
+            f.files.sources.put(710L, root(7, repeat(711, 7), List.of(new Material(0, 712, 0))));
+            f.files.sources.put(711L, group(EXT, 3, 16384, List.of(new Batch(0, 49152, 0, 0))));
+            f.files.sources.put(712L, blp(4, 4, 1, 0));
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(
+                        List.of(ROOT),
+                        set.models().stream().map(WorldExteriorObjects.Model::rootId).toList());
+                assertEquals(null, f.files.opens.get(712L), "capped root reads no image");
+            }
+        }
+        // Seventeen groups of 64 batches exceed 1,024 draw ranges.
+        var batches = new ArrayList<Batch>();
+        for (int i = 0; i < 64; i++) {
+            batches.add(new Batch(i * 3, 3, 0, 0));
+        }
+        try (var f = new Fixture(List.of(Modf.of(720, 1, 0x8)))) {
+            f.files.sources.put(720L, root(repeat(721, 17)));
+            f.files.sources.put(721L, group(EXT, 3, 64, batches));
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+            }
+        }
+        // Sixteen such groups fit exactly at 1,024 ranges.
+        try (var f = new Fixture(List.of(Modf.of(720, 1, 0x8)))) {
+            f.files.sources.put(720L, root(repeat(721, 16)));
+            f.files.sources.put(721L, group(EXT, 3, 64, batches));
+            try (var set = f.run()) {
+                assertEquals(WorldExteriorObjects.MAX_RANGES, set.ranges());
+            }
+        }
+    }
+
+    @Test
+    void tilePixelBudgetFallsBackToSmallerMipThenCapsImage() {
+        // 15 x 256^2 + 256x128 leave 32,768 pixels: the next 256^2 image falls to its 128^2
+        // level. The last then also selects level 1 by budget, which it does not declare.
+        var materials = new ArrayList<Material>();
+        var batches = new ArrayList<Batch>();
+        for (int i = 0; i < 18; i++) {
+            materials.add(new Material(0, 4000 + i, 0));
+            batches.add(new Batch(i * 3, 3, 0, i));
+        }
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(ROOT, root(1, new long[] {GROUP}, materials));
+            f.files.sources.put(GROUP, group(EXT, 3, 18, batches));
+            for (int i = 0; i < 15; i++) {
+                f.files.sources.put(4000L + i, blp(256, 256, 1, i));
+            }
+            f.files.sources.put(4015L, blp(256, 128, 1, 0));
+            f.files.sources.put(4016L, blp(256, 256, 3, 0));
+            f.files.sources.put(4017L, blp(256, 256, 1, 0)); // only level 0 declared
+            try (var set = f.run()) {
+                var fallback = set.images().get(16);
+                assertEquals(4016L, fallback.id());
+                assertEquals(1, fallback.mipLevel());
+                assertEquals(128, fallback.width());
+                // 16,384 pixels remain: 4017 selects level 1 by budget but declares none.
+                assertEquals(1, set.count(WorldExteriorObjects.Count.IMAGE_UNDECODABLE));
+                assertEquals(17, set.images().size());
+                assertEquals(15 * 65536 + 32768 + 16384, set.pixels());
+            }
         }
     }
 

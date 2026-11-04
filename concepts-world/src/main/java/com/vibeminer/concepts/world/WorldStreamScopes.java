@@ -16,9 +16,11 @@ import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.BitSet;
+import java.util.EnumSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -799,7 +801,12 @@ final class WorldStreamScopes {
             check();
             long id =
                     switch (kind) {
-                        case ROOT -> recorded.rootId();
+                        case ROOT -> {
+                            if (profile == UseProfile.BASIC_EXTERIOR) {
+                                throw new IllegalArgumentException("Unused exterior root input");
+                            }
+                            yield recorded.rootId();
+                        }
                         case TEX0 -> {
                             if (profile != UseProfile.TERRAIN_BASIC) {
                                 throw new IllegalArgumentException("Unused WMO tex0 input");
@@ -834,14 +841,27 @@ final class WorldStreamScopes {
             }
             int ordinal = Objects.requireNonNull(kind).ordinal();
             if (derivedReads[ordinal] >= profile.derivedReads(kind)) {
-                throw new IllegalStateException("WMO " + kind + " read limit");
+                throw new IllegalStateException(
+                        switch (kind) {
+                            case WMO_ROOT -> "WMO root read limit";
+                            case WMO_GROUP -> "WMO group read limit";
+                            case WMO_IMAGE -> "WMO image read limit";
+                        });
             }
             derivedReads[ordinal]++;
             int limit = profile.derivedLimit(kind);
-            return readCandidate(id, limit);
+            return readCandidate(id, limit, profile == UseProfile.BASIC_EXTERIOR);
         }
 
         private Input readCandidate(long id, int limit) {
+            return readCandidate(id, limit, false);
+        }
+
+        /**
+         * With {@code classifyUnavailable}, only a missing, protected or over-limit source is
+         * refused at SOURCE_UNAVAILABLE; every other refusal keeps its original site.
+         */
+        private Input readCandidate(long id, int limit, boolean classifyUnavailable) {
             if (id <= 0 || id > 0xffff_ffffL) {
                 throw new IllegalArgumentException("Missing or invalid input ID");
             }
@@ -855,7 +875,7 @@ final class WorldStreamScopes {
             reserved = true;
             Source source = null;
             try {
-                source = engine.read(id, limit, token);
+                source = engine.read(id, limit, token, classifyUnavailable);
                 var binding = new Binding(id, source.key(), source.bytes().length);
                 for (var prior : bindings) {
                     if (prior.id() == id && !prior.equals(binding)) {
@@ -1361,26 +1381,61 @@ final class WorldStreamScopes {
     }
 
     private Source read(long id, int limit, Cancellation token) {
+        return read(id, limit, token, false);
+    }
+
+    private static final Set<FileTypes.FileReadState> UNAVAILABLE_READS =
+            EnumSet.of(
+                    FileTypes.FileReadState.PROTECTED,
+                    FileTypes.FileReadState.WRONG_KEY,
+                    FileTypes.FileReadState.UNKNOWN_FILE,
+                    FileTypes.FileReadState.NOT_IN_LOCALE,
+                    FileTypes.FileReadState.NOT_IN_ENCODING,
+                    FileTypes.FileReadState.MISSING,
+                    FileTypes.FileReadState.TOO_LARGE);
+
+    private Source read(long id, int limit, Cancellation token, boolean classifyUnavailable) {
+        var unavailable =
+                classifyUnavailable
+                        ? WorldSourceRefusals.Site.SOURCE_UNAVAILABLE
+                        : WorldSourceRefusals.Site.SOURCE_INPUT;
+        if (classifyUnavailable) {
+            token.check();
+            var looked = WorldSourceFutures.await(files.stat(FileTypes.FileRef.id(id), token));
+            token.check();
+            if (looked.state() != FileTypes.FileLookupState.FOUND) {
+                throw WorldSourceRefusals.at(unavailable); // missing from this build/locale
+            }
+        }
         var before = stat(id, token);
         if (before.size() != null && before.size() > limit) {
-            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_INPUT);
+            throw WorldSourceRefusals.at(unavailable);
         }
         var opened = WorldSourceFutures.await(files.openRead(FileTypes.FileRef.id(id), token));
         if (opened.stream() == null) {
             if (opened.state() == FileTypes.FileReadState.COMPLETE) {
                 throw new IllegalStateException("Complete source has no stream");
             }
-            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_INPUT);
+            throw WorldSourceRefusals.at(
+                    UNAVAILABLE_READS.contains(opened.state())
+                            ? unavailable
+                            : WorldSourceRefusals.Site.SOURCE_INPUT);
         }
         try (var stream = opened.stream()) {
             final long observedLength = stream.length();
             if (before.size() != null && before.size() != observedLength) {
                 throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_BINDING);
             }
+            if (observedLength > limit
+                    || UNAVAILABLE_READS.contains(opened.state())
+                    || opened.state() == FileTypes.FileReadState.COMPLETE
+                            && !stream.holes().isEmpty()) {
+                // Over the cap, protected/keyless, or encrypted holes in a complete stream.
+                throw WorldSourceRefusals.at(unavailable);
+            }
             if (opened.state() != FileTypes.FileReadState.COMPLETE
                     || !stream.holes().isEmpty()
-                    || observedLength < 12
-                    || observedLength > limit) {
+                    || observedLength < 12) {
                 throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_INPUT);
             }
             var bytes = ByteBuffer.allocate(Math.toIntExact(observedLength));

@@ -52,17 +52,45 @@ Order is obj0 source order only.
 - Every needed texture1 lands in one IMAGE bucket.
 - MDDF doodads are counted as not in this slice.
 
-Unavailable sources (a `SOURCE_INPUT` refusal: missing, protected, or over the 1 MiB cap,
-which is declined before opening) count as `*_UNAVAILABLE`. Any other refusal, including a
-source changing during a read, fails the whole set.
+A derived read counts as `*_UNAVAILABLE` only if the engine refuses it at the new
+`SOURCE_UNAVAILABLE` site. That site is used only by BASIC_EXTERIOR derived reads, and only
+for three cases:
+
+- missing: lookup not FOUND, or an open state of unknown, not-in-locale, not-in-encoding or
+  missing;
+- protected: a protected or wrong-key open, or holes in a complete stream;
+- over the 1 MiB cap, or a too-large open. When the size is declared, this is declined before
+  opening.
+
+Every other refusal fails the whole set rather than being cached in the immutable result:
+
+- partial, network, store, corrupt or unsupported states;
+- short reads;
+- a source changing during or after a read.
+
+Malformed roots, and roots outside the parser ceilings, count as `ROOT_FAILED`. Roots that
+parse but are outside the profile count as `ROOT_UNSUPPORTED`. Pending meshes copy only
+candidate batch indices, so the index cap also bounds transient index memory. The mesh cap is
+implied by the 256 group reads.
 
 ## Validation
 
-`WorldExteriorObjectsTest` has 13 authored chunk-stream tests and uses no game assets. They
-cover the multi-placement and multi-group chain with the transform oracle, placement flags,
-rotation, scale and duplicates, root failures and unavailable sources, group outcomes, the
-LOD1 entries that are never read, batch and blend qualification, missing and undecodable
-images, mip selection, every cap, cancellation between reads, source change and determinism.
+`WorldExteriorObjectsTest` has 15 authored chunk-stream tests and uses no game assets. They
+cover:
+
+- the multi-placement, multi-group chain against the transform oracle, including a non-zero
+  shader;
+- placement flags, rotation, scale and duplicates;
+- root failures, unsupported roots and unavailable sources;
+- group outcomes, and LOD1 entries that are never read;
+- batch and blend qualification;
+- missing and undecodable images;
+- mip selection, including the tile pixel-budget fallback;
+- the placement, root, group, vertex, index, range and image caps;
+- cancellation between reads;
+- a source change (`SOURCE_BINDING`) and a short read (`SOURCE_INPUT`), each of which fails
+  the whole set;
+- determinism.
 Causal negative controls failed the suite as expected:
 
 - disabling the interior check failed 2 tests;

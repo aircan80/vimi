@@ -74,7 +74,10 @@ final class WorldExteriorObjects {
         PLACEMENT_FAILED_ROOT,
         PLACEMENT_EMPTY,
         ROOT_DRAWN,
+        /** Malformed, or outside the parser ceilings (256 groups/materials, 4096 GFID). */
         ROOT_FAILED,
+        /** Parsed, but MOTX names, no GFID, zero groups or GFID not a multiple of groups. */
+        ROOT_UNSUPPORTED,
         ROOT_UNAVAILABLE,
         ROOT_CAPPED,
         ROOT_EMPTY,
@@ -377,7 +380,7 @@ final class WorldExteriorObjects {
         private final Map<Long, Integer> imageSlots = new HashMap<>();
         private final Map<Long, RootState> rootStates = new HashMap<>();
         private final Map<Long, Integer> modelSlots = new HashMap<>();
-        private int rootsRead, groupsRead, imagesRead, vertices, indices, ranges, meshes, pixels;
+        private int rootsRead, groupsRead, imagesRead, vertices, indices, ranges, pixels;
 
         Builder(WorldStreamScopes.TileAdmission admission) {
             this.admission = admission;
@@ -500,7 +503,7 @@ final class WorldExteriorObjects {
                     || groupCount == 0
                     || root.gfidCount() == 0
                     || root.gfidCount() % groupCount != 0) {
-                count(Count.ROOT_FAILED);
+                count(Count.ROOT_UNSUPPORTED);
                 return RootState.FAILED;
             }
             int lod0 = (int) groupCount, reads = 0;
@@ -530,15 +533,14 @@ final class WorldExteriorObjects {
                     continue;
                 }
                 pending.add(mesh);
+                // Pending meshes hold only compacted candidate indices, so this charge is also
+                // the transient index memory. Meshes cannot exceed MAX_MESHES: one per group read.
                 tentativeVertices += mesh.vertices().length / VERTEX_FLOATS;
-                for (var range : mesh.ranges()) {
-                    tentativeIndices += range.indexCount();
-                }
+                tentativeIndices += mesh.indices().length;
                 tentativeRanges += mesh.ranges().size();
                 if (tentativeVertices > MAX_VERTICES - vertices
                         || tentativeIndices > MAX_INDICES - indices
-                        || tentativeRanges > MAX_RANGES - ranges
-                        || pending.size() > MAX_MESHES - meshes) {
+                        || tentativeRanges > MAX_RANGES - ranges) {
                     count(Count.ROOT_CAPPED);
                     return RootState.CAPPED;
                 }
@@ -586,7 +588,6 @@ final class WorldExteriorObjects {
                 vertices += mesh.vertexCount();
                 indices += mesh.indices.length;
                 ranges += mesh.ranges.size();
-                meshes++;
             }
             modelSlots.put(rootId, models.size());
             models.add(new Model(rootId, built));
@@ -647,6 +648,43 @@ final class WorldExteriorObjects {
                 WmoFormats.Root root,
                 WmoGroupSpans.Borrow borrow,
                 int[] local) {
+            // Overlapping recorded batches would draw triangles twice; refuse the whole group.
+            var ordered = new ArrayList<>(borrow.batches());
+            ordered.sort(java.util.Comparator.comparingLong(WmoFormats.Batch::firstIndex));
+            long end = 0;
+            for (var batch : ordered) {
+                if (batch.firstIndex() < end) {
+                    return null;
+                }
+                end = batch.firstIndex() + batch.indexCount();
+            }
+            var candidates = new ArrayList<Candidate>();
+            int unsupported = 0, candidateIndices = 0;
+            var materials = root.materials();
+            for (var batch : borrow.batches()) {
+                // Index ranges and vertex domains are already validated by WmoGroupSpans.
+                if (batch.flags() != 0 || batch.materialByte() >= materials.size()) {
+                    unsupported++;
+                    continue;
+                }
+                var material = materials.get(batch.materialByte());
+                if (material.word(2) != 0 || material.word(3) == 0) {
+                    unsupported++;
+                    continue;
+                }
+                candidates.add(
+                        new Candidate(
+                                (int) batch.firstIndex(),
+                                batch.indexCount(),
+                                batch.materialByte(),
+                                material.word(3)));
+                candidateIndices += batch.indexCount();
+            }
+            if (candidates.isEmpty()) {
+                // Nothing drawable: no vertex or index copy is made for this group.
+                local[Count.BATCH_UNSUPPORTED.ordinal()] += unsupported;
+                return new PendingMesh(ordinal, id, flags, new float[0], new int[0], List.of());
+            }
             var positions = borrow.positions();
             var normals = borrow.normals();
             var uv = borrow.uv();
@@ -672,45 +710,26 @@ final class WorldExteriorObjects {
                 vertices[at + 6] = uv.get(v * 2);
                 vertices[at + 7] = uv.get(v * 2 + 1);
             }
+            // Only candidate batch indices are copied, compacted in recorded batch order.
             var source = borrow.indices();
-            int[] indices = new int[source.size()];
-            for (int i = 0; i < indices.length; i++) {
-                if ((i & 4095) == 0) {
-                    token.check();
+            int[] indices = new int[candidateIndices];
+            var rebased = new ArrayList<Candidate>(candidates.size());
+            int used = 0;
+            for (var candidate : candidates) {
+                token.check();
+                for (int i = 0; i < candidate.indexCount(); i++) {
+                    indices[used + i] = source.get(candidate.firstIndex() + i);
                 }
-                indices[i] = source.get(i);
-            }
-            // Overlapping recorded batches would draw triangles twice; refuse the whole group.
-            var ordered = new ArrayList<>(borrow.batches());
-            ordered.sort(java.util.Comparator.comparingLong(WmoFormats.Batch::firstIndex));
-            long end = 0;
-            for (var batch : ordered) {
-                if (batch.firstIndex() < end) {
-                    return null;
-                }
-                end = batch.firstIndex() + batch.indexCount();
-            }
-            var candidates = new ArrayList<Candidate>();
-            for (var batch : borrow.batches()) {
-                // Index ranges and vertex domains are already validated by WmoGroupSpans.
-                var materials = root.materials();
-                if (batch.flags() != 0 || batch.materialByte() >= materials.size()) {
-                    local[Count.BATCH_UNSUPPORTED.ordinal()]++;
-                    continue;
-                }
-                var material = materials.get(batch.materialByte());
-                if (material.word(2) != 0 || material.word(3) == 0) {
-                    local[Count.BATCH_UNSUPPORTED.ordinal()]++;
-                    continue;
-                }
-                candidates.add(
+                rebased.add(
                         new Candidate(
-                                (int) batch.firstIndex(),
-                                batch.indexCount(),
-                                batch.materialByte(),
-                                material.word(3)));
+                                used,
+                                candidate.indexCount(),
+                                candidate.material(),
+                                candidate.image()));
+                used += candidate.indexCount();
             }
-            return new PendingMesh(ordinal, id, flags, vertices, indices, candidates);
+            local[Count.BATCH_UNSUPPORTED.ordinal()] += unsupported;
+            return new PendingMesh(ordinal, id, flags, vertices, indices, rebased);
         }
 
         /** Image slot for a texture1 FileDataID, or -1 when it is missing for any reason. */
@@ -787,7 +806,10 @@ final class WorldExteriorObjects {
             }
         }
 
-        /** Null only for an unavailable source (missing, protected or over the 1 MiB cap). */
+        /**
+         * Null only for an unavailable source (missing, protected or over the 1 MiB cap). Every
+         * other refusal, including a short or changed read, fails the whole set.
+         */
         private WorldStreamScopes.Input derived(long id, WorldStreamScopes.DerivedKind kind) {
             if (id <= 0 || id > 0xffff_ffffL) {
                 return null;
@@ -795,7 +817,7 @@ final class WorldExteriorObjects {
             try {
                 return admission.readDerivedCandidate(id, kind);
             } catch (WorldTerrainStreaming.Refusal refusal) {
-                if (WorldSourceRefusals.Site.SOURCE_INPUT.name().equals(refusal.site())) {
+                if (WorldSourceRefusals.Site.SOURCE_UNAVAILABLE.name().equals(refusal.site())) {
                     return null;
                 }
                 throw refusal;
