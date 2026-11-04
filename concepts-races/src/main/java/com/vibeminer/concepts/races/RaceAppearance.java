@@ -46,6 +46,10 @@ final class RaceAppearance {
         plans = new RaceAppearancePlan(owner, media, tables);
     }
 
+    boolean available() {
+        return files != null && generated != null;
+    }
+
     record Prepared(
             RaceMediaTypes.Preview base,
             RaceAppearancePlan.Plan plan,

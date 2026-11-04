@@ -104,7 +104,19 @@ public final class RacesService implements BuildRaces {
             long raceId, long classId, long modelId, Cancellation token) {
         return submit(
                 token,
-                request -> new RaceCustomization(media).catalog(raceId, classId, modelId, request));
+                request -> {
+                    if (!appearance.available()) {
+                        return new RaceCustomizationTypes.Catalog(
+                                RaceTypes.State.UNAVAILABLE,
+                                raceId,
+                                classId,
+                                modelId,
+                                List.of(),
+                                List.of(),
+                                "Appearance preparation is unavailable for this workspace.");
+                    }
+                    return new RaceCustomization(media).catalog(raceId, classId, modelId, request);
+                });
     }
 
     @Override

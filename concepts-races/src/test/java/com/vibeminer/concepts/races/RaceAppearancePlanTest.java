@@ -1110,7 +1110,10 @@ final class RaceAppearancePlanTest {
                         .tables();
         var service = new RacesService(tables);
         try {
-            var catalog = service.customizations(3, 1, 5, Cancellation.NONE).join();
+            assertTrue(
+                    service.customizations(3, 1, 5, Cancellation.NONE).join().options().isEmpty());
+            var projection = new RaceCustomization(new RaceMedia(service, tables, null, null));
+            var catalog = projection.catalog(3, 1, 5, Cancellation.NONE);
             assertTrue(!catalog.options().isEmpty(), catalog.toString());
             assertEquals(
                     List.of(524L, 525L, 529L),
@@ -1121,19 +1124,16 @@ final class RaceAppearancePlanTest {
             assertEquals(524, catalog.options().getFirst().defaultChoiceId());
             assertEquals(
                     List.of(524L, 525L),
-                    service
-                            .customizations(3, 2, 5, Cancellation.NONE)
-                            .join()
+                    projection
+                            .catalog(3, 2, 5, Cancellation.NONE)
                             .options()
                             .getFirst()
                             .choices()
                             .stream()
                             .map(RaceCustomizationTypes.Choice::id)
                             .toList());
-            assertTrue(
-                    service.customizations(3, 1, 6, Cancellation.NONE).join().options().isEmpty());
-            assertTrue(
-                    service.customizations(1, 1, 5, Cancellation.NONE).join().options().isEmpty());
+            assertTrue(projection.catalog(3, 1, 6, Cancellation.NONE).options().isEmpty());
+            assertTrue(projection.catalog(1, 1, 5, Cancellation.NONE).options().isEmpty());
             var customization = new RaceCustomization(new RaceMedia(service, tables, null, null));
             assertEquals(
                     Map.of(30L, 525L),
