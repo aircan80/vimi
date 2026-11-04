@@ -8,6 +8,7 @@ import com.vibeminer.rendering.world.TerrainScene;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -47,6 +48,7 @@ final class WorldTextureLoading implements AutoCloseable {
         final Cancellation token = new Cancellation();
         final AtomicReference<WorldTextureSnapshot> result = new AtomicReference<>();
         volatile boolean canceled;
+        boolean workerDone, mailboxDone, retired;
         Job(View view) { this.view = view; }
         void releaseResult() {
             var old = result.getAndSet(null);
@@ -65,6 +67,10 @@ final class WorldTextureLoading implements AutoCloseable {
     private Job active;
     private long generation, attempted;
     private volatile boolean closed;
+    private final Object retirement = new Object();
+    private int issued;
+    private java.io.IOException retirementFailure;
+    private CompletableFuture<Void> idleEpoch = CompletableFuture.completedFuture(null);
 
     WorldTextureLoading(Consumer<Runnable> schedule, Consumer<Status> status,
             Consumer<Result> deliver) {
@@ -108,15 +114,23 @@ final class WorldTextureLoading implements AutoCloseable {
         if (closed || active != null || view == null || attempted == view.generation()) return;
         var job = new Job(view);
         active = job;
+        synchronized (retirement) {
+            if (issued++ == 0) idleEpoch = new CompletableFuture<>();
+        }
         attempted = view.generation();
         try {
             worker.execute(() -> run(job));
         } catch (RuntimeException rejected) {
             active = null;
             String issue = "Terrain textures unavailable · previous preview retained";
-            status.accept(new Status(false, issue));
-            try { deliver.accept(new Result(job.view.scene(), null, issue)); }
-            finally { job.view.releaseScene(); idle.run(); }
+            try {
+                status.accept(new Status(false, issue));
+                deliver.accept(new Result(job.view.scene(), null, issue));
+            }
+            finally {
+                job.view.releaseScene();
+                try { idle.run(); } finally { retired(job, true, true, rejected); }
+            }
         }
     }
 
@@ -142,22 +156,50 @@ final class WorldTextureLoading implements AutoCloseable {
             if (closed || job.canceled) job.releaseResult();
         } catch (RuntimeException error) {
             failure = "Terrain textures unavailable · previous preview retained";
-        } finally {
-            if (closed || job.canceled) {
-                job.releaseResult();
-                job.view.releaseScene();
+            if (!(job.canceled || closed)
+                    || error.getClass() != java.util.concurrent.CancellationException.class
+                    || error.getCause() != null || error.getSuppressed().length != 0) {
+                retired(job, false, false, error);
             }
-            final String message = failure;
+        } catch (Error error) {
+            retired(job, false, false, error);
+            throw error;
+        } finally {
+            Throwable cleanupFailure = null;
             try {
+                if (closed || job.canceled) {
+                    job.releaseResult();
+                    job.view.releaseScene();
+                }
+                final String message = failure;
                 schedule.accept(() -> completed(job, message));
-            } catch (RuntimeException rejected) {
-                job.releaseResult();
-                job.view.releaseScene();
+            } catch (Throwable rejected) {
+                cleanupFailure = rejected;
+                try { job.releaseResult(); }
+                catch (Throwable cleanup) { cleanupFailure = cleanup; }
+                finally { job.view.releaseScene(); }
+                // There is no FX mailbox entry after failed scheduling. Fail the fence rather
+                // than retaining a phantom active job or claiming successful GUI retirement.
+                retired(job, false, true, cleanupFailure);
+            } finally {
+                retired(job, true, false, cleanupFailure);
             }
         }
     }
 
     private void completed(Job job, String failure) {
+        Throwable failed = null;
+        try {
+            completeOnOwner(job, failure);
+        } catch (Throwable error) {
+            failed = error;
+            throw error;
+        } finally {
+            retired(job, false, true, failed);
+        }
+    }
+
+    private void completeOnOwner(Job job, String failure) {
         if (active != job) {
             job.releaseResult();
             job.view.releaseScene();
@@ -189,6 +231,35 @@ final class WorldTextureLoading implements AutoCloseable {
         }
     }
 
+    /**
+     * GUI job fence only: supplier finally plus FX result/scene retirement. Stop producers first;
+     * a later request starts a new epoch. Native source IO must be fenced separately afterward.
+     */
+    CompletableFuture<Void> whenIdle() {
+        synchronized (retirement) { return idleEpoch.copy(); }
+    }
+
+    private void retired(Job job, boolean workerDone, boolean mailboxDone, Throwable error) {
+        CompletableFuture<Void> completed = null;
+        java.io.IOException failed;
+        synchronized (retirement) {
+            if (error != null && retirementFailure == null) {
+                retirementFailure = new java.io.IOException(error.getClass().getName());
+            }
+            job.workerDone |= workerDone;
+            job.mailboxDone |= mailboxDone;
+            if (!job.retired && job.workerDone && job.mailboxDone) {
+                job.retired = true;
+                if (--issued == 0) completed = idleEpoch;
+            }
+            failed = retirementFailure;
+        }
+        if (completed != null) {
+            if (failed == null) completed.complete(null);
+            else completed.completeExceptionally(failed);
+        }
+    }
+
     boolean hasActiveWork() { return active != null; }
 
     private void retireActive() {
@@ -196,9 +267,13 @@ final class WorldTextureLoading implements AutoCloseable {
         if (active == null || active.canceled) return;
         var retiring = active;
         retiring.canceled = true;
-        retiring.releaseResult();
-        retiring.view.releaseScene();
-        cancellation.execute(retiring.token::cancel);
+        try { retiring.releaseResult(); }
+        catch (Throwable error) { retired(retiring, false, false, error); }
+        finally {
+            retiring.view.releaseScene();
+            try { cancellation.execute(retiring.token::cancel); }
+            catch (Throwable rejected) { retired(retiring, false, false, rejected); }
+        }
     }
 
     void hide() {
