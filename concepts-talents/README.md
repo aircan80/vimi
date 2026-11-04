@@ -11,6 +11,13 @@ required; complete tables must establish three class-associated tabs. Retail and
 layouts and return an explicit unsupported-model result; legacy tables in those
 clients do not establish support.
 
+Forever builds (1.60.x) that record `SkillLineXTraitTree` use `TraitTrees` instead:
+class TraitTree, maximal TraitNodeGroup partition, a reviewed 600-unit grid and
+TraitEdge types 2/3. Unverified provider field names are accepted only for the
+reviewed physical layouts; other layouts and unreadable trait tables fail
+explicitly, without falling back to legacy rows. See
+[the checkpoint](../docs/talents-traittree-checkpoint.md).
+
 `TalentsService.catalog(token)` loads bounded ChrClasses/TalentTab/Talent metadata.
 `trees(classId, token)` validates references, coordinates and prerequisite cycles.
 ClassMask selects class ownership. Readable rows from PARTIAL tables are always

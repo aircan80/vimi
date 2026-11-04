@@ -29,6 +29,9 @@ public final class BackendBuildService implements BuildService {
     private DataSourcesService dataSources;
     BackendBuildService withDataSources(DataSourcesService value) { dataSources=value; return this; }
     @Override public DataSourcesService dataSources() { return dataSources; }
+    private WorldBookmarkStore worldBookmarks;
+    BackendBuildService withWorldBookmarks(WorldBookmarkStore value) { worldBookmarks=value; return this; }
+    @Override public WorldBookmarkStore worldBookmarks() { return worldBookmarks; }
     private ClientHotfixStore hotfixImports;
     BackendBuildService withHotfixImports(ClientHotfixStore value) {
         hotfixImports = Objects.requireNonNull(value); return this;

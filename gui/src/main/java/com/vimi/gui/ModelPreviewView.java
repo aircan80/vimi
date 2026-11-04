@@ -29,6 +29,8 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
             long generation,
             PreviewMesh mesh,
             MeshAppearance appearance,
+            com.vibeminer.rendering.models.PreviewAnimation animation,
+            long animationMillis,
             boolean textured,
             boolean qualifiedMaterialsOnly,
             int width,
@@ -44,6 +46,20 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
             all = new CheckBox("All recorded surfaces"),
             textures = new CheckBox("Textures");
     private final Label status = new Label("Select a model variant");
+    private final CheckBox idle = new CheckBox("Idle animation");
+    private final Label idleStatus = new Label();
+    private com.vibeminer.rendering.models.PreviewAnimation animation;
+    private long idleOrigin, idlePaused, idleLastFrame;
+    private final javafx.animation.AnimationTimer idleClock =
+            new javafx.animation.AnimationTimer() {
+                @Override
+                public void handle(long now) {
+                    if (!playing() || !active || running.get() || now - idleLastFrame < 40_000_000L)
+                        return;
+                    idleLastFrame = now;
+                    request();
+                }
+            };
     private final GpuPreviewService gpu;
     private final Object gpuOwner = new Object();
     private final CheckBox gpuButton = new CheckBox("GPU rendering");
@@ -256,12 +272,34 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
         textures.setOnAction(event -> request());
         wireframe.setOnAction(event -> request());
         all.setOnAction(event -> request());
-        HBox controls = new HBox(12, reset, textures, wireframe, all);
+        idle.setId("model-idle-animation");
+        idle.setAccessibleText("Play the qualified idle animation");
+        idle.setTooltip(
+                new Tooltip(
+                        "Loop the model's recorded Stand sequence. Only bones stored in the model"
+                                + " with step or linear keys are evaluated; playback uses software"
+                                + " rendering."));
+        idle.setOnAction(
+                event -> {
+                    if (idle.isSelected()) {
+                        idleOrigin = System.nanoTime() - idlePaused * 1_000_000L;
+                    } else {
+                        idlePaused = idleMillis();
+                        gpuFailed = false;
+                    }
+                    request();
+                });
+        idleStatus.setId("model-idle-status");
+        idleStatus.getStyleClass().add("muted");
+        idleStatus.setWrapText(true);
+        resetAnimation(null);
+        HBox controls = new HBox(12, reset, textures, wireframe, all, idle);
         controls.getStyleClass().add("model-preview-controls");
         setTop(controls);
         status.getStyleClass().add("muted");
         status.setWrapText(true);
-        setBottom(new VBox(8, status, new HBox(8, gpuButton, gpuActivity), gpuStatus));
+        setBottom(
+                new VBox(8, status, idleStatus, new HBox(8, gpuButton, gpuActivity), gpuStatus));
         viewport.setOnMousePressed(
                 event -> {
                     viewport.requestFocus();
@@ -286,10 +324,70 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
         viewport.widthProperty().addListener((o, b, a) -> resize.playFromStart());
         viewport.heightProperty().addListener((o, b, a) -> resize.playFromStart());
         visibility.start();
+        idleClock.start();
+    }
+
+    /**
+     * Offers looping idle playback when the animation was prepared for the exact surface shown.
+     * A mismatched or null animation hides the control; the static preview is unaffected.
+     */
+    void setAnimation(com.vibeminer.rendering.models.PreviewAnimation value, String message) {
+        if (closed) return;
+        boolean fits =
+                value != null
+                        && (appearance != null ? value.matches(appearance) : value.matches(mesh));
+        if (!fits) {
+            animationUnavailable(value == null ? message : null);
+            return;
+        }
+        boolean replaced = animation != value;
+        animation = value;
+        idle.setVisible(true);
+        idle.setManaged(true);
+        idle.setDisable(false);
+        showIdleStatus(message);
+        if (replaced && idle.isSelected()) {
+            idleOrigin = System.nanoTime();
+            request();
+        }
+    }
+
+    /** Hides idle playback; a non-null explanation is shown instead of an inert control. */
+    void animationUnavailable(String message) {
+        if (closed) return;
+        boolean wasPlaying = playing();
+        resetAnimation(message);
+        if (wasPlaying) request();
+    }
+
+    private void resetAnimation(String message) {
+        animation = null;
+        idlePaused = 0;
+        idle.setVisible(false);
+        idle.setManaged(false);
+        showIdleStatus(message);
+    }
+
+    private void showIdleStatus(String message) {
+        boolean shown = message != null && !message.isBlank();
+        idleStatus.setText(shown ? message : "");
+        idleStatus.setVisible(shown);
+        idleStatus.setManaged(shown);
+    }
+
+    private boolean playing() {
+        return animation != null && idle.isSelected();
+    }
+
+    private long idleMillis() {
+        return idle.isSelected()
+                ? Math.max(0, (System.nanoTime() - idleOrigin) / 1_000_000L)
+                : idlePaused;
     }
 
     void setMesh(PreviewMesh value, Set<Integer> visibleParts) {
         appearanceUnavailable();
+        if (animation != null && !animation.matches(value)) resetAnimation(null);
         closeGpu();
         mesh = value;
         gpuFailed = false;
@@ -312,6 +410,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
     void setAppearance(MeshAppearance value, Set<Integer> visibleParts, boolean qualifiedOnly) {
         if (closed) return;
         if (appearanceTarget != null && appearanceTarget != value) appearanceUnavailable();
+        if (animation != null && !animation.matches(value)) resetAnimation(null);
         var parts = Set.copyOf(visibleParts);
         boolean newScene =
                 mesh != value.mesh()
@@ -390,6 +489,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
         latest.set(null);
         mesh = null;
         appearance = null;
+        resetAnimation(null);
         textures.setDisable(true);
         image.setImage(null);
         status.setText(message);
@@ -411,7 +511,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
             return;
         }
         long request = generation.incrementAndGet();
-        status.setText("Rendering static preview…");
+        status.setText(playing() ? "Rendering idle pose…" : "Rendering static preview…");
         boolean initialFrame = image.getImage() == null;
         renderingActivity.setVisible(initialFrame);
         renderingActivity.setManaged(initialFrame);
@@ -420,6 +520,8 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                         request,
                         mesh,
                         appearance,
+                        playing() ? animation : null,
+                        playing() ? idleMillis() : 0,
                         textures.isSelected(),
                         qualifiedMaterials && !all.isSelected(),
                         width,
@@ -434,6 +536,11 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                                         : visible.isEmpty()
                                                 ? Set.of(Integer.MIN_VALUE)
                                                 : visible)));
+        if (playing()) {
+            if (gpuRequested) closeGpu();
+            kick();
+            return;
+        }
         updateGpu(request, width, height);
         if (!gpuReady) kick();
         else latest.set(null);
@@ -456,16 +563,31 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                                                         closed
                                                                 || generation.get()
                                                                         != current.generation();
+                                var posedMesh = work.mesh();
+                                var posedAppearance = work.appearance();
+                                if (work.animation() != null) {
+                                    if (posedAppearance != null) {
+                                        posedAppearance =
+                                                work.animation()
+                                                        .pose(posedAppearance, work.animationMillis());
+                                        posedMesh = posedAppearance.mesh();
+                                    } else {
+                                        posedMesh =
+                                                work.animation()
+                                                        .pose(posedMesh, work.animationMillis())
+                                                        .mesh();
+                                    }
+                                }
                                 var frame =
-                                        work.appearance() == null
+                                        posedAppearance == null
                                                 ? StaticMeshRenderer.render(
-                                                        work.mesh(),
+                                                        posedMesh,
                                                         work.width(),
                                                         work.height(),
                                                         work.view(),
                                                         canceled)
                                                 : StaticMeshRenderer.render(
-                                                        work.appearance(),
+                                                        posedAppearance,
                                                         work.width(),
                                                         work.height(),
                                                         work.view(),
@@ -497,7 +619,12 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                                             renderingActivity.setManaged(false);
                                             status.setText(
                                                     "Drag to rotate · scroll or +/− to zoom · arrow"
-                                                            + " keys rotate · static rest surface");
+                                                            + " keys rotate · "
+                                                            + (current.animation() != null
+                                                                    ? current.animation().label()
+                                                                            + " idle · software"
+                                                                            + " rendering"
+                                                                    : "static rest surface"));
                                             appearanceAccepted(current.appearance(), true);
                                         });
                             } catch (java.util.concurrent.CancellationException superseded) {
@@ -625,6 +752,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
     private void presentGpu(PendingFrame pendingFrame) {
         if (pendingFrame == null
                 || closed
+                || playing()
                 || !gpuRequested
                 || gpuFailed
                 || pendingFrame.token() != gpuGeneration
@@ -709,6 +837,8 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
         renderingActivity.setManaged(false);
         resize.stop();
         visibility.stop();
+        idleClock.stop();
+        animation = null;
         generation.incrementAndGet();
         latest.set(null);
         mesh = null;
