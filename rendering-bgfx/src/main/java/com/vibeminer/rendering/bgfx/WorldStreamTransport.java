@@ -43,6 +43,239 @@ public final class WorldStreamTransport {
         Process start(List<String> arguments) throws Exception;
     }
 
+    public enum Appearance {
+        TEXTURED,
+        HEIGHT_FALLBACK
+    }
+
+    public enum Refusal {
+        RETRY_LATER,
+        CAPABILITY_UNAVAILABLE,
+        SOURCE_INVALIDATED
+    }
+
+    public static final class PreparationRefusal extends Exception {
+        private static final long serialVersionUID = 1L;
+        private final transient Refusal reason;
+        private final transient Object identity;
+
+        private PreparationRefusal(Refusal reason, String detail, Object identity) {
+            super(detail, null, false, false);
+            this.reason = reason;
+            this.identity = identity;
+        }
+
+        public Refusal reason() {
+            return reason;
+        }
+    }
+
+    @FunctionalInterface
+    public interface StopRegistration extends AutoCloseable {
+        @Override
+        void close();
+    }
+
+    @FunctionalInterface
+    public interface PacketProducer {
+        OwnedPacket prepare(
+                PacketDestination destination, java.util.function.BooleanSupplier stopping)
+                throws Exception;
+    }
+
+    public static final class Resident {
+        private final WorldStreamParentState.Resident metadata;
+
+        private Resident(WorldStreamParentState.Resident metadata) {
+            this.metadata = metadata;
+        }
+
+        public int tileX() {
+            return metadata.x;
+        }
+
+        public int tileY() {
+            return metadata.y;
+        }
+
+        public Appearance appearance() {
+            return metadata.outcome == 1 ? Appearance.TEXTURED : Appearance.HEIGHT_FALLBACK;
+        }
+
+        public int coveredRectangles() {
+            return metadata.coverage;
+        }
+    }
+
+    /** Only producer/fixed-writer lanes receive this unadvertised owner; close is off JavaFX. */
+    public static final class OwnedPacket implements AutoCloseable {
+        private WorldStreamPacketFile.Moved moved;
+        private final int outcome, coverage;
+
+        private OwnedPacket(WorldStreamPacketFile.Moved moved, int outcome, int coverage) {
+            this.moved = Objects.requireNonNull(moved);
+            if (!(outcome == 1 && coverage >= 1 && coverage <= 256
+                    || outcome == 2 && coverage == 0)) {
+                throw new IllegalArgumentException("Packet appearance");
+            }
+            this.outcome = outcome;
+            this.coverage = coverage;
+        }
+
+        private synchronized WorldStreamPacketFile.Moved claim(
+                Object identity, WorldStreamTileFile.Expected expected) {
+            if (moved == null
+                    || moved.destinationIdentity() != identity
+                    || !moved.expected().equals(expected)) {
+                throw new IllegalStateException("Foreign or already transferred packet");
+            }
+            var value = moved;
+            moved = null;
+            return value;
+        }
+
+        @Override
+        public void close() {
+            WorldStreamPacketFile.Moved value;
+            synchronized (this) {
+                value = moved;
+                moved = null;
+            }
+            if (value != null) {
+                value.close();
+            }
+        }
+    }
+
+    public static final class PacketDestination {
+        record Context(
+                WorldStreamState.Nonce nonce,
+                String scope,
+                long transaction,
+                WorldStreamState.Lease lease,
+                int x,
+                int y,
+                Path path,
+                Object identity) {}
+
+        private final Context context;
+        private final Object identity = new Object();
+        private final Path path;
+        private final WorldStreamProducerCancellation.Producer cancellation;
+        private volatile boolean active = true;
+
+        private PacketDestination(
+                WorldStreamEnvelope.Session descriptor,
+                WorldStreamParentState.Ticket ticket,
+                Path path,
+                WorldStreamProducerCancellation.Producer cancellation) {
+            this.context =
+                    new Context(
+                            descriptor.nonce(),
+                            descriptor.scope(),
+                            ticket.transaction,
+                            ticket.lease,
+                            ticket.x,
+                            ticket.y,
+                            path,
+                            identity);
+            this.path = path;
+            this.cancellation = cancellation;
+        }
+
+        public Path path() {
+            requireActive();
+            return path;
+        }
+
+        public StopRegistration onStopping(Runnable requestCancellation) {
+            requireActive();
+            var registration = cancellation.onStopping(requestCancellation);
+            return registration::close;
+        }
+
+        public PreparationRefusal refusal(Refusal reason, String detail) {
+            requireActive();
+            Objects.requireNonNull(reason);
+            Objects.requireNonNull(detail);
+            if (detail.length() > 256) {
+                throw new IllegalArgumentException("Refusal detail bound");
+            }
+            for (int i = 0; i < detail.length(); i++) {
+                if (detail.charAt(i) < 32 || detail.charAt(i) > 126) {
+                    throw new IllegalArgumentException("Refusal detail ASCII");
+                }
+            }
+            return new PreparationRefusal(reason, detail, identity);
+        }
+
+        Context context() {
+            requireActive();
+            return context;
+        }
+
+        // The separately reviewed fixed writer performs MOVE inside the source's pinned resource
+        // callback.
+        OwnedPacket adopt(
+                WorldStreamPacketFile.Moved moved, WorldStreamTileFile.Header writtenHeader) {
+            requireActive();
+            Objects.requireNonNull(writtenHeader);
+            var expected = moved.expected();
+            if (moved.destinationIdentity() != identity
+                    || !moved.path().equals(path)
+                    || !expected.nonce().equals(context.nonce())
+                    || !expected.scope().equals(context.scope())
+                    || expected.transaction() != context.transaction()
+                    || !expected.lease().equals(context.lease())
+                    || !writtenHeader.nonce().equals(context.nonce())
+                    || !writtenHeader.scope().equals(context.scope())
+                    || writtenHeader.transaction() != context.transaction()
+                    || !writtenHeader.lease().equals(context.lease())
+                    || writtenHeader.x() != context.x()
+                    || writtenHeader.y() != context.y()) {
+                throw new IllegalArgumentException("Foreign packet destination/header");
+            }
+            int coverage = 0;
+            for (long word : writtenHeader.coverage()) {
+                coverage += Long.bitCount(word);
+            }
+            return new OwnedPacket(
+                    moved,
+                    writtenHeader.outcome() == WorldStreamTileFile.Outcome.TEXTURED ? 1 : 2,
+                    coverage);
+        }
+
+        private void requireActive() {
+            if (!active) {
+                throw new IllegalStateException("Expired packet destination");
+            }
+        }
+    }
+
+    public static final class TileReservation {
+        private final Session session;
+        private final WorldStreamParentState.Ticket ticket;
+        private final CompletableFuture<Resident> result = new CompletableFuture<>();
+        private final CompletableFuture<Void> canceled = new CompletableFuture<>();
+        private volatile boolean stop;
+        private volatile WorldStreamProducerCancellation.Producer cancellation;
+        private boolean produced;
+
+        private TileReservation(Session session, WorldStreamParentState.Ticket ticket) {
+            this.session = session;
+            this.ticket = ticket;
+        }
+
+        public CompletableFuture<Resident> produce(PacketProducer producer) {
+            return session.produce(this, Objects.requireNonNull(producer));
+        }
+
+        public CompletableFuture<Void> cancel() {
+            session.cancel(this);
+            return canceled.copy();
+        }
+    }
+
     public static final class DrainReceipt {
         private final OptionalLong pid;
         private final OptionalInt exit;
@@ -138,6 +371,15 @@ public final class WorldStreamTransport {
         private volatile IOException failure;
         private WorldStreamControl.Camera pendingCamera;
         private boolean closeWritten, actualExit, statusesDrained;
+        private final java.util.ArrayDeque<WorldStreamControl.Command> reliableCommands =
+                new java.util.ArrayDeque<>(4);
+        private final java.util.ArrayDeque<Runnable> fileTasks = new java.util.ArrayDeque<>(4);
+        private final WorldStreamProducerCancellation cancellation =
+                new WorldStreamProducerCancellation();
+        private int outstandingReliable;
+        private volatile long capacityRevision;
+        private TileReservation tile;
+        private WorldStreamPacketFile.Moved input;
 
         private Session(WorldStreamEnvelope.Session descriptor) {
             this.descriptor = descriptor;
@@ -160,6 +402,9 @@ public final class WorldStreamTransport {
                             (drain, error) -> {
                                 state.close();
                                 frames.close();
+                                failPending(
+                                        new java.util.concurrent.CancellationException(
+                                                "World session drained"));
                                 if (!initialized.isDone()) {
                                     initialized.completeExceptionally(
                                             problem("World child did not initialize"));
@@ -195,6 +440,15 @@ public final class WorldStreamTransport {
                         }
                     });
             handle.runWorker("stderr", () -> drainErrors(process));
+            handle.runWorker("producer-files", () -> files(handle));
+            handle.runWorker(
+                    "cancellation",
+                    () -> {
+                        cancellation.work(handle::stopping);
+                        if (cancellation.failure() != null) {
+                            fail(cancellation.failure());
+                        }
+                    });
         }
 
         public CompletableFuture<Void> initialized() {
@@ -204,6 +458,232 @@ public final class WorldStreamTransport {
         /** Protocol success is separate from process/resource drain. */
         public CompletableFuture<Void> completion() {
             return completion.copy();
+        }
+
+        /** Poll with the controller's existing cadence; a change requests one bounded retry. */
+        public long capacityRevision() {
+            return capacityRevision;
+        }
+
+        private void capacityChanged() {
+            synchronized (lock) {
+                if (capacityRevision == Long.MAX_VALUE) {
+                    throw new IllegalStateException("World capacity revision exhausted");
+                }
+                capacityRevision++;
+            }
+        }
+
+        /** Cheap metadata reservation; empty means genuine child/file credit is not available. */
+        public java.util.Optional<TileReservation> tryReserveTile(int x, int y) {
+            synchronized (lock) {
+                if (closing || owner.stopping()) {
+                    return java.util.Optional.empty();
+                }
+                var reserved = state.reserve(x, y);
+                if (reserved == null) {
+                    return java.util.Optional.empty();
+                }
+                tile = new TileReservation(this, reserved);
+                return java.util.Optional.of(tile);
+            }
+        }
+
+        private CompletableFuture<Resident> produce(
+                TileReservation reservation, PacketProducer producer) {
+            synchronized (lock) {
+                if (closing || owner.stopping() || tile != reservation || reservation.produced) {
+                    throw new IllegalStateException("Expired tile producer");
+                }
+                state.beginProducer(reservation.ticket);
+                reservation.produced = true;
+                enqueueFile(() -> produceFile(reservation, producer));
+            }
+            return reservation.result.copy();
+        }
+
+        private void cancel(TileReservation reservation) {
+            WorldStreamControl.Command command;
+            synchronized (lock) {
+                reservation.stop = true;
+                var lower = reservation.cancellation;
+                if (lower != null) {
+                    lower.stop();
+                }
+                command = state.cancel(reservation.ticket);
+                if (command != null) {
+                    enqueueCommand(command);
+                }
+            }
+        }
+
+        private void enqueueCommand(WorldStreamControl.Command command) {
+            synchronized (lock) {
+                if (closing || owner.stopping()) {
+                    return;
+                }
+                if (outstandingReliable == 4) {
+                    throw new IllegalStateException("World reliable command capacity");
+                }
+                outstandingReliable++;
+                reliableCommands.addLast(command);
+                lock.notifyAll();
+            }
+        }
+
+        private void enqueueFile(Runnable task) {
+            synchronized (lock) {
+                if (fileTasks.size() == 4) {
+                    throw new IllegalStateException("World file task capacity");
+                }
+                fileTasks.addLast(task);
+                lock.notifyAll();
+            }
+        }
+
+        private void produceFile(TileReservation reservation, PacketProducer producer) {
+            WorldStreamProducerCancellation.Producer lower;
+            try {
+                lower = cancellation.begin();
+            } catch (IllegalStateException unavailable) {
+                if (!closing && !owner.stopping()) {
+                    throw unavailable;
+                }
+                state.producerDrained(reservation.ticket);
+                capacityChanged();
+                state.retireTileFile(reservation.ticket);
+                capacityChanged();
+                reservation.result.completeExceptionally(
+                        new java.util.concurrent.CancellationException(
+                                "World stopped before producer"));
+                return;
+            }
+            reservation.cancellation = lower;
+            if (reservation.stop || closing || owner.stopping()) {
+                lower.stop();
+            }
+            var destination =
+                    new PacketDestination(
+                            descriptor,
+                            reservation.ticket,
+                            owner.files()
+                                    .directory()
+                                    .resolve("tile-" + reservation.ticket.transaction + ".wst"),
+                            lower);
+            OwnedPacket packet = null;
+            Throwable error = null;
+            try {
+                if (!reservation.stop && !closing && !owner.stopping()) {
+                    packet =
+                            Objects.requireNonNull(
+                                    producer.prepare(
+                                            destination,
+                                            () -> reservation.stop || closing || owner.stopping()));
+                }
+            } catch (Throwable failed) {
+                error = failed;
+            } finally {
+                destination.active = false;
+                lower.finished();
+            }
+            while (!lower.retired()) {
+                java.util.concurrent.locks.LockSupport.parkNanos(
+                        java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(2));
+            }
+            reservation.cancellation = null;
+            if (cancellation.failure() != null) {
+                error = cancellation.failure();
+            }
+            state.producerDrained(reservation.ticket);
+            capacityChanged();
+            try {
+                if (error != null
+                        && !(error instanceof PreparationRefusal refusal
+                                && refusal.identity == destination.identity)
+                        && !(error instanceof java.util.concurrent.CancellationException
+                                && (reservation.stop || closing || owner.stopping()))) {
+                    throw WorldStreamLaunchOwner.Handle.detached(error);
+                }
+                if (error != null
+                        || packet == null
+                        || reservation.stop
+                        || closing
+                        || owner.stopping()) {
+                    if (packet != null) {
+                        packet.close();
+                        packet = null;
+                    }
+                    state.retireTileFile(reservation.ticket);
+                    capacityChanged();
+                    var command = state.cancel(reservation.ticket);
+                    if (command != null) {
+                        enqueueCommand(command);
+                    }
+                    if (error instanceof PreparationRefusal refusal) {
+                        reservation.result.completeExceptionally(refusal);
+                    } else {
+                        reservation.result.completeExceptionally(
+                                new java.util.concurrent.CancellationException("Tile stopped"));
+                    }
+                    return;
+                }
+                var expected = packet.moved.expected();
+                if (!expected.nonce().equals(descriptor.nonce())
+                        || !expected.scope().equals(descriptor.scope())
+                        || expected.transaction() != reservation.ticket.transaction
+                        || !expected.lease().equals(reservation.ticket.lease)) {
+                    throw new IOException("Foreign finalized packet identity");
+                }
+                var moved = packet.claim(destination.identity, expected);
+                synchronized (lock) {
+                    input = moved;
+                }
+                var command =
+                        state.offer(
+                                reservation.ticket,
+                                expected.length(),
+                                expected.sha256(),
+                                packet.outcome,
+                                packet.coverage);
+                packet = null;
+                enqueueCommand(command);
+            } catch (Throwable failed) {
+                if (packet != null) {
+                    packet.close();
+                }
+                fail(failed);
+            }
+        }
+
+        private void files(WorldStreamLaunchOwner.Handle handle) throws Exception {
+            while (true) {
+                Runnable task;
+                synchronized (lock) {
+                    task = fileTasks.pollFirst();
+                    if (task == null) {
+                        if (handle.stopping() && input == null) {
+                            return;
+                        }
+                        if (handle.stopping() && actualExit && statusesDrained && input != null) {
+                            var owned = input;
+                            var current = tile;
+                            task =
+                                    () -> {
+                                        owned.close();
+                                        state.retireTileFile(current.ticket);
+                                        capacityChanged();
+                                        synchronized (lock) {
+                                            input = null;
+                                        }
+                                    };
+                        } else {
+                            lock.wait(20);
+                            continue;
+                        }
+                    }
+                }
+                task.run();
+            }
         }
 
         /** Replaces one pending camera; no pipe I/O or external callback occurs on the caller. */
@@ -243,6 +723,7 @@ public final class WorldStreamTransport {
                 lock.notifyAll();
             }
             frames.close();
+            cancellation.stopSession();
         }
 
         private void childExited() {
@@ -275,6 +756,8 @@ public final class WorldStreamTransport {
                         command = new WorldStreamControl.Close(descriptor.nonce());
                     } else if (closeWritten) {
                         return;
+                    } else if (!reliableCommands.isEmpty()) {
+                        command = reliableCommands.removeFirst();
                     } else if (pendingCamera != null) {
                         command = pendingCamera;
                         pendingCamera = null;
@@ -311,12 +794,68 @@ public final class WorldStreamTransport {
                             }
                         }
                         case CAMERA -> frames.applied((WorldStreamStatus.CameraApplied) message);
+                        case INPUT_TILE ->
+                                enqueueFile(
+                                        () -> {
+                                            WorldStreamPacketFile.Moved owned;
+                                            TileReservation current;
+                                            synchronized (lock) {
+                                                owned = input;
+                                                current = tile;
+                                            }
+                                            if (owned == null) {
+                                                throw new IllegalStateException(
+                                                        "Missing advertised input owner");
+                                            }
+                                            owned.close();
+                                            state.retireTileFile(current.ticket);
+                                            capacityChanged();
+                                            synchronized (lock) {
+                                                input = null;
+                                                lock.notifyAll();
+                                            }
+                                        });
+                        case STAGED -> {
+                            TileReservation current;
+                            synchronized (lock) {
+                                current = tile;
+                                outstandingReliable--;
+                            }
+                            if (!closing && !handle.stopping()) {
+                                current.result.complete(new Resident(current.ticket.resident));
+                            } else {
+                                current.result.completeExceptionally(
+                                        new java.util.concurrent.CancellationException(
+                                                "World stopped"));
+                            }
+                        }
+                        case CANCELED -> {
+                            TileReservation current;
+                            synchronized (lock) {
+                                current = tile;
+                                outstandingReliable = 0;
+                            }
+                            current.canceled.complete(null);
+                            current.result.completeExceptionally(
+                                    new java.util.concurrent.CancellationException(
+                                            "Tile canceled"));
+                        }
+                        case REJECTED -> {
+                            TileReservation current;
+                            synchronized (lock) {
+                                current = tile;
+                                outstandingReliable = 0;
+                            }
+                            current.result.completeExceptionally(
+                                    new IOException("World packet rejected"));
+                        }
                         case CLOSED -> {
                             closedStatus = true;
                             requestClose();
                             handle.closeAsync();
                         }
-                        case IGNORED, CREDIT -> {}
+                        case CREDIT -> capacityChanged();
+                        case IGNORED -> {}
                         default ->
                                 throw new IOException(
                                         "Unexpected World status without published operation");
@@ -338,6 +877,17 @@ public final class WorldStreamTransport {
             return failure == null ? new IOException(message) : failure;
         }
 
+        private void failPending(Throwable failure) {
+            TileReservation current;
+            synchronized (lock) {
+                current = tile;
+            }
+            if (current != null) {
+                current.result.completeExceptionally(failure);
+                current.canceled.completeExceptionally(failure);
+            }
+        }
+
         private void fail(Throwable error) {
             // Secure the lifetime before diagnostic encoding or any future/user callback.
             requestClose();
@@ -351,6 +901,7 @@ public final class WorldStreamTransport {
             }
             initialized.completeExceptionally(failure);
             completion.completeExceptionally(failure);
+            failPending(failure);
         }
     }
 

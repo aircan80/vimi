@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /** Opt-in actual native startup/control/exit proof; no content or frame acceptance claim. */
 public final class WorldStreamTransportProof {
+    @SuppressWarnings("try")
     public static void main(String[] arguments) throws Exception {
         Path output = Path.of(arguments[0]);
         Files.createDirectories(output);
@@ -43,6 +44,113 @@ public final class WorldStreamTransportProof {
         try {
             session.initialized().get(15, TimeUnit.SECONDS);
             prepared.close();
+            WorldStreamTransport.TileReservation reserved = null;
+            long creditDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (reserved == null && System.nanoTime() < creditDeadline) {
+                reserved = session.tryReserveTile(7, 19).orElse(null);
+                if (reserved == null) {
+                    Thread.sleep(2);
+                }
+            }
+            if (reserved == null) {
+                throw new AssertionError("No real child tile credit");
+            }
+            var expired = new AtomicReference<WorldStreamTransport.PacketDestination>();
+            try {
+                reserved.produce(
+                                (destination, stopping) -> {
+                                    expired.set(destination);
+                                    throw destination.refusal(
+                                            WorldStreamTransport.Refusal.RETRY_LATER,
+                                            "authored bounded source pressure");
+                                })
+                        .get(3, TimeUnit.SECONDS);
+                throw new AssertionError("Refusal became a resident");
+            } catch (java.util.concurrent.ExecutionException expected) {
+                if (!(expected.getCause()
+                                instanceof WorldStreamTransport.PreparationRefusal refusal)
+                        || refusal.reason() != WorldStreamTransport.Refusal.RETRY_LATER) {
+                    throw expected;
+                }
+            }
+            try {
+                expired.get().path();
+                throw new AssertionError("Destination escaped callback");
+            } catch (IllegalStateException expected) {
+            }
+            reserved = null;
+            creditDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (reserved == null && System.nanoTime() < creditDeadline) {
+                reserved = session.tryReserveTile(7, 19).orElse(null);
+                if (reserved == null) {
+                    Thread.sleep(2);
+                }
+            }
+            if (reserved == null) {
+                throw new AssertionError("Refused producer did not recover genuine child credit");
+            }
+            var resident =
+                    reserved.produce(
+                                    (destination, stopping) -> {
+                                        var context = destination.context();
+                                        var tile = WorldStreamTileFileTest.full(false);
+                                        var h = WorldStreamTileFileTest.header(tile, true);
+                                        var header =
+                                                new WorldStreamTileFile.Header(
+                                                        context.nonce(),
+                                                        context.scope(),
+                                                        context.transaction(),
+                                                        context.lease(),
+                                                        h.x(),
+                                                        h.y(),
+                                                        h.chunks(),
+                                                        h.vertices(),
+                                                        h.indices(),
+                                                        h.geometrySha256(),
+                                                        h.materialDigest(),
+                                                        h.outcome(),
+                                                        h.reason(),
+                                                        h.coverage(),
+                                                        h.maxX(),
+                                                        h.maxY(),
+                                                        h.uvError(),
+                                                        h.wdt(),
+                                                        h.root(),
+                                                        h.tex0(),
+                                                        h.diffuse());
+                                        var expected =
+                                                WorldStreamTileFile.write(
+                                                        destination.path().getParent(),
+                                                        header,
+                                                        tile,
+                                                        WorldStreamTileFileTest.atlas(),
+                                                        stopping);
+                                        try (var original =
+                                                WorldStreamPacketFile.finalized(
+                                                        expected,
+                                                        destination.path(),
+                                                        context.identity())) {
+                                            var packet = destination.adopt(original.move(), header);
+                                            // Original source wrapper close becomes inert before
+                                            // producer returns.
+                                            original.close();
+                                            if (!Files.exists(destination.path())) {
+                                                packet.close();
+                                                throw new AssertionError("MOVE lost file");
+                                            }
+                                            return packet;
+                                        }
+                                    })
+                            .get(8, TimeUnit.SECONDS);
+            if (resident.tileX() != 7
+                    || resident.tileY() != 19
+                    || resident.coveredRectangles() != 256) {
+                throw new AssertionError("Real STAGED correlation failed");
+            }
+            reserved.cancel().get(3, TimeUnit.SECONDS);
+            if (session.capacityRevision() == 0) {
+                throw new AssertionError("No actual capacity transition");
+            }
             for (int i = 1; i <= 100; i++) {
                 session.camera(
                         new WorldStreamTransport.Camera(
@@ -71,7 +179,7 @@ public final class WorldStreamTransportProof {
                             + receipt.childPid().orElseThrow()
                             + " submittedCameras=100 elapsedMs="
                             + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)
-                            + " contentFrames=NOT_TESTED");
+                            + " stagedTiles=1 refusedProducers=1 canceledTiles=1 contentFrames=NOT_TESTED");
         } finally {
             session.closeAsync();
             session.terminatedAndDrained().get(7, TimeUnit.SECONDS);
