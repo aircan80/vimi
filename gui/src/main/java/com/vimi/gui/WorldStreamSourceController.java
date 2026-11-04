@@ -883,24 +883,24 @@ final class WorldStreamSourceController {
         var tiles = new ArrayList<TerrainGround.Tile>();
         var metadata = new ArrayList<WorldFormats.AreaMetadata>();
         for (var entry : current) {
+            var known = heights.get(entry);
             var recorded = areaMetadata.get(entry);
-            if (recorded == null) {
+            if (known == null || recorded == null) {
+                // Current residents are never retired here; borrow failures surface like updateArea.
+                // One borrow reads both facts so neither depends on a second payload access.
+                TerrainGround.Tile[] built = {null};
                 WorldFormats.AreaMetadata[] read = {null};
-                entry.source().withPayload(borrow -> read[0] = borrow.areas());
+                entry.source().withPayload(borrow -> {
+                    built[0] = TerrainGround.Tile.of(borrow.geometry());
+                    read[0] = borrow.areas();
+                });
+                known = Optional.ofNullable(built[0]);
                 recorded = Optional.ofNullable(read[0]);
+                heights.put(entry, known);
                 areaMetadata.put(entry, recorded);
             }
-            recorded.ifPresent(metadata::add);
-            var known = heights.get(entry);
-            if (known == null) {
-                // Current residents are never retired here; borrow failures surface like updateArea.
-                TerrainGround.Tile[] built = {null};
-                entry.source().withPayload(
-                        borrow -> built[0] = TerrainGround.Tile.of(borrow.geometry()));
-                known = Optional.ofNullable(built[0]);
-                heights.put(entry, known);
-            }
             known.ifPresent(tiles::add);
+            recorded.ifPresent(metadata::add);
         }
         ground = TerrainGround.of(tiles);
         areas = List.copyOf(metadata);

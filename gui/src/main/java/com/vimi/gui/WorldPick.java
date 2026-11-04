@@ -23,7 +23,7 @@ final class WorldPick {
     /** Farthest picked surface, matching the explorer's whole-triangle draw distance. */
     static final double MAX_DISTANCE = TerrainCamera.WHOLE_TRIANGLE_FAR;
 
-    private static final double MIN_STEP = .25, MAX_STEP = 8, STEP_FRACTION = .01;
+    private static final double MIN_STEP = .25, MAX_STEP = 2, STEP_FRACTION = .01;
     private static final int REFINE = 40, MAX_SAMPLES = 4096;
 
     private WorldPick() {}
@@ -65,28 +65,49 @@ final class WorldPick {
 
     /**
      * First crossing from above to on-or-below the rendered surface along the ray. Samples where
-     * no surface is rendered (holes, unloaded tiles) count as open air. A camera already below the
-     * surface only hits after the ray emerges above it again. Empty when nothing is hit within
-     * {@link #MAX_DISTANCE}.
+     * no surface is rendered (holes, unloaded tiles) are uncovered. When the ray enters covered
+     * terrain from an uncovered stretch, it only counts as a hit if it is above the surface at
+     * the coverage edge; a ray that passed through a hole or arrives below the surface keeps
+     * marching. A camera already below the surface only hits after the ray emerges above it.
+     * Empty when nothing is hit within {@link #MAX_DISTANCE}.
      */
     static Optional<Hit> terrain(Ray ray, TerrainGround ground) {
         Objects.requireNonNull(ray);
         Objects.requireNonNull(ground);
         if (ground.tiles() == 0) return Optional.empty();
         double previous = 0, start = clearance(ray, ground, 0);
-        boolean above = Double.isNaN(start) || start > 0;
+        boolean covered = !Double.isNaN(start), above = covered && start > 0;
         double t = TerrainCamera.NEAR;
         for (int samples = 0; t <= MAX_DISTANCE && samples < MAX_SAMPLES; samples++) {
             double gap = clearance(ray, ground, t);
-            if (Double.isNaN(gap) || gap > 0) {
-                above = true;
-            } else if (above) {
-                return Optional.of(refine(ray, ground, previous, t));
+            if (Double.isNaN(gap)) {
+                covered = false;
+            } else if (gap > 0) {
+                above = covered = true;
+            } else {
+                if (!covered) {
+                    double edge = coverageEdge(ray, ground, previous, t), atEdge = clearance(ray, ground, edge);
+                    if (!Double.isNaN(atEdge) && atEdge > 0) return Optional.of(refine(ray, ground, edge, t));
+                    above = false;
+                } else if (above) {
+                    return Optional.of(refine(ray, ground, previous, t));
+                }
+                covered = true;
             }
             previous = t;
             t += Math.clamp(t * STEP_FRACTION, MIN_STEP, MAX_STEP);
         }
         return Optional.empty();
+    }
+
+    /** First covered distance between an uncovered and a covered sample. */
+    private static double coverageEdge(Ray ray, TerrainGround ground, double uncovered, double coveredAt) {
+        for (int i = 0; i < REFINE; i++) {
+            double middle = (uncovered + coveredAt) / 2;
+            if (Double.isNaN(clearance(ray, ground, middle))) uncovered = middle;
+            else coveredAt = middle;
+        }
+        return coveredAt;
     }
 
     private static Hit refine(Ray ray, TerrainGround ground, double open, double solid) {
@@ -141,8 +162,9 @@ final class WorldPick {
     /** Pointer over sky, a hole or terrain that is not loaded: report that, never a guess. */
     static String describeMiss(boolean groundLoaded) {
         return groundLoaded
-                ? "Nothing picked · no rendered terrain under the pointer within "
-                        + (int) MAX_DISTANCE + " yd (sky, a terrain hole or an unloaded tile)"
+                ? "Nothing picked · no retained terrain heights under the pointer within "
+                        + (int) MAX_DISTANCE + " yd (sky, a terrain hole, or terrain outside the"
+                        + " retained height tiles)"
                 : "Nothing picked · terrain heights are not loaded yet";
     }
 
@@ -165,7 +187,7 @@ final class WorldPick {
         var source = evidence.source();
         text.append(" · source: ").append(provider(source.provider())).append(' ').append(evidence.dataset())
                 .append(" record ").append(evidence.record()).append(" (fields ").append(evidence.field())
-                .append(") · client ").append(source.build()).append(' ').append(source.locale())
+                .append(") · client ").append(known(source.build())).append(' ').append(known(source.locale()))
                 .append(" · snapshot ").append(shortSnapshot(source.snapshot()));
         return text.append(" · phase, patrols and live server state unknown").toString();
     }
@@ -187,7 +209,7 @@ final class WorldPick {
             case CYCLE -> "area hierarchy cycle";
             case MAP_MISMATCH -> "area belongs to another map";
             case DEPTH_LIMIT -> "area hierarchy too deep";
-            case NONE -> "not resolved";
+            case NONE -> "area catalog not loaded";
         };
         return "Area unknown (" + why + (area.areaId() > 0 ? "; recorded area ID " + area.areaId() : "") + ")";
     }
@@ -198,12 +220,18 @@ final class WorldPick {
 
     private static String levels(WorldSpawns.Npc npc) {
         if (npc.levelMin() == null && npc.levelMax() == null) return "unknown";
-        if (npc.levelMin() == null || npc.levelMax() == null || npc.levelMin().equals(npc.levelMax()))
-            return String.valueOf(npc.levelMin() == null ? npc.levelMax() : npc.levelMin());
+        if (npc.levelMax() == null) return "≥ " + npc.levelMin() + " (maximum unknown)";
+        if (npc.levelMin() == null) return "≤ " + npc.levelMax() + " (minimum unknown)";
+        if (npc.levelMin().equals(npc.levelMax())) return String.valueOf(npc.levelMin());
         return npc.levelMin() + "–" + npc.levelMax();
     }
 
+    private static String known(String value) {
+        return value == null || value.isBlank() ? "unknown" : value;
+    }
+
     private static String shortSnapshot(String snapshot) {
+        if (snapshot == null || snapshot.isBlank()) return "unknown";
         return snapshot.length() > 12 ? snapshot.substring(0, 12) : snapshot;
     }
 

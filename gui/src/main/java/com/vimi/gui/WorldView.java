@@ -2587,13 +2587,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                 : areaIndex == null
                                         ? new com.vibeminer.concepts.world.WorldCurrentArea.Result(
                                                 com.vibeminer.concepts.world.WorldCurrentArea.State.UNAVAILABLE,
-                                                com.vibeminer.concepts.world.WorldCurrentArea.Reason.NO_LOADED_METADATA,
+                                                com.vibeminer.concepts.world.WorldCurrentArea.Reason.NONE,
                                                 0, java.util.List.of())
                                         : com.vibeminer.concepts.world.WorldCurrentArea.locate(
                                                 mapId, at.x(), at.y(), tiles, areaIndex);
                         text = WorldPick.describeTerrain(at, mapId, mapName, area);
                     }
-                } catch (RuntimeException failure) {
+                } catch (Throwable failure) {
                     text = "Inspection failed: " + (failure.getMessage() == null
                             ? failure.getClass().getSimpleName() : failure.getMessage());
                 }

@@ -110,6 +110,22 @@ public final class WorldPickTest {
         require(WorldPick.terrain(new WorldPick.Ray(x, y, -50, 0, 0, 1), ground(-1, -1)).isEmpty(),
                 "A camera below the surface does not pick the underside it starts beneath");
         require(WorldPick.terrain(down, TerrainGround.empty()).isEmpty(), "Unloaded heights pick nothing");
+        // Slanted 45° descent along -X that crosses the surface inside the hole cell.
+        double sx = x + 3, slant = Math.sqrt(.5);
+        var through = new WorldPick.Ray(sx, y, plane(sx, y) + 3, -slant, 0, -slant);
+        var solid = WorldPick.terrain(through, ground(-1, -1)).orElseThrow();
+        require(near(solid.x(), sx - 2.4, .02) && near(solid.z(), plane(solid.x(), solid.y()), .02),
+                "Slanted ray hits the rendered cell on the ray: " + solid);
+        require(WorldPick.terrain(through, ground(3, 4)).isEmpty(),
+                "A slanted ray through a hole does not hit the far side from below");
+        // Starting off the loaded chunk below its surface and moving into it.
+        var low = new WorldPick.Ray(PX + 10, PY - 16, 0, -1, 0, 0);
+        require(WorldPick.terrain(low, ground(-1, -1)).isEmpty(),
+                "Entering covered terrain beneath its surface is not a hit");
+        var high = new WorldPick.Ray(PX + 10, PY - 16, 30, -slant, 0, -slant);
+        var entered = WorldPick.terrain(high, ground(-1, -1)).orElseThrow();
+        require(near(entered.z(), plane(entered.x(), entered.y()), .02) && entered.x() < PX,
+                "Entering covered terrain from above still hits: " + entered);
         require(WorldPick.terrain(new WorldPick.Ray(PX + 5000, PY, 200, 0, 0, -1), ground(-1, -1)).isEmpty(),
                 "Points off the loaded tiles pick nothing");
     }
@@ -144,6 +160,18 @@ public final class WorldPickTest {
         String unnamed = WorldPick.describeSpawn(orphan, null, null);
         require(unnamed.contains("NPC 7 · name unknown") && unnamed.contains("map 0 ·"),
                 "Missing NPC record and map name stay unknown: " + unnamed);
+
+        var bare = new com.vibeminer.concepts.locations.LocationTypes.Source(
+                com.vibeminer.concepts.locations.LocationTypes.Provider.POLESTAR, "b".repeat(40), null, null, null, null);
+        var bareIndex = com.vibeminer.concepts.locations.WorldSpawns.polestar(bare,
+                List.of(WorldSpawnOverlayTest.spawn(8, 1, 10, 10, 1.0)),
+                List.of(Map.of("id", 8L, "level_min", 5L)), List.of(), com.vibeminer.access.Cancellation.NONE);
+        String sparse = WorldPick.describeSpawn(bareIndex.near(0, 10, 10, 5, 4).placed().getFirst(),
+                bareIndex.npc(8).orElseThrow(), null);
+        require(sparse.contains("client unknown unknown") && !sparse.contains("null"),
+                "Unrecorded build and locale are unknown: " + sparse);
+        require(sparse.contains("name unknown") && sparse.contains("level ≥ 5 (maximum unknown)"),
+                "A lone minimum level is not an exact level: " + sparse);
 
         var hit = new WorldPick.Hit(-640.5, -4120.5, 41.3, 70);
         var known = WorldCurrentArea.resolve(0, 10, WorldCurrentArea.Index.of(List.of(
