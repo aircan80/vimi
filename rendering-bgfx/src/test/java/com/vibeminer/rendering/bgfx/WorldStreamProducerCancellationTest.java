@@ -85,12 +85,19 @@ class WorldStreamProducerCancellationTest {
         var producer = lane.begin();
         var count = new AtomicInteger();
         var invoked = new CompletableFuture<Thread>();
+        var releaseCallback = new CountDownLatch(1);
         producer.stop();
         var registration =
                 producer.onStopping(
                         () -> {
                             count.incrementAndGet();
                             invoked.complete(Thread.currentThread());
+                            try {
+                                releaseCallback.await();
+                            } catch (InterruptedException interrupted) {
+                                Thread.currentThread().interrupt();
+                                throw new AssertionError(interrupted);
+                            }
                         });
         assertEquals(0, count.get());
         Thread worker =
@@ -111,9 +118,16 @@ class WorldStreamProducerCancellationTest {
             registration.close();
             assertThrows(IllegalStateException.class, () -> producer.onStopping(() -> {}));
             producer.finished();
+            assertFalse(producer.retired(), "A held callback still owns its cancellation slot");
+            releaseCallback.countDown();
+            lane.stopSession();
+            worker.join(2000);
+            assertFalse(worker.isAlive(), "Actual cancellation worker must finish");
             assertTrue(producer.retired());
+            assertEquals(1, count.get());
             assertThrows(IllegalStateException.class, () -> producer.onStopping(() -> {}));
         } finally {
+            releaseCallback.countDown();
             producer.finished();
             lane.stopSession();
             worker.join(2000);
