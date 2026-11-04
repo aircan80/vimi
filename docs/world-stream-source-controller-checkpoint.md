@@ -146,3 +146,60 @@ request ends without opening. Request completion/failure alone never releases th
 The pure area adapter is `WorldCurrentArea.resolve(mapId,recordedAreaId,Index)` from a512700. Controller
 scans checked AreaChunk coverage inside off-FX payload borrows and passes only the actual recorded
 scalar area ID to this helper; root minimap continues using Inventory, seeded origin and camera.
+
+Initial software toggle policy is **true GPU-off**, superseding the earlier software(boolean)
+method in the API sketch. Root closes this controller/application GPU owner, retains last pixels
+with pending feedback, and starts the existing legacy CPU acquisition only after this controller's
+successful actual close. Exceptional drain requires explicit unavailable/reload; it cannot start
+another acquisition pipeline. GPU re-enable likewise starts a fresh streaming scope/session only
+after the old CPU request is canceled/drained. No EmptyR source-holder path or active-GPU CPU label
+is introduced by this checkpoint.
+
+Initial rendering detail reports bounded textured/partial/height counts and terminal reason enums.
+READY requires the actual current receipt to have been accepted, not merely any prior frame. An
+empty recorded neighborhood keeps camera/sky updates and explicit missing-terrain status. Old
+current members remain until one actual incoming STAGED holder can replace one outgoing member;
+changed demand alone never shrinks the current table.
+
+## Implemented checkpoint and validation
+
+The actual class now uses the frozen df8c3c0 parent Commit/Frame API and reviewed tile cancellation
+follow-ups plus the failed-commit-cleanup correction. No reflection or protocol-status inference is
+used in production. Camera forwarding calls the parent's metadata-only camera mailbox independently
+of held source work. First origin preparation needs no preexisting camera; actual checked geometry
+produces the seed, after which commit waits for the view's first camera. Empty neighborhoods are
+valid. New demand never removes outgoing current members until one actual incoming STAGED source
+holder is ready. Current receipt application waits a borrowed FX handshake, preserving the exact
+mayPresent/upload/presented table. READY requires acceptance of the current receipt.
+
+Actual clean source refusal metadata is consumed only inside an exact clean CompletionException to
+PreparationRefusal branch, with correlated reason. SOURCE_INPUT/NUMERIC_ROOT/TERRAIN_PROFILE capability
+refusals are finite per-demand missing entries (<=9); current holders remain. Whole Map/native source
+capability or invalidation stops acquisition with explicit unavailable detail and retains visible
+pixels in the view. Unknown failure is fatal. Independent Source/pool pressure retries at most once
+per 500ms via the existing pulse if no genuine parent-capacity/presentation/demand revision arrives;
+a private monotonic clock injection makes the cadence deterministic in tests. It is not a hot loop.
+
+Active Events are retained strongly; queued FX work carries weak wake references and no payload.
+One borrowed/queued controller Frame is allowed, never both. Its detached pixels are at most
+800*500*4 = 1,600,000 bytes, separate from source atlas/geometry accounting. The parent independently
+bounds its latest detached frame and mapped slots. Controller membership tables are reference-only
+aliases (each <=9) over at most 12 unique existing source output owners. Request Inventory/area Index
+are borrowed existing graphs, not copied. Additional scalar/reference descriptors and <=9 finite
+refusal records add no image/geometry payload or receipt graph and no source cap increase.
+
+`:gui:worldStreamSourceControllerTest` uses genuine native Map preparation, checked authored
+WDT/ADT/BLP sources, the real packet encoder/decoder, real parent transport, a separate authored
+protocol child and real mapped detached-frame codec. Child pixels are authored; this is lifecycle
+and scheduling evidence, not GPU rendering/FPS evidence. Cases exercise nine initial full textured
+tiles, held incoming ROOT with old nine-member table/camera frames intact, actual post-COMMITTED FX
+handshake, twelve-owner presentation backpressure and stationary final-frame recovery, held source
+superseded only after explicit parent cancel, finite missing ROOT while the scope stays valid,
+shared pool release with no new demand/capacity event, queued GPU-owner late drain, actual initial
+WDT proof cancellation before any GPU owner exists, and close waiting both borrowed FX and actual
+process drain. The companion bridge suite covers full/partial/height, file MOVE and cleanup faults.
+
+GPU checkbox integration is owned by root and uses actual drain before legacy CPU acquisition. This
+checkpoint does not claim UI integration, actual movement smoothness, or software pixels over an
+active GPU session. Unknown/source cleanup/actual-owner failures remain conservatively exceptional
+on close; exact clean close-induced cancellation and clean logical capability refusal do not.

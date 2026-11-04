@@ -1,0 +1,924 @@
+package com.vimi.gui;
+
+import com.vibeminer.access.Cancellation;
+import com.vibeminer.concepts.world.BuildWorld;
+import com.vibeminer.concepts.world.WorldCurrentArea;
+import com.vibeminer.concepts.world.WorldService;
+import com.vibeminer.concepts.world.WorldTerrainStreaming;
+import com.vibeminer.concepts.world.WorldTerrainTextureSource;
+import com.vibeminer.formats.world.WorldFormats;
+import com.vibeminer.rendering.bgfx.WorldStreamTransport;
+import com.vibeminer.rendering.world.TerrainCamera;
+
+import java.lang.ref.WeakReference;
+import java.nio.IntBuffer;
+import java.util.ArrayList;
+import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
+import java.util.function.LongSupplier;
+
+/** One bounded source/commit actor. No view widgets, legacy scenes, or application GPU launch. */
+final class WorldStreamSourceController {
+    record Request(
+            long viewGeneration,
+            BuildWorld world,
+            WorldService.MapInfo map,
+            WorldService.Inventory inventory,
+            WorldFormats.Tile origin,
+            WorldFormats.AreaPoint areaPoint,
+            WorldCurrentArea.Index areaIndex) {
+        Request {
+            Objects.requireNonNull(world);
+            Objects.requireNonNull(map);
+            Objects.requireNonNull(inventory);
+            Objects.requireNonNull(origin);
+            Objects.requireNonNull(areaIndex);
+            if (viewGeneration < 0
+                    || inventory.world() == null
+                    || inventory.world().tiles().size() > 4096) {
+                throw new IllegalArgumentException("World request bounds");
+            }
+        }
+    }
+
+    interface GpuStarter {
+        GpuOwner start(String qualifiedScopeSha256);
+    }
+
+    interface GpuOwner {
+        CompletableFuture<WorldStreamTransport.Session> session();
+
+        CompletableFuture<Void> closeAsync();
+    }
+
+    interface Events {
+        void changed();
+    }
+
+    enum Phase {
+        QUALIFYING,
+        STARTING,
+        PREPARING,
+        UPLOADING,
+        COMMITTING,
+        PRESENTING,
+        READY,
+        WAITING_CAPACITY,
+        UNAVAILABLE,
+        FAILED,
+        CLOSED
+    }
+
+    record Seed(
+            TerrainCamera camera,
+            double originX,
+            double originY,
+            WorldTerrainStreaming.Bounds bounds) {}
+
+    record Snapshot(
+            Phase phase,
+            String detail,
+            int prepared,
+            int desired,
+            Seed seed,
+            WorldCurrentArea.Result area) {}
+
+    /** Detached pixels plus exact receipt metadata. No source/payload handles escape to FX. */
+    static final class Presentation {
+        private final WorldStreamTransport.Frame frame;
+        private final long generation;
+
+        private Presentation(WorldStreamTransport.Frame frame, long generation) {
+            this.frame = frame;
+            this.generation = generation;
+        }
+
+        long sequence() {
+            return frame.sequence();
+        }
+
+        long cameraRevision() {
+            return frame.cameraRevision();
+        }
+
+        long policy() {
+            return frame.policy();
+        }
+
+        int width() {
+            return frame.width();
+        }
+
+        int height() {
+            return frame.height();
+        }
+
+        IntBuffer pixels() {
+            return frame.pixels();
+        }
+    }
+
+    private record Entry(
+            WorldStreamTransport.Resident resident, WorldStreamSourceBridge.Prepared source) {}
+
+    private static final class Pending {
+        final WorldFormats.Tile tile;
+        final WorldStreamTransport.TileReservation reservation;
+        final WorldStreamSourceBridge.Producer producer;
+        volatile boolean useful = true;
+        CompletableFuture<WorldStreamTransport.Resident> result;
+        CompletableFuture<Void> cancellation;
+
+        Pending(
+                WorldFormats.Tile tile,
+                WorldStreamTransport.TileReservation reservation,
+                WorldTerrainStreaming source,
+                WorldTerrainStreaming.Scope scope) {
+            this.tile = tile;
+            this.reservation = reservation;
+            producer = new WorldStreamSourceBridge.Producer(source, scope, tile, () -> useful);
+        }
+    }
+
+    private final Object lock = new Object();
+    private final Request request;
+    private final GpuStarter starter;
+    private Events events;
+    private final Consumer<Runnable> fxPost;
+    private final LongSupplier clock;
+    private static final long RETRY_NANOS = 500_000_000L;
+    private final ExecutorService worker =
+            Executors.newSingleThreadExecutor(
+                    Thread.ofPlatform().daemon().name("world-source-controller").factory());
+    private final AtomicBoolean scheduled = new AtomicBoolean(), wake = new AtomicBoolean();
+    private final AtomicBoolean fxQueued = new AtomicBoolean();
+    private final Cancellation qualificationCancellation = new Cancellation();
+    private final CompletableFuture<Void> drained = new CompletableFuture<>();
+    private volatile boolean closing;
+    private volatile WorldStreamTransport.Camera camera;
+    private volatile WorldStreamTransport.Session session;
+    private List<WorldFormats.Tile> desired;
+    private long demandRevision, presentationRevision, acceptedSequence;
+    private Snapshot snapshot =
+            new Snapshot(Phase.QUALIFYING, "Qualifying world sources", 0, 1, null, null);
+    private Presentation queued, borrowed;
+    private boolean validated;
+    // Worker owns every source/transport owner below. FX sees only immutable table aliases under
+    // lock.
+    private WorldTerrainStreaming source;
+    private WorldTerrainStreaming.Scope scope;
+    private GpuOwner gpu;
+    private CompletableFuture<WorldStreamTransport.Session> opening;
+    private Pending pending;
+    private final IdentityHashMap<WorldStreamTransport.Resident, Entry> entries =
+            new IdentityHashMap<>();
+    private List<Entry> current = List.of(), presented = List.of(), committing = List.of();
+    private CompletableFuture<WorldStreamTransport.CommitReceipt> commit;
+    private WorldStreamTransport.CommitReceipt currentReceipt, acceptedReceipt;
+    private Entry staged;
+    private final LinkedHashMap<Integer, WorldStreamSourceBridge.RefusalMetadata> unavailable =
+            new LinkedHashMap<>();
+    private boolean initialBlocked;
+    private long initialRetryAt, blockedAt;
+    private long blockedCapacity = -1, blockedPresentation = -1, blockedDemand = -1;
+    private volatile Throwable terminal;
+    private volatile String unavailableDetail;
+    private CompletableFuture<Void> physicalClosing;
+    private boolean initialized;
+
+    WorldStreamSourceController(
+            Request request, GpuStarter starter, Events events, Consumer<Runnable> fxPost) {
+        this(request, starter, events, fxPost, System::nanoTime);
+    }
+
+    WorldStreamSourceController(
+            Request request,
+            GpuStarter starter,
+            Events events,
+            Consumer<Runnable> fxPost,
+            LongSupplier clock) {
+        this.clock = Objects.requireNonNull(clock);
+        this.request = Objects.requireNonNull(request);
+        this.starter = Objects.requireNonNull(starter);
+        this.events = Objects.requireNonNull(events);
+        this.fxPost = Objects.requireNonNull(fxPost);
+        desired = List.of(request.origin());
+        kick();
+    }
+
+    void camera(WorldStreamTransport.Camera next) {
+        Objects.requireNonNull(next);
+        synchronized (lock) {
+            if (closing) return;
+            if (camera != null && next.revision() <= camera.revision()) {
+                throw new IllegalArgumentException("Camera revision must advance");
+            }
+            camera = next;
+        }
+        // Parent camera replaces metadata only; source/CPU/retirement work cannot stall motion.
+        var active = session;
+        if (active != null) {
+            try {
+                active.camera(next);
+            } catch (RuntimeException failure) {
+                failLater(failure);
+            }
+        }
+        kick();
+    }
+
+    void neighborhood(List<WorldFormats.Tile> ordered) {
+        Objects.requireNonNull(ordered);
+        if (ordered.size() > 9) throw new IllegalArgumentException("Neighborhood bounds");
+        var copy = List.copyOf(ordered);
+        for (int i = 0; i < copy.size(); i++) {
+            for (int j = 0; j < i; j++) {
+                if (same(copy.get(i), copy.get(j)))
+                    throw new IllegalArgumentException("Duplicate neighborhood tile");
+            }
+        }
+        synchronized (lock) {
+            if (closing || desired.equals(copy)) return;
+            desired = copy;
+            demandRevision++;
+        }
+        kick();
+    }
+
+    void pulse() {
+        kick();
+    }
+
+    Snapshot snapshot() {
+        synchronized (lock) {
+            return snapshot;
+        }
+    }
+
+    Optional<Presentation> takePresentation() {
+        synchronized (lock) {
+            if (closing || borrowed != null || queued == null) return Optional.empty();
+            borrowed = queued;
+            queued = null;
+            validated = false;
+            return Optional.of(borrowed);
+        }
+    }
+
+    boolean mayPresent(Presentation value) {
+        synchronized (lock) {
+            validated = validPresentation(value);
+            return validated;
+        }
+    }
+
+    boolean presented(Presentation value) {
+        boolean accepted;
+        synchronized (lock) {
+            accepted = validated && validPresentation(value);
+            if (borrowed == value) {
+                borrowed = null;
+                validated = false;
+                if (accepted) {
+                    acceptedSequence = value.sequence();
+                    acceptedReceipt = currentReceipt;
+                    presented = List.copyOf(current);
+                    presentationRevision++;
+                }
+            }
+        }
+        kick();
+        return accepted;
+    }
+
+    void discard(Presentation value) {
+        synchronized (lock) {
+            if (borrowed == value) {
+                borrowed = null;
+                validated = false;
+            }
+        }
+        kick();
+    }
+
+    private boolean validPresentation(Presentation value) {
+        if (closing
+                || borrowed != value
+                || value.generation != request.viewGeneration()
+                || value.sequence() <= acceptedSequence
+                || camera == null
+                || camera.policy() != value.policy()
+                || camera.width() != value.width()
+                || camera.height() != value.height()
+                || currentReceipt != value.frame.content()) return false;
+        for (var entry : current) if (!entry.source().isOpen()) return false;
+        return true;
+    }
+
+    CompletableFuture<Void> closeAsync() {
+        synchronized (lock) {
+            if (closing) return drained.copy();
+            closing = true;
+            queued = null;
+        }
+        // This private token has only the actual engine's coalesced metadata cancellation listener.
+        try {
+            qualificationCancellation.cancel();
+        } catch (RuntimeException | Error failure) {
+            failLater(failure);
+        }
+        kick();
+        return drained.copy();
+    }
+
+    private void kick() {
+        wake.set(true);
+        if (scheduled.compareAndSet(false, true)) {
+            try {
+                worker.execute(this::run);
+            } catch (RuntimeException failure) {
+                scheduled.set(false);
+                if (!drained.isDone()) drained.completeExceptionally(failure);
+            }
+        }
+    }
+
+    private void run() {
+        try {
+            do {
+                wake.set(false);
+                if (closing) retire();
+                else step();
+            } while (wake.get() && !drained.isDone());
+        } catch (Throwable failure) {
+            if (!(closing && cleanCancellation(failure))) {
+                if (failure instanceof WorldTerrainStreaming.Refusal refusal
+                        && refusal.getCause() == null
+                        && refusal.getSuppressed().length == 0
+                        && refusal.reason() != WorldTerrainStreaming.Refusal.Reason.RETRY_LATER) {
+                    unavailableDetail = "Source unavailable: " + refusal.site();
+                } else terminal = failure;
+                closing = true;
+                publish(
+                        unavailableDetail == null ? Phase.FAILED : Phase.UNAVAILABLE,
+                        unavailableDetail == null
+                                ? "World streaming failed: " + failure.getClass().getSimpleName()
+                                : unavailableDetail);
+            }
+            wake.set(true);
+        } finally {
+            scheduled.set(false);
+            if (wake.get() && !drained.isDone()) kick();
+        }
+    }
+
+    private void failLater(Throwable failure) {
+        synchronized (lock) {
+            if (terminal == null) terminal = failure;
+            closing = true;
+        }
+        kick();
+    }
+
+    private void step() {
+        if (!initialized) {
+            if (initialBlocked && clock.getAsLong() - initialRetryAt < RETRY_NANOS) return;
+            if (source == null)
+                source =
+                        request.world()
+                                .terrainStreaming()
+                                .orElseThrow(
+                                        () ->
+                                                new IllegalStateException(
+                                                        "Qualified streaming unavailable"));
+            try {
+                if (scope == null)
+                    scope = source.createScope(request.map(), qualificationCancellation);
+                source.activate(scope);
+            } catch (WorldTerrainStreaming.Refusal refusal) {
+                if (refusal.reason() != WorldTerrainStreaming.Refusal.Reason.RETRY_LATER
+                        || refusal.getCause() != null
+                        || refusal.getSuppressed().length != 0) throw refusal;
+                initialBlocked = true;
+                initialRetryAt = clock.getAsLong();
+                publish(Phase.WAITING_CAPACITY, "Waiting for source capacity: " + refusal.site());
+                return;
+            }
+            initialized = true;
+            if (closing) {
+                wake.set(true);
+                return;
+            }
+            publish(Phase.STARTING, "Starting persistent GPU viewer");
+            gpu = Objects.requireNonNull(starter.start(scope.scopeSha256()));
+            opening = gpu.session();
+            opening.whenComplete((ignored, failure) -> kick());
+            if (closing) {
+                wake.set(true);
+                return;
+            }
+        }
+        if (session == null) {
+            if (!opening.isDone()) return;
+            session = opening.join();
+            var latest = camera;
+            if (latest != null) session.camera(latest);
+            session.initialized().whenComplete((ignored, failure) -> kick());
+            session.completion()
+                    .whenComplete(
+                            (ignored, failure) -> {
+                                if (!closing)
+                                    failLater(
+                                            failure == null
+                                                    ? new IllegalStateException(
+                                                            "World session ended")
+                                                    : failure);
+                            });
+        }
+        if (!session.initialized().isDone()) return;
+        session.initialized().join();
+        pollFrame();
+        updateArea();
+        var wanted = demand();
+        unavailable.keySet().removeIf(key -> wanted.stream().noneMatch(tile -> key(tile) == key));
+        if (pending != null) {
+            if (!contains(wanted, pending.tile) && pending.cancellation == null) {
+                // Parent's explicit stop MUST precede the bridge's latest=false cancellation.
+                pending.cancellation = pending.reservation.cancel();
+                pending.useful = false;
+                pending.cancellation.whenComplete((ignored, failure) -> kick());
+            }
+            if (pending.cancellation != null) {
+                if (!pending.cancellation.isDone()) return;
+                pending.cancellation.join();
+                pending.producer.close();
+                pending = null;
+            } else {
+                if (!pending.result.isDone()) return;
+                try {
+                    var resident = pending.result.join();
+                    var prepared = pending.producer.takePrepared();
+                    staged = new Entry(resident, prepared);
+                    entries.put(resident, staged);
+                    seed(prepared);
+                } catch (CompletionException failure) {
+                    if (failure.getClass() != CompletionException.class
+                            || failure.getSuppressed().length != 0
+                            || !(failure.getCause()
+                                    instanceof WorldStreamTransport.PreparationRefusal refusal)
+                            || refusal.getCause() != null
+                            || refusal.getSuppressed().length != 0) throw failure;
+                    var origin = pending.producer.sourceRefusal();
+                    int failedTile = key(pending.tile);
+                    pending.producer.close();
+                    pending = null;
+                    if (origin != null && !origin.reason().name().equals(refusal.reason().name()))
+                        throw failure;
+                    if (origin == null
+                            && refusal.reason() != WorldStreamTransport.Refusal.SOURCE_INVALIDATED)
+                        throw failure;
+                    if (refusal.reason() == WorldStreamTransport.Refusal.CAPABILITY_UNAVAILABLE
+                            && origin != null
+                            && origin.reason().name().equals(refusal.reason().name())
+                            && tileUnavailable(origin)) {
+                        unavailable.put(failedTile, origin);
+                        publish(Phase.UNAVAILABLE, "Terrain unavailable: " + origin.site());
+                        wake.set(true);
+                        return;
+                    }
+                    if (refusal.reason() != WorldStreamTransport.Refusal.RETRY_LATER) {
+                        unavailableDetail =
+                                "Source unavailable: "
+                                        + (origin == null
+                                                ? refusal.reason().name()
+                                                : origin.site());
+                        closing = true;
+                        publish(Phase.UNAVAILABLE, unavailableDetail);
+                        wake.set(true);
+                        return;
+                    }
+                    blockedAt = clock.getAsLong();
+                    blockedCapacity = session.capacityRevision();
+                    synchronized (lock) {
+                        blockedPresentation = presentationRevision;
+                        blockedDemand = demandRevision;
+                    }
+                    publish(Phase.WAITING_CAPACITY, "Waiting for streaming resource capacity");
+                    return;
+                }
+                pending.producer.close();
+                pending = null;
+            }
+        }
+        if (commit != null) {
+            if (!commit.isDone()) return;
+            synchronized (lock) {
+                if (borrowed != null) return;
+            }
+            var receipt = commit.join();
+            synchronized (lock) {
+                current = committing;
+                currentReceipt = receipt;
+                committing = List.of();
+            }
+            commit = null;
+            pollFrame();
+        }
+        if (staged != null) {
+            var latest = camera;
+            if (latest == null) return;
+            var target = new ArrayList<>(current);
+            if (target.size() == 9) {
+                int outgoing = target.size() - 1;
+                for (int i = target.size() - 1; i >= 0; i--) {
+                    if (!containsResident(wanted, target.get(i).resident())) {
+                        outgoing = i;
+                        break;
+                    }
+                }
+                target.remove(outgoing);
+            }
+            target.add(staged);
+            staged = null;
+            committing = List.copyOf(target);
+            commit =
+                    session.commit(
+                            latest.policy(),
+                            target.stream()
+                                    .map(Entry::resident)
+                                    .toArray(WorldStreamTransport.Resident[]::new));
+            commit.whenComplete((ignored, failure) -> kick());
+            publish(Phase.COMMITTING, "Activating prepared terrain");
+            return;
+        }
+        retireUnused();
+        updateArea();
+        synchronized (lock) {
+            if (blockedCapacity == session.capacityRevision()
+                    && blockedPresentation == presentationRevision
+                    && blockedDemand == demandRevision
+                    && clock.getAsLong() - blockedAt < RETRY_NANOS) return;
+        }
+        if (entries.size() >= 12) {
+            publish(Phase.WAITING_CAPACITY, "Waiting for accepted viewport pixels");
+            return;
+        }
+        for (var tile : wanted) {
+            if (unavailable.containsKey(key(tile))) continue;
+            boolean found = false;
+            for (var entry : entries.values())
+                if (same(tile, entry.resident())) {
+                    found = true;
+                    break;
+                }
+            if (found) continue;
+            var reservation = session.tryReserveTile(tile.x(), tile.y());
+            if (reservation.isEmpty()) {
+                publish(Phase.WAITING_CAPACITY, "Waiting for GPU upload capacity");
+                return;
+            }
+            pending = new Pending(tile, reservation.orElseThrow(), source, scope);
+            pending.result = pending.reservation.produce(pending.producer);
+            pending.result.whenComplete((ignored, failure) -> kick());
+            publish(Phase.PREPARING, "Preparing terrain, textures and upload");
+            return;
+        }
+        publish(
+                wanted.isEmpty() || current.isEmpty() && !unavailable.isEmpty()
+                        ? Phase.UNAVAILABLE
+                        : acceptedReceipt == currentReceipt && currentReceipt != null
+                                ? Phase.READY
+                                : Phase.PRESENTING,
+                wanted.isEmpty()
+                        ? "No recorded terrain near this camera"
+                        : current.isEmpty() && !unavailable.isEmpty()
+                                ? "Terrain unavailable: "
+                                        + unavailable.values().iterator().next().site()
+                                : acceptedReceipt == currentReceipt && currentReceipt != null
+                                        ? readyDetail()
+                                        : "Waiting for accepted viewport pixels");
+    }
+
+    private String readyDetail() {
+        int textured = 0, partial = 0, height = 0;
+        String reason = "";
+        for (var entry : current) {
+            var facts = entry.source().facts();
+            if (facts.outcome() == WorldTerrainStreaming.Outcome.TEXTURED) {
+                textured++;
+                if (entry.resident().coveredRectangles() < 256
+                        || facts.materialState() == WorldTerrainTextureSource.State.PARTIAL) partial++;
+            } else {
+                height++;
+                reason =
+                        facts.terminalReason() == null
+                                ? facts.fallback().name()
+                                : facts.terminalReason().name();
+            }
+        }
+        return current.size()
+                + " tiles: "
+                + textured
+                + " textured ("
+                + partial
+                + " partial), "
+                + height
+                + " height fallback"
+                + (reason.isEmpty() ? "" : "; " + reason)
+                + (unavailable.isEmpty()
+                        ? ""
+                        : "; "
+                                + unavailable.size()
+                                + " unavailable ("
+                                + unavailable.values().iterator().next().site()
+                                + ")");
+    }
+
+    private void pollFrame() {
+        if (commit != null) return;
+        synchronized (lock) {
+            if (borrowed != null || queued != null || currentReceipt == null) return;
+        }
+        var frame = session.takeLatestFrame();
+        if (frame.isPresent()) {
+            synchronized (lock) {
+                if (!closing)
+                    queued = new Presentation(frame.orElseThrow(), request.viewGeneration());
+            }
+            changed();
+        }
+    }
+
+    private void seed(WorldStreamSourceBridge.Prepared prepared) {
+        synchronized (lock) {
+            if (snapshot.seed() != null) return;
+        }
+        var bounds = prepared.facts().bounds();
+        var point = request.areaPoint();
+        double x = point == null ? (bounds.minX() + bounds.maxX()) / 2 : point.x();
+        double y = point == null ? (bounds.minY() + bounds.maxY()) / 2 : point.y();
+        double[] height = {bounds.maxZ()}, nearest = {Double.POSITIVE_INFINITY};
+        prepared.withPayload(
+                borrow -> {
+                    var vertices = borrow.geometry().vertices();
+                    while (vertices.hasRemaining()) {
+                        double vx = vertices.get(), vy = vertices.get(), z = vertices.get();
+                        double distance = Math.hypot(vx - x, vy - y);
+                        if (distance < nearest[0]) {
+                            nearest[0] = distance;
+                            height[0] = z;
+                        }
+                    }
+                });
+        var view =
+                new TerrainCamera(
+                        x, y, (point == null ? height[0] : point.z()) + 100, Math.PI, -.8);
+        synchronized (lock) {
+            snapshot =
+                    new Snapshot(
+                            snapshot.phase(),
+                            snapshot.detail(),
+                            snapshot.prepared(),
+                            snapshot.desired(),
+                            new Seed(view, bounds.maxX(), bounds.maxY(), bounds),
+                            snapshot.area());
+        }
+        changed();
+    }
+
+    private void updateArea() {
+        var latest = camera;
+        if (latest == null) return;
+        long[] selected = {0};
+        int[] count = {0};
+        for (var entry : current)
+            entry.source()
+                    .withPayload(
+                            borrow -> {
+                                for (var chunk : borrow.areas().chunks()) {
+                                    float minX =
+                                            (float) (chunk.originX() - WorldFormats.TILE_SIZE / 16);
+                                    float minY =
+                                            (float) (chunk.originY() - WorldFormats.TILE_SIZE / 16);
+                                    if (latest.view().x() > minX
+                                            && latest.view().x() <= chunk.originX()
+                                            && latest.view().y() > minY
+                                            && latest.view().y() <= chunk.originY()) {
+                                        selected[0] = chunk.areaId();
+                                        count[0]++;
+                                    }
+                                }
+                            });
+        var result =
+                count[0] == 1
+                        ? WorldCurrentArea.resolve(
+                                request.map().id(), selected[0], request.areaIndex())
+                        : new WorldCurrentArea.Result(
+                                count[0] > 1
+                                        ? WorldCurrentArea.State.AMBIGUOUS
+                                        : WorldCurrentArea.State.UNAVAILABLE,
+                                count[0] > 1
+                                        ? WorldCurrentArea.Reason.OVERLAP
+                                        : WorldCurrentArea.Reason.NO_COVERAGE,
+                                0,
+                                List.of());
+        synchronized (lock) {
+            snapshot =
+                    new Snapshot(
+                            snapshot.phase(),
+                            snapshot.detail(),
+                            snapshot.prepared(),
+                            snapshot.desired(),
+                            snapshot.seed(),
+                            result);
+        }
+    }
+
+    private void retireUnused() {
+        var remove = new ArrayList<Entry>();
+        synchronized (lock) {
+            for (var entry : entries.values()) {
+                if (!current.contains(entry)
+                        && !presented.contains(entry)
+                        && !committing.contains(entry)
+                        && entry != staged) remove.add(entry);
+            }
+        }
+        for (var entry : remove) {
+            entry.source().close();
+            entries.remove(entry.resident());
+        }
+    }
+
+    private List<WorldFormats.Tile> demand() {
+        synchronized (lock) {
+            return desired;
+        }
+    }
+
+    private void publish(Phase phase, String detail) {
+        synchronized (lock) {
+            int available=0;
+            for(var tile:desired) {
+                for(var entry:entries.values()) {
+                    if(same(tile,entry.resident())) { available++; break; }
+                }
+            }
+            snapshot =
+                    new Snapshot(
+                            phase,
+                            detail.length()>256?detail.substring(0,256):detail,
+                            available,
+                            desired.size(),
+                            snapshot.seed(),
+                            snapshot.area());
+        }
+        changed();
+    }
+
+    private void changed() {
+        if (fxQueued.compareAndSet(false, true)) {
+            WeakReference<Events> sink;
+            synchronized (lock) {
+                sink = new WeakReference<>(events);
+            }
+            var flag = fxQueued;
+            var controller = new WeakReference<>(this);
+            try {
+                fxPost.accept(
+                        () -> {
+                            flag.set(false);
+                            var target = sink.get();
+                            if (target != null) {
+                                try {
+                                    target.changed();
+                                } catch (RuntimeException | Error failure) {
+                                    var owner = controller.get();
+                                    if (owner != null) owner.failLater(failure);
+                                }
+                            }
+                        });
+            } catch (RuntimeException | Error failure) {
+                flag.set(false);
+                if (!closing) failLater(failure);
+            }
+        }
+    }
+
+    private void retire() {
+        // Start real cancellation/physical shutdown BEFORE any potentially blocking payload close.
+        if (pending != null && pending.cancellation == null) {
+            pending.cancellation = pending.reservation.cancel();
+            pending.useful = false;
+        }
+        if (physicalClosing == null) {
+            try {
+                physicalClosing =
+                        gpu == null ? CompletableFuture.completedFuture(null) : gpu.closeAsync();
+            } catch (RuntimeException | Error failure) {
+                physicalClosing = CompletableFuture.failedFuture(failure);
+            }
+            physicalClosing.whenComplete((ignored, failure) -> kick());
+        }
+        var physical = physicalClosing;
+        if (pending != null) pending.producer.close();
+        if (!physical.isDone()) return;
+        Throwable failure = terminal;
+        try {
+            physical.join();
+        } catch (RuntimeException problem) {
+            if (failure == null) failure = problem;
+            else failure.addSuppressed(problem);
+        }
+        synchronized (lock) {
+            if (borrowed != null) return;
+            queued = null;
+            current = List.of();
+            presented = List.of();
+            committing = List.of();
+        }
+        for (var entry : new ArrayList<>(entries.values())) {
+            try {
+                entry.source().close();
+            } catch (RuntimeException | Error problem) {
+                if (failure == null) failure = problem;
+                else failure.addSuppressed(problem);
+            }
+        }
+        entries.clear();
+        source = null;
+        scope = null;
+        opening = null;
+        session = null;
+        gpu = null;
+        if (pending != null) {
+            pending.producer.close();
+            pending = null;
+        }
+        publish(
+                failure != null
+                        ? Phase.FAILED
+                        : unavailableDetail != null ? Phase.UNAVAILABLE : Phase.CLOSED,
+                failure != null
+                        ? "World viewer failed"
+                        : unavailableDetail != null ? unavailableDetail : "World viewer closed");
+        synchronized (lock) {
+            events = null;
+        }
+        worker.shutdown();
+        if (failure == null) drained.complete(null);
+        else drained.completeExceptionally(failure);
+    }
+
+    private static int key(WorldFormats.Tile tile) {
+        return tile.x() * 64 + tile.y();
+    }
+
+    private static boolean tileUnavailable(WorldStreamSourceBridge.RefusalMetadata origin) {
+        if (origin.reason() != WorldTerrainStreaming.Refusal.Reason.CAPABILITY_UNAVAILABLE)
+            return false;
+        return switch (origin.site()) {
+            case "SOURCE_INPUT", "NUMERIC_ROOT", "TERRAIN_PROFILE" -> true;
+            default -> false;
+        };
+    }
+
+    private static boolean cleanCancellation(Throwable failure) {
+        for (int i = 0; i < 8; i++) {
+            if (failure.getClass() == java.util.concurrent.CancellationException.class)
+                return failure.getCause() == null && failure.getSuppressed().length == 0;
+            if (failure.getClass() != CompletionException.class
+                    && failure.getClass() != java.util.concurrent.ExecutionException.class)
+                return false;
+            if (failure.getSuppressed().length != 0 || failure.getCause() == null) return false;
+            failure = failure.getCause();
+        }
+        return false;
+    }
+
+    private static boolean containsResident(
+            List<WorldFormats.Tile> tiles, WorldStreamTransport.Resident resident) {
+        return tiles.stream().anyMatch(value -> same(value, resident));
+    }
+
+    private static boolean same(WorldFormats.Tile a, WorldFormats.Tile b) {
+        return a.x() == b.x() && a.y() == b.y();
+    }
+
+    private static boolean same(WorldFormats.Tile a, WorldStreamTransport.Resident b) {
+        return a.x() == b.tileX() && a.y() == b.tileY();
+    }
+
+    private static boolean contains(List<WorldFormats.Tile> tiles, WorldFormats.Tile tile) {
+        return tiles.stream().anyMatch(value -> same(value, tile));
+    }
+}
