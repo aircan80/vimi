@@ -139,6 +139,44 @@ class WorldStreamPacketFileTest {
     }
 
     @Test
+    void unexpectedExecutorErrorIsFatalButCannotLeaveAnUnfinishableCleanupFuture()
+            throws Exception {
+        var written = write(directory);
+        var moved = written.shell().move();
+        var fatal =
+                new AssertionError("Authored executor error") {
+                    @Override
+                    public String getMessage() {
+                        throw new AssertionError("Do not inspect arbitrary failure text");
+                    }
+                };
+        try {
+            assertSame(
+                    fatal,
+                    assertThrows(
+                            AssertionError.class,
+                            () ->
+                                    moved.closeAsync(
+                                            command -> {
+                                                throw fatal;
+                                            })));
+            var failed =
+                    moved.closeAsync(
+                            command -> {
+                                throw new AssertionError("Cleanup must not be rescheduled");
+                            });
+            assertTrue(failed.isCompletedExceptionally());
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> failed.get(2, TimeUnit.SECONDS));
+            assertThrows(java.io.UncheckedIOException.class, moved::close);
+            assertTrue(Files.exists(written.path()), "Failure is not actual deletion");
+        } finally {
+            Files.deleteIfExists(written.path());
+        }
+    }
+
+    @Test
     void finalizationRefusesMismatchedOrUnownedShapeWithoutDeletingAnything() throws Exception {
         var written = write(directory);
         var other = directory.resolve("tile-43.wst");

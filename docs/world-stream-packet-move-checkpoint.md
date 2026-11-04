@@ -42,3 +42,12 @@ trials proving exactly one deleting owner. Full rendering-bgfx checks pass40task
 `/tmp/vimi-world-packet-move-root-check.log`. Existing tile/source/native resource caps
 and wire bytes stay unchanged. This adds only one tiny metadata owner per already
 bounded pending/moved input, charged to the existing parent transport metadata reserve.
+
+Independent review reproduced an unexpected Executor Error leaving the first owned
+completion pending. The isolated followup completes that private future exceptionally
+with a bounded class-only detached failure BEFORE rethrowing the same original Error.
+Deletion Error follows the same rule. It never calls arbitrary failure getMessage or
+getCause, never converts the Error into retry/fallback and never reports file retirement.
+A seventh fixture includes a cause-text trap and verifies repeated close gets a terminal
+failed completion rather than hanging; physical input remains retained on failure. Full
+checks pass40tasks `/tmp/vimi-world-packet-move-error-followup-check.log`.
