@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.access.Cancellation;
+import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.db2.Db2Types;
 import com.vibeminer.formats.definitions.TableSchema;
 import com.vibeminer.formats.tables.AuthoredNativeMap;
@@ -183,6 +184,9 @@ final class WorldStreamScopesTest {
         assertThrows(IllegalStateException.class, () -> source.create(REQUEST, Cancellation.NONE));
         long start = System.nanoTime();
         var closed = source.closeAsync();
+        for (int i = 0; i < 32; i++) {
+            assertFalse(source.closeAsync().isDone(), "Repeated close shares pending owner drain");
+        }
         assertTrue(
                 System.nanoTime() - start < TimeUnit.SECONDS.toNanos(1),
                 "Close does not wait for held I/O");
@@ -262,6 +266,61 @@ final class WorldStreamScopesTest {
                         1,
                         source.create(REQUEST, Cancellation.NONE).wdtId(),
                         "A policy refusal does not poison the native graph or source engine");
+            } finally {
+                source.closeAsync().join();
+                tables.close();
+            }
+        }
+    }
+
+    @Test
+    void sourceDownloadMayEnrichStoragePathFormatAndUnknownLengthWithoutChangingIdentity() {
+        for (boolean wrongLength : new boolean[] {false, true}) {
+            var files =
+                    new WorldTerrainTextureSourceTest.Files() {
+                        @Override
+                        FileTypes.FileStat stat(long id, Cancellation token) {
+                            var original = super.stat(id, token);
+                            if (original.file() == null) {
+                                return original;
+                            }
+                            var file = original.file();
+                            boolean downloaded = opens(id) > 0;
+                            return new FileTypes.FileStat(
+                                    original.state(),
+                                    new FileTypes.BuildFile(
+                                            file.fileDataId(),
+                                            downloaded ? "world/maps/authored/authored.wdt" : null,
+                                            downloaded
+                                                    ? FileTypes.FilePathSource.LISTFILE
+                                                    : FileTypes.FilePathSource.NONE,
+                                            downloaded ? file.size() + (wrongLength ? 1 : 0) : null,
+                                            file.contentKey(),
+                                            downloaded
+                                                    ? FileTypes.FileFormat.WDT
+                                                    : FileTypes.FileFormat.UNKNOWN,
+                                            downloaded
+                                                    ? FileTypes.FileFormatSource.EXTENSION
+                                                    : FileTypes.FileFormatSource.NONE,
+                                            downloaded
+                                                    ? FileTypes.FileStorage.STORED
+                                                    : FileTypes.FileStorage.NOT_STORED,
+                                            false));
+                        }
+                    };
+            var tables = new Tables(files);
+            var source = new WorldStreamScopes(tables.handle(), files.files());
+            try {
+                if (wrongLength) {
+                    assertThrows(
+                            IllegalStateException.class,
+                            () -> source.create(REQUEST, Cancellation.NONE));
+                    assertEquals(0, source.retainedProofs());
+                } else {
+                    var scope = source.create(REQUEST, Cancellation.NONE);
+                    assertEquals(1, scope.wdtId());
+                    assertEquals(TILE, source.recorded(scope, TILE, Cancellation.NONE));
+                }
             } finally {
                 source.closeAsync().join();
                 tables.close();

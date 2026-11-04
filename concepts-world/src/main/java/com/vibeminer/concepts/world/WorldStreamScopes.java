@@ -271,6 +271,9 @@ final class WorldStreamScopes {
         Cancellation active;
         boolean finish;
         synchronized (this) {
+            if (closed) {
+                return drained.copy();
+            }
             closed = true;
             current = null;
             replacement = null;
@@ -540,7 +543,11 @@ final class WorldStreamScopes {
                 }
             }
             token.check();
-            if (!before.equals(stat(id, token))) {
+            var after = stat(id, token);
+            // Download/local metadata enrichment is allowed; only consumed source identity binds.
+            if (before.fileDataId() != after.fileDataId()
+                    || !before.contentKey().equals(after.contentKey())
+                    || after.size() != null && after.size() != bytes.capacity()) {
                 throw new IllegalStateException("Source changed during read");
             }
             return new Source(before.contentKey(), bytes.array());

@@ -662,3 +662,11 @@ integration; this is emphatically **not** a whole-pipeline/process48MiB claim.
 
 Source geometry/PreparedWorldTile positive ownership and callback-close tests
 remain next work. Native/renderer/frame/GUI wiring remains absent.
+
+Scope source reads compare consumed identity (FileDataID, CKey and consistent known
+length), not the entire BuildFile display/storage snapshot. Download may enrich
+unknown length, path, detected format and NOT_STORED→STORED while the same source
+remains valid. An authored enrichment regression passes; restoring whole-object
+equality fails it. Changed CK/FileDataID/known consumed length still rejects.
+Repeated close calls share the existing active-operation drain and do not dispatch
+additional cancellation workers; the held-IO fixture repeats close32 times.
