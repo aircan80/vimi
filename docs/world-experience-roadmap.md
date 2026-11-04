@@ -1,14 +1,15 @@
 # World experience and character roadmap
 
-Latest verified release: [alpha.18](https://github.com/aircan80/vimi/releases/tag/v0.1.0-alpha.18), source c9cd4f3, all five platform packages and18 assets. Published tags and frozen launchers are immutable. Group ready parallel milestones into explicit GitHub prereleases after review and checks.
+Latest verified release: [alpha.19](https://github.com/aircan80/vimi/releases/tag/v0.1.0-alpha.19), source39a42bb, all five platform packages and18 assets. Published tags and frozen launchers are immutable. Group ready parallel milestones into explicit GitHub prereleases after review and checks.
 
 The user authorized all items below and autonomous continued work, including overnight work, agents, routine fixes and prereleases. Do not ask for repeated routine confirmation. Preserve truthful source provenance, bounded ownership, off-FX acquisition/preparation and visible activity through presentation.
 
 | Work | Current state | Delivery gate |
 | --- | --- | --- |
 | Terrain textures/navigation/download feedback | Released alpha.18 | BASIC diffuse/tint/fog; larger material fidelity remains below |
-| Continuous world GPU streaming | Active; approved pure protocol/state, Vulkan feasibility and precision; source scopes reviewed; frame v2 codec initial tests pass | Persistent same-child terrain changes, accepted content/camera provenance, cancellation/drain and real movement proof |
+| Continuous world GPU streaming | Active; approved pure protocol/state, Vulkan feasibility and precision; source scopes reviewed; frame v2 codec and bounded command/mailbox independently approved | Persistent same-child terrain changes, accepted content/camera provenance, cancellation/drain and real movement proof |
 | Greater view distance | 49-source planner/test-emitter checkpoint; integration pending | Independent seam/error/cap review, multi-source geometry/material representation and bounded streaming |
+| Terrain load allocation | Released alpha.19 | Primitive parser preserves exact geometry/area; cold neighborhood renderer handoff remains |
 | Terrain visual quality | Planned | Higher-resolution GPU material sampling, filtering/mips and qualified blending; no claim of client parity |
 | Cities/buildings/doodads | Active source/design; real WMO root/group/texture proof | Qualified transforms/materials, culling, same-world depth/camera and combined GPU ledger |
 | Dungeons/raids | Active team investigation | Explicit terrain/global-WMO/mixed source modes; first actual instance, interior navigation and safe camera framing |
