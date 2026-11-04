@@ -1,5 +1,7 @@
 # Persistent World GPU streaming
 
+Material identity terminology is amended by [the explicit draft amendment](world-stream-material-identity-amendment.md); a source composition cache key remains genuinely nullable.
+
 Status: pre-code architecture proposal at `4c21343`. No production implementation
 or achieved frame-rate claim. Immediate atomic cold-bundle work is complementary:
 it removes the geometry-then-texture transition, while this proposal removes

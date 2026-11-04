@@ -1,5 +1,7 @@
 # World hot-stream protocol checkpoint
 
+Material identity terminology is amended by [the explicit draft amendment](world-stream-material-identity-amendment.md); a source composition cache key remains genuinely nullable.
+
 Status: proposed contract for independent review, based on approved design
 `5547ef1`. This checkpoint adds no production renderer or GUI wiring. Immutable
 model/terrain v1 files, control and frames remain unchanged. New codecs and pure
