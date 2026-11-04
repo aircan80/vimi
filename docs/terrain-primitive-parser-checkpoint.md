@@ -55,3 +55,27 @@ this checkpoint does not itself certify the proposed factory's16MiB bound.
 JAVA_HOME=/usr/lib/jvm/java-25-openjdk ./gradlew \
   :formats-world:check :rendering-world:check :concepts-world:check
 ```
+
+## Read-only actual-source equivalence
+
+A private proof compiled old main78d03a6 and new8e57ff1 into separate classpaths,
+using the actual TerrainGeometryFingerprint utility. It read three already-available
+private root ADTs selected by WDT775971; no user library/store was opened/written,
+no asset bytes were added to Git and no GUI/GPU was started. A named source worker
+parsed each input with16 warmups and9 measured observations.
+
+All three inputs retained identical MD5, chunks/components/index counts, native
+geometry fingerprint and complete raw area/entry-reference digest:
+
+| Root FileDataID | Chunks | Components | Indices | Old/new median Java bytes |
+| --- | ---: | ---: | ---: | ---: |
+| 777947 | 256 | 111,360 | 196,464 | 13,263,712 / 6,115,272 |
+| 777952 | 256 | 111,360 | 196,608 | 13,257,472 / 5,297,848 |
+| 778147 | 256 | 111,360 | 196,464 | 13,253,248 / 6,074,136 |
+
+Median parse times in the same order were6.407/1.838ms,2.600/2.212ms and
+2.540/2.376ms (old/new). Fewer-than-maximum indices require an exact-size trim copy,
+so allocation differs from the full unholed authored input. These small local
+source-only traces do not establish frame rate, heap peak or interactive pacing.
+The private source/helper/compiler/log evidence is retained under
+`/tmp/vimi-terrain-primitive-live-proof/`; comparison.txt records each full hash.
