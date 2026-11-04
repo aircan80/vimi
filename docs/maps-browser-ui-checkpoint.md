@@ -36,3 +36,22 @@ retired-result activity cleanup, wrong-tile rejection and a deliberately held
 lower cancellation without blocking FX. Fixtures do not authenticate sources.
 The test requires a display; game assets and user settings are unnecessary.
 Independent UI review and an actual selected-build browse proof remain pending.
+
+Independent UI implementation review approves554a574; defensive table-owner
+retirement10f48a2 follows. Isolated authored UI proof passes91tasks, full GUI check
+passes124tasks. Source bindingf7162bc and bounded schema-comment followup47fb1ba
+also have independent approval; the latter admits an actual434-character pinned
+UiMap.Flags comment under unchanged64KiB aggregate metadata limits.
+
+Actual selected wowf1.60.1.70755 enUS GUI proof on frozen06a3b89 passes:
+Azeroth947→Eastern Kingdoms1415→Elwynn1429, each1002×668 artwork and12/12 readable
+tiles, varied actual pixels, activity held through actual tile completion, Up to
+1415 versus Back to1429, direct947/direct1429 and clean close. The final fresh
+scratch generated overlay retained legacy UNKNOWN UiMap/Assignment captures
+unchanged while explicit native preparation produced verified new graphs. Across
+the route84 actual artwork tile calls completed. Original library handles were
+read-only; verified normal acquisition downloaded missing recorded artwork ONLY
+into private scratch and generated writes stayed in the overlay. This proof
+allowed network access; the first local-only attempt honestly showed0/12 missing
+artwork. Private proof and screenshots remain `/tmp/vimi-maps-live-ui-proof/`;
+`proof-final.log` exits successfully. No assets or images are committed.

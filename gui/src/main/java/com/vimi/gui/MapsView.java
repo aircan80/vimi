@@ -124,7 +124,7 @@ final class MapsView extends BorderPane implements AutoCloseable {
         refresh.setOnAction(e -> reload());
         prepare.setId("maps-prepare");
         prepare.setTooltip(new javafx.scene.control.Tooltip(
-                "Prepare native UiMap and UiMapAssignment evidence. Missing source files may download."));
+                "Prepare the map hierarchy for this build. Missing source files may download."));
         prepare.setOnAction(e -> prepareTables());
         canvas.setOnScroll(e -> {
             if (!currentGraph() || history == null) return;
