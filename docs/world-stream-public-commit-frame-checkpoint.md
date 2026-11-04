@@ -43,3 +43,12 @@ commit replacing texture pixels with sky without another camera request. It also
 commit cancellation is not fake CANCELED, real uncommitted tile cancel, CLOSED/EOF/exit0 and actual
 cleanup. This is authored native parent-bridge evidence, not game-source/GUI/FPS/cross-platform
 runtime approval. Existing offline shader verification remains unchanged.
+
+Persistent COMMIT deletion failure is one terminal attempt, not a shutdown retry queue. Failure
+requests close and propagates out of the actual producer/file worker (fatal Errors stay fatal).
+The aggregate owner then observes real worker finally and a failed private-directory cleanup;
+there is no successful drain receipt or successor permit. Two causal fixtures cover an advertised
+COMMIT replaced by a nonempty directory after the child read and a modeled owned unadvertised
+COMMIT path with persistent refusal. Both require actual worker retirement and exceptional drain
+while the held entry remains. The original implementation times out in its repeated-delete loop;
+the fixed implementation fails closed promptly without deleting foreign contents recursively.
