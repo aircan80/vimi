@@ -25,6 +25,62 @@ class WorldStreamTransportTest {
             new WorldStreamTransport.Spec("ab".repeat(32), 1, WorldStreamTransport.Backend.VULKAN);
 
     @Test
+    void failedExitObservationNeverAuthorizesDeletingAdvertisedInput() throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var bootstrap = new AtomicReference<WorldStreamEnvelope.Session>();
+        var child = new WorldStreamLaunchOwnerTest.Child();
+        child.observesExit = false;
+        child.killAllowed = false;
+        var prepared = WorldStreamTransport.prepare(directory, spec);
+        var session =
+                prepared.launch(
+                        arguments -> {
+                            bootstrap.set(
+                                    WorldStreamEnvelope.decodeSession(
+                                            Files.readAllBytes(
+                                                    Path.of(arguments.get(1))
+                                                            .resolve("session.wss")),
+                                            arguments.get(3)));
+                            entered.countDown();
+                            release.await();
+                            return child;
+                        });
+        assertTrue(entered.await(2, TimeUnit.SECONDS));
+        var stateField = WorldStreamTransport.Session.class.getDeclaredField("state");
+        stateField.setAccessible(true);
+        var state = (WorldStreamParentState) stateField.get(session);
+        var nonce = bootstrap.get().nonce();
+        state.status(new WorldStreamStatus.Session(nonce));
+        state.status(new WorldStreamStatus.Credit(nonce, new WorldStreamState.Lease(0, 1, 1)));
+        var ticket = state.reserve(7, 19);
+        state.beginProducer(ticket);
+        state.producerDrained(ticket);
+        state.offer(ticket, 4096, "ab".repeat(32), 1, 256);
+        release.countDown();
+        try {
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> session.terminatedAndDrained().get(3, TimeUnit.SECONDS));
+            // Wait for the public completion callback, not merely the underlying failed future.
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> session.completion().get(2, TimeUnit.SECONDS));
+            assertTrue(child.isAlive());
+            assertThrows(IllegalStateException.class, () -> state.retireTileFile(ticket));
+            var field = WorldStreamTransport.Session.class.getDeclaredField("owner");
+            field.setAccessible(true);
+            var owner = (WorldStreamLaunchOwner.Handle) field.get(session);
+            assertFalse(owner.childExited().isDone());
+            assertTrue(Files.exists(owner.files().framePath()));
+            child.exit(0); // Authored fake exit; test now independently knows cleanup is safe.
+            owner.files().closeAsync().get(2, TimeUnit.SECONDS);
+        } finally {
+            child.exit(0);
+        }
+    }
+
+    @Test
     void actualJavaProtocolChildCameraCloseAndDrainOwnPrivateFiles() throws Exception {
         Path source = directory.resolve("Protocol.java");
         Files.writeString(
