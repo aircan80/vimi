@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -323,7 +324,8 @@ final class BlpImagesTest {
     }
 
     @Test
-    void originalCsharpVmimPayloadAndCanonicalLimitsIdentityAreByteExact() throws Exception {
+    void originalCsharpPayloadRemainsExactAndDecoderRevisionInvalidatesLegacyIdentity()
+            throws Exception {
         byte[] source;
         byte[] expected;
         String identity;
@@ -342,9 +344,13 @@ final class BlpImagesTest {
         var image = Blp2Decoder.decode(com.vibeminer.formats.AssetSource.bytes(source)).join();
         assertArrayEquals(expected, BlpImagePayload.write(image));
         assertArrayEquals(image.rgba(), BlpImagePayload.read(expected, 0, new Limits()).rgba());
-        assertEquals(
-                expectedIdentity(identity),
-                new BlpImages(new MemoryGeneratedStore()).identityText(CONTENT, 0));
+        String legacy = expectedIdentity(identity);
+        assertTrue(legacy.contains("\nblp2-rgba8-v2\n"));
+        String current = new BlpImages(new MemoryGeneratedStore()).identityText(CONTENT, 0);
+        assertEquals(legacy.replace("\nblp2-rgba8-v2\n", "\nblp2-rgba8-v3\n"), current);
+        assertNotEquals(
+                GeneratedKey.hash(legacy.getBytes(StandardCharsets.UTF_8)),
+                GeneratedKey.hash(current.getBytes(StandardCharsets.UTF_8)));
     }
 
     @Test
