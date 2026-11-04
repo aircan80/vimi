@@ -182,7 +182,8 @@ class WorldServiceTest {
                         new Class<?>[] {BuildFiles.class},
                         (proxy, method, args) -> {
                             var data = adt();
-                            if (method.getName().equals("stat")) {
+                            if (method.getName().equals("stat")
+                                    || method.getName().equals("statContent")) {
                                 return CompletableFuture.completedFuture(
                                         new FileTypes.FileStat(
                                                 FileTypes.FileLookupState.FOUND,

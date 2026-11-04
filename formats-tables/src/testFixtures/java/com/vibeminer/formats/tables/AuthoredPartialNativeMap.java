@@ -227,12 +227,15 @@ public final class AuthoredPartialNativeMap implements AutoCloseable {
                                             }
                                         };
                                     }
-                                    if ((method.getName().equals("stat")
+                                    if (((method.getName().equals("stat")
+                                                            || method.getName()
+                                                                    .equals("statContent"))
                                                     || method.getName().equals("openRead"))
                                             && ((FileTypes.FileRef) args[0]).fileDataId() == 100) {
                                         var token = (Cancellation) args[1];
                                         token.check();
-                                        if (method.getName().equals("stat")) {
+                                        if (method.getName().equals("stat")
+                                                || method.getName().equals("statContent")) {
                                             return CompletableFuture.completedFuture(
                                                     new FileTypes.FileStat(
                                                             FileTypes.FileLookupState.FOUND,

@@ -413,7 +413,8 @@ final class CapturedRowsTest {
                                     BuildFiles.class.getClassLoader(),
                                     new Class<?>[] {BuildFiles.class},
                                     (proxy, method, args) -> {
-                                        if (method.getName().equals("stat")) {
+                                        if (method.getName().equals("stat")
+                                                || method.getName().equals("statContent")) {
                                             statCalls.incrementAndGet();
                                             var file =
                                                     new FileTypes.BuildFile(

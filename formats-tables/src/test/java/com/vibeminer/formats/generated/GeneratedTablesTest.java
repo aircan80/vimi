@@ -301,6 +301,39 @@ final class GeneratedTablesTest {
     }
 
     @Test
+    void storedRowsSpanSeveralWriterPagesInSourceOrder() {
+        var rows = new java.util.ArrayList<Db2Types.Row>();
+        for (int i = 0; i < 600; i++) {
+            // Descending ids so pages must keep source order, not id order.
+            rows.add(
+                    new Db2Types.Row(
+                            10_000 - i * 3, false, null, List.of(Integer.toString(i)), null));
+        }
+        var seed = content(new AtomicInteger(), List.of(), List.of());
+        var content =
+                new GeneratedTableContent(
+                        seed.header(),
+                        seed.sections(),
+                        seed.completion(),
+                        List.of(),
+                        (first, count, token) ->
+                                CompletableFuture.completedFuture(
+                                        rows.subList(
+                                                (int) first,
+                                                (int) Math.min(rows.size(), first + count))),
+                        () -> {},
+                        List.of(),
+                        List.of());
+        var table =
+                new GeneratedTables(new MemoryGeneratedStore())
+                        .store(source(null), TactKeyStatus.NONE, content, Cancellation.NONE)
+                        .join();
+        assertEquals(600, table.rowCount());
+        assertEquals(rows, table.readPage(0, 600, Cancellation.NONE).join());
+        assertEquals(rows.get(257), table.find(10_000 - 257 * 3, Cancellation.NONE).join());
+    }
+
+    @Test
     void oneLookupReadsEachMutableKeyFingerprintOnlyOnce() {
         var calls = new AtomicInteger();
         KeyStatus status = name -> calls.incrementAndGet() == 1 ? null : "changed";

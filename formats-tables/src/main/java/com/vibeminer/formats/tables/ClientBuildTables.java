@@ -643,7 +643,8 @@ final class ClientBuildTables implements BuildTables {
             boolean nativeOnly,
             Cancellation token) {
         long id = id(ref);
-        var stat = id == 0 ? null : files.stat(FileRef.id(id), token).join();
+        // Preparation needs only lookup state, content key and storage: skip name and format.
+        var stat = id == 0 ? null : files.statContent(FileRef.id(id), token).join();
         String content = stat == null || stat.file() == null ? null : stat.file().contentKey();
         if (stat == null) {
             return failed(

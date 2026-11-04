@@ -561,7 +561,12 @@ final class LocationMapsServiceTest {
                                     BuildFiles.class.getClassLoader(),
                                     new Class<?>[] {BuildFiles.class},
                                     (proxy, method, args) -> {
-                                        if (List.of("get", "readRange", "openRead", "stat")
+                                        if (List.of(
+                                                        "get",
+                                                        "readRange",
+                                                        "openRead",
+                                                        "stat",
+                                                        "statContent")
                                                 .contains(method.getName())) {
                                             reads.incrementAndGet();
                                         }
