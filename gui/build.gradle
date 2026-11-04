@@ -541,3 +541,9 @@ tasks.register('worldStreamImagePresentationTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldStreamImagePresentationTest'
 }
 check.dependsOn worldStreamImagePresentationTest
+tasks.register('worldStreamSourceControllerTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldStreamSourceControllerTest'
+}
+check.dependsOn worldStreamSourceControllerTest
