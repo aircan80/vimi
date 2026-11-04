@@ -385,6 +385,149 @@ final class RaceAppearancePlanTest {
         return seed;
     }
 
+    private static List<MemoryTables.FakeTable> nightElfFixture(
+            int model, int layout, int sex, String fallback, boolean base) {
+        var seed = new ArrayList<>(dwarfFixture(model, layout, sex, fallback));
+        replace(seed, table("ChrRaces", "4F44C796", "PlayableRaceBit", row(4, "3")));
+        replace(
+                seed,
+                table(
+                        "CharacterLoadout",
+                        "713CE8BB",
+                        "ChrClassID,Purpose,Racemask:2",
+                        row(1, "1", "9", "8", "0")));
+        replace(
+                seed,
+                table(
+                        "ChrModelMaterial",
+                        "22469480",
+                        "CharComponentTextureLayoutsID,TextureType,Width,Height,Flags",
+                        row(1, Integer.toString(layout), "1", "2048", "1024", "0"),
+                        row(2, Integer.toString(layout), "6", "256", "256", "0"),
+                        row(3, Integer.toString(layout), "19", "256", "128", "0"),
+                        row(4, Integer.toString(layout), "10", "128", "256", "0")));
+        replace(
+                seed,
+                table(
+                        "ChrModelTextureLayer",
+                        "D0583FB4",
+                        "CharComponentTextureLayoutsID,TextureType,Layer,BlendMode,TextureSectionTypeBitMask,TextureSectionTypeBitMask2,Flags,ChrModelTextureTargetID:2",
+                        row(
+                                50,
+                                Integer.toString(layout),
+                                base ? "1" : "6",
+                                "0",
+                                "1",
+                                "-1",
+                                "-1",
+                                "0",
+                                "2",
+                                "0")));
+        return seed;
+    }
+
+    @Test
+    void nightElfPairRequiresItsExactTupleAndFullSelectedBaseSkin() {
+        for (int model : new int[] {7, 8}) {
+            var tables =
+                    new MemoryTables()
+                            .add(
+                                    BUILD,
+                                    "enUS",
+                                    nightElfFixture(model, model + 102, model - 7, "0", true))
+                            .forBuild(BUILD, "enUS", Cancellation.NONE)
+                            .join()
+                            .tables();
+            var service = new RacesService(tables);
+            try {
+                var plan =
+                        new RaceAppearancePlan(
+                                        service, new RaceMedia(service, tables, null, null), tables)
+                                .build(
+                                        4,
+                                        1,
+                                        new RaceMediaTypes.Variant(model, model - 7, 1, 1, 1),
+                                        Cancellation.NONE,
+                                        new ArrayList<>());
+                assertEquals(
+                        model == 7
+                                ? RaceAppearanceProfiles.Profile.NIGHT_ELF_MALE
+                                : RaceAppearanceProfiles.Profile.NIGHT_ELF_FEMALE,
+                        plan.profile());
+                assertTrue(
+                        plan.layers().stream()
+                                .anyMatch(
+                                        layer ->
+                                                RaceAppearancePlan.wholeBodyBase(
+                                                        layer, plan.canvases())));
+                assertEquals(
+                        new RaceAppearancePlan.Canvas(6, 256, 256),
+                        plan.canvases().stream()
+                                .filter(canvas -> canvas.type() == 6)
+                                .findFirst()
+                                .orElseThrow());
+            } finally {
+                service.closeAsync().join();
+                tables.closeAsync().join();
+            }
+        }
+        for (int change = 0; change < 8; change++) {
+            final int mutation = change;
+            var seed =
+                    new ArrayList<>(
+                            nightElfFixture(
+                                    7,
+                                    change == 0 ? 110 : 109,
+                                    change == 1 ? 1 : 0,
+                                    change == 2 ? "8" : change == 3 ? "00" : "0",
+                                    change != 7));
+            if (change == 4) {
+                var model =
+                        seed.stream()
+                                .filter(table -> table.entry().name().equals("ChrModel"))
+                                .findFirst()
+                                .orElseThrow();
+                var values = new ArrayList<>(model.rows().getFirst().values());
+                values.set(13, "8");
+                replace(
+                        seed,
+                        new MemoryTables.FakeTable(
+                                model.entry(),
+                                model.columns(),
+                                List.of(new Db2Types.Row(7, false, null, values, List.of())),
+                                model.schema(),
+                                Map.of(),
+                                true));
+            }
+            var tables =
+                    new MemoryTables()
+                            .add(BUILD, "enUS", seed)
+                            .forBuild(BUILD, "enUS", Cancellation.NONE)
+                            .join()
+                            .tables();
+            var service = new RacesService(tables);
+            try {
+                assertThrows(
+                        RacesService.Projection.class,
+                        () ->
+                                new RaceAppearancePlan(
+                                                service,
+                                                new RaceMedia(service, tables, null, null),
+                                                tables)
+                                        .build(
+                                                mutation == 5 ? 5 : 4,
+                                                1,
+                                                new RaceMediaTypes.Variant(
+                                                        7, mutation == 6 ? 1 : 0, 1, 1, 1),
+                                                Cancellation.NONE,
+                                                new ArrayList<>()));
+            } finally {
+                service.closeAsync().join();
+                tables.closeAsync().join();
+            }
+        }
+    }
+
     @Test
     void dwarfPairKeepsSeparateSexProfilesAndSourceQualifiedHairAtlas() {
         for (int model : new int[] {5, 6}) {

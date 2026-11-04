@@ -117,7 +117,7 @@ final class RaceAppearance {
                             .append('\n')
                             .append(Blp2Decoder.REVISION)
                             .append(
-                                    "\nstraight-alpha-source-over-nearest-v1\nhuman-orc-dwarf-tauren-clothing-geosets-v5\n")
+                                    "\nstraight-alpha-source-over-nearest-v1\nhuman-orc-dwarf-night-elf-tauren-clothing-geosets-v6\n")
                             .append(files.build())
                             .append('\n')
                             .append(files.locale())
@@ -217,6 +217,16 @@ final class RaceAppearance {
                 }
                 decoded.put(fid, new MeshAppearance.Texture(image.width(), image.height(), argb));
             }
+            if (RaceAppearanceProfiles.nightElf(plan.profile())
+                    && plan.layers().stream()
+                            .noneMatch(
+                                    layer ->
+                                            RaceAppearancePlan.wholeBodyBase(layer, plan.canvases())
+                                                    && decoded.containsKey(layer.fileDataId()))) {
+                return failed(
+                        issues,
+                        "The base skin texture is unavailable; no incomplete body is presented.");
+            }
             var textures = new ArrayList<MeshAppearance.Texture>();
             var textureTypes = new HashMap<Integer, Integer>();
             for (var canvas : plan.canvases()) {
@@ -311,9 +321,9 @@ final class RaceAppearance {
                 sectionBatches.merge(batch.sectionIndex(), 1, Integer::sum);
             }
             for (var batch : skin.skin().batches()) {
-                boolean dwarf = plan.profile() != RaceAppearanceProfiles.Profile.LEGACY;
-                if (dwarf
-                        && !RaceAppearanceProfiles.dwarfDraw(
+                boolean contextual = plan.profile() != RaceAppearanceProfiles.Profile.LEGACY;
+                if (contextual
+                        && !RaceAppearanceProfiles.reviewedDraw(
                                 plan.profile(),
                                 model.model(),
                                 batch,
@@ -322,7 +332,7 @@ final class RaceAppearance {
                     continue;
                 }
                 if (batch.textureCount() != 1
-                        || !dwarf && batch.shaderId() != 0
+                        || !contextual && batch.shaderId() != 0
                         || batch.colorIndex() != -1) {
                     continue;
                 }

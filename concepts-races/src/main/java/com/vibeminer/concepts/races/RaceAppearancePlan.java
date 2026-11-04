@@ -77,10 +77,11 @@ final class RaceAppearancePlan {
         if (!(raceId == 1 && variant.chrModelId() >= 1 && variant.chrModelId() <= 2)
                 && !(raceId == 2 && variant.chrModelId() >= 3 && variant.chrModelId() <= 4)
                 && !(raceId == 3 && variant.chrModelId() >= 5 && variant.chrModelId() <= 6)
-                && !(raceId == 6 && variant.chrModelId() >= 11 && variant.chrModelId() <= 12)) {
+                && !(raceId == 6 && variant.chrModelId() >= 11 && variant.chrModelId() <= 12)
+                && !(raceId == 4 && variant.chrModelId() >= 7 && variant.chrModelId() <= 8)) {
             throw new RacesService.Projection(
                     RaceTypes.State.UNSUPPORTED,
-                    "Static character textures support the narrow Human, Orc, Dwarf and Tauren model pairs.");
+                    "Static character textures support the narrow Human, Orc, Dwarf, Night Elf and Tauren model pairs.");
         }
         var models = schema("ChrModel", token, issues, "CharComponentTextureLayoutID");
         var model = get(models, variant.chrModelId(), token);
@@ -120,6 +121,21 @@ final class RaceAppearancePlan {
                     variant.sex() == 0
                             ? RaceAppearanceProfiles.Profile.DWARF_MALE
                             : RaceAppearanceProfiles.Profile.DWARF_FEMALE;
+        }
+        if (raceId == 4) {
+            models.field("Sex", true);
+            if (layout != variant.chrModelId() + 102
+                    || variant.sex() != variant.chrModelId() - 7
+                    || models.number(model, "Sex") != variant.sex()) {
+                throw models.unsupported(
+                        "Night Elf model/layout/sex differs from the reviewed profile");
+            }
+            requireCompatibilityZero(models, model, "ModelFallbackChrModelID", 12);
+            requireCompatibilityZero(models, model, "TextureFallbackChrModelID", 13);
+            profile =
+                    variant.sex() == 0
+                            ? RaceAppearanceProfiles.Profile.NIGHT_ELF_MALE
+                            : RaceAppearanceProfiles.Profile.NIGHT_ELF_FEMALE;
         }
         var materials = media.data("ChrModelMaterial", 2048, token, issues);
         fields(
@@ -292,6 +308,11 @@ final class RaceAppearancePlan {
                 }
             }
         }
+        if (RaceAppearanceProfiles.nightElf(profile)
+                && recipe.stream().noneMatch(layer -> wholeBodyBase(layer, canvases))) {
+            throw models.unsupported(
+                    "Known eligible full base skin is unavailable for this preview");
+        }
         var items = new ArrayList<Item>();
         try {
             clothing(
@@ -308,6 +329,19 @@ final class RaceAppearancePlan {
                     RaceTypes.State.UNSUPPORTED, "Texture recipe exceeds preview bounds.");
         }
         return new Plan(canvases, recipe, items, profile);
+    }
+
+    static boolean wholeBodyBase(Layer layer, List<Canvas> canvases) {
+        return layer.type() == 1
+                && layer.blend() == 1
+                && layer.x() == 0
+                && layer.y() == 0
+                && canvases.stream()
+                        .anyMatch(
+                                canvas ->
+                                        canvas.type() == 1
+                                                && canvas.width() == layer.width()
+                                                && canvas.height() == layer.height());
     }
 
     private void clothing(
@@ -469,7 +503,8 @@ final class RaceAppearancePlan {
         }
     }
 
-    // This is a compatibility-zero gate for these exact Tauren/Dwarf profiles, not general name
+    // This is a compatibility-zero gate for these exact Tauren/Dwarf/Night Elf profiles, not
+    // general name
     // admission.
     // The selected Classic layout declares these two logical signed32 slots at flattened12/13.
     private static void requireCompatibilityZero(
