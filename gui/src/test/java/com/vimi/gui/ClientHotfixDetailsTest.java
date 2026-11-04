@@ -76,7 +76,36 @@ public final class ClientHotfixDetailsTest {
         };
         check(!ClientHotfixDetails.failure(new java.util.concurrent.CompletionException("fixed", trap)).isBlank(),
                 "Foreign exception accessors are not invoked");
-        System.out.println("Client hotfix source labels and redacted failures passed");
+        refreshSummariesUseFixedVocabulary();
+        System.out.println("Client hotfix source labels, refresh summaries and redacted failures passed");
+    }
+
+    private static void refreshSummariesUseFixedVocabulary() {
+        var scope = new ClientHotfixStore.Scope(
+                new com.vibeminer.builds.BuildTypes.BuildRef("wow", "01".repeat(16), "02".repeat(16), "us"),
+                "enUS", "1.60.1.70707");
+        var summary = new ClientHotfixStore.Summary(70707, "enUS", "1.60.1.70707", "a".repeat(64), 79, 1,
+                java.time.Instant.EPOCH);
+        var privatePath = new java.io.IOException("/home/someone/World/Cache/DBCache.bin");
+        var results = List.of(
+                new ClientHotfixStore.RefreshResult(scope, ClientHotfixStore.RefreshOutcome.UPDATED, summary, 70707, null),
+                new ClientHotfixStore.RefreshResult(scope, ClientHotfixStore.RefreshOutcome.UNCHANGED, summary, 70707, null),
+                new ClientHotfixStore.RefreshResult(scope, ClientHotfixStore.RefreshOutcome.UNCHANGED, summary, 70707, null),
+                new ClientHotfixStore.RefreshResult(scope, ClientHotfixStore.RefreshOutcome.CLIENT_BUILD_CHANGED,
+                        summary, 70800, null),
+                new ClientHotfixStore.RefreshResult(scope, ClientHotfixStore.RefreshOutcome.MISSING, summary, 0, null),
+                new ClientHotfixStore.RefreshResult(null, ClientHotfixStore.RefreshOutcome.FAILED, null, 0, privatePath));
+        String text = ClientHotfixDetails.refreshSummary(results);
+        check(text.equals("1 newer cache imported; reopen the build to apply · 2 unchanged"
+                + " · 1 now for another client build; existing import kept"
+                + " · 1 not found; existing import kept · 1 could not be verified; existing import kept"),
+                "Refresh summary counts each outcome: " + text);
+        check(!text.contains("/home") && !text.contains("DBCache"), "Refresh summary never includes paths");
+        check(ClientHotfixDetails.refreshFailed(results), "Verification failure fails the refresh row");
+        check(!ClientHotfixDetails.refreshFailed(results.subList(0, 5)),
+                "Missing or other-build originals are not refresh failures");
+        check(ClientHotfixDetails.refreshSummary(List.of()).equals("No client caches are marked for checking"),
+                "Empty refresh summary is explicit");
     }
 
     private static void check(boolean condition, String message) {

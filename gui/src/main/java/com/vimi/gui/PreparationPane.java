@@ -22,7 +22,23 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
     private final Button retry, cancel;
     private final Node overview;
     private final javafx.scene.control.Label hotfixSource = new javafx.scene.control.Label();
-    private Button importHotfix, baseData;
+    private Button importHotfix, baseData, reopenHotfix;
+    private javafx.scene.control.CheckBox watchHotfix;
+    private boolean watchSync;
+
+    /** Client hotfix cache actions owned by the application window. */
+    interface HotfixActions {
+        /** Choose and import a cache; {@code watch} remembers it for Refresh sources. */
+        void importCache(boolean watch);
+
+        void useBaseData();
+
+        /** Forget the remembered original; binding and imported files stay unchanged. */
+        void stopWatching();
+
+        /** Reopen so a refresh-imported cache replaces the loaded snapshot. */
+        void reopen();
+    }
     private TalentsView talents;
     private RacesView races;
     private NpcsView npcs;
@@ -55,12 +71,12 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
 
     public PreparationPane(BuildPreparation.Job job, Runnable choose, Runnable release, Runnable enrich,
             BuildDownloads downloads, DataSourcesService sources) {
-        this(job, choose, release, enrich, downloads, sources, null, null);
+        this(job, choose, release, enrich, downloads, sources, null);
     }
 
     PreparationPane(BuildPreparation.Job job, Runnable choose, Runnable release, Runnable enrich,
             BuildDownloads downloads, DataSourcesService sources,
-            Runnable importClientCache, Runnable useBaseData) {
+            HotfixActions hotfix) {
         this.job = job;
         this.sources = sources;
         var navigation = new HBox(4);
@@ -85,19 +101,33 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         var closeButton = new Button("Close build");
         closeButton.setOnAction(event -> release.run());
         var controls = new HBox(10, cancel, retry, closeButton);
-        if (importClientCache != null && useBaseData != null) {
+        if (hotfix != null) {
             importHotfix = new Button("Import client hotfix cache…");
             importHotfix.setTooltip(new javafx.scene.control.Tooltip(
                     "Use a local client cache for this build and locale, including cached "
                             + "decryption keys. The workspace reopens after verification."));
-            importHotfix.setOnAction(event -> importClientCache.run());
+            importHotfix.setOnAction(event -> hotfix.importCache(watchHotfix.isSelected()));
             baseData = new Button("Use base data");
             baseData.setTooltip(new javafx.scene.control.Tooltip(
                     "Stop applying this build and locale's client cache. Imported files remain stored locally."));
-            baseData.setOnAction(event -> useBaseData.run());
+            baseData.setOnAction(event -> hotfix.useBaseData());
+            watchHotfix = new javafx.scene.control.CheckBox("Check on Refresh sources");
+            watchHotfix.setTooltip(new javafx.scene.control.Tooltip(
+                    "Remember the imported file's location privately. Refresh sources then verifies "
+                            + "and imports a newer cache for this exact build and locale; reopen the "
+                            + "build to apply it. Turning this on asks for the file again."));
+            watchHotfix.selectedProperty().addListener((property, was, selected) -> {
+                if (watchSync) return;
+                if (selected) hotfix.importCache(true);
+                else hotfix.stopWatching();
+            });
+            reopenHotfix = new Button("Reopen with newer cache");
+            reopenHotfix.setOnAction(event -> hotfix.reopen());
+            reopenHotfix.setVisible(false);
+            reopenHotfix.setManaged(false);
             hotfixSource.setWrapText(true);
             hotfixSource.getStyleClass().add("muted");
-            controls.getChildren().addAll(importHotfix, baseData);
+            controls.getChildren().addAll(importHotfix, baseData, watchHotfix, reopenHotfix);
         }
         liveOverview =
                 BuildOverviewView.live(job, this::show,
@@ -121,6 +151,16 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             boolean unavailable = !(job.work() instanceof NativePreparationWork work) || !work.canImportHotfix();
             importHotfix.setDisable(snapshot.busy() || job.enrichingNames() || unavailable);
             baseData.setDisable(snapshot.busy() || job.enrichingNames() || unavailable);
+            watchHotfix.setDisable(snapshot.busy() || job.enrichingNames() || unavailable);
+            boolean watched = job.work() instanceof NativePreparationWork work && work.hotfixWatched();
+            if (watchHotfix.isSelected() != watched) {
+                watchSync = true;
+                try { watchHotfix.setSelected(watched); } finally { watchSync = false; }
+            }
+            boolean pending = job.work() instanceof NativePreparationWork work && work.hotfixRefreshPending();
+            reopenHotfix.setVisible(pending);
+            reopenHotfix.setManaged(pending);
+            reopenHotfix.setDisable(snapshot.busy() || job.enrichingNames());
             hotfixSource.setText(job.work() instanceof NativePreparationWork work
                     ? work.hotfixStatus() : "Base data");
         }
