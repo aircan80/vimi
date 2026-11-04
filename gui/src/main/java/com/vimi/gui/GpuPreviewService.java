@@ -180,6 +180,9 @@ final class GpuPreviewService {
         final AtomicReference<Control> view = new AtomicReference<>();
         volatile long revision;
         final CompletableFuture<Void> drained = new CompletableFuture<>();
+        // Bounded sanitized helper stderr, logged only when the helper fails.
+        final com.vibeminer.rendering.bgfx.HelperStderrTail stderrTail =
+                new com.vibeminer.rendering.bgfx.HelperStderrTail();
         volatile boolean stopping, ready, protocolFailure;
         volatile String backend = "", errorCode = "";
 
@@ -580,7 +583,10 @@ final class GpuPreviewService {
                     }
                     if (!failureShown && protocol.isCompletedExceptionally()) {
                         failureShown = true;
-                        request.publish(State.FAILED, "GPU World unavailable; waiting for renderer cleanup…");
+                        Throwable reason = protocol.exceptionNow();
+                        WorldDiagnostics.warn("GPU World protocol failed", reason);
+                        request.publish(State.FAILED, "GPU World unavailable ("
+                                + WorldDiagnostics.brief(reason) + "); waiting for renderer cleanup…");
                         request.stopping = true;
                     }
                     Thread.sleep(10);
@@ -592,9 +598,9 @@ final class GpuPreviewService {
                 protocol.get(closeMillis, TimeUnit.MILLISECONDS);
             }
         } catch (Throwable error) {
-            String type = error.getClass().getName();
-            failure = new IOException("Persistent GPU World lifecycle failed ("
-                    + type.substring(0, Math.min(128, type.length())) + ")");
+            WorldDiagnostics.warn("Persistent GPU World lifecycle failed", error);
+            failure = new IOException("Persistent GPU World lifecycle failed: "
+                    + WorldDiagnostics.brief(error));
         } finally {
             if (session != null && !actualDrain) {
                 request.publish(State.STOPPING, "Waiting for GPU World resources to drain…");
@@ -603,7 +609,9 @@ final class GpuPreviewService {
                     session.terminatedAndDrained().join();
                     actualDrain = true;
                 } catch (Throwable unconfirmed) {
-                    failure = new IOException("GPU World resource drain could not be confirmed");
+                    WorldDiagnostics.warn("GPU World resource drain could not be confirmed", unconfirmed);
+                    failure = new IOException("GPU World resource drain could not be confirmed: "
+                            + WorldDiagnostics.brief(unconfirmed));
                 }
             }
             if (prepared != null) {
@@ -611,8 +619,10 @@ final class GpuPreviewService {
                     prepared.closeAsync().join();
                     if (!launchAttempted) actualDrain = true;
                 } catch (Throwable unconfirmed) {
+                    WorldDiagnostics.warn("GPU World preparation resources did not drain", unconfirmed);
                     actualDrain = false;
-                    failure = new IOException("GPU World preparation resources did not drain");
+                    failure = new IOException("GPU World preparation resources did not drain: "
+                            + WorldDiagnostics.brief(unconfirmed));
                 }
             }
             if (!actualDrain) failClosed(request);
@@ -809,6 +819,11 @@ final class GpuPreviewService {
                 request.publish(State.CLOSED, "Inline GPU renderer stopped");
                 request.finish(null);
             } else {
+                WorldDiagnostics.warn("Inline GPU renderer failed"
+                        + (request.errorCode.isEmpty() ? "" : " (" + request.errorCode + ")")
+                        + (child == null || child.isAlive() ? "" : "; exit " + child.exitValue()),
+                        failure, child == null ? null : request.stderrTail.isEmpty()
+                                ? "helper stderr empty" : "helper stderr tail:\n" + request.stderrTail.snapshot());
                 request.publish(State.FAILED, request.failureMessage());
                 request.finish(failure);
             }
@@ -837,6 +852,16 @@ final class GpuPreviewService {
     }
 
     private void readLines(java.io.InputStream input, Request request, boolean protocol) {
+        if (!protocol) {
+            try (input) {
+                byte[] scratch = new byte[4096];
+                int read;
+                while ((read = input.read(scratch)) != -1) request.stderrTail.accept(scratch, 0, read);
+            } catch (IOException ignored) {
+                /* Process exit/close terminates stream readers. */
+            }
+            return;
+        }
         try (var buffered = new BufferedInputStream(input)) {
             var line = new ByteArrayOutputStream(4096);
             boolean oversized = false;

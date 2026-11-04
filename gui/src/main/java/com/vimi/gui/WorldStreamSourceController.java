@@ -376,12 +376,15 @@ final class WorldStreamSourceController {
                         && refusal.getSuppressed().length == 0
                         && refusal.reason() != WorldTerrainStreaming.Refusal.Reason.RETRY_LATER) {
                     unavailableDetail = "Source unavailable: " + refusal.site();
-                } else terminal = failure;
+                } else {
+                    terminal = failure;
+                    WorldDiagnostics.warn("World streaming failed", failure);
+                }
                 closing = true;
                 publish(
                         unavailableDetail == null ? Phase.FAILED : Phase.UNAVAILABLE,
                         unavailableDetail == null
-                                ? "World streaming failed: " + failure.getClass().getSimpleName()
+                                ? "World streaming failed: " + WorldDiagnostics.brief(failure)
                                 : unavailableDetail);
             }
             wake.set(true);
@@ -392,6 +395,7 @@ final class WorldStreamSourceController {
     }
 
     private void failLater(Throwable failure) {
+        WorldDiagnostics.warn("World streaming failed", failure);
         synchronized (lock) {
             if (terminal == null) terminal = failure;
             else if(terminal!=failure) terminal.addSuppressed(failure);
@@ -992,12 +996,16 @@ final class WorldStreamSourceController {
             pending.producer.close();
             pending = null;
         }
+        // The original terminal failure was logged when it occurred; log again only for new
+        // retirement problems so a hung physical close cannot hide the first cause.
+        if (failure != null && (failure != terminal || failure.getSuppressed().length > 0))
+            WorldDiagnostics.warn("World viewer retired after failure", failure);
         publish(
                 failure != null
                         ? Phase.FAILED
                         : unavailableDetail != null ? Phase.UNAVAILABLE : Phase.CLOSED,
                 failure != null
-                        ? "World viewer failed"
+                        ? "World viewer failed: " + WorldDiagnostics.brief(failure)
                         : unavailableDetail != null ? unavailableDetail : "World viewer closed");
         synchronized (lock) {
             events = null;

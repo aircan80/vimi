@@ -283,17 +283,25 @@ final class WorldView extends BorderPane implements AutoCloseable {
             pendingLegacy = pending;
             invocation = pending.result;
             resumePendingLegacy();
-            return pending.result.copy();
+            return logged(pending.result.copy());
         }
         try {
             var cancel = token;
             tokenUsed = true;
             var call = requests.invoke(cancel, cancel::cancel, action);
             invocation = call;
-            return call;
+            return logged(call);
         } catch (RuntimeException error) {
-            return CompletableFuture.failedFuture(error);
+            return logged(CompletableFuture.failedFuture(error));
         }
+    }
+
+    /** Request failures stay visible in the application log even when the UI shows a summary. */
+    private static <T> CompletableFuture<T> logged(CompletableFuture<T> call) {
+        call.whenComplete((ignored, failure) -> {
+            if (failure != null) WorldDiagnostics.warn("World request failed", failure);
+        });
+        return call;
     }
 
     private void resumePendingLegacy() {
@@ -310,7 +318,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         return;
                     }
                     if (failure != null) {
-                        pending.result.completeExceptionally(failure);
+                        pending.result.completeExceptionally(new WorldDiagnostics.RetirementBlocked(failure));
                         return;
                     }
                     try {
@@ -817,8 +825,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                             show(catalogActivity, false);
                                             if (error != null || data == null) {
                                                 maps.setPlaceholder(new Label("Map records unavailable; use Reload to retry."));
-                                                status.setText(
-                                                        "Map records unavailable; use Reload after"
+                                                String blocked = WorldDiagnostics.retirementMessage(error);
+                                                status.setText(blocked != null ? blocked
+                                                        : "Map records unavailable; use Reload after"
                                                                 + " preparation");
                                                 return;
                                             }
@@ -996,7 +1005,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                             if (error != null
                                                     || data == null
                                                     || data.world() == null) {
-                                                String message = data != null && data.issue() != null
+                                                String blocked = WorldDiagnostics.retirementMessage(error);
+                                                String message = blocked != null ? blocked
+                                                        : data != null && data.issue() != null
                                                         && !data.issue().isBlank() ? data.issue()
                                                         : "Terrain inventory unavailable for this map. Select another map or try again.";
                                                 inventoryMessage.setText(message);
@@ -1384,8 +1395,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                 loadingTile = false;
                                                 busy(null);
                                                 if (initial) show(firstFrameActivity, false);
+                                                String blocked = WorldDiagnostics.retirementMessage(error);
                                                 status.setText(
-                                                        data == null
+                                                        blocked != null ? blocked
+                                                                : data == null
                                                                 ? "Terrain tile unavailable"
                                                                 : data.issue());
                                                 if (!initial) loadNext();
@@ -1958,6 +1971,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     return;
                 }
             } catch (RuntimeException invalid) {
+                WorldDiagnostics.warn("GPU terrain request failed; using software rendering", invalid);
                 gpu.hide();
                 show(gpuActivity, false);
                 gpuStatus.setText("GPU terrain unavailable; using software rendering.");
@@ -1979,7 +1993,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             renderingTransitionPending = false;
             if (closed || !active || !explorer || !streamingMode) return;
             if (failure != null) {
-                streamingUnavailable();
+                streamingUnavailable(failure);
                 return;
             }
             if (gpuEnabled.isSelected()) {
@@ -2012,12 +2026,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 streamingStartWaiting = false;
                 if (closed || !active || !streamingMode || !explorer || streaming != null) return;
                 if (failure == null) startStreaming();
-                else streamingUnavailable();
+                else streamingUnavailable(failure);
             }));
             return;
         }
         if (streamingRetirement.isCompletedExceptionally() || legacyRetirement.isCompletedExceptionally()) {
-            streamingUnavailable();
+            streamingUnavailable(streamingRetirement.isCompletedExceptionally()
+                    ? streamingRetirement.exceptionNow() : legacyRetirement.exceptionNow());
             return;
         }
         streamingPaused = false;
@@ -2043,10 +2058,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
         streamChanged();
     }
 
-    private void streamingUnavailable() {
+    private void streamingUnavailable(Throwable failure) {
+        WorldDiagnostics.warn("World resources could not be confirmed retired", failure);
         show(gpuActivity, false);
         show(firstFrameActivity, false);
-        gpuStatus.setText("World resources could not be confirmed retired; reload the workspace.");
+        gpuStatus.setText("World resources could not be confirmed retired ("
+                + WorldDiagnostics.brief(failure) + "); reload the workspace.");
         retryGpu.setDisable(true);
     }
 
@@ -2100,6 +2117,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             show(firstFrameActivity, false);
             status.setText("Terrain explorer · persistent GPU terrain · buildings, water and collision are not rendered");
         } catch (RuntimeException failedUpload) {
+            WorldDiagnostics.warn("GPU World frame upload failed", failedUpload);
             retireStreaming();
             show(firstFrameActivity, false);
             show(textureActivity, false);

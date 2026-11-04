@@ -500,6 +500,7 @@ class WorldStreamLaunchOwnerTest {
         volatile boolean observesExit = true;
         volatile OutputStream output = new ByteArrayOutputStream();
         volatile InputStream input = new ByteArrayInputStream(new byte[0]);
+        volatile InputStream error = new ByteArrayInputStream(new byte[0]);
         private final ProcessHandle handle =
                 new ProcessHandle() {
                     @Override
@@ -579,7 +580,7 @@ class WorldStreamLaunchOwnerTest {
 
         @Override
         public InputStream getErrorStream() {
-            return new ByteArrayInputStream(new byte[0]);
+            return error;
         }
 
         @Override

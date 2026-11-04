@@ -153,6 +153,10 @@ and [EgLinkRepository](../eg-link/src/main/java/com/vibeminer/eglink/EgLinkRepos
   complete OS crash-report location list. JVM/native crashes and desktop launchers
   can retain paths, arguments or memory outside `<data>`. Review diagnostic output
   before sharing it; deleting the library does not necessarily delete those reports.
+- World failure records (`com.vimi.gui.World`, `WorldStreamTransport`) contain
+  bounded exception messages, code locations, helper pid/exit status and a sanitized
+  40-line helper stderr tail; URL query strings are redacted and no payload bytes or
+  keys are recorded. See [world-diagnostics-checkpoint.md](world-diagnostics-checkpoint.md).
 
 Evidence: [GpuPreviewService](../gui/src/main/java/com/vimi/gui/GpuPreviewService.java),
 [WorldStreamPreparedFiles](../rendering-bgfx/src/main/java/com/vibeminer/rendering/bgfx/WorldStreamPreparedFiles.java),

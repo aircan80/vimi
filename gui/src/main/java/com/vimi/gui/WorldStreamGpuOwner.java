@@ -21,14 +21,15 @@ final class WorldStreamGpuOwner {
                 opened::complete,
                 status -> {
                     if (status.state() == GpuPreviewService.State.FAILED) {
-                        opened.completeExceptionally(new IOException("GPU World startup unavailable"));
+                        opened.completeExceptionally(new IOException(
+                                "GPU World startup unavailable: " + status.message()));
                     }
                 });
         lifetime.whenComplete((ignored, failure) -> {
                     // A queued owner can retire before any process exists. Never manufacture a
                     // child drain receipt or leave the controller waiting forever for its Session.
                     if (failure != null) {
-                        opened.completeExceptionally(new IOException("GPU World owner ended"));
+                        opened.completeExceptionally(new IOException("GPU World owner ended", failure));
                     } else {
                         opened.completeExceptionally(new CancellationException("GPU World owner closed"));
                     }
