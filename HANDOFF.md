@@ -1,38 +1,44 @@
 # vimi development handoff
 
-## Latest Linux checkpoint — actual inline textured movement passes
+## Latest Linux checkpoint — alpha21 candidate passes final local gates
 
-Published application remains alpha20; no alpha21 yet. Integration PR153 is now
-b0ef438 on feature/world-streaming-integration. The inline WorldView connection
-8aa5a86, forward-demand planner504f573, lifecycle proofbf0a2d2, source controller
-through4e34703, retry fixture89a4b72 and owned-material cancellation fix46eb7e5 are
-independently reviewed and integrated. Main still contains alpha20 application code.
+Published application remains alpha20; alpha21 publication is next, after hosted
+checks. Runtime candidate9dbad51 on feature/world-streaming-integration (draft PR153)
+passes full check/assemble/installDist, explicit C# image interop and eight World
+FX/lifecycle suites:485tasks,26s, log
+`/home/aircan/.cache/vimi-tmp/world-alpha21-owner-final-check.log`.
+Local packaged launcher/UI/native probe passes with40 shader blobs:
+`/home/aircan/.cache/vimi-tmp/vimi-alpha21-candidate-package-smoke.log`.
 
-Actual frozen inline GUI proof7432cb7 PASSES: 45 forced16-yard steps,46 image
-publications during1838ms, final9 textured tiles (4partial), no height fallback,
-2997 terrain-color samples and inspected terrain image at the formerly sky-only
-viewpoint. Actual close returns atlas claims0. This is a fast-motion diagnostic,
-not sustained FPS, client visual parity or whole-continent coverage. Evidence:
-`/home/aircan/.cache/vimi-tmp/world-stream-real-proof/inline-historical-cancellation-native.log`
-and private `inline-run-7/inline-world.png`. Original/prior libraries remained
-READONLY; network writes used only the diagnostic source cache.
+Exact frozen9dbad51 actual Linux Vulkan movement also passes: onePID959420 before
+and after45forced16-yard steps,46image publications during1832ms, final9textured
+(4partial),2997terrain-color samples, actual child setempty and atlas claims0 after
+close. Private evidence: `world-stream-real-proof/inline-release-candidate-native.log`,
+`inline-run-9-candidate/inline-world.png`, and `inline-frozen-9dbad51/manifest.json`,
+all under `/home/aircan/.cache/vimi-tmp/`. Original/prior libraries READONLY; writes
+only in the diagnostic cache. These counts are not a sustained FPS benchmark.
 
-Earlier sky-only and fatal cancellation movement runs remain recorded failures.
-The fixes retain useful pixels through pending terrain; a historical raster owns
-no obsolete source pins and never fabricates a presentation ACK. Original owned
-material failures are preserved before JDK25 join adds a cancellation cause wrapper;
-actual material drain still precedes source transfer. Root combined controller/
-concepts checks pass102tasks and added retry tests pass96tasks. Prior integrated
-formats/assets/world/concepts/bgfx/GUI checks pass162tasks before inline wiring.
-Full integrated checks, UI/package gates and hosted checks must pass before release.
+Independent reviews cover source controller/raster history4e34703, request/file
+pressure89a4b72, actual GPU lifecyclebf0a2d2, original source future failures46eb7e5/
+a9708b7, strict bounded read747816b/26af365, decoder65a1df2/026b191 and CPU owner
+stamp911cb22. The CPU stamp fixes actual GPU-resize admission of a third source
+owner, while current CPU aliases still load a second owner without starvation.
+Hosted fast-exit worker registration8c2ce03 and causal test-observation fixes are
+included. Earlier failed proofs and tests remain failures, superseded by these fixes.
 
-Source author is additionally testing asynchronous root-read cancellation with
-original-failure preservation at trusted await sites; no broad dirty-cancellation
-normalization is allowed. Maps agent implements reviewed G1 global WMO source-chain
-inspection only (no renderable/native instance yet). Character audit775c995 identifies
-one shared validated appearance vector as the next character-creator slice.
-Continue toward the next prerelease and then terrain distance/buildings/water,
-instances and character work; do not stop at checkpoints or delay these for tooling.
+G1 global source chain5db99f7+0db1512+ffad0fc+0473a85+e0ca7e5 is reviewed/integrated,
+with actual local-only Onyxia28-body traversal twice, no mesh/images retained.
+It is not a rendered dungeon. Future separate branches: G2 private payloada7a9ddc
+is independently approved (not integrated for alpha21); raw liquids1ec4e89 is
+independently approved with actual20/26-layer proofs; standalone global design
+057ba90/3651a82 and water source design31b31f8 await next review/implementation.
+Continue those after publishing alpha21; no new feature code enters this candidate.
+
+Local packaging uses checksum-verified Temurin25.0.5+8 at the path in
+`/home/aircan/.cache/vimi-tmp/vimi-alpha21-jdk/java-home.txt` plus verified OpenJFX
+notices in `vimi-alpha21-javafx-sdk/legal`. System Fedora JDK builds/tests work, but
+its modified java.security prevents jlink; no system configuration was changed.
+Keep frozen alpha20 launchers/tags immutable and use HOME cache for new worktrees/tmp.
 
 ## Newest Linux checkpoint — actual three-tile persistent textured GPU proof
 

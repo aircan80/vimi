@@ -63,3 +63,17 @@ retry with immutable membership. These are separate from the actual-image proof.
 Larger distance, city rendering, liquids and Metal/D3D runtime behavior remain open.
 Published alpha20 and its frozen launcher are unchanged; inline enablement currently
 exists on the integration branch pending full release gates.
+
+
+## Final release-candidate confirmation
+
+Frozen integrated9dbad51 repeats the accepted inline movement against the final
+source await/EOF guards, decoder cancellation fix, fast-exit lifecycle correction
+and coherent CPU-owner stamp. PID959420 remains unchanged during45forced steps;
+46images publish over1832ms, final9textured tiles (4partial) contain2997terrain
+samples, and shutdown leaves no native children and zero atlas claims. Root inspected
+the candidate image. The final record is private `inline-release-candidate-native.log`
+and `inline-run-9-candidate/inline-world.png`; runtime hashes are frozen in
+`inline-frozen-9dbad51/manifest.json`. Full local checks pass485tasks; the bundled
+launcher/UI/native smoke passes40shaders using a verified stock packaging JDK.
+Hosted and five-platform publication gates are still required before claiming release.
