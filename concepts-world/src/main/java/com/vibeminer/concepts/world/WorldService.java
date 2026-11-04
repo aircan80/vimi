@@ -8,9 +8,7 @@ import com.vibeminer.formats.tables.BuildTables;
 import com.vibeminer.formats.tables.TableTypes;
 import com.vibeminer.formats.world.WorldFormats;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -125,7 +123,7 @@ public final class WorldService implements BuildWorld {
                     new ThreadPoolExecutor.AbortPolicy());
     private final Cancellation lifetime = new Cancellation();
     private CompletableFuture<Void> closing;
-    private final Map<String, LoadedTile> cache = new LinkedHashMap<>(16, .75f, true);
+    private final WorldGeometryCache cache = new WorldGeometryCache();
     private Catalog catalog;
     private WorldAreaNavigation areaNavigation;
     private WorldPlacementSource placements;
@@ -235,15 +233,8 @@ public final class WorldService implements BuildWorld {
         return submit(
                 token,
                 cancel -> {
-                    String key =
-                            map.id()
-                                    + ":"
-                                    + map.directory()
-                                    + ":"
-                                    + tile.key()
-                                    + ":"
-                                    + tile.rootId();
-                    var saved = cache.get(key);
+                    String key = WorldGeometryCache.key(map.id(), map.directory(), tile);
+                    var saved = cache.legacyGet(key);
                     if (saved != null) {
                         return saved;
                     }
@@ -268,10 +259,7 @@ public final class WorldService implements BuildWorld {
                         }
                         var parsed = WorldFormats.adtTile(bytes(ref, cancel), cancel::isCanceled);
                         var loaded = new LoadedTile(tile, parsed.terrain(), null, parsed.areas());
-                        cache.put(key, loaded);
-                        while (cache.size() > 12) {
-                            cache.remove(cache.keySet().iterator().next());
-                        }
+                        cache.legacyPut(key, loaded);
                         return loaded;
                     } catch (java.util.concurrent.CancellationException e) {
                         throw e;
@@ -281,6 +269,11 @@ public final class WorldService implements BuildWorld {
                                 tile, null, "Tile " + tile.key() + ": " + reason(failure));
                     }
                 });
+    }
+
+    /** Private source factories call this only inside withRecordedTile on their source worker. */
+    WorldGeometryCache.Prepared prepareGeometry(WorldStreamScopes.TileAdmission admission) {
+        return cache.prepare(admission);
     }
 
     @Override
@@ -561,6 +554,7 @@ public final class WorldService implements BuildWorld {
             return closing.copy();
         }
         closing = new CompletableFuture<>();
+        cache.invalidate();
         lifetime.cancel();
         worker.shutdown();
         var areasClosed =
@@ -588,7 +582,7 @@ public final class WorldService implements BuildWorld {
                                             texturesClosed)
                                     .join();
                         } finally {
-                            cache.clear();
+                            cache.closeAsync().join();
                         }
                         closing.complete(null);
                     } catch (InterruptedException e) {
