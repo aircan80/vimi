@@ -190,3 +190,8 @@
 .race-racial-card { -fx-background-color: #ffffff; -fx-padding: 12; -fx-background-radius: 6; -fx-border-color: #d5dfd7; -fx-border-radius: 6; }
 .model-preview-viewport { -fx-background-color: #141d1f; -fx-background-radius: 8; }
 .model-preview-controls { -fx-padding: 5 0 10 0; -fx-alignment: center-left; }
+
+.network-activity { -fx-background-color: transparent; -fx-padding: 2 5; -fx-cursor: hand; }
+.network-activity:hover, .network-activity:focused { -fx-background-color: #e5eee7; -fx-background-radius: 6; }
+.network-activity-status { -fx-font-size: 11px; -fx-text-fill: #235b49; -fx-font-weight: bold; }
+.network-activity-amount { -fx-font-size: 10px; -fx-text-fill: #586a64; }

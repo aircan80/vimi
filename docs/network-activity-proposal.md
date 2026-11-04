@@ -1,7 +1,9 @@
 # Global HTTP activity and mining indicator proposal
 
-Status: design for API review; no production implementation. Audited against
-`4c21343`. This complements the existing preparation/model/terrain indicators;
+Status: API/module/byte/lifecycle design approved; implemented in the network
+activity continuation. Core checkpoint `b80c817` adds both transport paths; the
+GUI continuation wires the same session meter through startup and data sources.
+The original source audit was against `4c21343`. This complements the existing preparation/model/terrain indicators;
 it does not replace their evidence of local work or accepted rendering.
 
 ## Audited coverage
@@ -185,8 +187,8 @@ Network acquisition continues under existing ownership while the widget is hidde
 
 ## Review boundary
 
-Approve the neutral module/API, byte semantics, phase/ownership model and GUI
-sampling lifecycle before production edits. Implement meter and transport tests
-first, then application wiring/widget. This work does not change network consent,
+The neutral module/API, byte semantics, phase/ownership model and GUI sampling
+lifecycle received parent architecture approval before production edits. Meter
+and both transport tests were delivered first; application wiring/widget followed. This work does not change network consent,
 source acquisition policy, cancellation semantics, credentials or persisted user
 settings. It does not claim full machine network utilization or general CPU activity.

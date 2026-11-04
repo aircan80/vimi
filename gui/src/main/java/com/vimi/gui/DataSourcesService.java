@@ -139,9 +139,19 @@ public final class DataSourcesService {
             com.vibeminer.store.ObjectReader reader, com.vibeminer.store.ObjectWriter writer,
             com.vibeminer.network.EgLinkClient egClient,
             com.vibeminer.network.PolestarClient polestarClient) throws Exception {
+        return open(database, directory, names, catalog, client, reader, writer, egClient,
+                polestarClient, com.vibeminer.activity.TransferObserver.NONE);
+    }
+
+    static DataSourcesService open(Path database, Path directory, CommunityFileNames names,
+            LibraryCatalog catalog, com.vibeminer.network.TactKeyClient client,
+            com.vibeminer.store.ObjectReader reader, com.vibeminer.store.ObjectWriter writer,
+            com.vibeminer.network.EgLinkClient egClient,
+            com.vibeminer.network.PolestarClient polestarClient,
+            com.vibeminer.activity.TransferObserver observer) throws Exception {
         var settings = new SourcePreferences(database);
         var repository =
-                QuestieRepository.open(directory, com.vibeminer.generated.Cancellation.NONE).join();
+                QuestieRepository.open(directory, com.vibeminer.generated.Cancellation.NONE, observer).join();
         DataSourcesService service = null;
         com.vibeminer.polestar.PolestarRepository polestarRepository = null;
         try {

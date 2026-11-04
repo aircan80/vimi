@@ -77,6 +77,9 @@ public final class VimiApp extends Application {
     private final Button refreshSourcesButton = new Button("↻  Refresh sources");
     private SourceRefresh sourceRefresh;
     private SourceRefreshDialog sourceRefreshDialog;
+    private final com.vibeminer.activity.NetworkActivity networkActivity = new com.vibeminer.activity.NetworkActivity();
+    private NetworkActivityModel networkActivityModel;
+    private NetworkActivityView networkActivityView;
     private final BorderPane root = new BorderPane();
     private final javafx.scene.layout.StackPane surface = new javafx.scene.layout.StackPane(root);
     private final MockPreparationService preparations = new MockPreparationService(true);
@@ -114,6 +117,7 @@ public final class VimiApp extends Application {
 
     @Override
     public void start(Stage stage) {
+        networkActivityModel = new NetworkActivityModel(networkActivity, stage);
         preparations.observe(job -> Platform.runLater(() -> preparationChanged(job)));
         preparationActivity.setOnAction(event -> {
             if (activityJob != null) {
@@ -276,7 +280,7 @@ public final class VimiApp extends Application {
         status.setText("Opening local build history…");
         startup = getParameters().getRaw().contains("--mock")
                 ? java.util.concurrent.CompletableFuture.completedFuture(new MockBuildService())
-                : BuildApplication.open();
+                : BuildApplication.open(BuildApplication.defaultDataDirectory(), null, networkActivity);
         startup.whenComplete((result, error) -> Platform.runLater(() -> {
             if (closing) { return; }
             if (error != null) {
@@ -1066,6 +1070,7 @@ public final class VimiApp extends Application {
 
     @Override
     public void stop() {
+        closeNetworkActivity();
         GpuPreviewService.application().closeAsync();
         if (sourceRefresh != null) sourceRefresh.close();
         if (sourceRefreshDialog != null) sourceRefreshDialog.close();
@@ -1080,6 +1085,7 @@ public final class VimiApp extends Application {
     private void shutdown() {
         if (closing) { return; }
         closing = true;
+        closeNetworkActivity();
         if (sourceRefresh != null) sourceRefresh.close();
         if (sourceRefreshDialog != null) sourceRefreshDialog.close();
         preparationClock.stop();
@@ -1421,7 +1427,7 @@ public final class VimiApp extends Application {
         Button choose = button("Close build",this::showBuilds);
         choose.getStyleClass().add("header-menu");
         choose.setMinWidth(Region.USE_PREF_SIZE);
-        bar.setSpacing(16);bar.getChildren().addAll(fields,choose);
+        bar.setSpacing(16);bar.getChildren().addAll(headerFields(fields),choose,networkActivityView);
         return bar;
     }
 
@@ -1443,8 +1449,21 @@ public final class VimiApp extends Application {
         choose.getStyleClass().add("header-menu");
         choose.setMinWidth(Region.USE_PREF_SIZE);
         bar.setSpacing(16);
-        bar.getChildren().addAll(fields, preparationActivity, choose);
+        bar.getChildren().addAll(headerFields(fields), preparationActivity, choose, networkActivityView);
         return bar;
+    }
+
+    private static ScrollPane headerFields(HBox fields) {
+        var viewport = new ScrollPane(fields);
+        viewport.setFitToHeight(true);
+        viewport.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        viewport.setVbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        viewport.setPannable(true);
+        viewport.setMinWidth(0);
+        viewport.setAccessibleText("Build identity; scroll horizontally for additional fields");
+        viewport.getStyleClass().add("header-fields");
+        HBox.setHgrow(viewport, Priority.ALWAYS);
+        return viewport;
     }
 
     private static VBox headerField(String title, Node value) {
@@ -1461,7 +1480,14 @@ public final class VimiApp extends Application {
         return field;
     }
 
+    private void closeNetworkActivity() {
+        if (networkActivityView != null) networkActivityView.close();
+        if (networkActivityModel != null) networkActivityModel.close();
+    }
+
     private HBox header(String area, Node action) {
+        if (networkActivityView != null) networkActivityView.close();
+        networkActivityView = new NetworkActivityView(networkActivityModel);
         ImageView mark = new ImageView(brandImage());
         mark.setFitWidth(36);
         mark.setFitHeight(36);
@@ -1479,6 +1505,7 @@ public final class VimiApp extends Application {
         if (action != null) {
             header.getChildren().add(action);
         }
+        header.getChildren().add(networkActivityView);
         header.getStyleClass().add("header");
         return header;
     }

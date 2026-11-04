@@ -1,5 +1,6 @@
 package com.vimi.gui;
 
+import com.vibeminer.activity.TransferObserver;
 import com.vibeminer.access.CachingObjectSource;
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.access.ObjectSource;
@@ -49,11 +50,17 @@ public final class BuildApplication {
     }
 
     public static CompletableFuture<BackendBuildService> open(Path directory) {
-        return open(directory, null);
+        return open(directory, null, TransferObserver.NONE);
     }
 
     static CompletableFuture<BackendBuildService> open(Path directory, com.vibeminer.network.TactKeyClient keyClient) {
+        return open(directory, keyClient, TransferObserver.NONE);
+    }
+
+    static CompletableFuture<BackendBuildService> open(Path directory,
+            com.vibeminer.network.TactKeyClient keyClient, TransferObserver observer) {
         java.util.Objects.requireNonNull(directory);
+        java.util.Objects.requireNonNull(observer);
         var result = new CompletableFuture<BackendBuildService>();
         var token = new Cancellation();
         result.whenComplete(
@@ -123,7 +130,7 @@ public final class BuildApplication {
                                         .join();
                             }
                         }
-                        var network = new NetworkClients();
+                        var network = new NetworkClients(new com.vibeminer.network.NetworkOptions(), observer);
                         cleanup.addFirst(network::closeAsync);
                         var discovery =
                                 library.forOwner(
@@ -184,7 +191,7 @@ public final class BuildApplication {
                                 "source", LibraryCatalog.Role.ORIGINAL);
                         ownership.retainOwner("provider:tact-keys", LibraryCatalog.Scope.GLOBAL).join();
                         var dataSources = DataSourcesService.open(library.databasePath(), directory.resolve("questie"),
-                                fullContexts.communityNames(), ownership, keyClient == null ? network : keyClient, tactOwner, tactOwner, network, network);
+                                fullContexts.communityNames(), ownership, keyClient == null ? network : keyClient, tactOwner, tactOwner, network, network, observer);
                         cleanup.addFirst(dataSources::closeAsync);
                         fullContexts.withSources(dataSources);
                         Path comparisonWork = directory.resolve("derived").resolve("comparison-work");

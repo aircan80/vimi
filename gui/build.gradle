@@ -30,6 +30,7 @@ def arch = System.getProperty('os.arch')
 def classifier = platform + (arch in ['aarch64', 'arm64'] ? '-aarch64' : '')
 
 dependencies {
+    implementation project(':network-activity')
     implementation project(':builds')
     implementation project(':questie')
     implementation project(':eg-link')
@@ -492,4 +493,11 @@ tasks.register('talentSourceDetailsUiTest', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.TalentSourceDetailsUiTest'
+}
+
+// Authored HTTP counters/branding lifecycle only; requires a desktop display.
+tasks.register('networkActivityUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.NetworkActivityUiTest'
 }

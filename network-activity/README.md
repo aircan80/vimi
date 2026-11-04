@@ -34,3 +34,29 @@ Tests use fake clocks, authored bodies and loopback servers; no credentials or
 live network services are required. See
 [the integration proposal](../docs/network-activity-proposal.md) for GUI ownership
 and complete coverage limits.
+
+## Application indicator
+
+The native GUI supplies one shared session meter before backend startup. The
+upper-right mining button animates while an observed HTTP request is active,
+shows measured body throughput and session received bytes, and opens bounded
+category/phase details. Metadata checks count too. Waiting for headers/data is
+shown separately from an open transfer handed back to local code. Existing pane
+indicators continue to explain local preparation and rendering.
+
+The GUI samples at most four times a second and deduplicates unchanged displays.
+A single stage-owned model survives route/build changes; header nodes dispose
+independently. Hidden/iconified windows stop sampling/animation, resume with a new
+rate baseline, and retain the session total. The operating-system reduced-motion
+preference uses a static active icon. Counters and UI state remain session-only.
+
+Authored UI verification (requires a working desktop display):
+
+```sh
+JAVA_HOME=/usr/lib/jvm/java-25-openjdk ./gradlew :gui:networkActivityUiTest
+```
+
+This exercises held activity, throughput/total, reduced motion, 100 header
+replacements, the actual app's generic/overview header layout at its 1000px minimum,
+and hide/resume/shutdown. Its screenshot is generated under
+`gui/build/network-activity-ui/`; it contains authored counters and existing branding.
