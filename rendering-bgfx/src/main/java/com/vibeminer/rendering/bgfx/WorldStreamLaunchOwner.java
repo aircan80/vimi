@@ -92,6 +92,7 @@ final class WorldStreamLaunchOwner {
         private final AtomicBoolean initialized = new AtomicBoolean();
         private volatile boolean startupDone;
         private final AtomicBoolean stopping = new AtomicBoolean();
+        private final CompletableFuture<Void> childExited = new CompletableFuture<>();
         private final CompletableFuture<Drain> actualDrain = new CompletableFuture<>();
         private final CompletableFuture<Drain> boundedClose = new CompletableFuture<>();
         private final List<AtomicBoolean> workers = new ArrayList<>(6);
@@ -187,7 +188,16 @@ final class WorldStreamLaunchOwner {
                                                 child; // Irrevocable ownership before any fallible
                                         // setup.
                                         processExit = child.onExit();
-                                        processExit.whenComplete((ignored, error) -> closeAsync());
+                                        processExit.whenComplete(
+                                                (ignored, error) -> {
+                                                    try {
+                                                        if (error == null && !child.isAlive()) {
+                                                            childExited.complete(null);
+                                                        }
+                                                    } finally {
+                                                        closeAsync();
+                                                    }
+                                                });
                                         if (!stopping.get()) {
                                             attachment.attach(child, this);
                                         }
@@ -235,6 +245,11 @@ final class WorldStreamLaunchOwner {
             return boundedClose.copy();
         }
 
+        /** Only confirmed OS exit; failed setup/cleanup and no-child start never imply this. */
+        CompletableFuture<Void> childExited() {
+            return childExited.copy();
+        }
+
         CompletableFuture<Drain> terminatedAndDrained() {
             return actualDrain.copy();
         }
@@ -273,6 +288,7 @@ final class WorldStreamLaunchOwner {
                     if (child.isAlive()) {
                         throw new IOException("Exit observation disagrees with live child");
                     }
+                    childExited.complete(null);
                 }
                 while (!attachmentDone || !startupDone || !workersDone()) {
                     LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));

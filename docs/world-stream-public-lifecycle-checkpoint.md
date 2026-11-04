@@ -45,3 +45,17 @@ must be checked before its single clone on the caller, with exact owned-snapshot
 the off-caller reducer. Immutable commit receipts may expose a bounded List. File ownership is
 being implemented separately as a one-shot Unadvertised-to-Moved capability; source-side close
 must become inert after MOVE, rather than sharing a deleting close flag with the transport.
+
+## Confirmed exit is independent of drain success
+
+A failed drain future is never an exit certificate. The launch owner publishes a separate
+private childExited event only after its actual Process.onExit observation and a non-live check.
+This event can precede held worker finally blocks, so input retirement after confirmed exit
+cannot deadlock waiting for the later aggregate drain. Public state uses that event for
+processExited; aggregate success/failure only closes state. No-child start and unavailable exit
+observation never publish childExited.
+
+An authored live, unkillable Process with throwing onExit proves aggregate failure cannot enable
+retirement of an advertised input; the mapping remains retained. A held-worker fixture proves
+actual confirmed exit is observable before worker release while aggregate drain and file cleanup
+remain pending. Genuine subprocess lifecycle tests remain separate from that adversarial fake.

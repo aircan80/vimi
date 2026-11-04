@@ -138,10 +138,11 @@ public final class WorldStreamTransport {
 
         private void launched(WorldStreamLaunchOwner.Handle handle) {
             owner = handle;
+            handle.childExited().thenRun(state::processExited);
             handle.terminatedAndDrained()
                     .whenComplete(
                             (drain, error) -> {
-                                state.processExited();
+                                state.close();
                                 frames.close();
                                 if (!initialized.isDone()) {
                                     initialized.completeExceptionally(
