@@ -1,5 +1,32 @@
 # vimi development handoff
 
+## Latest Linux continuation — parallel world integration (2026-11-04)
+
+Published application remains alpha.20. Main is7432249 after security/privacy PR160.
+Alpha.21 tag dc7c5a4 is immutable and UNPUBLISHED: Linux ARM64 packaging found the
+split JavaFX SDK native-library-path issue. PR159 fixes that and Maps availability;
+Linux/Windows checks pass, while hosted macOS jobs failed runner acquisition even
+on one infrastructure retry. Do not describe those as source-test failures or waive
+the eventual five-platform package gate.
+
+Active integration: `feature/world-next-integration` under
+`/home/aircan/.cache/vimi-worktrees/vimi-world-next-integration`. Its source6e57190
+passes full `check assemble`:474 tasks,102 executed. This includes reviewed PR159
+code, geographic camera/minimap correction, Dwarf appearance controls, Night Elf
+source/native qualification, standalone global canonical file I/O and private
+Source facade, and single-root liquid Source/coordinate mapping. Water geometry
+ac56f66 follows after independent implementation approval; its integrated check
+is running. No instance or water draw is enabled in the GUI yet.
+
+See [world-next-integration-checkpoint.md](docs/world-next-integration-checkpoint.md)
+and [world-experience-roadmap.md](docs/world-experience-roadmap.md) for component
+proofs and remaining gates. Agents continue renderer2cb independent review,
+Source-to-file bridge c62 independent review, and flat-water composition design.
+Bridge depends on genuine test-only Source fixture736a929. Keep frozen agent
+branches unchanged; promote reviewed commits into integration, then check.
+
+Earlier sections below are historical and do not supersede this checkpoint.
+
 ## Current alpha21 delivery gate — pool retry correction
 
 Newest runtime/integration checkpoint is dfe9817, superseding9dbad51 only with
