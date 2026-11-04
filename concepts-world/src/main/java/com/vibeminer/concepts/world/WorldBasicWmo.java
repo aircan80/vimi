@@ -237,11 +237,16 @@ final class WorldBasicWmo {
         private final double x, y, z, scale, co, si;
 
         private Transform(WorldPlacements.WorldObject p) {
+            this(p, p.scale() / 1024.0);
+        }
+
+        /** Same ADT heading rule with a caller-qualified scale (BASIC_EXTERIOR_V1 placements). */
+        Transform(WorldPlacements.WorldObject p, double scale) {
             double c = 51200.0 / 3.0;
             x = c - (double) p.position().z();
             y = c - (double) p.position().x();
             z = p.position().y();
-            scale = p.scale() / 1024.0;
+            this.scale = scale;
             double theta = ((double) p.rotation().y()) * (StrictMath.PI / 180.0);
             co = StrictMath.cos(theta);
             si = StrictMath.sin(theta);
@@ -257,6 +262,30 @@ final class WorldBasicWmo {
 
         double z(double c) {
             return z + scale * c;
+        }
+
+        double originX() {
+            return x;
+        }
+
+        double originY() {
+            return y;
+        }
+
+        double originZ() {
+            return z;
+        }
+
+        double scale() {
+            return scale;
+        }
+
+        double cos() {
+            return co;
+        }
+
+        double sin() {
+            return si;
         }
 
         double normalX(double a, double b) {
