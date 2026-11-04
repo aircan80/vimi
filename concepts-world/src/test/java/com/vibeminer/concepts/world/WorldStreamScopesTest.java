@@ -35,6 +35,211 @@ final class WorldStreamScopesTest {
             new WorldFormats.Tile(7, 19, 2, 0, 0, 0, 0, 3, 0, 0);
 
     @Test
+    void canceledNativeCapturePreservesKnownScopeWithoutCancelingExternalToken() throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var cancelCapture = new java.util.concurrent.atomic.AtomicBoolean();
+        var raw = tables.handle();
+        var handle =
+                (BuildTables)
+                        Proxy.newProxyInstance(
+                                BuildTables.class.getClassLoader(),
+                                new Class<?>[] {BuildTables.class},
+                                (proxy, method, args) -> {
+                                    if (method.getName().equals("capturePreparedLocal")
+                                            && cancelCapture.get()) {
+                                        return CompletableFuture.completedFuture(
+                                                new CapturedRowsTypes.Capture(
+                                                        CapturedRowsTypes.CaptureState.CANCELED,
+                                                        null,
+                                                        "CANCELED",
+                                                        "Authored cancellation"));
+                                    }
+                                    try {
+                                        return method.invoke(raw, args);
+                                    } catch (java.lang.reflect.InvocationTargetException error) {
+                                        throw error.getCause();
+                                    }
+                                });
+        var pool = new TerrainAtlasPool();
+        var world = new WorldService(handle, files.files(), pool);
+        var external = new Cancellation();
+        try {
+            var source = world.preparedTerrain();
+            var scope = source.createScope(REQUEST, Cancellation.NONE);
+            source.activate(scope);
+            try (var previous =
+                    source.prepareAndWrite(
+                            scope,
+                            TILE,
+                            Cancellation.NONE,
+                            (borrow, cancel) -> (AutoCloseable) () -> {})) {
+                cancelCapture.set(true);
+                assertThrows(
+                        java.util.concurrent.CancellationException.class,
+                        () ->
+                                source.prepareAndWrite(
+                                        scope,
+                                        TILE,
+                                        external,
+                                        (borrow, cancel) -> (AutoCloseable) () -> {}));
+                assertFalse(external.isCanceled());
+                assertTrue(previous.isOpen());
+                cancelCapture.set(false);
+                previous.withPayload(borrow -> assertTrue(borrow.texture() != null));
+                try (var recovered =
+                        source.prepareAndWrite(
+                                scope,
+                                TILE,
+                                Cancellation.NONE,
+                                (borrow, cancel) -> (AutoCloseable) () -> {})) {
+                    assertTrue(recovered.isOpen());
+                }
+            }
+        } finally {
+            cancelCapture.set(false);
+            world.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+            tables.close();
+        }
+    }
+
+    @Test
+    void wrappedAsyncCancellationPreservesScopeForInitialAndFinalMapAndWdtValidation()
+            throws Exception {
+        for (int mode = 0; mode < 7; mode++) {
+            int selected = mode;
+            var files = new WorldTerrainTextureSourceTest.Files();
+            var tables = new Tables(files);
+            var failing = new java.util.concurrent.atomic.AtomicBoolean();
+            var causeReads = new AtomicInteger();
+            @SuppressWarnings("serial")
+            class CauseTrap extends RuntimeException {
+                @Override
+                public synchronized Throwable getCause() {
+                    causeReads.incrementAndGet();
+                    throw new AssertionError("Arbitrary cause traversal");
+                }
+            }
+            RuntimeException failure;
+            if (mode == 4) {
+                failure =
+                        new java.util.concurrent.CompletionException(
+                                new IllegalStateException("Authored unknown provider failure"));
+            } else if (mode == 5) {
+                failure = new java.util.concurrent.CancellationException();
+                for (int depth = 0; depth < 9; depth++) {
+                    failure = new java.util.concurrent.CompletionException(failure);
+                }
+            } else if (mode == 6) {
+                failure = new java.util.concurrent.CompletionException(new CauseTrap());
+            } else {
+                Throwable canceled = new java.util.concurrent.CancellationException();
+                if (mode == 0 || mode == 3) {
+                    canceled = new java.util.concurrent.ExecutionException(canceled);
+                }
+                failure = new java.util.concurrent.CompletionException(canceled);
+            }
+            var returnedFailure = failure;
+            var rawTables = tables.handle();
+            var tableHandle =
+                    (BuildTables)
+                            Proxy.newProxyInstance(
+                                    BuildTables.class.getClassLoader(),
+                                    new Class<?>[] {BuildTables.class},
+                                    (proxy, method, args) -> {
+                                        if (method.getName().equals("capturePreparedLocal")
+                                                && failing.get()
+                                                && selected != 1
+                                                && selected != 3) {
+                                            return CompletableFuture.failedFuture(returnedFailure);
+                                        }
+                                        try {
+                                            return method.invoke(rawTables, args);
+                                        } catch (
+                                                java.lang.reflect.InvocationTargetException error) {
+                                            throw error.getCause();
+                                        }
+                                    });
+            var rawFiles = files.files();
+            var fileHandle =
+                    (com.vibeminer.files.BuildFiles)
+                            Proxy.newProxyInstance(
+                                    com.vibeminer.files.BuildFiles.class.getClassLoader(),
+                                    new Class<?>[] {com.vibeminer.files.BuildFiles.class},
+                                    (proxy, method, args) -> {
+                                        if (method.getName().equals("stat")
+                                                && failing.get()
+                                                && (selected == 1 || selected == 3)
+                                                && ((FileTypes.FileRef) args[0]).fileDataId()
+                                                        == 1L) {
+                                            return CompletableFuture.failedFuture(returnedFailure);
+                                        }
+                                        try {
+                                            return method.invoke(rawFiles, args);
+                                        } catch (
+                                                java.lang.reflect.InvocationTargetException error) {
+                                            throw error.getCause();
+                                        }
+                                    });
+            var pool = new TerrainAtlasPool();
+            var world = new WorldService(tableHandle, fileHandle, pool);
+            var external = new Cancellation();
+            WorldPreparedTerrain.WrittenTile<AutoCloseable> previous = null;
+            try {
+                var source = world.preparedTerrain();
+                var scope = source.createScope(REQUEST, Cancellation.NONE);
+                source.activate(scope);
+                previous =
+                        source.prepareAndWrite(
+                                scope,
+                                TILE,
+                                Cancellation.NONE,
+                                (borrow, cancel) -> (AutoCloseable) () -> {});
+                if (mode != 2 && mode != 3) {
+                    failing.set(true);
+                }
+                assertThrows(
+                        java.util.concurrent.CompletionException.class,
+                        () ->
+                                source.prepareAndWrite(
+                                        scope,
+                                        TILE,
+                                        external,
+                                        (borrow, cancel) -> {
+                                            failing.set(true);
+                                            return (AutoCloseable) () -> {};
+                                        }));
+                assertFalse(
+                        external.isCanceled(),
+                        "Provider cancellation is wrapped, external stays healthy");
+                assertEquals(mode < 4, previous.isOpen());
+                assertEquals(0, causeReads.get());
+                failing.set(false);
+                if (mode < 4) {
+                    previous.withPayload(borrow -> assertTrue(borrow.texture() != null));
+                    try (var recovered =
+                            source.prepareAndWrite(
+                                    scope,
+                                    TILE,
+                                    Cancellation.NONE,
+                                    (borrow, cancel) -> (AutoCloseable) () -> {})) {
+                        assertTrue(recovered.isOpen());
+                    }
+                }
+            } finally {
+                failing.set(false);
+                if (previous != null) {
+                    previous.close();
+                }
+                world.closeAsync().get(5, TimeUnit.SECONDS);
+                pool.closeAsync().get(5, TimeUnit.SECONDS);
+                tables.close();
+            }
+        }
+    }
+
+    @Test
     void terrainScopeMetadataValidityRejectsNewBorrowButPreservesEnteredHistoricalPayload()
             throws Exception {
         var files = new WorldTerrainTextureSourceTest.Files();
@@ -2668,6 +2873,9 @@ final class WorldStreamScopesTest {
                     fixture.tables()
                             .capturePreparedLocal(TableTypes.Ref.forName("Map"), token)
                             .join();
+            if (actual.state() == CapturedRowsTypes.CaptureState.CANCELED) {
+                return actual;
+            }
             assertEquals(CapturedRowsTypes.CaptureState.CAPTURED, actual.state(), actual.message());
             var delegate = actual.rows();
             last = delegate;

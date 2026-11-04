@@ -40,3 +40,21 @@ The later bridge proposal uses the exact planned parent type
 WorldStreamTransport.StopRegistration. Its stopping request triggers for BOTH
 reservation cancellation and Session stop, with coalesced off-caller callback/drain
 rules already specified by the parent transport/controller design.
+
+## Bounded asynchronous cancellation follow-up
+
+Cancellation recognition unwraps at most eight exact standard CompletionException
+or ExecutionException links. It never traverses causes on arbitrary exception
+classes or invokes subclass-overridden cause getters. Direct/recognized wrapped
+CancellationException preserves healthy current proof even when the external token
+was never canceled; the original exception still propagates unchanged. Unknown
+nested failures and out-of-profile deeper chains remain failures and invalidate
+proof conservatively. An explicit native CaptureState.CANCELED is normalized as
+cancellation rather than an unavailable prepared capability; the native fixture
+forwards its genuine canceled result instead of asserting it was captured.
+
+Causal fixtures inject failed futures during initial and final Map/WDT checks,
+then prove current payload validity and successful retry. They also cover an
+unknown wrapped program failure, a nine-wrapper boundary, an arbitrary cause-getter
+trap, and an explicit canceled capture with an uncanceled external token. No source
+IO or generated positive graph is fabricated to satisfy those cases.
