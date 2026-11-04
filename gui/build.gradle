@@ -56,6 +56,7 @@ dependencies {
     testImplementation testFixtures(project(':builds'))
     testImplementation testFixtures(project(':polestar'))
     testImplementation testFixtures(project(':files'))
+    testImplementation testFixtures(project(':formats-tables'))
     testImplementation testFixtures(project(':generated-store'))
     ['base', 'graphics', 'controls'].each {
         implementation "org.openjfx:javafx-${it}:25.0.1:${classifier}"
@@ -508,3 +509,11 @@ tasks.register('worldPreparedTextureUiTest', JavaExec) {
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.WorldPreparedTextureUiTest'
 }
+
+// Authored native-source-to-packet ownership test; no JavaFX toolkit or native GPU required.
+tasks.register('worldStreamSourceBridgeTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldStreamSourceBridgeTest'
+}
+check.dependsOn worldStreamSourceBridgeTest
