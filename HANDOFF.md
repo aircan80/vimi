@@ -13,6 +13,37 @@ remains the latest verified published prerelease until publication is checked.
 No city/instance/NPC/music/hotstreaming/characterUI feature is claimed delivered.
 
 
+## Alpha20 publication and active streaming checkpoint
+
+Maps PR158 is FF-merged on main at590aa0e. Current-head hosted gates and allfive
+platform packaging dry run41778802552 passed. Immutable alpha20 tag points at590;
+publication run41780488095 is IN PROGRESS, not yet verified. Frozen local preview
+`.local/apps/preview-590aa0e/bin/vimi-gui-prototype` passes packaged UI/native24shader
+smoke. Do not move tags or overwrite frozen launchers. Authored placeholder-only
+review screenshot is in docs/screenshots; actual game-art proof images stay PRIVATE.
+
+All3agents are actively implementing, not stopped: architect production native
+core93cf11f after1bd1aa5 (/tmp/vimi-persistent-world-native-owner) passes actual
+Vulkan104replacement/cancelcycles SAMEprocess,1469camera frames duringupload,
+4410callbacksdrained,4MiBproducerpeak; independent review pending and no parentGUI/
+controlpipes wired yet. Rootstreamingintegration currentc2a69a4+ownedhelperb7837ad/
+testcleanup184fcd1 combines reviewed tile/frame/control/cache/deadline/source pieces.
+WorldBasicWmoa22b82d+unknown-sizefixture01ddd9e source-only checkpoint is root-review
+pending (/tmp/vimi-wmo-basic-source); neutral coldannex23ecedb+a4b9e12 designapproved
+for implementation. No visible buildings/instances delivered yet.
+
+CRITICAL actual-source gate: source proof `/tmp/vimi-world-source-live-proof/proof3.log`
+finds actualselected70755 Map VERIFIED_NATIVE but PARTIAL73/81,3encryptedsections/
+8excludedrecords, layoutD43AFAC3, textIssueCount0, scopeunencryptedSections. Existing
+Scopes READY+zeroexcluded policy blocks evenreadableMap0. Do NOT blanketallowPARTIAL
+or treat nativeissuecertificate as membership. Worker proposal40c7c31 approved for
+narrow native per-ID-domain inspection: complete explicit excluded IDs, zero copies,
+WDC4/5, private selected-row witness bound to samecapture/source/keys/definitions,
+<=1MiBsource and4MiBphase. Add explicit CONFIGURED_SOURCE access parameter (may
+acquire Map source, but no tableprepare/repair/definitionfetch/whole-rowdecode).
+ActualMap0 scope/root/WMO proof must pass afterward before hot GUI/sourcepromotion.
+Legacyviewer/Mapsalpha20 remain functional. Sourceworker is implementing this now.
+
 ## Overnight continuation — Maps alpha20 candidate
 
 Latest VERIFIED published release is alpha19 source39a42bb, run41775202595,

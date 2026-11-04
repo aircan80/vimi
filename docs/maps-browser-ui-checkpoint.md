@@ -55,3 +55,11 @@ into private scratch and generated writes stayed in the overlay. This proof
 allowed network access; the first local-only attempt honestly showed0/12 missing
 artwork. Private proof and screenshots remain `/tmp/vimi-maps-live-ui-proof/`;
 `proof-final.log` exits successfully. No assets or images are committed.
+
+## Review screenshot
+
+![Maps browser controls with authored placeholder pixels](screenshots/maps-browser-authored.png)
+
+This screenshot uses only the committed authored UI fixture's solid-color pixels
+and synthetic map relationships, with the application's stylesheet. It contains
+no acquired game artwork. Real selected-build screenshot evidence remains private.
