@@ -4,8 +4,8 @@ import com.vibeminer.access.Cancellation;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * One held prepared-local graph without repair or a logical storage lease. Ordinal reads use
- * that graph; optional native-ID inspection has separate explicit source-access semantics.
+ * One held prepared-local graph without repair or a logical storage lease. Ordinal reads use that
+ * graph; optional native-ID inspection has separate explicit source-access semantics.
  */
 public interface CapturedRows extends AutoCloseable {
     int MAX_PAGE_ROWS = 256;
