@@ -1035,7 +1035,8 @@ public final class NativePreparationWork implements BuildPreparation.Work {
             try {
                 if (usageAccounting != null) usageAccounting.close();
             } catch (Throwable error) {
-                failure = error;
+                if (failure == null) failure = error;
+                else if (failure != error) failure.addSuppressed(error);
             }
             try {
                 CompletableFuture.allOf(waiting.toArray(CompletableFuture[]::new)).join();
