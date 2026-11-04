@@ -294,8 +294,12 @@ final class WorldStreamScopes {
             }
         }
         if (rejected) {
-            working.set(false);
-            if (closed) {
+            boolean finish;
+            synchronized (this) {
+                working.set(false);
+                finish = closed && liquidCredits.isEmpty();
+            }
+            if (finish) {
                 completeDrain(fault);
             }
             if (fault != null) {
@@ -343,6 +347,12 @@ final class WorldStreamScopes {
     }
 
     private void completeDrain(Throwable failure) {
+        // Every completion path must honor the actual worker and all inspection pins.
+        synchronized (this) {
+            if (!closed || working.get() || !liquidCredits.isEmpty()) {
+                return;
+            }
+        }
         if (failure == null) {
             drained.complete(null);
         } else {

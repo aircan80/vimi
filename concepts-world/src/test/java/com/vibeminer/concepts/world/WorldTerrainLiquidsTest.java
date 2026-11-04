@@ -693,4 +693,43 @@ class WorldTerrainLiquidsTest {
             }
         }
     }
+
+    @Test
+    void rejectedCreateCannotCompleteDrainWithHeldLiquidBorrow() throws Exception {
+        try (var f = new Fixture()) {
+            f.payload(liquids(1, 0, 1, false));
+            var owner = f.inspect();
+            var entered = new CompletableFuture<Void>();
+            var release = new CompletableFuture<Void>();
+            var finished = new CompletableFuture<Void>();
+            Thread.ofVirtual()
+                    .start(
+                            () -> {
+                                try {
+                                    owner.withBorrow(
+                                            v -> {
+                                                entered.complete(null);
+                                                release.join();
+                                                assertEquals(5, v.actualUsedHeight(0));
+                                                return null;
+                                            });
+                                    finished.complete(null);
+                                } catch (Throwable failure) {
+                                    finished.completeExceptionally(failure);
+                                }
+                            });
+            try {
+                entered.get(3, TimeUnit.SECONDS);
+                var drain = f.scopes.closeAsync();
+                assertFalse(drain.isDone());
+                assertEquals(1, f.scopes.liquidCredits());
+                assertThrows(RuntimeException.class, () -> f.scopes.create(MAP, Cancellation.NONE));
+                assertFalse(drain.isDone(), "Rejected work must not retire held liquid owner");
+            } finally {
+                release.complete(null);
+                finished.get(3, TimeUnit.SECONDS);
+                owner.close();
+            }
+        }
+    }
 }
