@@ -44,3 +44,19 @@ The first numeric profile supports reviewed Forever fixed percentage aura
 amounts. Other tokens/formulas remain typed unresolved values; raw templates and
 source cells are retained separately from display text. See the profile and
 read-only validation details in [Talents](../docs/talents.md#spell-value-previews).
+
+
+## Optional selected-item spell previews
+
+The three-argument `ItemEffectsService(Tables, Options, String version)` enables
+bounded `SpellTexts` previews for item descriptions. Existing constructors remain
+raw-only. `TooltipLine.text/state` preserve source facts; optional `preview` holds
+interpreted display text and exact substitution evidence. Closing the item-effects
+handle drains the borrowed-table preview helper before closing its owned Tables.
+
+Reviewed Forever5362E3D4 forms additionally admit static slow-aura33 and dummy3
+percentage scalars only with literal `%` units and zero context fields. Fixed
+`$d` durations follow exact SpellMisc434B3607 → SpellDuration4FDF0951 bindings.
+Unsupported/contextual values stay unknown. The application opts into a separately
+pinned local SpellDuration definition without changing the original bundled
+provider or network policy. See [design and validation](../docs/item-spell-text-proposal.md).

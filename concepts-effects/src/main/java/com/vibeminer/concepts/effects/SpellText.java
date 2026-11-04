@@ -14,14 +14,37 @@ final class SpellText {
 
     private SpellText() {}
 
-    record Amount(BigDecimal base, List<SpellTexts.Source> sources, String issue) {
+    record Amount(
+            BigDecimal base,
+            List<SpellTexts.Source> sources,
+            String issue,
+            boolean percentageOnly) {
+        Amount(BigDecimal base, List<SpellTexts.Source> sources, String issue) {
+            this(base, sources, issue, false);
+        }
+
         Amount {
+            sources = List.copyOf(sources);
+        }
+    }
+
+    record Value(String text, List<SpellTexts.Source> sources, String issue) {
+        Value {
             sources = List.copyOf(sources);
         }
     }
 
     static SpellTexts.Description project(
             long spell, String raw, Map<Integer, Amount> amounts, List<String> issues) {
+        return project(spell, raw, amounts, null, issues);
+    }
+
+    static SpellTexts.Description project(
+            long spell,
+            String raw,
+            Map<Integer, Amount> amounts,
+            Value duration,
+            List<String> issues) {
         if (raw == null || raw.length() > LIMIT || !ItemEffectProfiles.wellFormed(raw)) {
             return new SpellTexts.Description(
                     spell,
@@ -68,8 +91,18 @@ final class SpellText {
             String value = null;
             String issue =
                     index == null ? "Unsupported spell token" : "Effect amount is unavailable";
+            var sources = amount == null ? List.<SpellTexts.Source>of() : amount.sources();
+            if (token.equals("$d") && duration != null) {
+                value = duration.text();
+                issue = duration.issue();
+                sources = duration.sources();
+            }
             if (amount != null) {
                 issue = amount.issue();
+                if (amount.percentageOnly()
+                        && (matcher.end() == raw.length() || raw.charAt(matcher.end()) != '%')) {
+                    issue = "This fixed scalar profile requires a literal percent suffix";
+                }
                 if (issue == null && amount.base() != null) {
                     BigDecimal absolute = amount.base().abs();
                     if (absolute.stripTrailingZeros().scale() <= 0
@@ -85,11 +118,7 @@ final class SpellText {
             display.append(value == null ? "?" : value);
             substitutions.add(
                     new SpellTexts.Substitution(
-                            token,
-                            index,
-                            value,
-                            amount == null ? List.of() : amount.sources(),
-                            value == null ? issue : null));
+                            token, index, value, sources, value == null ? issue : null));
             at = matcher.end();
         }
         display.append(raw, at, raw.length());

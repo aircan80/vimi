@@ -73,7 +73,10 @@ final class SpellTextsTest {
                     "Variance",
                     "ResourceCoefficient",
                     "GroupSizeBasePointsCoefficient",
-                    "EffectBasePointsF");
+                    "EffectBasePointsF",
+                    "MinDuration",
+                    "Speed",
+                    "LaunchDelay");
 
     private static Db2Types.Row row(long id, String... cells) {
         return new Db2Types.Row(id, false, null, List.of(cells), List.of());
@@ -111,7 +114,7 @@ final class SpellTextsTest {
                             null,
                             TableSchema.KeyStorage.NONE,
                             TableSchema.KeyStorage.NONE,
-                            !field.equals("ScalingClass"),
+                            !field.equals("ScalingClass") && !field.equals("PvPDurationIndex"),
                             WowLocale.parse("enUS"),
                             null,
                             null));
@@ -176,6 +179,236 @@ final class SpellTextsTest {
                                         List.of(row(16929, "Increases armor by $s1%.")),
                                         TableTypes.State.PARTIAL),
                                 table(2, "SpellEffect", names, effects, TableTypes.State.PARTIAL)));
+    }
+
+    private static MemoryTables.FakeTable layout(MemoryTables.FakeTable table, String hash) {
+        var entry = table.entry();
+        return new MemoryTables.FakeTable(
+                new TableTypes.Entry(
+                        entry.fileDataId(),
+                        entry.name(),
+                        entry.state(),
+                        true,
+                        null,
+                        new TableTypes.Counts(
+                                table.rows().size(), table.rows().size(), 0, 0, "fixture", hash),
+                        entry.contentKey()),
+                table.columns(),
+                table.rows(),
+                new TableSchema(
+                        table.schema().columns(),
+                        List.of(hash),
+                        table.schema().match(),
+                        table.schema().locale(),
+                        null),
+                table.protectedIds(),
+                true);
+    }
+
+    private static Db2Types.Row scalar(long id, int slot, String changed) {
+        var values = new ArrayList<>(effect(id, slot == 0 ? "-50" : "-80", null).values());
+        values.set(FIELDS.indexOf("EffectAura"), slot == 0 ? "33" : "0");
+        values.set(FIELDS.indexOf("Effect"), slot == 0 ? "6" : "3");
+        values.set(FIELDS.indexOf("EffectIndex"), Integer.toString(slot));
+        values.set(FIELDS.indexOf("EffectBonusCoefficient"), "0");
+        if (changed != null) {
+            values.set(FIELDS.indexOf(changed), "2");
+        }
+        return new Db2Types.Row(id, false, null, values, List.of());
+    }
+
+    private static MemoryTables.FakeTable miscTable(List<Db2Types.Row> rows) {
+        var names = new ArrayList<String>();
+        names.add("ID");
+        for (int i = 0; i < 17; i++) {
+            names.add("Attributes[" + i + "]");
+        }
+        names.addAll(
+                List.of(
+                        "DifficultyID",
+                        "CastingTimeIndex",
+                        "DurationIndex",
+                        "PvPDurationIndex",
+                        "RangeIndex",
+                        "SchoolMask",
+                        "Speed",
+                        "LaunchDelay",
+                        "MinDuration",
+                        "SpellIconFileDataID",
+                        "ActiveIconFileDataID",
+                        "ContentTuningID",
+                        "ShowFutureSpellPlayerConditionID",
+                        "SpellVisualScript",
+                        "ActiveSpellVisualScript",
+                        "SpellID"));
+        var expanded = new ArrayList<Db2Types.Row>();
+        for (var row : rows) {
+            var cells = new ArrayList<>(java.util.Collections.nCopies(names.size(), "0"));
+            cells.set(0, Long.toString(row.id()));
+            for (int i = 0; i < 5; i++) {
+                cells.set(
+                        names.indexOf(
+                                List.of(
+                                                "SpellID",
+                                                "DifficultyID",
+                                                "DurationIndex",
+                                                "PvPDurationIndex",
+                                                "MinDuration")
+                                        .get(i)),
+                        row.values().get(i));
+            }
+            expanded.add(new Db2Types.Row(row.id(), false, null, cells, List.of()));
+        }
+        return layout(table(3, "SpellMisc", names, expanded, TableTypes.State.PARTIAL), "434B3607");
+    }
+
+    private static SpellTexts.Description scalarPreview(
+            String raw,
+            List<Db2Types.Row> effects,
+            List<Db2Types.Row> misc,
+            List<Db2Types.Row> duration) {
+        var world =
+                new MemoryTables()
+                        .add(
+                                BUILD,
+                                "enUS",
+                                List.of(
+                                        table(
+                                                1,
+                                                "Spell",
+                                                List.of("Description_lang"),
+                                                List.of(row(16929, raw)),
+                                                TableTypes.State.PARTIAL),
+                                        table(
+                                                2,
+                                                "SpellEffect",
+                                                FIELDS,
+                                                effects,
+                                                TableTypes.State.PARTIAL),
+                                        miscTable(misc),
+                                        layout(
+                                                table(
+                                                        4,
+                                                        "SpellDuration",
+                                                        List.of(
+                                                                "Duration",
+                                                                "DurationPerLevel",
+                                                                "MaxDuration",
+                                                                "DurationPerResource"),
+                                                        duration,
+                                                        TableTypes.State.PARTIAL),
+                                                "4FDF0951")));
+        try (var tables = world.forBuild(BUILD, "enUS", Cancellation.NONE).join().tables();
+                var service = new SpellTexts(tables, "1.60.1.70755")) {
+            return service.description(16929, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                    .join();
+        }
+    }
+
+    @Test
+    void staticSlowAndDummyPercentagesAndFixedDurationUseRecordedMagnitudeAndMilliseconds() {
+        var result =
+                scalarPreview(
+                        "Slow by $s1% for $d; special $s2%.",
+                        List.of(scalar(101, 0, null), scalar(102, 1, null)),
+                        List.of(row(90, "16929", "0", "1", "0", "0")),
+                        List.of(row(1, "10000", "0", "10000", "0")));
+        assertEquals("Slow by 50% for 10 sec; special 80%.", result.display());
+        assertEquals(SpellTexts.State.RESOLVED, result.state());
+        assertEquals(
+                "-50",
+                result.substitutions().getFirst().sources().stream()
+                        .filter(source -> source.column().equals("EffectBasePointsF"))
+                        .findFirst()
+                        .orElseThrow()
+                        .value());
+        assertTrue(
+                result.substitutions().get(1).sources().stream()
+                        .anyMatch(
+                                source ->
+                                        source.table().equals("SpellDuration")
+                                                && source.rowId() == 1
+                                                && source.value().equals("10000")));
+        assertTrue(result.issues().stream().anyMatch(issue -> issue.contains("PARTIAL")));
+    }
+
+    @Test
+    void newScalarFormsRequirePercentUnitsAndEveryReviewedContextGuard() {
+        for (String guard :
+                List.of(
+                        "Variance",
+                        "EffectRealPointsPerLevel",
+                        "EffectPointsPerResource",
+                        "BonusCoefficientFromAP",
+                        "Coefficient",
+                        "ResourceCoefficient",
+                        "EffectBonusCoefficient",
+                        "GroupSizeBasePointsCoefficient",
+                        "PvpMultiplier",
+                        "ScalingClass",
+                        "EffectAttributes",
+                        "EffectAuraPeriod",
+                        "EffectTriggerSpell")) {
+            var result =
+                    scalarPreview(
+                            "Slow by $s1%.", List.of(scalar(101, 0, guard)), List.of(), List.of());
+            assertEquals("Slow by ?%.", result.display(), guard);
+            assertEquals(SpellTexts.State.UNRESOLVED, result.state(), guard);
+        }
+        var unitless =
+                scalarPreview(
+                        "Amount $s1; dummy $s2.",
+                        List.of(scalar(101, 0, null), scalar(102, 1, null)),
+                        List.of(),
+                        List.of());
+        assertEquals("Amount ?; dummy ?.", unitless.display());
+        var duplicate =
+                scalarPreview(
+                        "$s1%",
+                        List.of(scalar(101, 0, null), scalar(102, 0, null)), List.of(), List.of());
+        assertEquals("?%", duplicate.display());
+    }
+
+    @Test
+    void durationOnlyRejectsScalingIndefiniteFractionalAndAmbiguousSources() {
+        for (var row :
+                List.of(
+                        row(1, "-1", "0", "-1", "0"),
+                        row(1, "10000", "1", "10000", "0"),
+                        row(1, "10000", "0", "10000", "1"),
+                        row(1, "1500", "0", "1500", "0"),
+                        row(1, "10000", "0", "20000", "0"))) {
+            var result =
+                    scalarPreview(
+                            "Lasts $d.",
+                            List.of(),
+                            List.of(row(90, "16929", "0", "1", "0", "0")),
+                            List.of(row));
+            assertEquals("Lasts ?.", result.display(), row.toString());
+        }
+        var fixed =
+                scalarPreview(
+                        "Lasts $d.",
+                        List.of(),
+                        List.of(row(90, "16929", "0", "1", "0", "0")),
+                        List.of(row(1, "10000", "0", "10000", "0")));
+        assertEquals("Lasts 10 sec.", fixed.display());
+        for (var misc :
+                List.of(
+                        List.of(row(90, "16929", "0", "1", "1", "0")),
+                        List.of(row(90, "16929", "0", "1", "0", "1")),
+                        List.of(
+                                row(90, "16929", "0", "1", "0", "0"),
+                                row(91, "16929", "0", "1", "0", "0")))) {
+            assertEquals(
+                    "Lasts ?.",
+                    scalarPreview(
+                                    "Lasts $d.",
+                                    List.of(),
+                                    misc,
+                                    List.of(row(1, "10000", "0", "10000", "0")))
+                            .display());
+        }
     }
 
     @Test

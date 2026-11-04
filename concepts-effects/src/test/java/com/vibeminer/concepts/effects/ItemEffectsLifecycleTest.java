@@ -61,6 +61,87 @@ final class ItemEffectsLifecycleTest {
     }
 
     @Test
+    void optionalPreviewFailureAndOutwardCancellationStillDrainBeforeTablesClose()
+            throws Exception {
+        for (boolean canceled : List.of(false, true)) {
+            var base = ItemEffectTextTest.spell(TableTypes.State.PARTIAL, java.util.Map.of());
+            var spell =
+                    new FakeTable(
+                            base.entry(),
+                            base.columns(),
+                            List.of(EffectsWorld.row(7, "7", "Gain $s1%.")),
+                            base.schema(),
+                            java.util.Map.of(),
+                            true);
+            var world = ItemEffectTextTest.world(spell);
+            var real = real(world);
+            var held = new CompletableFuture<TableTypes.RowResult>();
+            var entered = new CountDownLatch(1);
+            var reads = new AtomicInteger();
+            var closed = new AtomicInteger();
+            var tables =
+                    proxy(
+                            real,
+                            (method, args) -> {
+                                if (method.equals("get")
+                                        && "Spell".equals(((TableTypes.Ref) args[0]).name())
+                                        && reads.incrementAndGet() == 2) {
+                                    entered.countDown();
+                                    return held;
+                                }
+                                if (method.equals("closeAsync")) {
+                                    closed.incrementAndGet();
+                                    return real.closeAsync();
+                                }
+                                return null;
+                            });
+            var service =
+                    new ItemEffectsService(
+                            (b, l, t) ->
+                                    CompletableFuture.completedFuture(
+                                            new TableTypes.OpenResult(
+                                                    b,
+                                                    l,
+                                                    FilesOpenState.OPEN,
+                                                    tables,
+                                                    null,
+                                                    null,
+                                                    null)),
+                            new EffectsTypes.Options(),
+                            "1.60.1.70755");
+            var handle =
+                    service.forBuild(EffectsWorld.BUILD, EffectsWorld.LOCALE, Cancellation.NONE)
+                            .join()
+                            .effects();
+            var caller = new Cancellation();
+            var result = handle.tooltip(2, EffectsWorld.NOW, caller);
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                if (canceled) {
+                    result.cancel(false);
+                }
+                var closing = handle.closeAsync();
+                assertFalse(closing.isDone());
+                assertEquals(0, closed.get());
+                held.completeExceptionally(
+                        new IllegalStateException("Authored optional preview failure"));
+                if (!canceled) {
+                    var line = result.get(5, TimeUnit.SECONDS).lines().getFirst();
+                    assertEquals("Gain $s1%.", line.text());
+                    assertEquals(EffectsTypes.TextState.UNRESOLVED_TOKENS, line.state());
+                    assertEquals(SpellTexts.State.UNAVAILABLE, line.preview().state());
+                }
+                closing.get(5, TimeUnit.SECONDS);
+                assertEquals(1, closed.get());
+                assertFalse(caller.isCanceled());
+            } finally {
+                held.completeExceptionally(new IllegalStateException("Test cleanup"));
+                handle.closeAsync().get(5, TimeUnit.SECONDS);
+            }
+        }
+    }
+
+    @Test
     void closeWaitsAcceptedCallEvenAfterOutwardFutureCancellation() throws Exception {
         EffectsWorld world =
                 new EffectsWorld().with(EffectsWorld.retail().toArray(FakeTable[]::new));

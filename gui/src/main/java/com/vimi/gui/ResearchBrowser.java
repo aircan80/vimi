@@ -1101,12 +1101,33 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
         inspector.getChildren().add(text(scope, "muted"));
         if (effects != null) {
             for (var effect : effects.lines()) {
-                String content = effect.text();
+                var preview = effect.preview();
+                String content = preview == null ? effect.text() : preview.display();
                 if (content == null || content.isBlank())
-                    content = safe(effect.name()) + " (" + state(effect.state()) + ")";
+                    content = safe(effect.name()) + " (" + (preview == null
+                            ? state(effect.state()) : "description unavailable") + ")";
                 tooltip.getChildren().add(text(effect.trigger() + ": " + content, "wow-stat"));
-                if (effect.state() == com.vibeminer.concepts.effects.EffectsTypes.TextState.UNRESOLVED_TOKENS)
+                if (preview != null) {
+                    if (preview.state() == com.vibeminer.concepts.effects.SpellTexts.State.UNRESOLVED
+                            || preview.state() == com.vibeminer.concepts.effects.SpellTexts.State.UNAVAILABLE) {
+                        inspector.getChildren().add(text("Some spell values are unavailable for this preview.", "muted"));
+                    }
+                    var details = new TitledPane("Spell source details", null);
+                    details.setExpanded(false);
+                    details.expandedProperty().addListener((observable, wasExpanded, expanded) -> {
+                        if (expanded && details.getContent() == null) {
+                            var source = new javafx.scene.control.TextArea(spellSourceDetails(preview));
+                            source.setEditable(false);
+                            source.setWrapText(true);
+                            source.setPrefRowCount(10);
+                            source.setMaxHeight(240);
+                            details.setContent(source);
+                        }
+                    });
+                    inspector.getChildren().add(details);
+                } else if (effect.state() == com.vibeminer.concepts.effects.EffectsTypes.TextState.UNRESOLVED_TOKENS) {
                     inspector.getChildren().add(text("Client spell expressions are unresolved; source text shown.", "muted"));
+                }
             }
             if (effects.state() != com.vibeminer.concepts.effects.EffectsTypes.PageState.OK)
                 inspector.getChildren().add(text("Item effects: " + state(effects.state()), "muted"));
@@ -1141,6 +1162,29 @@ public final class ResearchBrowser extends BorderPane implements AutoCloseable {
         }
         sourceButton("Item");
         sourceButton("ItemSparse");
+    }
+
+    private static String spellSourceDetails(com.vibeminer.concepts.effects.SpellTexts.Description preview) {
+        var source = new StringBuilder("Spell #" + preview.spellId() + "\n" + preview.raw() + "\n");
+        for (var substitution : preview.substitutions()) {
+            source.append(substitution.token()).append(" → ")
+                    .append(substitution.value() == null ? "unavailable" : substitution.value())
+                    .append(substitution.issue() == null ? "" : " · " + substitution.issue()).append('\n');
+            for (var cell : substitution.sources()) {
+                source.append(cell.table()).append(" #").append(cell.rowId()).append('.')
+                        .append(cell.column()).append(" = ").append(cell.value()).append('\n');
+                if (source.length() > 65536) {
+                    source.setLength(65536);
+                    return source.append("\nAdditional source details omitted.").toString();
+                }
+            }
+        }
+        for (String issue : preview.issues()) source.append(issue).append('\n');
+        if (source.length() > 65536) {
+            source.setLength(65536);
+            source.append("\nAdditional source details omitted.");
+        }
+        return source.toString();
     }
 
     private void showCreature(Row row, CreatureTypes.CreatureResult result) {

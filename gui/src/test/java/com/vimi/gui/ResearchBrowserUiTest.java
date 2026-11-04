@@ -271,7 +271,19 @@ public final class ResearchBrowserUiTest {
                                 com.vibeminer.concepts.effects.EffectsTypes.PageState.OK,
                                 List.of(new com.vibeminer.concepts.effects.EffectsTypes.TooltipLine(
                                         "Use", 429961, "Unroll Bag", "Rest for one minute.",
-                                        com.vibeminer.concepts.effects.EffectsTypes.TextState.READY)), false), null);
+                                        com.vibeminer.concepts.effects.EffectsTypes.TextState.READY),
+                                        new com.vibeminer.concepts.effects.EffectsTypes.TooltipLine(
+                                                "Equip", 123, "Synthetic slow", "Synthetic slow $s1% for $d.",
+                                                com.vibeminer.concepts.effects.EffectsTypes.TextState.UNRESOLVED_TOKENS,
+                                                new com.vibeminer.concepts.effects.SpellTexts.Description(
+                                                        123, "Synthetic slow $s1% for $d.", "Synthetic slow 50% for 10 sec.",
+                                                        com.vibeminer.concepts.effects.SpellTexts.State.RESOLVED,
+                                                        List.of(new com.vibeminer.concepts.effects.SpellTexts.Substitution(
+                                                                "$s1", 0, "50", List.of(new com.vibeminer.concepts.effects.SpellTexts.Source(
+                                                                        "SpellEffect", 101, "EffectBasePointsF", "-50")), null),
+                                                                new com.vibeminer.concepts.effects.SpellTexts.Substitution(
+                                                                        "$d", null, "10 sec", List.of(new com.vibeminer.concepts.effects.SpellTexts.Source(
+                                                                                "SpellDuration", 1, "Duration", "10000")), null)), List.of()))), false), null);
             }
             return CompletableFuture.completedFuture(value);
         }
@@ -481,6 +493,26 @@ public final class ResearchBrowserUiTest {
                                         .anyMatch(node -> node instanceof javafx.scene.control.Label label
                                                 && label.getText().equals("Use: Rest for one minute."));
                                 if (!effect) throw new AssertionError("Selected item effect description missing");
+                                var styled = browser.get().lookupAll(".wow-stat").stream()
+                                        .filter(node -> node instanceof javafx.scene.control.Label)
+                                        .map(node -> ((javafx.scene.control.Label) node).getText()).toList();
+                                if (!styled.contains("Equip: Synthetic slow 50% for 10 sec.")
+                                        || styled.stream().anyMatch(value -> value.contains("$"))) {
+                                    throw new AssertionError("Styled item tooltip must use resolved previews, not raw tokens");
+                                }
+                                var source = browser.get().lookupAll(".titled-pane").stream()
+                                        .filter(node -> node instanceof javafx.scene.control.TitledPane pane
+                                                && pane.getText().equals("Spell source details"))
+                                        .map(node -> (javafx.scene.control.TitledPane) node).findFirst().orElseThrow();
+                                if (source.isExpanded() || source.getContent() != null) {
+                                    throw new AssertionError("Spell source details must remain lazy and collapsed");
+                                }
+                                source.setExpanded(true);
+                                String raw = ((javafx.scene.control.TextArea) source.getContent()).getText();
+                                if (!raw.contains("Synthetic slow $s1% for $d.") || !raw.contains("SpellDuration #1.Duration = 10000")) {
+                                    throw new AssertionError("Collapsed source details preserve raw text and substitution evidence");
+                                }
+                                source.setExpanded(false);
                             });
                 fx(
                         () -> {

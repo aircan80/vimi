@@ -1,6 +1,6 @@
 # Selected item spell-text previews
 
-Status: source-backed design/API checkpoint; no implementation claimed here.
+Status: implementation checkpoint with independently reviewable provider and preview changes. Full integration/release remains separate.
 
 Item286556 reproduces the reported raw-token problem on selected Forever70755.
 Its recorded ItemXItemEffect170254 → ItemEffect238154 → Spell1320579 route reads
@@ -41,7 +41,8 @@ literal `%`. Require difficulty0, a unique readable effect per index, integral
 finite base within the existing limit, raw scaling guard column24 equal0,
 Variance/EffectRealPointsPerLevel/EffectPointsPerResource/BonusCoefficientFromAP/
 Coefficient/ResourceCoefficient/EffectBonusCoefficient equal0 and
-GroupSizeBasePointsCoefficient/PvpMultiplier equal1. No damage/healing, area
+GroupSizeBasePointsCoefficient/PvpMultiplier equal1. EffectAttributes,
+EffectAuraPeriod and EffectTriggerSpell must also be readable zero values. No damage/healing, area
 eligibility, script execution, character scaling or server outcome is inferred.
 Duplicate readable rows and partial scopes retain existing qualification rules.
 
@@ -82,7 +83,10 @@ policies remain unchanged. The existing pinned compressed bundle and source
 hashes are untouched. New data keeps upstream CC-BY-SA attribution separately.
 
 `$d` resolution uses a unique readable difficulty0 SpellMisc with declared,
-verified DurationIndex and exact reviewed layout. It reads that ID from qualified
+verified DurationIndex and exact reviewed layout. The field at raw integer slot21
+has an unverified name in the pinned SpellMisc block; it is conservatively required
+to be zero and retained as `column[21] (unverified name)`, with no assigned semantics.
+Verified MinDuration must also be zero. It reads that ID from qualified
 SpellDuration4FDF0951; DurationPerLevel and DurationPerResource must be0,
 Duration must be positive integral milliseconds with exact whole-second conversion,
 and MaxDuration must equal Duration. Infinite/contextual/ambiguous/protected or
@@ -112,3 +116,26 @@ build/file/layout/hash/provenance gates, old preparation-ledger refresh,
 close/cancellation and styled-tooltip display/source separation. Reproduce the
 reported item through the public service plus a UI fixture; existing C# golden
 facts and native issue certificates must remain unchanged.
+
+## Implemented checkpoint validation
+
+The opt-in provider passes exact build/layout/manifest, corruption/truncation and
+unchanged legacy resolution tests. Existing pinned resources are byte unchanged.
+Application table/definition/item preparation identities include the enabled
+supplement identity; old prepared NO_DEFINITION ledgers therefore cannot be reused.
+The disabled path remains explicit and never enables the supplement.
+
+The public ItemEffectsService using original read-only70755 sources now produces
+an optional RESOLVED preview for item286556:50%,10sec,80%. Raw TooltipLine.text and
+its original UNRESOLVED_TOKENS state remain intact. SpellMisc866289 selects
+duration1, whose exact row reads10000/0/10000/0 milliseconds/scaling fields. This
+is a source-based description preview, not desert-condition or script evaluation.
+Private evidence: `/tmp/vimi-item-tooltip-286556-resolved.log`.
+
+Authored tests cover thirteen percentage context guards, duplicate indices,
+percent-only units, indefinite/scaled/fractional/ambiguous duration, raw/preview
+identity, optional failure, outward cancellation and close-before-Tables ordering.
+The rendered Items fixture verifies resolved text contains no raw dollar syntax;
+raw text and exact substitution cells appear only when Source details is expanded.
+That expansion creates one bounded read-only text area, avoiding eager per-cell
+node construction on item selection.

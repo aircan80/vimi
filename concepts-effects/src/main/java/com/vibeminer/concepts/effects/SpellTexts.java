@@ -168,7 +168,11 @@ public final class SpellTexts implements AutoCloseable {
         if (!raw.contains("$") && !raw.contains("|")) {
             return SpellText.project(spell, raw, Map.of(), issues);
         }
-        if (!java.util.regex.Pattern.compile("\\$s[1-3](?![A-Za-z0-9])").matcher(raw).find()) {
+        boolean needsAmounts =
+                java.util.regex.Pattern.compile("\\$s[1-3](?![A-Za-z0-9])").matcher(raw).find();
+        boolean needsDuration =
+                java.util.regex.Pattern.compile("\\$d(?![A-Za-z0-9])").matcher(raw).find();
+        if (!needsAmounts && !needsDuration) {
             return SpellText.project(spell, raw, Map.of(), issues);
         }
         // The direct-float profile is reviewed for modern Forever, not legacy integer Classic data.
@@ -181,20 +185,27 @@ public final class SpellTexts implements AutoCloseable {
                     Map.of(),
                     List.of("Spell amount profile is unsupported for this build."));
         }
+        var amounts =
+                needsAmounts
+                        ? amounts(spell, priority, token, issues)
+                        : Map.<Integer, SpellText.Amount>of();
+        var duration = needsDuration ? duration(spell, priority, token, issues) : null;
+        return SpellText.project(spell, raw, amounts, duration, issues);
+    }
+
+    private Map<Integer, SpellText.Amount> amounts(
+            long spell, TableTypes.Priority priority, Cancellation token, List<String> issues) {
         var effectSchema =
                 tables.schema(TableTypes.Ref.forName("SpellEffect"), priority, token).join();
         var effects = new Columns(effectSchema);
         if (!TableQueries.isReadable(effectSchema.table().state()) || !effects.modernProfile()) {
-            return SpellText.project(
-                    spell,
-                    raw,
-                    Map.of(),
-                    List.of("SpellEffect profile is unavailable: " + effectSchema.table().state()));
+            issues.add("SpellEffect profile is unavailable: " + effectSchema.table().state());
+            return Map.of();
         }
         var lookup = indexes.lookup("SpellEffect", "SpellID", spell, 64, priority, token).join();
         if (lookup.state() != RelationIndexes.State.OK || lookup.matches() > 64) {
-            return SpellText.project(
-                    spell, raw, Map.of(), List.of("SpellEffect lookup is " + lookup.state()));
+            issues.add("SpellEffect lookup is " + lookup.state());
+            return Map.of();
         }
         if (!lookup.complete()) {
             issues.add("SpellEffect is PARTIAL; values use readable records only.");
@@ -236,12 +247,16 @@ public final class SpellTexts implements AutoCloseable {
                             effects.text(effect, 24)));
             var kind = effects.number(effect, "Effect");
             var aura = effects.number(effect, "EffectAura");
-            // Reviewed fixed percentage-aura forms only, not arbitrary damage/healing formulas.
+            // Existing talent forms stay unchanged; new scalar cases require a literal % at use.
+            boolean percentageOnly =
+                    (BigDecimal.valueOf(6).equals(kind) && BigDecimal.valueOf(33).equals(aura))
+                            || (BigDecimal.valueOf(3).equals(kind) && BigDecimal.ZERO.equals(aura));
             boolean fixed =
                     effects.rawGuardZero(effect)
                             && BigDecimal.valueOf(6).equals(kind)
                             && (BigDecimal.valueOf(108).equals(aura)
                                     || BigDecimal.valueOf(290).equals(aura));
+            fixed |= percentageOnly && effects.rawGuardZero(effect);
             for (String field : CONTEXT_FLOATS) {
                 sources.add(
                         new Source(
@@ -253,7 +268,23 @@ public final class SpellTexts implements AutoCloseable {
                         new Source(
                                 "SpellEffect", effect.id(), field, effects.value(effect, field)));
                 var value = effects.number(effect, field);
-                fixed &= value != null && value.compareTo(BigDecimal.ONE) == 0;
+                BigDecimal expected =
+                        percentageOnly && field.equals("EffectBonusCoefficient")
+                                ? BigDecimal.ZERO
+                                : BigDecimal.ONE;
+                fixed &= value != null && value.compareTo(expected) == 0;
+            }
+            if (percentageOnly) {
+                for (String field :
+                        List.of("EffectAttributes", "EffectAuraPeriod", "EffectTriggerSpell")) {
+                    sources.add(
+                            new Source(
+                                    "SpellEffect",
+                                    effect.id(),
+                                    field,
+                                    effects.value(effect, field)));
+                    fixed &= effects.zero(effect, field);
+                }
             }
             var base = effects.number(effect, "EffectBasePointsF");
             var amount =
@@ -264,7 +295,8 @@ public final class SpellTexts implements AutoCloseable {
                                     ? "Effect base amount is unreadable"
                                     : fixed
                                             ? null
-                                            : "Effect requires random, scaling or character context");
+                                            : "Effect requires random, scaling or character context",
+                            percentageOnly);
             if (amounts.putIfAbsent(slot, amount) != null) {
                 ambiguous.add(slot);
             }
@@ -275,7 +307,106 @@ public final class SpellTexts implements AutoCloseable {
                     new SpellText.Amount(
                             null, List.of(), "Multiple readable effects match this effect index"));
         }
-        return SpellText.project(spell, raw, amounts, issues);
+        return amounts;
+    }
+
+    private SpellText.Value duration(
+            long spell, TableTypes.Priority priority, Cancellation token, List<String> issues) {
+        var sources = new ArrayList<Source>();
+        var miscSchema = tables.schema(TableTypes.Ref.forName("SpellMisc"), priority, token).join();
+        var misc = new Columns(miscSchema);
+        if (!TableQueries.isReadable(miscSchema.table().state()) || !misc.miscProfile()) {
+            return new SpellText.Value(null, sources, "SpellMisc duration profile is unavailable");
+        }
+        var lookup = indexes.lookup("SpellMisc", "SpellID", spell, 64, priority, token).join();
+        if (lookup.state() != RelationIndexes.State.OK || lookup.matches() > 64) {
+            return new SpellText.Value(null, sources, "SpellMisc duration lookup is unavailable");
+        }
+        if (!lookup.complete()) {
+            issues.add("SpellMisc is PARTIAL; duration uses readable records only.");
+        }
+        Db2Types.Row selected = null;
+        for (var found : lookup.rows()) {
+            token.check();
+            var row = found.row();
+            var difficulty = misc.number(row, "DifficultyID");
+            if (difficulty == null || difficulty.signum() != 0) {
+                continue;
+            }
+            if (selected != null) {
+                return new SpellText.Value(
+                        null, sources, "Multiple readable SpellMisc durations match");
+            }
+            selected = row;
+        }
+        if (selected == null) {
+            return new SpellText.Value(null, sources, "SpellMisc duration is unavailable");
+        }
+        for (String field : List.of("SpellID", "DifficultyID", "DurationIndex", "MinDuration")) {
+            sources.add(new Source("SpellMisc", selected.id(), field, misc.value(selected, field)));
+        }
+        sources.add(
+                new Source(
+                        "SpellMisc",
+                        selected.id(),
+                        "column[21] (unverified name)",
+                        misc.text(selected, 21)));
+        var id = misc.number(selected, "DurationIndex");
+        if (id == null
+                || id.scale() > 0
+                || id.signum() <= 0
+                || id.compareTo(BigDecimal.valueOf(65535)) > 0
+                || !misc.rawZero(selected, 21)
+                || !misc.zero(selected, "MinDuration")) {
+            return new SpellText.Value(
+                    null, sources, "Duration requires unsupported context or a valid duration ID");
+        }
+        var durationRef = TableTypes.Ref.forName("SpellDuration");
+        var durationSchema = tables.schema(durationRef, priority, token).join();
+        var columns = new Columns(durationSchema);
+        if (!TableQueries.isReadable(durationSchema.table().state())
+                || !columns.durationProfile()) {
+            return new SpellText.Value(
+                    null,
+                    sources,
+                    "SpellDuration profile is unavailable: " + durationSchema.table().state());
+        }
+        var result = tables.get(durationRef, id.longValueExact(), priority, token).join();
+        if (result.outcome() != TableTypes.RowOutcome.FOUND
+                || result.row() == null
+                || result.row().row().id() != id.longValueExact()) {
+            return new SpellText.Value(null, sources, "SpellDuration record is unavailable");
+        }
+        var row = result.row().row();
+        for (String field :
+                List.of("Duration", "DurationPerLevel", "MaxDuration", "DurationPerResource")) {
+            sources.add(new Source("SpellDuration", row.id(), field, columns.value(row, field)));
+        }
+        var milliseconds = columns.number(row, "Duration");
+        if (milliseconds == null
+                || milliseconds.signum() <= 0
+                || milliseconds.scale() > 0
+                || milliseconds.compareTo(BigDecimal.valueOf(Integer.MAX_VALUE)) > 0
+                || !columns.zero(row, "DurationPerLevel")
+                || !columns.zero(row, "DurationPerResource")
+                || milliseconds.compareTo(
+                                columns.number(row, "MaxDuration") == null
+                                        ? BigDecimal.ZERO
+                                        : columns.number(row, "MaxDuration"))
+                        != 0
+                || milliseconds.remainder(BigDecimal.valueOf(1000)).signum() != 0) {
+            return new SpellText.Value(
+                    null,
+                    sources,
+                    "Duration is contextual, indefinite or not a fixed whole second");
+        }
+        if (durationSchema.table().state() == TableTypes.State.PARTIAL) {
+            issues.add("SpellDuration is PARTIAL; duration uses a readable record only.");
+        }
+        return new SpellText.Value(
+                milliseconds.divide(BigDecimal.valueOf(1000)).toBigIntegerExact() + " sec",
+                sources,
+                null);
     }
 
     private static Description unavailable(long spell, String issue) {
@@ -332,8 +463,65 @@ public final class SpellTexts implements AutoCloseable {
             return -1;
         }
 
+        boolean layout(String hash) {
+            return schema.schema() != null
+                    && schema.table().counts() != null
+                    && hash.equalsIgnoreCase(schema.table().counts().layoutHash())
+                    && schema.schema().layoutHashes().stream().anyMatch(hash::equalsIgnoreCase);
+        }
+
+        boolean miscProfile() {
+            if (!layout("434B3607")) {
+                return false;
+            }
+            for (String name : List.of("SpellID", "DifficultyID", "DurationIndex")) {
+                if (field(name, false) < 0
+                        || schema.schema().columns().stream()
+                                .noneMatch(
+                                        c ->
+                                                c.name().equals(name)
+                                                        && c.kind()
+                                                                == TableSchema.ColumnKind.INT)) {
+                    return false;
+                }
+            }
+            return schema.columns().size() > 21
+                    && "integer".equals(schema.columns().get(21).kind())
+                    && schema.columns().get(21).interpretation() == null
+                    && field("MinDuration", false) >= 0
+                    && schema.schema().columns().stream()
+                            .anyMatch(
+                                    c ->
+                                            c.name().equals("MinDuration")
+                                                    && c.kind() == TableSchema.ColumnKind.FLOAT);
+        }
+
+        boolean durationProfile() {
+            if (!layout("4FDF0951")) {
+                return false;
+            }
+            for (String name :
+                    List.of("Duration", "DurationPerLevel", "MaxDuration", "DurationPerResource")) {
+                if (field(name, false) < 0
+                        || schema.schema().columns().stream()
+                                .noneMatch(
+                                        c ->
+                                                c.name().equals(name)
+                                                        && c.kind() == TableSchema.ColumnKind.INT
+                                                        && Integer.valueOf(32).equals(c.bits())
+                                                        && Boolean.FALSE.equals(c.unsigned()))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         boolean rawGuardZero(Db2Types.Row row) {
-            String value = text(row, 24);
+            return rawZero(row, 24);
+        }
+
+        boolean rawZero(Db2Types.Row row, int index) {
+            String value = text(row, index);
             try {
                 return value != null && new BigDecimal(value).signum() == 0;
             } catch (NumberFormatException failure) {
@@ -342,8 +530,7 @@ public final class SpellTexts implements AutoCloseable {
         }
 
         boolean modernProfile() {
-            if (schema.schema() == null
-                    || !schema.schema().layoutHashes().contains("5362E3D4")
+            if (!layout("5362E3D4")
                     || schema.columns().size() <= 24
                     || !schema.columns().get(24).kind().equals("integer")) {
                 return false;

@@ -59,12 +59,24 @@ import java.util.concurrent.CompletableFuture;
 public final class ItemEffectsService implements ItemEffects {
     private final Tables tables;
     private final Options options;
+    private final String version;
 
     public ItemEffectsService(Tables tables) {
         this(tables, new Options());
     }
 
     public ItemEffectsService(Tables tables, Options options) {
+        this(tables, options, null);
+    }
+
+    /**
+     * Explicit selected-build version enables optional interpreted previews; source facts stay raw.
+     */
+    public ItemEffectsService(Tables tables, Options options, String version) {
+        if (version != null && (version.isBlank() || version.length() > 128)) {
+            throw new IllegalArgumentException("Invalid spell preview version");
+        }
+        this.version = version;
         this.tables = Objects.requireNonNull(tables);
         this.options = Objects.requireNonNull(options);
     }
@@ -104,7 +116,7 @@ public final class ItemEffectsService implements ItemEffects {
                                                     opened.observedAt()));
                                     return;
                                 }
-                                handle = new Handle(opened.tables(), options);
+                                handle = new Handle(opened.tables(), options, version);
                                 if (!result.complete(
                                         new OpenResult(
                                                 build,
@@ -148,13 +160,15 @@ public final class ItemEffectsService implements ItemEffects {
                 NO_NAME = new Source(Role.NAME, SourceState.NOT_CHECKED);
         private final BuildTables tables;
         private final RelationIndexes relations;
+        private final SpellTexts spellTexts;
         private final Object gate = new Object();
         private final CompletableFuture<Void> closing = new CompletableFuture<>();
         private int active;
         private boolean closed, cleanup;
 
-        Handle(BuildTables tables, Options options) {
+        Handle(BuildTables tables, Options options, String version) {
             this.tables = tables;
+            this.spellTexts = version == null ? null : new SpellTexts(tables, version);
             relations = new RelationIndexes(tables, options.maxRelationIndexEntries());
         }
 
@@ -290,7 +304,41 @@ public final class ItemEffectsService implements ItemEffects {
                 return new EffectsTypes.TooltipLine(
                         trigger, spell, name, null, EffectsTypes.TextState.INVALID_TEXT);
             }
-            return ItemEffectText.project(trigger, spell, name, row.values().get(column));
+            var line = ItemEffectText.project(trigger, spell, name, row.values().get(column));
+            if (spellTexts == null || line.state() != EffectsTypes.TextState.UNRESOLVED_TOKENS) {
+                return line;
+            }
+            SpellTexts.Description preview;
+            try {
+                preview = spellTexts.description(spell, priority, token).join();
+                token.check();
+                if (!Objects.equals(preview.raw(), line.text())) {
+                    preview =
+                            new SpellTexts.Description(
+                                    spell,
+                                    line.text(),
+                                    null,
+                                    SpellTexts.State.UNAVAILABLE,
+                                    List.of(),
+                                    List.of("Spell preview source is unavailable or changed"));
+                }
+            } catch (RuntimeException unavailable) {
+                token.check();
+                if (EffectsTasks.unwrap(unavailable)
+                        instanceof java.util.concurrent.CancellationException canceled) {
+                    throw canceled;
+                }
+                preview =
+                        new SpellTexts.Description(
+                                spell,
+                                line.text(),
+                                null,
+                                SpellTexts.State.UNAVAILABLE,
+                                List.of(),
+                                List.of("Spell value preview unavailable"));
+            }
+            return new EffectsTypes.TooltipLine(
+                    trigger, spell, name, line.text(), line.state(), preview);
         }
 
         @Override
@@ -395,13 +443,44 @@ public final class ItemEffectsService implements ItemEffects {
 
         private void cleanup() {
             try {
-                tables.closeAsync()
+                var previewsClosed =
+                        spellTexts == null
+                                ? CompletableFuture.<Void>completedFuture(null)
+                                : spellTexts.closeAsync();
+                previewsClosed
+                        .handle(
+                                (ignored, previewFailure) -> {
+                                    CompletableFuture<Void> tablesClosed;
+                                    try {
+                                        tablesClosed = tables.closeAsync();
+                                    } catch (Throwable failure) {
+                                        tablesClosed = CompletableFuture.failedFuture(failure);
+                                    }
+                                    return tablesClosed.handle(
+                                            (done, tableFailure) -> {
+                                                if (previewFailure != null) {
+                                                    if (tableFailure != null) {
+                                                        previewFailure.addSuppressed(tableFailure);
+                                                    }
+                                                    throw new java.util.concurrent
+                                                            .CompletionException(
+                                                            EffectsTasks.unwrap(previewFailure));
+                                                }
+                                                if (tableFailure != null) {
+                                                    throw new java.util.concurrent
+                                                            .CompletionException(
+                                                            EffectsTasks.unwrap(tableFailure));
+                                                }
+                                                return (Void) null;
+                                            });
+                                })
+                        .thenCompose(work -> work)
                         .whenComplete(
-                                (v, e) -> {
-                                    if (e == null) {
+                                (ignored, failure) -> {
+                                    if (failure == null) {
                                         closing.complete(null);
                                     } else {
-                                        closing.completeExceptionally(EffectsTasks.unwrap(e));
+                                        closing.completeExceptionally(EffectsTasks.unwrap(failure));
                                     }
                                 });
             } catch (Throwable e) {

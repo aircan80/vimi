@@ -1,6 +1,7 @@
 package com.vibeminer.concepts.effects;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -36,7 +37,7 @@ final class ItemEffectTextTest {
         assertNull(ItemEffectText.project("Use", 1, null, "x".repeat(16385)).text());
     }
 
-    private static FakeTable spell(TableTypes.State state, Map<Long, String> protectedIds) {
+    static FakeTable spell(TableTypes.State state, Map<Long, String> protectedIds) {
         var id =
                 new TableSchema.SchemaColumn(
                         "ID",
@@ -83,7 +84,7 @@ final class ItemEffectTextTest {
                 true);
     }
 
-    private static EffectsWorld world(FakeTable spell) {
+    static EffectsWorld world(FakeTable spell) {
         return new EffectsWorld()
                 .with(
                         EffectsWorld.itemTable(List.of(EffectsWorld.item(2))),
@@ -102,6 +103,50 @@ final class ItemEffectTextTest {
             assertEquals("Rest for one minute.", result.lines().getFirst().text());
             assertEquals(EffectsTypes.TextState.READY, result.lines().getFirst().state());
             assertEquals("Chance on hit", result.lines().getFirst().trigger());
+        }
+    }
+
+    @Test
+    void explicitPreviewVersionPreservesRawFactsAndKeepsUnknownValuesSeparate() {
+        var original = spell(TableTypes.State.PARTIAL, Map.of());
+        var spell =
+                new FakeTable(
+                        original.entry(),
+                        original.columns(),
+                        List.of(EffectsWorld.row(7, "7", "Gain $s1%.")),
+                        original.schema(),
+                        Map.of(),
+                        true);
+        var world = world(spell);
+        try (var raw = world.open()) {
+            assertNull(
+                    raw.tooltip(2, EffectsWorld.NOW, Cancellation.NONE)
+                            .join()
+                            .lines()
+                            .getFirst()
+                            .preview());
+        }
+        try (var handle =
+                new ItemEffectsService(world.tables, new EffectsTypes.Options(), "1.60.1.70755")
+                        .forBuild(EffectsWorld.BUILD, EffectsWorld.LOCALE, Cancellation.NONE)
+                        .join()
+                        .effects()) {
+            var line =
+                    handle.tooltip(2, EffectsWorld.NOW, Cancellation.NONE)
+                            .join()
+                            .lines()
+                            .getFirst();
+            assertEquals("Gain $s1%.", line.text());
+            assertEquals(EffectsTypes.TextState.UNRESOLVED_TOKENS, line.state());
+            assertNotNull(line.preview());
+            assertEquals("Gain ?%.", line.preview().display());
+            assertEquals("Gain $s1%.", line.preview().raw());
+            assertEquals(SpellTexts.State.UNRESOLVED, line.preview().state());
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            new EffectsTypes.TooltipLine(
+                                    "Use", 8, "Other", line.text(), line.state(), line.preview()));
         }
     }
 

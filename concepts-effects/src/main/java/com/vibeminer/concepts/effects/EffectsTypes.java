@@ -218,7 +218,25 @@ public final class EffectsTypes {
     }
 
     public record TooltipLine(
-            String trigger, long spellId, String name, String text, TextState state) {}
+            String trigger,
+            long spellId,
+            String name,
+            String text,
+            TextState state,
+            SpellTexts.Description preview) {
+        public TooltipLine(
+                String trigger, long spellId, String name, String text, TextState state) {
+            this(trigger, spellId, name, text, state, null);
+        }
+
+        public TooltipLine {
+            if (preview != null
+                    && (preview.spellId() != spellId
+                            || !java.util.Objects.equals(preview.raw(), text))) {
+                throw new IllegalArgumentException("Spell preview differs from source line");
+            }
+        }
+    }
 
     public record Tooltip(
             long itemId, PageState state, List<TooltipLine> lines, boolean truncated) {

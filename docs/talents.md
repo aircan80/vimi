@@ -39,7 +39,7 @@ through same-build SpellEffect rows. Unsupported values show `?`; complex client
 expressions show an unavailable message. Raw templates and exact substitution
 provenance remain in collapsed Source details, not the styled tooltip.
 
-The initial numeric profile is deliberately limited to Forever 1.60, layout
+The original numeric profile is deliberately limited to Forever 1.60, layout
 `5362E3D4`, APPLY_AURA effects with percentage modifier/critical chance aura IDs
 108/290. It uses integral `EffectBasePointsF` directly, with no legacy `+1`;
 random, level, resource and scaling coefficients must be zero, and the reviewed
@@ -60,6 +60,10 @@ and [aura constants](https://github.com/TrinityCore/TrinityCore/blob/master/src/
 ![Authored resolved spell preview](images/talents-spell-text-authored.png)
 
 This image uses authored text/pixels to test numeric preview presentation.
+
+The shared resolver also supports the separately reviewed static percentage and
+fixed-duration forms described in [item spell previews](item-spell-text-proposal.md).
+This does not add general client expression, character scaling or script evaluation.
 
 ## Missing image and description explanations
 

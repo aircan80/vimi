@@ -89,7 +89,8 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         if (result == null) return null;
         return new CachedTableInventory(identity,
                 BundledDefinitions.REVISION + ":" + BundledDefinitions.MANIFEST_SHA256
-                        + ":" + BundledDefinitions.SOURCES_SHA256, result);
+                        + ":" + BundledDefinitions.SOURCES_SHA256
+                        + ":" + com.vibeminer.formats.definitions.SupplementalDefinitions.IDENTITY, result);
     }
 
     NativePreparationWork withAccounting(OverviewAccounting value) {
@@ -414,6 +415,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
 
     private TablesService tablesService(Cancellation token, boolean onlinePreparation) {
         var definitions = new TableDefinitions(definitionsAllowed ? BundledDefinitions.open(token).join() : BundledDefinitions.of(List.of(), java.util.Map.of()), null, null);
+        if (definitionsAllowed) definitions = definitions.withSupplementalDefinitions();
         var available = effectiveKeys();
         var status = new TactKeyStatus(available.fingerprints());
         var defaults =
@@ -609,6 +611,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                 BundledDefinitions.REVISION,
                 BundledDefinitions.MANIFEST_SHA256,
                 BundledDefinitions.SOURCES_SHA256,
+                definitionsAllowed ? com.vibeminer.formats.definitions.SupplementalDefinitions.IDENTITY : "supplemental-disabled",
                 new com.vibeminer.formats.db2.Db2Types.Limits().toString(),
                 keyFingerprint);
     }
@@ -681,7 +684,8 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                         issues, nextCreatures.warmup(TableTypes.Priority.BACKGROUND, token).join());
             token.check();
             var effectOpen =
-                    new ItemEffectsService(staged.service()).forBuild(ref, locale, token).join();
+                    new ItemEffectsService(staged.service(),
+                            new com.vibeminer.concepts.effects.EffectsTypes.Options(), info.version()).forBuild(ref, locale, token).join();
             nextEffects = effectOpen.effects();
             if (nextEffects == null) issues.add("Effects: " + effectOpen.code());
             else
@@ -849,6 +853,7 @@ public final class NativePreparationWork implements BuildPreparation.Work {
                                 BundledDefinitions.REVISION,
                                 BundledDefinitions.MANIFEST_SHA256,
                                 BundledDefinitions.SOURCES_SHA256,
+                                definitionsAllowed ? com.vibeminer.formats.definitions.SupplementalDefinitions.IDENTITY : "supplemental-disabled",
                                 opened.metadata().rootContentKey().hex(),
                                 opened.metadata().encodingContentKey().hex(),
                                 fingerprints)));
