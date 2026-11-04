@@ -205,6 +205,11 @@ final class WorldStreamSession {
                     return;
                 }
                 var result = mailbox.offer(command);
+                if (command instanceof WorldStreamControl.Close
+                        && result == WorldControlMailbox.Result.ACCEPTED) {
+                    requestClose(); // Arm the independent deadline even while native init is
+                    // blocked.
+                }
                 if (result == WorldControlMailbox.Result.OVERFLOW) {
                     send("REJECTED 0 STATUS_OVERFLOW");
                     failed = true;
