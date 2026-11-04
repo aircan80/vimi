@@ -96,6 +96,11 @@ public final class AuthoredWorldControllerChild {
                                     nonce);
                     state.members.clear();
                     for (var member : commit.members()) state.members.add(member.slot());
+                    var heldCommit = directory.getParent().resolve("authored-hold-commit");
+                    if (Files.exists(heldCommit) && Long.parseLong(Files.readString(heldCommit)) == commit.next()) {
+                        Files.writeString(directory.getParent().resolve("authored-held-commit"), Long.toString(commit.next()));
+                        while (Files.exists(heldCommit)) Thread.sleep(2);
+                    }
                     state.send("INPUT_CONSUMED " + next.transaction() + " COMMIT");
                     state.send(
                             "COMMITTED "

@@ -28,6 +28,7 @@ public final class WorldStreamSourceControllerTest {
     private WorldStreamSourceControllerTest() {}
 
     public static void main(String[] args) throws Exception {
+        retryCommitKeepsExactTargetUntilPriorFileActuallyRetires();
         failedFxWakeStillCancelsHeldInitialSourceQualification();
         returningNearestCanProgressWhenAllNeverPresentedNeighborsRemainWanted();
         newNearestCanProgressWhenAllNeverPresentedNeighborsRemainWanted();
@@ -48,6 +49,65 @@ public final class WorldStreamSourceControllerTest {
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
         queuedGpuOwnerLateCloseIsPartOfControllerDrain();
         closeDuringActualInitialWdtQualificationIsCleanAndWaitsSourceDrain();
+    }
+
+    private static void retryCommitKeepsExactTargetUntilPriorFileActuallyRetires() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(),13);
+        var firstEntered = new java.util.concurrent.CountDownLatch(1);
+        var firstRelease = new java.util.concurrent.CountDownLatch(1);
+        Path hold = fixture.directory.resolve("authored-hold-commit");
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed()!=null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0,9));
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared()==9);
+            Files.writeString(hold,"12");
+            fixture.controller.neighborhood(fixture.tiles.subList(4,13));
+            fixture.until(() -> Files.exists(fixture.directory.resolve("authored-held-commit")));
+            enqueueHeldFile(fixture.gpu.session, firstEntered, firstRelease);
+            check(firstEntered.await(3,TimeUnit.SECONDS),"Actual producer/file lane held before INPUT_CONSUMED12");
+            Files.delete(hold);
+            fixture.until(() -> fixture.commitLines().stream().anyMatch(line -> line.startsWith("12 ")));
+            var returning = new ArrayList<>(fixture.tiles.subList(4,12));
+            returning.addFirst(fixture.tiles.get(1));
+            fixture.controller.neighborhood(returning);
+            var targetField=WorldStreamSourceController.class.getDeclaredField("committing");targetField.setAccessible(true);
+            var retryField=WorldStreamSourceController.class.getDeclaredField("retryCommit");retryField.setAccessible(true);
+            fixture.until(() -> {
+                try {return retryField.getBoolean(fixture.controller);}
+                catch(IllegalAccessException error){throw new AssertionError(error);}
+            });
+            Object target=targetField.get(fixture.controller);
+            check(fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.WAITING_CAPACITY,
+                    "Real pending commit input credit is pressure, not fatal or fabricated ACK");
+            var atField=WorldStreamSourceController.class.getDeclaredField("commitRetryAt");atField.setAccessible(true);
+            fixture.controller.neighborhood(fixture.tiles.subList(1,10));
+            fixture.clock.set(600_000_000L);
+            fixture.controller.pulse();
+            fixture.until(() -> {
+                try {return atField.getLong(fixture.controller)==600_000_000L;}
+                catch(IllegalAccessException error){throw new AssertionError(error);}
+            });
+            check(targetField.get(fixture.controller)==target,"500ms refused retry keeps exact immutable target aliases");
+            firstRelease.countDown();
+
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared()==9);
+            check(fixture.pool.stats().leaseClaims()==9,"Actual cleanup capacity eventually restores the requested neighborhood");
+        } finally {
+            Files.deleteIfExists(hold);
+            firstRelease.countDown();
+            fixture.close();
+        }
+    }
+
+    private static void enqueueHeldFile(WorldStreamTransport.Session session,
+            java.util.concurrent.CountDownLatch entered,java.util.concurrent.CountDownLatch release) throws Exception {
+        var method=session.getClass().getDeclaredMethod("enqueueFile",Runnable.class);method.setAccessible(true);
+        method.invoke(session,(Runnable)()->{entered.countDown();try{release.await();}
+            catch(InterruptedException error){throw new AssertionError(error);}});
     }
 
     private static void returningNearestCanProgressWhenAllNeverPresentedNeighborsRemainWanted() throws Exception {
