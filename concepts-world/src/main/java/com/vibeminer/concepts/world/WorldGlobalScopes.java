@@ -140,6 +140,8 @@ final class WorldGlobalScopes {
     private Lane active;
     private Throwable cleanupFault;
     private final java.util.ArrayList<PayloadCredit> payloads = new java.util.ArrayList<>(2);
+    private final java.util.ArrayList<WorldGlobalAssetFactory.OwnedAsset> quarantine =
+            new java.util.ArrayList<>(2);
 
     WorldGlobalScopes(BuildTables tables, BuildFiles files) {
         maps = new WorldMapProofs(tables, files);
@@ -585,7 +587,11 @@ final class WorldGlobalScopes {
         }
 
         void retired() {
-            source.retirePayload(this);
+            retired(null);
+        }
+
+        void retired(Throwable failure) {
+            source.retirePayload(this, failure);
         }
     }
 
@@ -628,10 +634,20 @@ final class WorldGlobalScopes {
         asset.pin(); // No callbacks/IO; never acquire source while holding owner.
     }
 
-    private void retirePayload(PayloadCredit credit) {
+    private void retirePayload(PayloadCredit credit, Throwable cleanup) {
         boolean finish;
         Throwable failure;
         synchronized (this) {
+            if (cleanup != null) {
+                if (credit.asset != null) {
+                    quarantine.add(credit.asset);
+                }
+                if (cleanupFault == null) {
+                    cleanupFault = cleanup;
+                } else if (cleanupFault != cleanup) {
+                    cleanupFault.addSuppressed(cleanup);
+                }
+            }
             payloads.remove(credit);
             credit.asset = null;
             finish = closed && !working && payloads.isEmpty();
@@ -671,8 +687,23 @@ final class WorldGlobalScopes {
                 lane.request();
             }
         } finally {
+            Throwable closingFailure = null;
             for (var asset : owners) {
-                asset.close();
+                try {
+                    asset.close();
+                } catch (RuntimeException | Error cleanup) {
+                    if (closingFailure == null) {
+                        closingFailure = cleanup;
+                    } else if (closingFailure != cleanup) {
+                        closingFailure.addSuppressed(cleanup);
+                    }
+                }
+            }
+            if (closingFailure instanceof Error fatal) {
+                throw fatal;
+            }
+            if (closingFailure instanceof RuntimeException runtime) {
+                throw runtime;
             }
         }
         if (finish) {

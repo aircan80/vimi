@@ -1398,4 +1398,220 @@ class WorldGlobalAssetFactoryTest {
             assertEquals(0, f.scopes.payloadCredits());
         }
     }
+
+    private static final class OutputFile implements AutoCloseable {
+        final java.nio.file.Path path;
+        final AtomicInteger closes = new AtomicInteger();
+        volatile boolean moved;
+
+        OutputFile(java.nio.file.Path path) {
+            this.path = path;
+            try {
+                java.nio.file.Files.writeString(
+                        path, "unadvertised", java.nio.file.StandardOpenOption.CREATE_NEW);
+            } catch (java.io.IOException failure) {
+                throw new java.io.UncheckedIOException(failure);
+            }
+        }
+
+        @Override
+        public void close() throws java.io.IOException {
+            closes.incrementAndGet();
+            if (!moved) {
+                java.nio.file.Files.delete(path);
+            }
+        }
+    }
+
+    @Test
+    void writerBorrowsActualPayloadBeforeFinalChecksAndExpiresItsView(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) throws Exception {
+        try (var f = new Fixture()) {
+            var saved = new AtomicReference<WorldGlobalAssetFactory.AssetBorrow>();
+            var file = new AtomicReference<OutputFile>();
+            var owned =
+                    f.factory.createAndWrite(
+                            f.scope,
+                            SELECT,
+                            Cancellation.NONE,
+                            (borrow, token) -> {
+                                token.check();
+                                assertEquals(3, borrow.vertices());
+                                assertEquals(6, borrow.indices());
+                                assertEquals(255, borrow.imageByte(0, 3));
+                                saved.set(borrow);
+                                var output = new OutputFile(directory.resolve("global.wgs"));
+                                file.set(output);
+                                return output;
+                            });
+            assertThrows(IllegalStateException.class, () -> saved.get().vertices());
+            assertEquals(0, file.get().closes.get());
+            assertEquals(1, f.scopes.payloadCredits());
+            owned.closeAsync().get(3, TimeUnit.SECONDS);
+            assertFalse(java.nio.file.Files.exists(file.get().path));
+            assertEquals(1, file.get().closes.get());
+            assertEquals(0, f.scopes.payloadCredits());
+        }
+    }
+
+    @Test
+    void changedLastBindingDeletesUnreturnedOutputAndRetiresConstructionPin(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) throws Exception {
+        try (var f = new Fixture()) {
+            var file = new AtomicReference<OutputFile>();
+            assertThrows(
+                    WorldTerrainStreaming.Refusal.class,
+                    () ->
+                            f.factory.createAndWrite(
+                                    f.scope,
+                                    SELECT,
+                                    Cancellation.NONE,
+                                    (borrow, token) -> {
+                                        var output =
+                                                new OutputFile(directory.resolve("global.wgs"));
+                                        file.set(output);
+                                        f.files.changedId = 201;
+                                        f.files.changeAfterRead = true;
+                                        return output;
+                                    }));
+            assertEquals(1, file.get().closes.get());
+            assertFalse(java.nio.file.Files.exists(file.get().path));
+            assertEquals(0, f.scopes.payloadCredits());
+            assertEquals(f.files.totalOpens(), f.files.closed.get());
+        }
+    }
+
+    @Test
+    void sourceCloseWaitsActualMoveCallbackAndCannotDeleteMovedInput(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) throws Exception {
+        try (var f = new Fixture()) {
+            var file = new OutputFile(directory.resolve("global.wgs"));
+            var owned =
+                    f.factory.createAndWrite(f.scope, SELECT, Cancellation.NONE, (b, t) -> file);
+            var entered = new CompletableFuture<Void>();
+            var release = new CompletableFuture<Void>();
+            var completed = new CompletableFuture<Void>();
+            var worker =
+                    Thread.ofVirtual()
+                            .start(
+                                    () -> {
+                                        try {
+                                            owned.withWrittenResource(
+                                                    resource -> {
+                                                        entered.complete(null);
+                                                        release.join();
+                                                        resource.moved = true;
+                                                    });
+                                            completed.complete(null);
+                                        } catch (RuntimeException | Error failure) {
+                                            completed.completeExceptionally(failure);
+                                        }
+                                    });
+            try {
+                entered.get(3, TimeUnit.SECONDS);
+                var sourceDrain = f.scopes.closeAsync();
+                assertFalse(sourceDrain.isDone());
+                assertEquals(0, file.closes.get());
+                assertEquals(1, f.scopes.payloadCredits());
+                release.complete(null);
+                completed.get(3, TimeUnit.SECONDS);
+                worker.join();
+                sourceDrain.get(3, TimeUnit.SECONDS);
+                assertEquals(1, file.closes.get());
+                org.junit.jupiter.api.Assertions.assertTrue(java.nio.file.Files.exists(file.path));
+                assertThrows(IllegalStateException.class, () -> owned.withWrittenResource(r -> {}));
+                java.nio.file.Files.delete(file.path); // The separate moved owner, never Source.
+            } finally {
+                release.complete(null);
+                worker.join();
+            }
+        }
+    }
+
+    @Test
+    void sourceCloseCancelsTheActualWriterTokenAndClosesUnreturnedFile(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) throws Exception {
+        try (var f = new Fixture()) {
+            var entered = new CompletableFuture<Void>();
+            var canceled = new CompletableFuture<Void>();
+            var release = new CompletableFuture<Void>();
+            var failed = new CompletableFuture<Throwable>();
+            var file = new AtomicReference<OutputFile>();
+            var worker =
+                    Thread.ofVirtual()
+                            .start(
+                                    () -> {
+                                        try {
+                                            f.factory.createAndWrite(
+                                                    f.scope,
+                                                    SELECT,
+                                                    Cancellation.NONE,
+                                                    (borrow, token) -> {
+                                                        var output =
+                                                                new OutputFile(
+                                                                        directory.resolve(
+                                                                                "global.wgs"));
+                                                        file.set(output);
+                                                        try (var registration =
+                                                                token.onCancel(
+                                                                        () ->
+                                                                                canceled.complete(
+                                                                                        null))) {
+                                                            entered.complete(null);
+                                                            release.join();
+                                                            return output;
+                                                        }
+                                                    });
+                                            failed.completeExceptionally(
+                                                    new AssertionError(
+                                                            "Closed Source returned output"));
+                                        } catch (RuntimeException | Error failure) {
+                                            failed.complete(failure);
+                                        }
+                                    });
+            try {
+                entered.get(3, TimeUnit.SECONDS);
+                var sourceDrain = f.scopes.closeAsync();
+                canceled.get(3, TimeUnit.SECONDS);
+                assertFalse(sourceDrain.isDone());
+                assertEquals(0, file.get().closes.get());
+                release.complete(null);
+                org.junit.jupiter.api.Assertions.assertNotNull(failed.get(3, TimeUnit.SECONDS));
+                worker.join();
+                sourceDrain.get(3, TimeUnit.SECONDS);
+                assertEquals(1, file.get().closes.get());
+                assertFalse(java.nio.file.Files.exists(file.get().path));
+                assertEquals(0, f.scopes.payloadCredits());
+            } finally {
+                release.complete(null);
+                worker.join();
+            }
+        }
+    }
+
+    @Test
+    void failedOutputDeletionIsFatalAndDoesNotSkipOtherActualOwners(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) throws Exception {
+        try (var f = new Fixture()) {
+            var a = new OutputFile(directory.resolve("first.wgs"));
+            var b = new OutputFile(directory.resolve("second.wgs"));
+            f.factory.createAndWrite(f.scope, SELECT, Cancellation.NONE, (read, token) -> a);
+            f.factory.createAndWrite(f.scope, SELECT, Cancellation.NONE, (read, token) -> b);
+            java.nio.file.Files.delete(a.path);
+            java.nio.file.Files.createDirectory(a.path);
+            java.nio.file.Files.writeString(a.path.resolve("held"), "held");
+            assertThrows(IllegalStateException.class, f.scopes::closeAsync);
+            assertEquals(1, a.closes.get());
+            assertEquals(1, b.closes.get());
+            assertFalse(java.nio.file.Files.exists(b.path));
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> f.scopes.closeAsync().get(3, TimeUnit.SECONDS));
+            assertEquals(0, f.scopes.payloadCredits());
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> f.factory.createOwned(f.scope, SELECT, Cancellation.NONE));
+            assertEquals(1, a.closes.get()); // Unknown deletion never hot-retries.
+        }
+    }
 }

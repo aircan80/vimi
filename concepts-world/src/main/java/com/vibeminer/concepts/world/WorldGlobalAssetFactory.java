@@ -162,10 +162,12 @@ final class WorldGlobalAssetFactory {
 
     static final class Borrow {
         private Manifest manifest;
+        private Cancellation token;
         private final long thread = Thread.currentThread().threadId();
 
-        private Borrow(Manifest manifest) {
+        private Borrow(Manifest manifest, Cancellation token) {
             this.manifest = manifest;
+            this.token = token;
         }
 
         Manifest manifest() {
@@ -177,6 +179,7 @@ final class WorldGlobalAssetFactory {
 
         private void expire() {
             manifest = null;
+            token = null;
         }
     }
 
@@ -192,7 +195,49 @@ final class WorldGlobalAssetFactory {
         T read(AssetBorrow borrow);
     }
 
-    /** Private source owner. No array or NIO view can bypass the guarded read lifetime. */
+    @FunctionalInterface
+    interface AssetWriter<R extends AutoCloseable> {
+        R writeUnadvertised(AssetBorrow borrow, Cancellation token);
+    }
+
+    /** Worker-only owned resource, retained by the actual source payload through final gates. */
+    static final class WrittenAsset<R extends AutoCloseable> implements AutoCloseable {
+        private final OwnedAsset asset;
+
+        private WrittenAsset(OwnedAsset asset) {
+            this.asset = asset;
+        }
+
+        Manifest facts() {
+            return asset.facts();
+        }
+
+        <T> T withBorrow(AssetRead<T> read) {
+            return asset.withBorrow(read);
+        }
+
+        void withWrittenResource(java.util.function.Consumer<R> moveOnly) {
+            Objects.requireNonNull(moveOnly);
+            asset.withBorrow(
+                    borrow -> {
+                        @SuppressWarnings("unchecked")
+                        R resource = (R) Objects.requireNonNull(asset.written);
+                        moveOnly.accept(resource);
+                        return null;
+                    });
+        }
+
+        @Override
+        public void close() {
+            asset.close();
+        }
+
+        java.util.concurrent.CompletableFuture<Void> closeAsync() {
+            return asset.closeAsync();
+        }
+    }
+
+    /** Private source owner. All resource-bearing construction, callbacks and close run off FX. */
     static final class OwnedAsset implements AutoCloseable {
         private WorldGlobalScopes.PayloadCredit credit;
         private final java.util.concurrent.CompletableFuture<Void> drained =
@@ -203,7 +248,8 @@ final class WorldGlobalAssetFactory {
         private final ArrayList<DrawSpan> spans = new ArrayList<>(64);
         private Manifest manifest;
         private int vertices, indexCount, pixels, pins = 1; // Actual construction pin.
-        private boolean closing, qualified;
+        private boolean closing, qualified, retiring;
+        private AutoCloseable written;
 
         private OwnedAsset(WorldGlobalScopes.PayloadCredit credit) {
             this.credit = credit;
@@ -330,19 +376,40 @@ final class WorldGlobalAssetFactory {
 
         private void retireIfReady() {
             WorldGlobalScopes.PayloadCredit source;
+            AutoCloseable resource;
             synchronized (this) {
-                if (!closing || pins != 0 || credit == null) {
+                if (!closing || pins != 0 || credit == null || retiring) {
                     return;
                 }
+                retiring = true;
+                source = credit;
+                resource = written;
+            }
+            Throwable failure = null;
+            try {
+                if (resource != null) {
+                    resource.close();
+                }
+            } catch (Exception | Error cleanup) {
+                failure = cleanup;
+            }
+            synchronized (this) {
                 mesh = null;
                 indices = null;
                 images.clear();
                 spans.clear();
-                source = credit;
                 credit = null;
+                if (failure == null) {
+                    written = null;
+                } // Failed resource stays retained in the source quarantine.
             }
-            source.retired();
-            drained.complete(null); // No source/owner monitor held across future consumers.
+            source.retired(failure);
+            if (failure == null) {
+                drained.complete(null);
+            } else {
+                drained.completeExceptionally(failure);
+                throw resourceFailure(failure);
+            }
         }
 
         @Override
@@ -433,12 +500,40 @@ final class WorldGlobalAssetFactory {
             WorldGlobalScopes.GlobalScope scope,
             WorldGlobalScopes.Selection selection,
             Cancellation external) {
+        return createOwned(scope, selection, external, null);
+    }
+
+    <R extends AutoCloseable> WrittenAsset<R> createAndWrite(
+            WorldGlobalScopes.GlobalScope scope,
+            WorldGlobalScopes.Selection selection,
+            Cancellation external,
+            AssetWriter<R> writer) {
+        Objects.requireNonNull(writer);
+        var owned = createOwned(scope, selection, external, writer);
+        try {
+            return new WrittenAsset<>(owned);
+        } catch (RuntimeException | Error failure) {
+            try {
+                owned.close();
+            } catch (RuntimeException | Error cleanup) {
+                throw cleanupFailure(failure, cleanup);
+            }
+            throw failure;
+        }
+    }
+
+    private OwnedAsset createOwned(
+            WorldGlobalScopes.GlobalScope scope,
+            WorldGlobalScopes.Selection selection,
+            Cancellation external,
+            AssetWriter<?> writer) {
         Objects.requireNonNull(selection);
         Objects.requireNonNull(external);
         var credit =
                 scopes.reservePayload(scope); // Shared source credit BEFORE any build IO/arrays.
         OwnedAsset asset = null;
         boolean published = false;
+        Throwable primary = null;
         try {
             asset = new OwnedAsset(credit);
             scopes.attachPayload(credit, asset);
@@ -450,22 +545,61 @@ final class WorldGlobalAssetFactory {
                             external,
                             borrow -> {
                                 building.manifest = borrow.manifest();
+                                if (writer != null) {
+                                    var payload = new AssetBorrow(building);
+                                    try {
+                                        // Construction pin remains charged through all final IO.
+                                        building.written =
+                                                Objects.requireNonNull(
+                                                        writer.writeUnadvertised(
+                                                                payload, borrow.token));
+                                    } finally {
+                                        payload.expire();
+                                    }
+                                }
                                 return building;
                             },
                             building);
             scopes.publishPayload(credit, checked);
             published = true;
             return checked;
+        } catch (RuntimeException | Error failure) {
+            primary = failure;
+            throw failure;
         } finally {
-            if (asset == null) {
-                credit.retired();
-            } else {
-                if (!published) {
-                    asset.close();
+            try {
+                if (asset == null) {
+                    credit.retired();
+                } else {
+                    if (!published) {
+                        asset.close();
+                    }
+                    asset.releasePin(); // Final checks and actual lower cleanup precede retirement.
                 }
-                asset.releasePin(); // Keep construction charged through final checks and publish.
+            } catch (RuntimeException | Error cleanup) {
+                if (primary != null) {
+                    throw cleanupFailure(primary, cleanup);
+                }
+                throw cleanup;
             }
         }
+    }
+
+    private static RuntimeException resourceFailure(Throwable failure) {
+        if (failure instanceof Error fatal) {
+            throw fatal;
+        }
+        return failure instanceof RuntimeException runtime
+                ? runtime
+                : new IllegalStateException("Global resource cleanup failed", failure);
+    }
+
+    private static IllegalStateException cleanupFailure(Throwable primary, Throwable cleanup) {
+        var failure = new IllegalStateException("Global output cleanup failed", primary);
+        if (primary != cleanup) {
+            failure.addSuppressed(cleanup);
+        }
+        return failure;
     }
 
     <R extends AutoCloseable> R inspectSources(
@@ -559,7 +693,7 @@ final class WorldGlobalAssetFactory {
                     var manifest =
                             new Manifest(
                                     admission.facts(), root, groups, images, admission.receipts());
-                    var borrow = new Borrow(manifest);
+                    var borrow = new Borrow(manifest, token);
                     try {
                         return Objects.requireNonNull(use.use(borrow));
                     } finally {
