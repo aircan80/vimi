@@ -78,6 +78,16 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final StackPane viewport = new StackPane(image);
     private final WorldMinimap minimap = new WorldMinimap();
     private final TerrainGpuPreview gpu;
+    private final GpuPreviewService gpuService;
+    private WorldStreamSourceController streaming;
+    private final WorldStreamSourceController.Events streamingEvents = this::streamChanged;
+    private boolean streamingMode;
+    private boolean streamingPaused, streamingStartWaiting, renderingTransitionPending;
+    private final WorldStreamImagePresentation streamingImages = new WorldStreamImagePresentation(image);
+    private TerrainRenderer.Camera resumeCamera;
+    private long streamingControl, streamingPolicy = 1;
+    private int streamingWidth, streamingHeight;
+    private CompletableFuture<Void> streamingRetirement = CompletableFuture.completedFuture(null);
     private final CheckBox gpuEnabled = new CheckBox("GPU terrain");
     private final Button retryGpu = new Button("Retry GPU");
     private final Label gpuStatus = new Label();
@@ -106,8 +116,26 @@ final class WorldView extends BorderPane implements AutoCloseable {
             firstFrameActivity = activity("world-first-frame-activity", 32);
     private final Label localStage = new Label();
     private final HBox localLoading = new HBox(8, localActivity, localStage);
-    private final ThreadPoolExecutor requests = worker("world-requests"),
-            preparation = worker("world-preparation");
+    private final LegacyWorldActivity requests = new LegacyWorldActivity("world-requests", true),
+            preparation = new LegacyWorldActivity("world-preparation", false);
+    private CompletableFuture<Void> legacyRetirement = CompletableFuture.completedFuture(null);
+    private volatile CompletableFuture<Void> cpuRetirement = CompletableFuture.completedFuture(null);
+    private volatile java.io.IOException cpuRetirementFailure;
+    private boolean legacyPaused, legacyResumeWaiting;
+    private PendingLegacy<?> pendingLegacy;
+
+    private static final class PendingLegacy<T> {
+        final long selection;
+        final Cancellation token;
+        final java.util.function.Supplier<CompletableFuture<T>> action;
+        final CompletableFuture<T> result = new CompletableFuture<>();
+        PendingLegacy(long selection, Cancellation token,
+                java.util.function.Supplier<CompletableFuture<T>> action) {
+            this.selection = selection;
+            this.token = token;
+            this.action = action;
+        }
+    }
     private CompletableFuture<?> invocation, sceneTask;
     private long sceneGeneration;
     private boolean scenePreparing, waveActive, waveDirty;
@@ -165,6 +193,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final LinkedHashMap<String, WorldService.LoadedTile> loaded = new LinkedHashMap<>();
     private final Set<String> attempted = new HashSet<>();
     private Cancellation token = new Cancellation();
+    private boolean tokenUsed;
     private BuildWorld handle;
     private WorldService.Catalog catalog;
     private WorldService.Inventory inventory;
@@ -233,15 +262,100 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     private <T> CompletableFuture<T> invoke(
             java.util.function.Supplier<CompletableFuture<T>> action) {
-        if (invocation != null) invocation.cancel(false);
-        requests.getQueue().clear();
+        var previousInvocation = invocation;
+        invocation = null;
+        if (previousInvocation != null) previousInvocation.cancel(false);
+        requests.discardQueued();
+        if (legacyPaused) {
+            var pending = new PendingLegacy<T>(selection, token, action);
+            if (pendingLegacy != null) pendingLegacy.result.cancel(false);
+            pendingLegacy = pending;
+            invocation = pending.result;
+            resumePendingLegacy();
+            return pending.result.copy();
+        }
         try {
-            var call = CompletableFuture.supplyAsync(action, requests).thenCompose(value -> value);
+            var cancel = token;
+            tokenUsed = true;
+            var call = requests.invoke(cancel, cancel::cancel, action);
             invocation = call;
             return call;
         } catch (RuntimeException error) {
             return CompletableFuture.failedFuture(error);
         }
+    }
+
+    private void resumePendingLegacy() {
+        if (legacyResumeWaiting) return;
+        legacyResumeWaiting = true;
+        CompletableFuture.allOf(legacyRetirement, streamingRetirement)
+                .whenComplete((ignored, failure) -> Platform.runLater(() -> {
+                    legacyResumeWaiting = false;
+                    var pending = pendingLegacy;
+                    pendingLegacy = null;
+                    if (pending == null) return;
+                    if (stale(pending.selection) || streamingMode || !active) {
+                        pending.result.cancel(false);
+                        return;
+                    }
+                    if (failure != null) {
+                        pending.result.completeExceptionally(failure);
+                        return;
+                    }
+                    try {
+                        resumeLegacy();
+                        runPendingLegacy(pending);
+                    } catch (RuntimeException error) {
+                        pending.result.completeExceptionally(error);
+                    }
+                }));
+    }
+
+    private <T> void runPendingLegacy(PendingLegacy<T> pending) {
+        tokenUsed = true;
+        var actual = requests.invoke(pending.token, pending.token::cancel, pending.action);
+        actual.whenComplete((value, error) -> {
+            if (error == null) pending.result.complete(value);
+            else pending.result.completeExceptionally(error);
+        });
+    }
+
+    private void cancelLegacyToken() {
+        var previous = token;
+        boolean used = tokenUsed;
+        token = new Cancellation();
+        tokenUsed = false;
+        try {
+            if (used) requests.stop(previous, previous::cancel);
+        } catch (RuntimeException error) {
+            // Retire every already-issued key; an unadmitted token grants no source credit.
+            requests.pauseAndDrain();
+            legacyPaused = true;
+            legacyRetirement = CompletableFuture.failedFuture(error);
+        }
+        if (pendingLegacy != null) pendingLegacy.result.cancel(false);
+        pendingLegacy = null;
+    }
+
+    private void pauseLegacy() {
+        var source = handle;
+        legacyPaused = true;
+        var cpuFence = cpuRetirementFailure == null ? cpuRetirement
+                : CompletableFuture.<Void>failedFuture(cpuRetirementFailure);
+        legacyRetirement = CompletableFuture.allOf(requests.pauseAndDrain(),
+                preparation.pauseAndDrain(), textureLoading.whenIdle(), cpuFence, areaDrain,
+                gpu == null ? CompletableFuture.completedFuture(null) : gpu.retirement())
+                .thenCompose(ignored -> source instanceof WorldService nativeWorld
+                        ? nativeWorld.terrainActivityDrained()
+                        : CompletableFuture.failedFuture(new IllegalStateException(
+                                "Custom world provider has no native retirement fence")));
+    }
+
+    private void resumeLegacy() {
+        if (!legacyPaused) return;
+        requests.resume();
+        preparation.resume();
+        legacyPaused = false;
     }
 
     private record Render(
@@ -277,6 +391,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     WorldView(java.util.function.Supplier<BuildWorld> handles,
             java.util.function.LongSupplier revisions, GpuPreviewService gpuService,
             CpuRenderer cpuRenderer, java.util.function.Consumer<Runnable> cpuDelivery) {
+        this.gpuService = gpuService;
         this.cpuRenderer = java.util.Objects.requireNonNull(cpuRenderer);
         this.cpuDelivery = java.util.Objects.requireNonNull(cpuDelivery);
         gpu = gpuService == null ? null : new TerrainGpuPreview(gpuService, Platform::runLater,
@@ -311,6 +426,21 @@ final class WorldView extends BorderPane implements AutoCloseable {
         gpuStatus.setWrapText(true);
         retryGpu.setDisable(true);
         gpuEnabled.setOnAction(e -> {
+            if (streamingMode) {
+                switchStreamingRendering();
+                return;
+            }
+            if (explorer && gpuEnabled.isSelected() && gpuService != null
+                    && handle instanceof WorldService && handle.terrainStreaming().isPresent()) {
+                var previous = image.getImage();
+                var retainedCamera = camera;
+                openExplorer();
+                camera = retainedCamera;
+                image.setImage(previous);
+                streamCamera();
+                streamNeighborhood();
+                return;
+            }
             if (gpu != null && !gpuEnabled.isSelected()) {
                 gpu.hide();
                 show(gpuActivity, false);
@@ -322,6 +452,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
             requestFrame();
         });
         retryGpu.setOnAction(e -> {
+            if (streamingMode) {
+                retireStreaming();
+                startStreaming();
+                return;
+            }
             if (gpu != null) {
                 gpu.retry();
                 gpuEnabled.setSelected(true);
@@ -561,11 +696,28 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 new AnimationTimer() {
                     @Override
                     public void handle(long now) {
-                        if (!active || !explorer || camera == null) return;
+                        if (!active || !explorer) return;
+                        if (streamingMode) {
+                            if (!viewportActive()) {
+                                streamingPaused = true;
+                                retireStreaming();
+                                minimap.hide();
+                                keys.clear();
+                                lastTick = 0;
+                                return;
+                            }
+                            if (streamingPaused && streaming == null) {
+                                if (gpuEnabled.isSelected()) startStreaming();
+                                else switchStreamingRendering();
+                            }
+                            if (streaming != null) streaming.pulse();
+                        }
+                        if (camera == null) return;
                         if (gpu != null && !viewportActive()) {
                             minimap.hide();
                             retireTextures();
                             if (gpuVisible) {
+                                retireStreaming();
                                 gpu.hide();
                                 gpuVisible = false;
                                 show(gpuActivity, false);
@@ -576,10 +728,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         }
                         if (gpu != null && !gpuVisible) {
                             gpuVisible = true;
+                            if (streamingMode && streaming == null) startStreaming();
                             requestFrame();
                             loadNext();
                         }
-                        if (terrainScene == null) {
+                        if (terrainScene == null && !streamingMode) {
                             lastTick = 0;
                             return;
                         }
@@ -608,7 +761,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                 * dt;
                         if (f != 0 || s != 0 || z != 0 || turn != 0 || tilt != 0) {
                             camera = camera.move(f * step, s * step, z * step).look(turn, tilt);
-                            long cadence = gpu != null && gpu.ready() ? 16_000_000 : 100_000_000;
+                            long cadence = streamingMode || gpu != null && gpu.ready()
+                                    ? 16_000_000 : 100_000_000;
                             if (now - lastRender > cadence) {
                                 lastRender = now;
                                 requestFrame();
@@ -668,6 +822,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     void invalidate() {
+        resumeCamera = null;
         retireTextures();
         retireGpu();
         gpuScene = null;
@@ -675,8 +830,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         stopArea(true);
         areaEntry = null;
         selection++;
-        token.cancel();
-        token = new Cancellation();
+        cancelLegacyToken();
         catalog = null;
         catalogLoading = false;
         loadingTile = false;
@@ -688,6 +842,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         loadedRevision++;
         attempted.clear();
         explorer = false;
+        streamingMode = false;
         timer.stop();
         camera = null;
         terrainScene = null;
@@ -742,8 +897,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         retireGpu();
         stopArea(false);
         selection++;
-        token.cancel();
-        token = new Cancellation();
+        cancelLegacyToken();
         catalogLoading = false;
         loadingTile = false;
         busy(null);
@@ -767,7 +921,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
         ensureLoaded();
         areaButtons();
         if (explorer && inventory != null) {
-            if (camera == null) openExplorer();
+            if (streamingMode && streaming == null) {
+                if (gpuEnabled.isSelected()) {
+                    startStreaming();
+                    timer.start();
+                } else switchStreamingRendering();
+            } else if (camera == null) openExplorer();
             else {
                 lastTick = 0;
                 timer.start();
@@ -778,14 +937,15 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void selectMap(WorldService.MapInfo map) {
+        resumeCamera = null;
         retireTextures();
         stopArea(true);
         areaEntry = null;
         selection++;
-        token.cancel();
-        token = new Cancellation();
+        cancelLegacyToken();
         long request = selection;
         explorer = false;
+        streamingMode = false;
         timer.stop();
         inventory = null;
         selected = null;
@@ -1081,9 +1241,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void showInventory() {
+        resumeCamera = null;
         minimap.hide();
         retireGpu();
         explorer = false;
+        streamingMode = false;
         timer.stop();
         keys.clear();
         content.setTop(new VBox(10, heading, status, localLoading));
@@ -1172,7 +1334,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
         status.setText("Loading terrain tile " + selected.key() + "…");
         show(firstFrameActivity, true);
         timer.start();
-        loadTile(selected, true);
+        streamingMode = gpuEnabled.isSelected() && gpuService != null
+                && handle instanceof WorldService && handle.terrainStreaming().isPresent();
+        if (streamingMode) {
+            pauseLegacy();
+            startStreaming();
+        }
+        else loadTile(selected, true);
         viewport.requestFocus();
     }
 
@@ -1254,7 +1422,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var task = sceneTask;
         sceneTask = null;
         if (task != null) task.cancel(false);
-        preparation.getQueue().clear();
+        preparation.discardQueued();
         textureLoading.hide();
         textureSourceBusy = false;
     }
@@ -1264,8 +1432,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
         cancelCandidate();
         waveActive = false;
         waveDirty = false;
-        if (invocation != null) invocation.cancel(false);
-        requests.getQueue().clear();
+        var previousInvocation = invocation;
+        invocation = null;
+        if (previousInvocation != null) previousInvocation.cancel(false);
+        requests.discardQueued();
     }
 
     private static Prepared prepare(
@@ -1326,7 +1496,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         try {
             // Completed futures carry no full Prepared object. Retiring the mailbox also releases
             // geometry held by a queued FX delivery, without waiting for that callback or GC.
-            sceneTask = CompletableFuture.runAsync(() -> {
+            sceneTask = preparation.invoke(() -> {
                 try {
                     job.result.set(prepare(snapshot, initial, gpu != null, areaPoint));
                     if (closed || job.canceled) job.result.set(null);
@@ -1337,7 +1507,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     try { Platform.runLater(() -> completedGeometry(job)); }
                     catch (IllegalStateException stopped) { job.result.set(null); }
                 }
-            }, preparation);
+                return CompletableFuture.completedFuture(null);
+            });
         } catch (RuntimeException rejected) {
             job.failure = rejected;
             completedGeometry(job);
@@ -1369,7 +1540,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (job.initialSeed) {
             // Seed only navigation, then gather the full available first neighborhood. No
             // height-only child is launched while its material bundle is still incomplete.
-            camera = prepared.camera();
+            camera = resumeCamera == null ? prepared.camera() : resumeCamera;
+            resumeCamera = null;
             originX = prepared.x();
             originY = prepared.y();
             scenePreparing = false;
@@ -1438,6 +1610,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void loadNext() {
+        if (streamingMode) {
+            streamNeighborhood();
+            return;
+        }
         if (!active || !explorer || loadingTile || camera == null || inventory == null || !viewportActive()) return;
         int x = tileX(), y = tileY();
         attempted.retainAll(inventory.world().tiles().stream()
@@ -1520,6 +1696,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void abandonUnusableCandidate() {
+        if (streamingMode) return;
         if (!scenePreparing || candidateUseful(preparingAnchorX, preparingAnchorY)) return;
         cancelCandidate();
         waveActive = false;
@@ -1701,6 +1878,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void requestFrame() {
+        if (streamingMode) {
+            streamCamera();
+            return;
+        }
         if (!active || !explorer || camera == null || terrainScene == null || closed) return;
         if (publishPrepared()) return;
         if (stale(selection) || !viewportActive()) {
@@ -1755,7 +1936,179 @@ final class WorldView extends BorderPane implements AutoCloseable {
         kick();
     }
 
+    private void switchStreamingRendering() {
+        timer.stop();
+        retireStreaming();
+        show(gpuActivity, true);
+        gpuStatus.setText("Stopping previous renderer before changing rendering mode…");
+        if (renderingTransitionPending) return;
+        renderingTransitionPending = true;
+        streamingRetirement.whenComplete((ignored, failure) -> Platform.runLater(() -> {
+            renderingTransitionPending = false;
+            if (closed || !active || !explorer || !streamingMode) return;
+            if (failure != null) {
+                streamingUnavailable();
+                return;
+            }
+            if (gpuEnabled.isSelected()) {
+                startStreaming();
+                timer.start();
+            } else {
+                var previous = image.getImage();
+                resumeCamera = camera;
+                streamingMode = false;
+                openExplorer();
+                image.setImage(previous);
+            }
+        }));
+    }
+
+    private void startStreaming() {
+        if (closed || !active || !explorer || !streamingMode || streaming != null
+                || !gpuEnabled.isSelected() || stale(selection)) return;
+        if (!viewportActive()) {
+            streamingPaused = true;
+            return;
+        }
+        if (!streamingRetirement.isDone() || !legacyRetirement.isDone()) {
+            if (streamingStartWaiting) return;
+            streamingStartWaiting = true;
+            show(gpuActivity, true);
+            gpuStatus.setText("Waiting for previous World resources to retire…");
+            CompletableFuture.allOf(streamingRetirement, legacyRetirement)
+                    .whenComplete((ignored, failure) -> Platform.runLater(() -> {
+                streamingStartWaiting = false;
+                if (closed || !active || !streamingMode || !explorer || streaming != null) return;
+                if (failure == null) startStreaming();
+                else streamingUnavailable();
+            }));
+            return;
+        }
+        if (streamingRetirement.isCompletedExceptionally() || legacyRetirement.isCompletedExceptionally()) {
+            streamingUnavailable();
+            return;
+        }
+        streamingPaused = false;
+        streamingControl = 0;
+        streamingPolicy = 1;
+        streamingWidth = streamingHeight = 0;
+        var request = new WorldStreamSourceController.Request(selection, handle, inventory.map(),
+                inventory, origin, areaEntry == null || areaEntry.entryChunk() == null
+                        ? null : areaEntry.entryChunk().entryReference(), catalog.areaIndex());
+        streaming = new WorldStreamSourceController(request, scope -> {
+            var owner = new WorldStreamGpuOwner(gpuService, scope);
+            return new WorldStreamSourceController.GpuOwner() {
+                public CompletableFuture<com.vibeminer.rendering.bgfx.WorldStreamTransport.Session> session() {
+                    return owner.session();
+                }
+                public CompletableFuture<Void> closeAsync() { return owner.closeAsync(); }
+            };
+        }, streamingEvents, Platform::runLater);
+        if (camera != null) {
+            streamCamera();
+            streamNeighborhood();
+        }
+        streamChanged();
+    }
+
+    private void streamingUnavailable() {
+        show(gpuActivity, false);
+        show(firstFrameActivity, false);
+        gpuStatus.setText("World resources could not be confirmed retired; reload the workspace.");
+        retryGpu.setDisable(true);
+    }
+
+    private void retireStreaming() {
+        var previous = streaming;
+        streaming = null;
+        if (previous != null) streamingRetirement = previous.closeAsync();
+    }
+
+    private void streamChanged() {
+        var controller = streaming;
+        if (controller == null || !streamingMode || stale(selection) || !explorer) return;
+        var snapshot = controller.snapshot();
+        if (snapshot.phase() == WorldStreamSourceController.Phase.UNAVAILABLE
+                && snapshot.seed() == null) {
+            gpuEnabled.setSelected(false);
+            switchStreamingRendering();
+            return;
+        }
+        if (camera == null && snapshot.seed() != null) {
+            camera = snapshot.seed().camera().software();
+            originX = snapshot.seed().originX();
+            originY = snapshot.seed().originY();
+            streamCamera();
+            streamNeighborhood();
+        }
+        boolean busy = switch (snapshot.phase()) {
+            case READY, UNAVAILABLE, FAILED, CLOSED -> false;
+            default -> true;
+        };
+        show(gpuActivity, busy);
+        show(textureActivity, busy);
+        show(firstFrameActivity, busy && image.getImage() == null);
+        gpuStatus.setText(snapshot.detail());
+        textureStatus.setText(snapshot.detail());
+        retryGpu.setDisable(busy);
+        retryTextures.setDisable(true);
+        if (snapshot.area() != null) currentArea.setText(snapshot.area().label());
+        if (camera != null) position.setText(String.format(java.util.Locale.ROOT,
+                "Tile %d,%d · x %.1f / y %.1f / altitude %.1f · %.0f yards/s · %d / %d tiles",
+                tileX(), tileY(), camera.x(), camera.y(), camera.z(), speed,
+                snapshot.prepared(), snapshot.desired()));
+        var pending = controller.takePresentation();
+        if (pending.isEmpty()) return;
+        var frame = pending.get();
+        try {
+            if (!viewportActive() || controller != streaming || !controller.mayPresent(frame)) return;
+            if (!streamingImages.present(frame.width(), frame.height(), frame.pixels(),
+                    () -> !stale(selection) && viewportActive() && controller == streaming,
+                    () -> controller.presented(frame))) return;
+            show(firstFrameActivity, false);
+            status.setText("Terrain explorer · persistent GPU terrain · buildings, water and collision are not rendered");
+        } catch (RuntimeException failedUpload) {
+            retireStreaming();
+            show(firstFrameActivity, false);
+            show(textureActivity, false);
+            show(gpuActivity, false);
+            gpuStatus.setText("GPU World frame upload failed; retry the viewer.");
+            retryGpu.setDisable(false);
+        } finally {
+            controller.discard(frame);
+        }
+    }
+
+    private void streamCamera() {
+        if (streaming == null || camera == null || !active || !explorer || closed) return;
+        if (stale(selection) || !viewportActive()) return;
+        double targetWidth = Math.max(1, viewport.getWidth());
+        double targetHeight = Math.max(1, viewport.getHeight());
+        double scale = Math.min(1, Math.min(800 / targetWidth, 500 / targetHeight));
+        int width = Math.max(1, (int) (targetWidth * scale));
+        int height = Math.max(1, (int) (targetHeight * scale));
+        if (streamingWidth != 0 && (width != streamingWidth || height != streamingHeight)) streamingPolicy++;
+        streamingWidth = width;
+        streamingHeight = height;
+        streaming.camera(new com.vibeminer.rendering.bgfx.WorldStreamTransport.Camera(
+                ++streamingControl, streamingPolicy, width, height, TerrainCamera.from(camera)));
+        minimap.update(handle, inventory, origin, originX, originY,
+                camera.x(), camera.y(), camera.yaw());
+    }
+
+    private void streamNeighborhood() {
+        if (streaming == null || camera == null || inventory == null) return;
+        int x = tileX(), y = tileY();
+        streaming.neighborhood(inventory.world().tiles().stream()
+                .filter(tile -> Math.abs(tile.x() - x) <= 1 && Math.abs(tile.y() - y) <= 1)
+                .sorted(Comparator.comparingInt((WorldFormats.Tile tile) ->
+                        Math.abs(tile.x() - x) + Math.abs(tile.y() - y))
+                        .thenComparingInt(WorldFormats.Tile::x).thenComparingInt(WorldFormats.Tile::y))
+                .limit(9).toList());
+    }
+
     private void retireGpu() {
+        retireStreaming();
         if (gpu != null) {
             gpu.hide();
             gpuVisible = false;
@@ -1832,9 +2185,34 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 + (frame.budgetReached() ? " · rendering budget reached" : ""));
     }
 
+    private void cpuFailure(Throwable failure) {
+        if (cpuRetirementFailure == null) {
+            cpuRetirementFailure = new java.io.IOException(failure.getClass().getName());
+        }
+    }
+
+    private void reportCpuFailure() {
+        try {
+            Platform.runLater(() -> {
+                if (!closed && !streamingMode) {
+                    show(firstFrameActivity, false);
+                    status.setText("Software renderer failed; reload the workspace before retrying.");
+                }
+            });
+        } catch (IllegalStateException stopped) { /* Toolkit has already stopped. */ }
+    }
+
     private void kick() {
+        if (cpuRetirementFailure != null) {
+            try { replaceRender(null); }
+            catch (RuntimeException | Error cleanup) { cpuFailure(cleanup); }
+            reportCpuFailure();
+            return;
+        }
         if (!rendering.compareAndSet(false, true)) return;
-        Thread.startVirtualThread(() -> {
+        var retired = new CompletableFuture<Void>();
+        cpuRetirement = retired;
+        Runnable render = () -> {
             try {
                 Render work;
                 while ((work = latest.getAndSet(null)) != null) {
@@ -1855,32 +2233,63 @@ final class WorldView extends BorderPane implements AutoCloseable {
                             frame = rendered[0];
                         }
                         queueCpuDelivery(current, frame);
-                    } catch (java.util.concurrent.CancellationException ignored) {
+                    } catch (java.util.concurrent.CancellationException stopped) {
+                        if (stopped.getClass() != java.util.concurrent.CancellationException.class
+                                || stopped.getCause() != null || stopped.getSuppressed().length != 0) cpuFailure(stopped);
                     } catch (RuntimeException error) {
+                        cpuFailure(error);
                         queueCpuDelivery(current, null);
                     }
+                    if (cpuRetirementFailure != null) break;
                 }
+            } catch (RuntimeException | Error failure) {
+                cpuFailure(failure);
             } finally {
-                rendering.set(false);
-                if (latest.get() != null && !closed) kick();
+                try {
+                    if (cpuRetirementFailure != null) replaceRender(null);
+                } catch (RuntimeException | Error cleanup) {
+                    cpuFailure(cleanup);
+                } finally {
+                    // Complete the old ownership fence before admitting another worker. Nothing
+                    // after this point closes a renderer, source handle or snapshot.
+                    if (cpuRetirementFailure == null) retired.complete(null);
+                    else retired.completeExceptionally(cpuRetirementFailure);
+                    rendering.set(false);
+                }
+                if (cpuRetirementFailure != null) reportCpuFailure();
+                else if (latest.get() != null && !closed) kick();
                 if (materialWakeNeeded.getAndSet(false) && !closed) {
                     try { Platform.runLater(this::advanceMaterials); }
                     catch (IllegalStateException stopped) { /* Toolkit already retired. */ }
                 }
             }
-        });
+        };
+        try {
+            Thread.startVirtualThread(render);
+        } catch (RuntimeException | Error failedStart) {
+            cpuFailure(failedStart);
+            try { replaceRender(null); }
+            catch (RuntimeException | Error cleanup) { cpuFailure(cleanup); }
+            finally {
+                retired.completeExceptionally(cpuRetirementFailure);
+                rendering.set(false);
+            }
+            reportCpuFailure();
+        }
     }
 
     @Override
     public void close() {
         closed = true;
+        resumeCamera = null;
+        streamingImages.clear();
         minimap.close();
         if (gpu != null) gpu.close();
         invalidate();
         textureLoading.close();
-        requests.shutdownNow();
+        requests.closeAsync();
         areaRequests.shutdown();
         areaCancellation.shutdown();
-        preparation.shutdownNow();
+        preparation.closeAsync();
     }
 }
