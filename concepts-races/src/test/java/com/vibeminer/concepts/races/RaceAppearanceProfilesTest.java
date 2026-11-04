@@ -212,6 +212,51 @@ final class RaceAppearanceProfilesTest {
     }
 
     @Test
+    void admittedNightElfOpaqueHairIgnoresSourceAlphaAndKeepsItsDepth() throws Exception {
+        var hair = fixture(true, false, 272, 4, 0, 3, 65535, false);
+        assertTrue(
+                RaceAppearanceProfiles.reviewedDraw(
+                        RaceAppearanceProfiles.Profile.NIGHT_ELF_MALE,
+                        hair.model(),
+                        batch(0),
+                        hair.facts(),
+                        1));
+        var hairSurface =
+                RaceAppearanceProfiles.surface(
+                        batch(0),
+                        hair.model().materials().getFirst(),
+                        hair.model().textures().getFirst(),
+                        0);
+        var geometry =
+                new PreviewMesh(
+                        new float[] {
+                            .2f, -1, -1, .2f, 1, -1, .2f, 0, 1, -.2f, -1, -1, -.2f, 1, -1, -.2f, 0,
+                            1
+                        },
+                        new int[] {0, 1, 2, 3, 4, 5},
+                        List.of(new PreviewMesh.Part(0, 0, 3), new PreviewMesh.Part(0, 3, 3)));
+        var appearance =
+                new MeshAppearance(
+                        geometry,
+                        new float[12],
+                        List.of(hairSurface, new MeshAppearance.Surface(1, 1, false, false, false)),
+                        List.of(
+                                new MeshAppearance.Texture(1, 1, new int[] {0x0000ff00}),
+                                new MeshAppearance.Texture(1, 1, new int[] {0xffff0000})));
+        int pixel =
+                StaticMeshRenderer.render(
+                                appearance,
+                                200,
+                                200,
+                                new StaticMeshRenderer.View(0, 0, 1, false, Set.of(0)),
+                                () -> false)
+                        .argb()[100 * 200 + 100];
+        assertTrue(((pixel >>> 8) & 255) > 100);
+        assertEquals(0, pixel & 0xff00ff);
+        assertEquals(255, pixel >>> 24);
+    }
+
+    @Test
     void opacityMustBeFullAndBoundToTheIdenticalParsedModel() throws Exception {
         var profile = RaceAppearanceProfiles.Profile.DWARF_MALE;
         var full = fixture(true, false, 272, 4, 1, 3, 65535, false);
