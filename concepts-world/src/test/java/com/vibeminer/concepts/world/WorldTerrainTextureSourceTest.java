@@ -347,6 +347,123 @@ class WorldTerrainTextureSourceTest {
     }
 
     @Test
+    @SuppressWarnings("try")
+    void
+            actualIdleWaitsCanceledRawResultWorkerAndLowerCancellationFinallyWithoutClosingSharedSource()
+                    throws Exception {
+        var entered = new CompletableFuture<Void>();
+        var releaseWorker = new CompletableFuture<Void>();
+        var workerReturned = new CompletableFuture<Void>();
+        var lowerEntered = new CompletableFuture<Void>();
+        var releaseLower = new CompletableFuture<Void>();
+        var first = new AtomicInteger();
+        var files =
+                new Files() {
+                    @Override
+                    FileTypes.FileStat stat(long id, Cancellation token) {
+                        if (id == 1 && first.getAndIncrement() == 0) {
+                            try (var registration =
+                                    token.onCancel(
+                                            () -> {
+                                                lowerEntered.complete(null);
+                                                releaseLower.join();
+                                            })) {
+                                entered.complete(null);
+                                releaseWorker.join();
+                                token.check();
+                            } finally {
+                                workerReturned.complete(null);
+                            }
+                        }
+                        return super.stat(id, token);
+                    }
+                };
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        var other = new WorldTerrainTextureSource(new Files().files(), pool);
+        try {
+            var raw = source.read(MAP, List.of(TILE), Cancellation.NONE, p -> {});
+            entered.get(3, TimeUnit.SECONDS);
+            raw.cancel(false);
+            lowerEntered.get(3, TimeUnit.SECONDS);
+            var idle = source.activityDrained();
+            assertTrue(raw.isDone());
+            assertFalse(idle.isDone());
+            other.activityDrained().get(1, TimeUnit.SECONDS);
+            releaseWorker.complete(null);
+            workerReturned.get(3, TimeUnit.SECONDS);
+            assertFalse(idle.isDone()); // Input worker returning is not lower callback retirement.
+            releaseLower.complete(null);
+            idle.get(3, TimeUnit.SECONDS);
+            assertFalse(source.closed);
+            try (var fresh =
+                    source.read(MAP, List.of(TILE), Cancellation.NONE, p -> {})
+                            .get(5, TimeUnit.SECONDS)) {
+                assertEquals(
+                        WorldTerrainTextureSource.State.READY, fresh.tiles().getFirst().state());
+            }
+            source.activityDrained().get(3, TimeUnit.SECONDS);
+        } finally {
+            releaseWorker.complete(null);
+            releaseLower.complete(null);
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+            other.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void idleAndSourceCloseWaitPostActiveFinalizationInsteadOfOnlyEmptyActivePointer()
+            throws Exception {
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(new Files().files(), pool);
+        var held = new CompletableFuture<Void>();
+        var release = new CompletableFuture<Void>();
+        var allowLoad = new CompletableFuture<Void>();
+        try {
+            var operation =
+                    source.readOwned(
+                            MAP,
+                            List.of(TILE),
+                            Cancellation.NONE,
+                            p -> {
+                                if (p.stage() == WorldTerrainTextureSource.Stage.INVENTORY) {
+                                    allowLoad.join();
+                                }
+                            });
+            var field = WorldTerrainTextureSource.Operation.class.getDeclaredField("drained");
+            field.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            var actual = (CompletableFuture<Void>) field.get(operation);
+            actual.whenComplete(
+                    (nothing, error) -> {
+                        held.complete(null);
+                        release.join();
+                    });
+            allowLoad.complete(null);
+            try (var result = operation.result().get(5, TimeUnit.SECONDS)) {
+                assertEquals(
+                        WorldTerrainTextureSource.State.READY, result.tiles().getFirst().state());
+            }
+            held.get(3, TimeUnit.SECONDS);
+            assertTrue(operation.isDrained()); // CF terminal flag alone does not prove
+            // callback-finally.
+            var idle = source.activityDrained();
+            var closed = source.closeAsync();
+            assertFalse(idle.isDone());
+            assertFalse(closed.isDone());
+            release.complete(null);
+            idle.get(3, TimeUnit.SECONDS);
+            closed.get(3, TimeUnit.SECONDS);
+        } finally {
+            allowLoad.complete(null);
+            release.complete(null);
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void observationFailureAfterOpenClosesActualInputBeforeOwnedDrain() throws Exception {
         var files =
                 new Files() {

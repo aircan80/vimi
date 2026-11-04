@@ -532,6 +532,7 @@ public final class WorldTerrainTextureSource {
         volatile boolean canceled;
         volatile Throwable cancellationFailure;
         boolean cancelQueued;
+        boolean activityTracked, activityFinished;
 
         Request(
                 WorldTerrainTextureSource source,
@@ -630,6 +631,9 @@ public final class WorldTerrainTextureSource {
     volatile boolean closed;
     volatile Throwable cancellationFailure;
     final CompletableFuture<Void> closing = new CompletableFuture<>();
+    // Guarded by the shared task owner, including the post-active-finally interval.
+    int activityRequests;
+    CompletableFuture<Void> activityIdle = CompletableFuture.completedFuture(null);
 
     public WorldTerrainTextureSource(BuildFiles files, TerrainAtlasPool pool) {
         this.files = Objects.requireNonNull(files);
@@ -731,6 +735,15 @@ public final class WorldTerrainTextureSource {
                 });
         tasks.submit(request);
         return new Operation(request);
+    }
+
+    /**
+     * Actual current request/cancellation/observation retirement; does not close this shared
+     * source. Callers must stop their request producers before taking this epoch fence: later
+     * requests begin a new epoch and are not covered by an already completed fence.
+     */
+    public CompletableFuture<Void> activityDrained() {
+        return tasks.whenSourceIdle(this);
     }
 
     public CompletableFuture<Void> closeAsync() {
