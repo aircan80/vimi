@@ -101,6 +101,29 @@ final class ColdWorldWmoOwnerTest {
     }
 
     @Test
+    void recognizedStatusIsBoundedPrintableAsciiBeforeTokenization() {
+        String prefix = "VIMI_GPU WORLD_WMO ";
+        var oversized =
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () -> WorldWmoStatus.parse(prefix + "READY NONE 1 1 " + "x".repeat(4096)));
+        assertEquals("Cold WMO status line too long", oversized.getMessage());
+        for (String bad :
+                List.of(
+                        "READY\tNONE 1 1",
+                        "READY NONE 1 1\n",
+                        "READY NONE 1 1\r",
+                        "READY NONE 1 1\u0000",
+                        "READY NONE 1 1\u007f",
+                        "READY NONE 1 1é",
+                        "READY  NONE 1 1",
+                        "READY NONE 1 1 ")) {
+            assertThrows(IllegalArgumentException.class, () -> WorldWmoStatus.parse(prefix + bad));
+        }
+        assertNull(WorldWmoStatus.parse("Other protocol " + "x".repeat(4096)));
+    }
+
+    @Test
     void annexRequiresColdTerrainAndAbsolutePath() {
         assertTrue(
                 GpuViewerMain.terrainMode(
