@@ -201,12 +201,103 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  native:
+    name: Object-store crash and compatibility / ${{ matrix.platform }}
+    needs: [changes]
+    if: ${{ needs.changes.outputs.object_store == 'true' }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Windows
+            runner: windows-2025
+          - platform: macOS
+            runner: macos-15
+    defaults:
+      run:
+        shell: bash
+        working-directory: vimi
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: vimi
+      - name: Check out pinned public CSharp object-store reference
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: aircan80/vibeminer
+          ref: 4fd92d2a36add50c9b82e1c92bf72706e8d0df2b
+          path: vibeminer
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /src/backend/VibeMiner.Objects/
+            /Directory.Build.props
+            /.editorconfig
+            /global.json
+      - name: Install pinned reference SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.402'
+          cache: false
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@0723195856401067f7a2779048b490ace7a47d7c # v5.0.2
+      - name: Install Java 25 and restore Gradle dependencies
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          java-package: jdk
+          cache: gradle
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+          cache-dependency-path: |
+            **/*.gradle
+            **/*gradle.lockfile
+            **/gradle.properties
+            **/gradle/wrapper/gradle-wrapper.properties
+          overwrite-settings: false
+      - name: Install macOS SQLite
+        if: ${{ runner.os == 'macOS' }}
+        run: brew install sqlite
+      - name: Locate and diagnose native SQLite
+        id: sqlite
+        run: python scripts/ci/native_sqlite.py --directory "$RUNNER_TEMP/vimi-sqlite"
+      - name: Build pinned CSharp reference
+        run: dotnet build ../vibeminer/src/backend/VibeMiner.Objects/VibeMiner.Objects.csproj --configuration Release -p:RestoreLockedMode=true -p:NuGetAudit=false --nologo
+      - name: Run process-kill recovery and Java-CSharp interoperability tests
+        env:
+          SQLITE_LIBRARY: ${{ steps.sqlite.outputs.library }}
+        run: |
+          dotnet_executable="$(command -v dotnet)"
+          if [ "$RUNNER_OS" = Windows ]; then
+            dotnet_executable="$(cygpath -w "$dotnet_executable")"
+          fi
+          ./gradlew :object-store:crashTest :object-store:interopTest "-Pdotnet=$dotnet_executable" "-PsqliteLibrary=$SQLITE_LIBRARY" --no-daemon --console=plain
+      - name: Retain native test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-storage-reports-${{ matrix.platform }}
+          path: |
+            vimi/object-store/build/reports/tests/crashTest/
+            vimi/object-store/build/test-results/crashTest/TEST-*.xml
+            vimi/object-store/build/reports/tests/interopTest/
+            vimi/object-store/build/test-results/interopTest/TEST-*.xml
+          if-no-files-found: warn
+          retention-days: 7
+
   required:
     name: Storage compatibility
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     if: ${{ always() }}
-    needs: [changes, crash, interop]
+    needs: [changes, crash, interop, native]
     steps:
       - name: Require selected broader suites to pass
         env:
@@ -214,13 +305,16 @@ jobs:
           OBJECT_STORE: ${{ needs.changes.outputs.object_store }}
           CRASH_RESULT: ${{ needs.crash.result }}
           INTEROP_RESULT: ${{ needs.interop.result }}
+          NATIVE_RESULT: ${{ needs.native.result }}
         run: |
           test "$SELECTION_RESULT" = success
           if [ "$OBJECT_STORE" = false ]; then
             test "$CRASH_RESULT" = skipped
             test "$INTEROP_RESULT" = skipped
+            test "$NATIVE_RESULT" = skipped
           else
             test "$OBJECT_STORE" = true
             test "$CRASH_RESULT" = success
             test "$INTEROP_RESULT" = success
+            test "$NATIVE_RESULT" = success
           fi

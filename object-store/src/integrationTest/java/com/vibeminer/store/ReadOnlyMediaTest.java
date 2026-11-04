@@ -12,9 +12,17 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import com.vibeminer.store.StoreTypes.Options;
 import com.vibeminer.store.StoreTypes.PutObject;
 import java.io.IOException;
+import java.nio.file.FileStore;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.AclEntry;
+import java.nio.file.attribute.AclEntryPermission;
+import java.nio.file.attribute.AclEntryType;
+import java.nio.file.attribute.AclFileAttributeView;
 import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.UserPrincipal;
+import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -123,16 +131,43 @@ final class ReadOnlyMediaTest {
         }
     }
 
-    /** Changes only this test's files and always restores them, including on assumption skips. */
+    /**
+     * Changes only this test's files and always restores them, including on assumption skips. POSIX
+     * file systems get owner-read-only modes; Windows/NTFS gets an explicit deny-write ACE for the
+     * current user, which applies to elevated accounts too. With {@code
+     * -Dvimi.requireReadOnlyMedia=true}, an environment that cannot enforce read-only media fails
+     * instead of skipping.
+     */
     private static final class ReadOnlyPermissions implements AutoCloseable {
-        private final Map<Path, Set<PosixFilePermission>> original = new LinkedHashMap<>();
+        private static final Set<AclEntryPermission> DENIED =
+                EnumSet.of(
+                        AclEntryPermission.WRITE_DATA,
+                        AclEntryPermission.APPEND_DATA,
+                        AclEntryPermission.WRITE_NAMED_ATTRS,
+                        AclEntryPermission.WRITE_ATTRIBUTES,
+                        AclEntryPermission.DELETE_CHILD,
+                        AclEntryPermission.DELETE);
+        private final Map<Path, Set<PosixFilePermission>> posix = new LinkedHashMap<>();
+        private final Map<Path, List<AclEntry>> acls = new LinkedHashMap<>();
 
         ReadOnlyPermissions(Path root) throws IOException {
-            assumeTrue(Files.getFileStore(root).supportsFileAttributeView("posix"));
+            FileStore store = Files.getFileStore(root);
+            boolean usePosix = store.supportsFileAttributeView("posix");
+            require(usePosix || store.supportsFileAttributeView("acl"), "Requires POSIX or ACL");
             try {
-                try (var paths = Files.walk(root)) {
-                    for (Path path : paths.toList()) {
-                        original.put(path, Files.getPosixFilePermissions(path));
+                List<Path> paths;
+                try (var walk = Files.walk(root)) {
+                    paths = walk.toList();
+                }
+                UserPrincipal user =
+                        usePosix
+                                ? null
+                                : root.getFileSystem()
+                                        .getUserPrincipalLookupService()
+                                        .lookupPrincipalByName(System.getProperty("user.name"));
+                for (Path path : paths) {
+                    if (usePosix) {
+                        posix.put(path, Files.getPosixFilePermissions(path));
                         Files.setPosixFilePermissions(
                                 path,
                                 Files.isDirectory(path)
@@ -140,9 +175,23 @@ final class ReadOnlyMediaTest {
                                                 PosixFilePermission.OWNER_READ,
                                                 PosixFilePermission.OWNER_EXECUTE)
                                         : Set.of(PosixFilePermission.OWNER_READ));
+                    } else {
+                        AclFileAttributeView view =
+                                Files.getFileAttributeView(path, AclFileAttributeView.class);
+                        List<AclEntry> original = view.getAcl();
+                        acls.put(path, original);
+                        List<AclEntry> denied = new ArrayList<>();
+                        denied.add(
+                                AclEntry.newBuilder()
+                                        .setType(AclEntryType.DENY)
+                                        .setPrincipal(user)
+                                        .setPermissions(DENIED)
+                                        .build());
+                        denied.addAll(original);
+                        view.setAcl(denied);
                     }
                 }
-                assumeTrue(
+                require(
                         !Files.isWritable(root),
                         "Requires an unprivileged permission-enforcing user");
             } catch (IOException | RuntimeException | Error error) {
@@ -155,11 +204,45 @@ final class ReadOnlyMediaTest {
             }
         }
 
+        private static void require(boolean condition, String message) {
+            if (Boolean.getBoolean("vimi.requireReadOnlyMedia")) {
+                assertTrue(condition, message);
+            } else {
+                assumeTrue(condition, message);
+            }
+        }
+
         @Override
         public void close() throws IOException {
-            for (var entry : original.entrySet()) {
-                Files.setPosixFilePermissions(entry.getKey(), entry.getValue());
+            IOException failure = null;
+            for (var entry : posix.entrySet()) {
+                try {
+                    Files.setPosixFilePermissions(entry.getKey(), entry.getValue());
+                } catch (IOException e) {
+                    failure = keep(failure, e);
+                }
             }
+            for (var entry : acls.entrySet()) {
+                try {
+                    Files.getFileAttributeView(entry.getKey(), AclFileAttributeView.class)
+                            .setAcl(entry.getValue());
+                } catch (IOException e) {
+                    failure = keep(failure, e);
+                }
+            }
+            posix.clear();
+            acls.clear();
+            if (failure != null) {
+                throw failure;
+            }
+        }
+
+        private static IOException keep(IOException first, IOException next) {
+            if (first == null) {
+                return next;
+            }
+            first.addSuppressed(next);
+            return first;
         }
     }
 }

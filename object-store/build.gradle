@@ -94,6 +94,9 @@ tasks.register('integrationTest', Test) {
     testClassesDirs = sourceSets.integrationTest.output.classesDirs
     classpath = sourceSets.integrationTest.runtimeClasspath
     shouldRunAfter tasks.named('test')
+    // CI sets -PrequireReadOnlyMedia=true so unenforceable permissions fail instead of skipping.
+    systemProperty 'vimi.requireReadOnlyMedia',
+        providers.gradleProperty('requireReadOnlyMedia').orElse('false').get()
 }
 
 tasks.register('crashTest', Test) {
