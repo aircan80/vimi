@@ -63,6 +63,322 @@ final class ClientBuildTables implements BuildTables {
         }
     }
 
+    public static final class NativeIdWitness implements NativeIdDomainTypes.Witness {
+        private final long selectedId, ordinal, fileId, length;
+        private final String key, layout, receiptFingerprint, excludedDigest, evidenceDigest;
+        private final int excludedCount;
+
+        private NativeIdWitness(
+                long selectedId,
+                Db2Table.IdDomainObservation domain,
+                CapturedRowsTypes.Receipt receipt,
+                String fingerprint) {
+            this.selectedId = selectedId;
+            ordinal = domain.ordinal();
+            fileId = receipt.table().fileDataId();
+            key = receipt.table().contentKey();
+            length = receipt.completion().consumedBytes();
+            layout = receipt.header().layoutHash();
+            receiptFingerprint = fingerprint;
+            excludedDigest = domain.excludedDigest();
+            excludedCount = domain.excludedCount();
+            evidenceDigest =
+                    com.vibeminer.formats.internal.Json.sha256(
+                            com.vibeminer.formats.db2.NativeIssueIdentity.tuple(
+                                    NativeIdDomainTypes.REVISION,
+                                    fingerprint,
+                                    Long.toString(selectedId),
+                                    Long.toString(ordinal),
+                                    key,
+                                    Long.toString(length),
+                                    layout,
+                                    Integer.toString(excludedCount),
+                                    excludedDigest));
+        }
+
+        public long selectedId() {
+            return selectedId;
+        }
+
+        public long readableOrdinal() {
+            return ordinal;
+        }
+
+        public long sourceFileDataId() {
+            return fileId;
+        }
+
+        public String sourceContentKey() {
+            return key;
+        }
+
+        public long consumedLength() {
+            return length;
+        }
+
+        public String layoutHash() {
+            return layout;
+        }
+
+        public String receiptFingerprint() {
+            return receiptFingerprint;
+        }
+
+        public int excludedCount() {
+            return excludedCount;
+        }
+
+        public String excludedDigest() {
+            return excludedDigest;
+        }
+
+        public String evidenceDigest() {
+            return evidenceDigest;
+        }
+
+        public String profileRevision() {
+            return NativeIdDomainTypes.REVISION;
+        }
+    }
+
+    private static NativeIdDomainTypes.Result idResult(NativeIdDomainTypes.State state) {
+        return new NativeIdDomainTypes.Result(state, null);
+    }
+
+    private NativeIdDomainTypes.Result inspectNativeId(
+            CapturedRowsTypes.Receipt receipt,
+            GeneratedTable saved,
+            long selectedId,
+            NativeIdDomainTypes.SourceAccess access,
+            Cancellation token) {
+        java.util.Objects.requireNonNull(access);
+        token.check();
+        if (receipt.issueChannelEvidence().state()
+                        != CapturedRowsTypes.IssueChannelState.VERIFIED_NATIVE
+                || saved.source().issuePolicy() != GeneratedTableSource.IssuePolicy.NATIVE_V1) {
+            return NativeIdDomainTypes.Result.unsupported();
+        }
+        if (receipt.header().declaredRecords() > 256
+                || receipt.rowCount() > 256
+                || receipt.sections().size() > 16
+                || receipt.columns().size() > 128
+                || receipt.effectiveKeys().size() > 32
+                || receipt.holeKeys().size() > 16
+                || receipt.completion().consumedBytes() > (1 << 20)) {
+            return idResult(NativeIdDomainTypes.State.LIMIT_EXCEEDED);
+        }
+        if (receipt.header().declaredCopyRecords() != 0
+                || !List.of("WDC4", "WDC5").contains(receipt.header().format())) {
+            return NativeIdDomainTypes.Result.unsupported();
+        }
+        if (!nativeIdRuleProfile()) {
+            return idResult(NativeIdDomainTypes.State.LIMIT_EXCEEDED);
+        }
+        String fingerprint;
+        try {
+            fingerprint = NativeIdReceiptFingerprint.sha256(receipt);
+        } catch (UnsupportedOperationException bound) {
+            return idResult(NativeIdDomainTypes.State.LIMIT_EXCEEDED);
+        }
+        if (!saved.header().equals(receipt.header())
+                || !saved.completion().equals(receipt.completion())
+                || !saved.sections().equals(receipt.sections())
+                || !issueEvidence(saved).equals(receipt.issueChannelEvidence())
+                || !saved.identity().equals(receipt.graphIdentity())
+                || !saved.holeKeys().equals(receipt.holeKeys())) {
+            return idResult(NativeIdDomainTypes.State.SOURCE_CHANGED);
+        }
+        var before = files.stat(FileRef.id(receipt.table().fileDataId()), token).join();
+        if (before.state() != FileTypes.FileLookupState.FOUND || before.file() == null) {
+            return idResult(NativeIdDomainTypes.State.UNAVAILABLE);
+        }
+        if (before.file().fileDataId() != receipt.table().fileDataId()
+                || !receipt.table().contentKey().equalsIgnoreCase(before.file().contentKey())) {
+            return idResult(NativeIdDomainTypes.State.SOURCE_CHANGED);
+        }
+        if (before.file().size() != null && before.file().size() > (1 << 20)) {
+            return idResult(NativeIdDomainTypes.State.LIMIT_EXCEEDED);
+        }
+        if (!nativeIdDefinitionMatches(receipt, saved, token) || !nativeIdKeysMatch(receipt)) {
+            return idResult(NativeIdDomainTypes.State.SOURCE_CHANGED);
+        }
+        var opened =
+                Db2FileSource.openBounded(
+                                files, FileRef.id(receipt.table().fileDataId()), 1 << 20, 16, token)
+                        .join();
+        if (opened.source() == null) {
+            return idResult(
+                    opened.state() == Db2FileSource.OpenState.TOO_LARGE
+                            ? NativeIdDomainTypes.State.LIMIT_EXCEEDED
+                            : NativeIdDomainTypes.State.UNAVAILABLE);
+        }
+        NativeIdWitness witness;
+        try (var source = opened.source()) {
+            if (source.length() != receipt.completion().consumedBytes()
+                    || before.file().size() != null && before.file().size() != source.length()) {
+                return idResult(NativeIdDomainTypes.State.SOURCE_CHANGED);
+            }
+            var definition =
+                    resolve(
+                            receipt.table().fileDataId(),
+                            receipt.header().layoutHash(),
+                            false,
+                            token);
+            if (definition.state() != TableDefinitions.State.RESOLVED) {
+                return idResult(NativeIdDomainTypes.State.SOURCE_CHANGED);
+            }
+            var nativeTable =
+                    Db2Reader.open(
+                                    source,
+                                    definition.definition().document(),
+                                    version,
+                                    nativeIdLimits(),
+                                    token)
+                            .join();
+            try {
+                if (!nativeTable.header().equals(receipt.header())
+                        || !nativeTable.sections().equals(receipt.sections())
+                        || !sameStructuralCompletion(nativeTable.completion(), receipt.completion())
+                        || !source.holes().stream()
+                                .map(Db2Types.Hole::name)
+                                .distinct()
+                                .sorted()
+                                .toList()
+                                .equals(receipt.holeKeys().stream().distinct().sorted().toList())) {
+                    return idResult(NativeIdDomainTypes.State.SOURCE_CHANGED);
+                }
+                var observation = nativeTable.inspectIdDomain(selectedId, token);
+                if (observation.state() != Db2Table.IdDomainState.READABLE_UNIQUE) {
+                    return idResult(
+                            switch (observation.state()) {
+                                case PROTECTED_ID -> NativeIdDomainTypes.State.PROTECTED_ID;
+                                case NOT_OBSERVED -> NativeIdDomainTypes.State.NOT_OBSERVED;
+                                default -> NativeIdDomainTypes.State.UNSUPPORTED_DOMAIN;
+                            });
+                }
+                witness = new NativeIdWitness(selectedId, observation, receipt, fingerprint);
+            } finally {
+                nativeTable = null;
+            }
+        } catch (RuntimeException failure) {
+            var cause = unwrap(failure);
+            if (cause instanceof Db2FormatException format) {
+                return idResult(
+                        format.code().equals("DB2_LIMIT")
+                                ? NativeIdDomainTypes.State.LIMIT_EXCEEDED
+                                : NativeIdDomainTypes.State.UNSUPPORTED_DOMAIN);
+            }
+            throw failure;
+        }
+        token.check();
+        var after = files.stat(FileRef.id(receipt.table().fileDataId()), token).join();
+        if (after.state() != FileTypes.FileLookupState.FOUND
+                || after.file() == null
+                || after.file().fileDataId() != receipt.table().fileDataId()
+                || !receipt.table().contentKey().equalsIgnoreCase(after.file().contentKey())
+                || after.file().size() != null && after.file().size() != witness.consumedLength()
+                || !nativeIdDefinitionMatches(receipt, saved, token)
+                || !nativeIdKeysMatch(receipt)) {
+            return idResult(NativeIdDomainTypes.State.SOURCE_CHANGED);
+        }
+        token.check();
+        return new NativeIdDomainTypes.Result(NativeIdDomainTypes.State.READABLE_UNIQUE, witness);
+    }
+
+    private boolean nativeIdDefinitionMatches(
+            CapturedRowsTypes.Receipt receipt, GeneratedTable saved, Cancellation token) {
+        var definition =
+                resolve(receipt.table().fileDataId(), receipt.header().layoutHash(), false, token);
+        if (definition.state() != TableDefinitions.State.RESOLVED) {
+            return false;
+        }
+        var selected =
+                definition
+                        .definition()
+                        .document()
+                        .selectFile(version, receipt.header().layoutHash(), token);
+        if (selected.blocks().size() != 1 || selected.blocks().getFirst().fields().size() > 128) {
+            return false;
+        }
+        for (var field : selected.blocks().getFirst().fields()) {
+            var column = field.column();
+            if (column.name().length() > 128
+                    || column.family().length() > 32
+                    || column.reference() != null
+                            && (column.reference().table().length() > 128
+                                    || column.reference().column().length() > 128)) {
+                return false;
+            }
+        }
+        return selected.blocks().size() == 1
+                && saved.source()
+                        .equals(
+                                GeneratedTableSource.forNativeBlock(
+                                        selected.blocks().getFirst(),
+                                        locale(),
+                                        receipt.table().contentKey(),
+                                        limits,
+                                        encodingScope()));
+    }
+
+    private boolean nativeIdKeysMatch(CapturedRowsTypes.Receipt receipt) {
+        var supplied = options.keys().apply(build());
+        for (var key : receipt.effectiveKeys()) {
+            if (!java.util.Objects.equals(key.fingerprint(), supplied.fingerprintOf(key.name()))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean nativeIdRuleProfile() {
+        if (limits.rules().size() > 128) {
+            return false;
+        }
+        for (var rule : limits.rules()) {
+            if (rule.expectedDefinitionSha256().length() > 64
+                    || rule.tableHash().length() > 8
+                    || rule.layoutHash().length() > 8
+                    || rule.fieldName().length() > 128) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private Db2Types.Limits nativeIdLimits() {
+        return new Db2Types.Limits(
+                Math.min(limits.maxDecodedBytes(), 1 << 20),
+                Math.min(limits.maxRows(), 256),
+                Math.min(limits.maxFields(), 128),
+                Math.min(limits.maxSections(), 16),
+                Math.min(limits.maxRecordBytes(), 64 << 10),
+                Math.min(limits.maxAuxiliaryBytes(), 64 << 10),
+                Math.min(limits.maxStringBytes(), 64 << 10),
+                Math.min(limits.maxIndexBytes(), 512 << 10),
+                Math.min(limits.maxColumns(), 128),
+                1,
+                limits.allowPartialEncryptedSections(),
+                limits.allowRawTextEvidence(),
+                Math.min(limits.maxRawTextEvidenceBytes(), 64 << 10),
+                Math.min(limits.maxRelationshipBytes(), 64 << 10),
+                Math.min(limits.maxRelationshipEntries(), 256),
+                limits.definitionSha256(),
+                limits.verifiedRawIntegerRules());
+    }
+
+    private static boolean sameStructuralCompletion(
+            Db2Types.Completion actual, Db2Types.Completion saved) {
+        return actual.declaredRecords() == saved.declaredRecords()
+                && actual.physicalRows() == saved.physicalRows()
+                && actual.copyRows() == saved.copyRows()
+                && actual.excludedEncryptedSections() == saved.excludedEncryptedSections()
+                && actual.excludedPhysicalRecords() == saved.excludedPhysicalRecords()
+                && actual.excludedCopyRecords() == saved.excludedCopyRecords()
+                && actual.scope().equals(saved.scope())
+                && actual.consumedBytes() == saved.consumedBytes();
+    }
+
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
 
     ClientBuildTables(
@@ -1003,7 +1319,21 @@ final class ClientBuildTables implements BuildTables {
                                         "CAPTURE_HANDLE_LIMIT");
                             }
                             var handle =
-                                    new CapturedRowsHandle(receipt, table, this::releaseCapture);
+                                    new CapturedRowsHandle(
+                                            receipt,
+                                            table,
+                                            this::releaseCapture,
+                                            receipt.issueChannelEvidence().state()
+                                                            == CapturedRowsTypes.IssueChannelState
+                                                                    .VERIFIED_NATIVE
+                                                    ? (selectedId, access, cancellation) ->
+                                                            inspectNativeId(
+                                                                    receipt,
+                                                                    table,
+                                                                    selectedId,
+                                                                    access,
+                                                                    cancellation)
+                                                    : null);
                             captures.add(handle);
                             active++;
                             return new CapturedRowsTypes.Capture(

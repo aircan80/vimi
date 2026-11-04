@@ -47,15 +47,25 @@ public final class Db2FileSource implements Db2ByteSource, AutoCloseable {
     private final java.util.Set<Long> unkept = new java.util.HashSet<>();
     private volatile boolean closed;
 
-    private Db2FileSource(FileReadStream stream) {
+    private Db2FileSource(
+            FileReadStream stream, List<com.vibeminer.files.FileTypes.FileHole> observedHoles) {
         this.stream = stream;
         holes =
-                stream.holes().stream()
+                observedHoles.stream()
                         .map(h -> new Db2Types.Hole(h.offset(), h.length(), h.keyName()))
                         .toList();
     }
 
     public static CompletableFuture<Open> open(BuildFiles files, FileRef file, Cancellation token) {
+        return openBounded(files, file, Long.MAX_VALUE, Integer.MAX_VALUE, token);
+    }
+
+    /** Limits are checked before copying hole descriptors or allocating any cache/range bytes. */
+    public static CompletableFuture<Open> openBounded(
+            BuildFiles files, FileRef file, long maxBytes, int maxHoles, Cancellation token) {
+        if (maxBytes < 204 || maxHoles < 0) {
+            throw new IllegalArgumentException("Invalid DB2 source bounds");
+        }
         return files.openRead(file, token)
                 .thenApply(
                         open -> {
@@ -68,9 +78,45 @@ public final class Db2FileSource implements Db2ByteSource, AutoCloseable {
                                         open.observedAt());
                             }
                             try {
+                                if (maxHoles != Integer.MAX_VALUE
+                                        && open.state() != FileReadState.COMPLETE
+                                        && open.state() != FileReadState.PARTIAL) {
+                                    open.stream().close();
+                                    return new Open(
+                                            state(open.state()),
+                                            null,
+                                            "DB2_SOURCE_STATE",
+                                            "Native ID source is not a qualified complete/partial read",
+                                            null);
+                                }
+                                var observedHoles = open.stream().holes();
+                                if (open.stream().length() > maxBytes
+                                        || observedHoles.size() > maxHoles) {
+                                    open.stream().close();
+                                    return new Open(
+                                            OpenState.TOO_LARGE,
+                                            null,
+                                            "DB2_SOURCE_LIMIT",
+                                            "Native ID source profile exceeded",
+                                            null);
+                                }
+                                for (var hole :
+                                        maxHoles == Integer.MAX_VALUE
+                                                ? List.<com.vibeminer.files.FileTypes.FileHole>of()
+                                                : observedHoles) {
+                                    if (hole.keyName() == null || hole.keyName().length() > 64) {
+                                        open.stream().close();
+                                        return new Open(
+                                                OpenState.UNSUPPORTED,
+                                                null,
+                                                "DB2_HOLE_PROFILE",
+                                                "Native ID hole metadata unsupported",
+                                                null);
+                                    }
+                                }
                                 return new Open(
                                         OpenState.OPEN,
-                                        new Db2FileSource(open.stream()),
+                                        new Db2FileSource(open.stream(), observedHoles),
                                         null,
                                         null,
                                         null);

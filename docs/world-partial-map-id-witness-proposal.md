@@ -20,7 +20,7 @@ reusing existing Found or protectedIds alone would silently weaken qualification
 ## Narrow new capability
 
 Add optional CapturedRows.inspectNativeIdDomain(long selectedId,
-NativePreparationTypes.SourceAccess.CONFIGURED_SOURCE, Cancellation),
+NativeIdDomainTypes.SourceAccess.CONFIGURED_SOURCE, Cancellation),
 default UNSUPPORTED without invoking ordinary reads. The explicit SourceAccess argument
 and Javadoc disclose actual configured-source I/O which may acquire/download data;
 this does not change capturePreparedLocal itself into an acquiring operation.

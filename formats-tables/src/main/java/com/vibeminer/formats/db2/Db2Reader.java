@@ -537,12 +537,16 @@ public final class Db2Reader {
             throw fail("INVALID", "Unconsumed auxiliary bytes");
         }
         Db2Numbers.select(bindings, storage, limits, hex(tableHash), hex(layoutHash), token);
+        boolean completeExcludedIdDomain = !format.equals("WDC3") && copies == 0;
         var protectedIds = new HashMap<Long, Integer>();
         var listedIds = new HashMap<Long, Integer>();
         long prefix = auxEnd;
         for (int s = 0; s < sections.size(); s++) {
             if (sections.get(s).key != 0 && !format.equals("WDC3")) {
                 int n = count(u(input.read(prefix, 4, token), 0), limits.maxRows());
+                if (sections.get(s).hidden && n != sections.get(s).count) {
+                    completeExcludedIdDomain = false;
+                }
                 prefix += 4;
                 charged += n * 64L;
                 if (charged > limits.maxIndexBytes()) {
@@ -796,6 +800,7 @@ public final class Db2Reader {
                 copyIndex,
                 copyStart,
                 protectedIds,
+                completeExcludedIdDomain,
                 excludedSections > 0,
                 decodedHeader,
                 infos,

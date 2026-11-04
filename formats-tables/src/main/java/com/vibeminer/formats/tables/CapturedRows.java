@@ -33,6 +33,18 @@ public interface CapturedRows extends AutoCloseable {
                 new UnsupportedOperationException("Bounded captured row reads unavailable"));
     }
 
+    /**
+     * Optional selected-ID inspection performs configured source I/O and may download data. It does
+     * not fetch definitions, decode row values, repair or write generated graphs. Default
+     * unsupported performs no I/O and never falls back to ordinary captured reads.
+     */
+    default CompletableFuture<NativeIdDomainTypes.Result> inspectNativeIdDomain(
+            long selectedId, NativeIdDomainTypes.SourceAccess access, Cancellation token) {
+        java.util.Objects.requireNonNull(access);
+        java.util.Objects.requireNonNull(token);
+        return CompletableFuture.completedFuture(NativeIdDomainTypes.Result.unsupported());
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override
