@@ -19,8 +19,12 @@ reusing existing Found or protectedIds alone would silently weaken qualification
 
 ## Narrow new capability
 
-Add optional CapturedRows.inspectNativeIdDomain(long selectedId, Cancellation),
-default UNSUPPORTED without invoking ordinary reads. It is implemented only on the
+Add optional CapturedRows.inspectNativeIdDomain(long selectedId,
+NativePreparationTypes.SourceAccess.CONFIGURED_SOURCE, Cancellation),
+default UNSUPPORTED without invoking ordinary reads. The explicit SourceAccess argument
+and Javadoc disclose actual configured-source I/O which may acquire/download data;
+this does not change capturePreparedLocal itself into an acquiring operation.
+It is implemented only on the
 actual client-owned CapturedRowsHandle, through a private ClientBuildTables inspector
 bound to that held native graph. No new generated graph, repair, table preparation,
 whole-row decode or definition fetch occurs. The legacy UNKNOWN/native-unverified
