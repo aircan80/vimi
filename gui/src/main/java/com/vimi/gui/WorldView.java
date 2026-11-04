@@ -180,6 +180,16 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final AtomicLong frameGeneration = new AtomicLong();
     private final AtomicReference<Render> latest = new AtomicReference<>();
     private final AtomicBoolean rendering = new AtomicBoolean();
+    @FunctionalInterface
+    interface CpuRenderer {
+        TerrainRenderer.Frame render(TerrainRenderer.Scene scene, TerrainRenderer.Camera camera,
+                int width, int height, java.util.List<com.vibeminer.rendering.world.TerrainTextureBinding> textures,
+                java.util.function.BooleanSupplier canceled);
+    }
+    private final CpuRenderer cpuRenderer;
+    private final java.util.function.Consumer<Runnable> cpuDelivery;
+    private record CpuDelivery(long generation, long selection, long textureGeneration,
+            boolean textured, TerrainRenderer.Frame frame) {}
 
     private record Prepared(
             TerrainRenderer.Scene scene, TerrainScene gpuScene,
@@ -261,6 +271,14 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     WorldView(java.util.function.Supplier<BuildWorld> handles,
             java.util.function.LongSupplier revisions, GpuPreviewService gpuService) {
+        this(handles, revisions, gpuService, TerrainRenderer::render, Platform::runLater);
+    }
+
+    WorldView(java.util.function.Supplier<BuildWorld> handles,
+            java.util.function.LongSupplier revisions, GpuPreviewService gpuService,
+            CpuRenderer cpuRenderer, java.util.function.Consumer<Runnable> cpuDelivery) {
+        this.cpuRenderer = java.util.Objects.requireNonNull(cpuRenderer);
+        this.cpuDelivery = java.util.Objects.requireNonNull(cpuDelivery);
         gpu = gpuService == null ? null : new TerrainGpuPreview(gpuService, Platform::runLater,
                 update -> {
                     show(gpuActivity, update.busy());
@@ -1512,6 +1530,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
         boolean accepted = presentedScene == terrainScene
                 && presentedTextureGeneration == textureGeneration;
         if (gpu != null && gpuEnabled.isSelected() && gpu.ready()) {
+            // A CPU fallback from an earlier appearance may still own a different atlas set even
+            // after the new GPU appearance presents. Its finally block supplies the wakeup.
+            if (rendering.get()) {
+                materialWakeNeeded.set(true);
+                return false;
+            }
             if (accepted) return true;
         } else if (gpu != null && !gpu.retirement().isDone()) {
             materialWakeNeeded.set(true);
@@ -1766,96 +1790,85 @@ final class WorldView extends BorderPane implements AutoCloseable {
         return true;
     }
 
+    private void queueCpuDelivery(Render work, TerrainRenderer.Frame frame) {
+        // Queued delivery owns detached pixels and epoch metadata only. It never captures a Render,
+        // geometry scene, atlas snapshot, or callback-scoped texture binding.
+        var delivery = new CpuDelivery(work.generation(), work.selection(), work.textureGeneration(),
+                work.textures() != null, frame);
+        cpuDelivery.accept(() -> presentCpu(delivery));
+    }
+
+    private void presentCpu(CpuDelivery delivery) {
+        if (stale(delivery.selection()) || !viewportActive()
+                || frameGeneration.get() != delivery.generation()
+                || textureGeneration != delivery.textureGeneration()) return;
+        var frame = delivery.frame();
+        if (frame == null) {
+            show(firstFrameActivity, false);
+            if (!textureSourceBusy) {
+                texturePendingFrame = false;
+                show(textureActivity, false);
+                textureStatus.setText("Terrain texture frame unavailable · previous preview retained");
+                retryTextures.setDisable(gpuScene == null);
+            }
+            status.setText("Terrain frame unavailable; previous image retained.");
+            return;
+        }
+        var bitmap = new WritableImage(frame.width(), frame.height());
+        bitmap.getPixelWriter().setPixels(0, 0, frame.width(), frame.height(),
+                PixelFormat.getIntArgbInstance(), frame.pixels(), 0, frame.width());
+        image.setImage(bitmap);
+        // Matching frame and material epochs establish that this is the current scene; no old
+        // scene reference needs to survive in the queued callback to establish that identity.
+        presentedScene = terrainScene;
+        presentedTextureGeneration = textureGeneration;
+        if (gpu != null && !gpu.ready()) show(gpuActivity, false);
+        show(firstFrameActivity, false);
+        if (!textureSourceBusy && !scenePreparing) finishCpuTextures();
+        advanceMaterials();
+        status.setText("Terrain explorer · "
+                + (delivery.textured() ? "basic terrain textures" : "height shading")
+                + " · buildings, water and collision are not rendered"
+                + (frame.budgetReached() ? " · rendering budget reached" : ""));
+    }
+
     private void kick() {
         if (!rendering.compareAndSet(false, true)) return;
-        Thread.startVirtualThread(
-                () -> {
-                    try {
-                        Render work;
-                        while ((work = latest.getAndSet(null)) != null) {
-                            var current = work;
-                            try (current) {
-                                if (closed) continue;
-                                java.util.function.BooleanSupplier canceled = () -> closed
-                                        || frameGeneration.get() != current.generation();
-                                TerrainRenderer.Frame frame;
-                                if (current.textures() == null) {
-                                    frame = TerrainRenderer.render(current.scene(), current.camera(),
-                                            current.width(), current.height(), canceled);
-                                } else {
-                                    var rendered = new TerrainRenderer.Frame[1];
-                                    current.textures().withBindings(bindings -> rendered[0] =
-                                            TerrainRenderer.render(current.scene(), current.camera(),
-                                                    current.width(), current.height(), bindings, canceled));
-                                    frame = rendered[0];
-                                }
-                                Platform.runLater(
-                                        () -> {
-                                            if (stale(current.selection())
-                                                    || frameGeneration.get()
-                                                            != current.generation()) return;
-                                            var bitmap =
-                                                    new WritableImage(
-                                                            frame.width(), frame.height());
-                                            bitmap.getPixelWriter()
-                                                    .setPixels(
-                                                            0,
-                                                            0,
-                                                            frame.width(),
-                                                            frame.height(),
-                                                            PixelFormat.getIntArgbInstance(),
-                                                            frame.pixels(),
-                                                            0,
-                                                            frame.width());
-                                            image.setImage(bitmap);
-                                            presentedScene = current.scene();
-                                            if (current.textureGeneration() == textureGeneration) {
-                                                presentedTextureGeneration = textureGeneration;
-                                            }
-                                            if (gpu != null && !gpu.ready()) {
-                                                show(gpuActivity, false);
-                                            }
-                                            show(firstFrameActivity, false);
-                                            if (current.textureGeneration() == textureGeneration
-                                                    && !textureSourceBusy && !scenePreparing) finishCpuTextures();
-                                            advanceMaterials();
-                                            status.setText(
-                                                    "Terrain explorer · "
-                                                        + (current.textures() == null ? "height shading" : "basic terrain textures")
-                                                        + " · buildings, water and collision are not rendered"
-                                                            + (frame.budgetReached()
-                                                                    ? " · rendering budget reached"
-                                                                    : ""));
-                                        });
-                            } catch (java.util.concurrent.CancellationException ignored) {
-                            } catch (RuntimeException error) {
-                                Platform.runLater(
-                                        () -> {
-                                            if (closed
-                                                    || frameGeneration.get()
-                                                            != current.generation()) return;
-                                            show(firstFrameActivity, false);
-                                            if (!textureSourceBusy && current.textureGeneration() == textureGeneration) {
-                                                texturePendingFrame = false;
-                                                show(textureActivity, false);
-                                                textureStatus.setText("Terrain texture frame unavailable · previous preview retained");
-                                                retryTextures.setDisable(gpuScene == null);
-                                            }
-                                            status.setText(
-                                                    "Terrain frame unavailable; previous image"
-                                                            + " retained.");
-                                        });
-                            }
+        Thread.startVirtualThread(() -> {
+            try {
+                Render work;
+                while ((work = latest.getAndSet(null)) != null) {
+                    var current = work;
+                    try (current) {
+                        if (closed) continue;
+                        java.util.function.BooleanSupplier canceled = () -> closed
+                                || frameGeneration.get() != current.generation();
+                        TerrainRenderer.Frame frame;
+                        if (current.textures() == null) {
+                            frame = cpuRenderer.render(current.scene(), current.camera(),
+                                    current.width(), current.height(), java.util.List.of(), canceled);
+                        } else {
+                            var rendered = new TerrainRenderer.Frame[1];
+                            current.textures().withBindings(bindings -> rendered[0] =
+                                    cpuRenderer.render(current.scene(), current.camera(),
+                                            current.width(), current.height(), bindings, canceled));
+                            frame = rendered[0];
                         }
-                    } finally {
-                        rendering.set(false);
-                        if (latest.get() != null && !closed) kick();
-                        if (materialWakeNeeded.getAndSet(false) && !closed) {
-                            try { Platform.runLater(this::advanceMaterials); }
-                            catch (IllegalStateException stopped) { /* Toolkit already retired. */ }
-                        }
+                        queueCpuDelivery(current, frame);
+                    } catch (java.util.concurrent.CancellationException ignored) {
+                    } catch (RuntimeException error) {
+                        queueCpuDelivery(current, null);
                     }
-                });
+                }
+            } finally {
+                rendering.set(false);
+                if (latest.get() != null && !closed) kick();
+                if (materialWakeNeeded.getAndSet(false) && !closed) {
+                    try { Platform.runLater(this::advanceMaterials); }
+                    catch (IllegalStateException stopped) { /* Toolkit already retired. */ }
+                }
+            }
+        });
     }
 
     @Override

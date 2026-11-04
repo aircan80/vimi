@@ -50,6 +50,13 @@ final class TerrainGpuPreviewTextureFixture implements AutoCloseable {
                 new WorldFormats.Tile(20, 21, 103, 0, 0, 0, 0, 3, 0, 0)));
     }
 
+    static TerrainGpuPreviewTextureFixture streamingWindow() {
+        return new TerrainGpuPreviewTextureFixture(false, List.of(TILE,
+                new WorldFormats.Tile(18, 21, 101, 0, 0, 0, 0, 3, 0, 0),
+                new WorldFormats.Tile(20, 21, 103, 0, 0, 0, 0, 3, 0, 0),
+                new WorldFormats.Tile(22, 21, 105, 0, 0, 0, 0, 3, 0, 0)));
+    }
+
     private TerrainGpuPreviewTextureFixture(boolean partial, List<WorldFormats.Tile> tiles) {
         this.tiles = List.copyOf(tiles);
         expectedChunks = (partial ? 128 : 256) * tiles.size();

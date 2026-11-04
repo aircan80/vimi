@@ -139,3 +139,7 @@ No stale acknowledgement may clear another candidate's activity.
 
 Cold child startup can still pause frame delivery. Measure that remaining gap
 separately and do not describe this immediate change as a hot-streaming engine.
+
+CPU/GPU transition retirement is part of admission: an accepted GPU appearance cannot admit another geometry/material candidate while an older CPU render still owns scoped borrows. The CPU worker's `finally` returns that credit and wakes the latest descriptor. Queued CPU delivery holds detached pixels and primitive epochs only; it cannot keep retired geometry or atlas ownership alive after the worker drains. Both scene/frame and material epochs are checked before detached pixels can be presented.
+
+The authored FX proof holds a CPU borrow from appearance A while GPU B presents, requests C, and verifies C stays descriptor-only until A retires. It then keeps the stale CPU callback queued while C prepares and confirms its payload has no scene or atlas references and cannot overwrite B. Removing the CPU admission gate makes this exact ownership assertion fail (negative control).

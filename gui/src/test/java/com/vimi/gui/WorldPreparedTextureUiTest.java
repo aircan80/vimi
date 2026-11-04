@@ -41,13 +41,21 @@ public final class WorldPreparedTextureUiTest {
     public static void main(String[] args) throws Exception {
         Platform.startup(() -> Platform.setImplicitExit(false));
         try { scenario(false, false, false); scenario(true, false, false);
-            scenario(false, true, false); scenario(false, false, true); }
+            scenario(false, true, false); scenario(false, false, true); scenario(false, false, false, true); }
         finally { Platform.exit(); }
         System.out.println("Prepared terrain bundle FX PASS: initial/full-window and replacement atomicity, old-camera continuity, partial/failure outcomes and ownership");
     }
 
     private static void scenario(boolean partial, boolean fail, boolean supersede) throws Exception {
-        var fixture = TerrainGpuPreviewTextureFixture.neighborhood(partial);
+        scenario(partial, fail, supersede, false);
+    }
+
+    private static void scenario(boolean partial, boolean fail, boolean supersede, boolean heldCpu) throws Exception {
+        var fixture = heldCpu ? TerrainGpuPreviewTextureFixture.streamingWindow()
+                : TerrainGpuPreviewTextureFixture.neighborhood(partial);
+        var cpuEntered = new java.util.concurrent.CountDownLatch(1);
+        var cpuRelease = new java.util.concurrent.CountDownLatch(1);
+        var deliveries = new java.util.concurrent.ConcurrentLinkedQueue<Runnable>();
         var children = new CopyOnWriteArrayList<GpuPreviewServiceTest.FakeProcess>();
         var frames = new CopyOnWriteArrayList<Frames>();
         var sceneCounts = new CopyOnWriteArrayList<Integer>();
@@ -93,7 +101,14 @@ public final class WorldPreparedTextureUiTest {
             public CompletableFuture<Void> closeAsync() { throw new AssertionError("Borrowed source must remain open"); }
         };
         try {
-            var ownedView = fx(() -> new WorldView(() -> source, () -> 0, service));
+            var ownedView = fx(() -> heldCpu ? new WorldView(() -> source, () -> 0, service,
+                    (scene, camera, width, height, textures, canceled) -> {
+                        require(!textures.isEmpty(), "Held CPU job owns scoped material borrows");
+                        cpuEntered.countDown();
+                        try { require(cpuRelease.await(12, TimeUnit.SECONDS), "Release held CPU ownership"); }
+                        catch (InterruptedException error) { throw new AssertionError(error); }
+                        return new TerrainRenderer.Frame(width, height, new int[width * height], 0, false);
+                    }, deliveries::add) : new WorldView(() -> source, () -> 0, service));
             view = ownedView;
             debugView = ownedView;
             var ownedStage = fx(() -> {
@@ -179,7 +194,15 @@ public final class WorldPreparedTextureUiTest {
                 });
                 require(!usefulToken.isCanceled() && fx(() -> get(ownedView, "pendingPrepared") == useful),
                         "A candidate that still covers the camera finishes instead of starving at a boundary");
+                if (heldCpu) {
+                    fx(() -> { ((javafx.scene.control.CheckBox) ownedView.lookup("#world-gpu-enabled")).fire(); return null; });
+                    require(cpuEntered.await(5, TimeUnit.SECONDS), "Old CPU renderer enters scoped borrow");
+                }
                 sourceGate.get().complete(null);
+                if (heldCpu) {
+                    await(() -> fx(() -> get(ownedView, "terrainScene") != oldScene), "New bundle publishes while old CPU work retires");
+                    fx(() -> { ((javafx.scene.control.CheckBox) ownedView.lookup("#world-gpu-enabled")).fire(); return null; });
+                }
             }
             await(() -> children.size() == 2, "one combined replacement child");
             require(annexes.get(1) && sceneCounts.get(1) == 3, "Replacement contains geometry and all admitted textures together");
@@ -188,8 +211,42 @@ public final class WorldPreparedTextureUiTest {
                     () -> pixel(ownedView) == TARGET && fx(() -> !ownedView.lookup("#world-texture-activity").isVisible()), "accepted replacement bundle");
             require(children.size() == 2 && reads.get() == (supersede ? 3 : 2),
                     "Only complete useful bundles launch a child; canceled intermediate never publishes");
+            if (heldCpu) {
+                sourceGate.set(new CompletableFuture<>());
+                fx(() -> {
+                    var camera = (TerrainRenderer.Camera) get(ownedView, "camera");
+                    set(ownedView, "camera", new TerrainRenderer.Camera(-4.5 * WorldFormats.TILE_SIZE,
+                            camera.y(), camera.z(), camera.yaw(), camera.pitch()));
+                    invoke(ownedView, "loadNext"); invoke(ownedView, "requestFrame"); return null;
+                });
+                await(() -> tileReads.get() == 4, "Fourth raw tile loads independently");
+                fx(() -> { invoke(ownedView, "advanceMaterials"); return null; });
+                require(reads.get() == 2 && fx(() -> get(ownedView, "pendingPrepared") == null
+                        && get(ownedView, "geometryJob") == null),
+                        "Accepted GPU frame cannot admit third geometry/material owner while old CPU borrow lives");
+                cpuRelease.countDown();
+                await(() -> reads.get() == 3 && !deliveries.isEmpty(), "CPU finally returns ownership credits and wakes pending candidate");
+                for (var callback : deliveries) for (var field : callback.getClass().getDeclaredFields()) {
+                    field.setAccessible(true);
+                    var captured = field.get(callback);
+                    require(captured == ownedView || captured != null && captured.getClass().getSimpleName().equals("CpuDelivery"),
+                            "Queued CPU closure captures only current view and detached delivery metadata");
+                    if (captured != ownedView) for (var component : captured.getClass().getRecordComponents())
+                        require(component.getType().isPrimitive() || component.getType() == TerrainRenderer.Frame.class,
+                                "CPU delivery cannot retain an old geometry or atlas owner");
+                }
+                int before = pixel(ownedView);
+                fx(() -> { Runnable callback; while ((callback = deliveries.poll()) != null) callback.run(); return null; });
+                require(pixel(ownedView) == before, "Delayed canceled CPU frame cannot replace accepted current GPU frame");
+                sourceGate.get().complete(null);
+                presentUntil(children, frames, 1, 100, TARGET, () -> children.size() == 3,
+                        "Candidate resumes after CPU retirement");
+                ready(children, 2, sceneCounts.get(2), false, false);
+                presentUntil(children, frames, 2, 1, FIRST, () -> pixel(ownedView) == FIRST, "Third bundle frame");
+            }
             require(fixture.stats().entries() <= 18, "Shared atlas bound remains unchanged");
         } finally {
+            cpuRelease.countDown();
             sourceGate.get().complete(null);
             var closingView = view; var closingStage = stage;
             fx(() -> { if (closingView != null) closingView.close(); if (closingStage != null) closingStage.close(); return null; });
