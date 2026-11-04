@@ -35,6 +35,54 @@ final class WorldStreamScopesTest {
             new WorldFormats.Tile(7, 19, 2, 0, 0, 0, 0, 3, 0, 0);
 
     @Test
+    void combinedTerrainSourceCloseReportsEachCleanupFailureOnceWithoutThrowableCycles()
+            throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var pool = new TerrainAtlasPool();
+        var world = new WorldService(tables.handle(), files.files(), pool);
+        var first = new IllegalStateException("First authored packet cleanup failure");
+        var second = new IllegalStateException("Second authored packet cleanup failure");
+        var retired = new AtomicInteger();
+        var owners = new ArrayList<WorldPreparedTerrain.WrittenTile<AutoCloseable>>();
+        try {
+            var source = world.preparedTerrain();
+            var scope = source.createScope(REQUEST, Cancellation.NONE);
+            for (var error : List.of(first, second)) {
+                owners.add(
+                        source.prepareAndWrite(
+                                scope,
+                                TILE,
+                                Cancellation.NONE,
+                                (borrow, cancel) ->
+                                        (AutoCloseable)
+                                                () -> {
+                                                    retired.incrementAndGet();
+                                                    throw error;
+                                                }));
+            }
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> world.closeAsync().get(5, TimeUnit.SECONDS));
+            assertEquals(2, retired.get());
+            assertEquals(0, pool.stats().leaseClaims());
+            assertEquals(List.of(second), List.of(first.getSuppressed()));
+            assertEquals(0, second.getSuppressed().length);
+            assertTrue(first.getCause() == null && second.getCause() == null);
+            for (var owner : owners) {
+                owner.close();
+            }
+            assertEquals(2, retired.get());
+        } finally {
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> world.closeAsync().get(5, TimeUnit.SECONDS));
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+            tables.close();
+        }
+    }
+
+    @Test
     void combinedTerrainFinalFailureDrainsReturnedResourceBeforeNextAdmission() throws Exception {
         var files = new WorldTerrainTextureSourceTest.Files();
         var tables = new Tables(files);
