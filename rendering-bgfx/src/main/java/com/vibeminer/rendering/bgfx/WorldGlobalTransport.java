@@ -80,6 +80,7 @@ public final class WorldGlobalTransport {
                         .normalize();
         Path framesPath = directory.resolve("frames.vgpu");
         GpuFrameFile frames = null;
+        Process process = null;
         try {
             frames = GpuFrameFile.create(framesPath, 800, 500);
             var launch =
@@ -93,11 +94,17 @@ public final class WorldGlobalTransport {
                                     ? GlobalWmoLaunch.Backend.DEFAULT
                                     : GlobalWmoLaunch.Backend.valueOf(
                                             backend.toUpperCase(java.util.Locale.ROOT)));
-            var process = Objects.requireNonNull(starter.start(launch.arguments()));
+            process = Objects.requireNonNull(starter.start(launch.arguments()));
             var session = new Session(input.expected(), frames, directory, framesPath, process);
             session.start();
             return session;
         } catch (IOException | RuntimeException | Error failure) {
+            if (process != null && !confirmExit(process)) {
+                // A started child may still map the frames and read the input: keep both.
+                var unconfirmed = new UnconfirmedExit();
+                unconfirmed.addSuppressed(failure);
+                throw unconfirmed;
+            }
             try {
                 if (frames != null) {
                     frames.close();
@@ -111,6 +118,25 @@ public final class WorldGlobalTransport {
         }
     }
 
+    /** A started child's exit could not be confirmed; its input and mapping must be retained. */
+    public static final class UnconfirmedExit extends IOException {
+        private static final long serialVersionUID = 1L;
+
+        UnconfirmedExit() {
+            super("Global renderer exit could not be confirmed");
+        }
+    }
+
+    private static boolean confirmExit(Process process) {
+        process.destroyForcibly();
+        try {
+            return process.waitFor(5, TimeUnit.SECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return !process.isAlive();
+        }
+    }
+
     public static final class Session {
         private final WorldGlobalSceneWriter.ExpectedFile expected;
         private final GpuFrameFile frames;
@@ -120,6 +146,8 @@ public final class WorldGlobalTransport {
         private final CompletableFuture<Void> ready = new CompletableFuture<>();
         private final CompletableFuture<Void> closedStatus = new CompletableFuture<>();
         private final CompletableFuture<Void> terminated = new CompletableFuture<>();
+        private final CompletableFuture<Void> readerDone = new CompletableFuture<>();
+        private volatile boolean retired;
         private final Object lock = new Object();
         private GlobalWmoFrameRequest pending;
         private long revision;
@@ -160,6 +188,11 @@ public final class WorldGlobalTransport {
                 lock.notifyAll();
                 return revision;
             }
+        }
+
+        /** True only after actual exit AND successful mapping/frames-directory retirement. */
+        public boolean retired() {
+            return retired;
         }
 
         /** True only once the actual child process has exited; kill intent is never exit. */
@@ -282,6 +315,8 @@ public final class WorldGlobalTransport {
             } catch (IOException | RuntimeException invalid) {
                 fail("PROTOCOL");
                 process.destroyForcibly();
+            } finally {
+                readerDone.complete(null);
             }
         }
 
@@ -325,9 +360,13 @@ public final class WorldGlobalTransport {
                         new IOException("Global renderer exit could not be confirmed", error));
                 return;
             }
+            // Every trailing record is validated before health is decided: reader EOF first.
             try {
-                closedStatus.get(2, TimeUnit.SECONDS);
-            } catch (Exception missing) {
+                readerDone.get(2, TimeUnit.SECONDS);
+            } catch (Exception undrained) {
+                fail("STATUS_UNDRAINED");
+            }
+            if (!closedStatus.isDone()) {
                 fail("CLOSED_MISSING");
             }
             try {
@@ -336,6 +375,7 @@ public final class WorldGlobalTransport {
                 }
                 Files.deleteIfExists(framesPath);
                 Files.deleteIfExists(directory);
+                retired = true;
             } catch (IOException | RuntimeException cleanup) {
                 terminated.completeExceptionally(cleanup);
                 return;
@@ -344,7 +384,7 @@ public final class WorldGlobalTransport {
             String reason;
             synchronized (lock) {
                 healthy = !failed && closeSent;
-                reason = closeSent ? failure : "UNEXPECTED_EXIT";
+                reason = !failure.isEmpty() ? failure : "UNEXPECTED_EXIT";
             }
             if (healthy) {
                 terminated.complete(null);

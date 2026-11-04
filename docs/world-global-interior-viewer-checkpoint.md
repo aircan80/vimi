@@ -110,8 +110,47 @@ navigation. #184 covers floor, group and entrance navigation.
   digest-verified, but are not hardware-qualified here.
 - Only Onyxia is actually proven. Other instances depend on the existing Source profile and
   otherwise report a refusal.
-- Raw MOCV and lighting are deliberately omitted, so interiors are lit uniformly. Holes visible
-  from some interior angles are not yet diagnosed: they could be unbatched indices (which are
-  preserved, not drawn) or culling.
+- Raw MOCV and lighting are deliberately omitted, so interiors are lit uniformly. The renderer
+  has no face culling. Gaps seen from some interior angles are most likely the 3,039 Onyxia raw
+  triangles that no MOBA batch covers, which are preserved but deliberately not drawn (see the
+  instance source proposal). This has not been confirmed per pixel.
 - `GLOBAL_UNAVAILABLE INPUT/CAPABILITY` is not emitted. Every child failure is treated as fatal,
   as partition 2 allows for a first integration.
+
+## Independent review follow-up
+
+An independent reviewer read the child, transport, service, bridge and view code against the
+proposal and found no blockers. The should-fix items are resolved:
+
+- **Health after full drain.** Transport health is decided only after status-reader EOF, with a
+  2 s bound, so a record arriving after CLOSED (even after the actual exit) is fatal. This is a
+  causal test: removing the wait makes the trailing-record test fail.
+- **Retirement tracking.**
+  - Mapping/frames-directory retirement is tracked separately (`retired()`).
+  - The service fails closed when exit cannot be confirmed or when that retirement fails.
+  - An in-loop input deletion failure is sticky and fails the service closed.
+- **Launch after start.** If launch fails after the child started, the transport destroys the
+  child and waits for its exit. When exit cannot be confirmed it throws `UnconfirmedExit` and
+  retains the mapping and input, and the service fails closed.
+- **Service loop.** Lifecycle futures are hoisted out of the poll loop. The `opened` callback is
+  observational and skipped once stopping. Cancellation is recognized only as exact standard
+  `CancellationException`, unwrapped from completion/execution wrappers.
+- **Build.** `processResources` no longer depends on the Python verifier; verification stays under
+  `check`.
+- **Child.**
+  - Lost-wakeup re-check after publishing the waiter.
+  - `Decoded` closed if owner allocation throws.
+  - Exact cancellation class.
+  - GLOBAL dispatch only at flag positions.
+- **View.** Held keys clear on focus loss, and there is one window per map.
+- **Tests.** `WorldGlobalTransportTest` adds 6 scripted fake-child cases:
+  - canonical CAM/CLOSE bytes and mapping retirement;
+  - a trailing record after exit;
+  - exit without parent CLOSE;
+  - wrong counts and READY before consumed;
+  - missing CLOSED and nonzero exit;
+  - coalescing and no admission after close.
+
+Deferred: stderr bytes are drained but not retained, and the view writes into the displayed bitmap
+rather than staging two. Post-launch service behavior has no deterministic fake-Source test: a
+`Prepared` needs an actual Source. The actual Onyxia proof covers that path.

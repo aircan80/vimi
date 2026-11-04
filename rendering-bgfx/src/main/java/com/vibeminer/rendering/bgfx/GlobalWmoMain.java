@@ -12,7 +12,6 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CancellationException;
@@ -36,7 +35,16 @@ final class GlobalWmoMain {
     private GlobalWmoMain() {}
 
     static boolean requested(String[] args) {
-        return args != null && Arrays.asList(args).contains("--global-scene");
+        if (args == null) {
+            return false;
+        }
+        // Flag positions only: a value equal to the flag text never selects GLOBAL mode.
+        for (int i = 0; i < args.length; i += 2) {
+            if ("--global-scene".equals(args[i])) {
+                return true;
+            }
+        }
+        return false;
     }
 
     static int execute(String[] args) {
@@ -77,7 +85,9 @@ final class GlobalWmoMain {
                 render(launch, control, statuses, context, frames);
             } catch (CancellationException canceled) {
                 // Only exact standard cancellation after an actual stop request is healthy.
-                if (!control.stopping() || control.failure() != null) {
+                if (canceled.getClass() != CancellationException.class
+                        || !control.stopping()
+                        || control.failure() != null) {
                     throw canceled;
                 }
             }
@@ -109,7 +119,13 @@ final class GlobalWmoMain {
         var decoded =
                 GpuGlobalWmoSceneFile.read(launch.scene(), launch.expected(), control::stopping);
         var counts = decoded.counts();
-        var owner = GlobalWmoFrameOwner.allocate(frames);
+        GlobalWmoFrameOwner owner;
+        try {
+            owner = GlobalWmoFrameOwner.allocate(frames);
+        } catch (RuntimeException | Error failure) {
+            decoded.close();
+            throw failure;
+        }
         boolean contextLive = false;
         try {
             statuses.emit(
@@ -250,7 +266,9 @@ final class GlobalWmoMain {
 
         void await(long nanos) {
             waiter = Thread.currentThread();
-            if (!stopping.get()) {
+            // Re-check after publishing the waiter so a camera arriving in between is not lost.
+            var newest = latest.get();
+            if (!stopping.get() && (newest == null || newest.revision() <= submitted)) {
                 LockSupport.parkNanos(nanos);
             }
             waiter = null;

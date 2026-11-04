@@ -699,7 +699,7 @@ final class GpuPreviewService {
         WorldGlobalSourceBridge.OwnedInput owned = null;
         com.vibeminer.rendering.bgfx.WorldGlobalTransport.Session session = null;
         Throwable failure = null;
-        boolean ownedClosed = false;
+        boolean ownedClosed = false, retirementUnknown = false;
         String message = "Interior renderer unavailable";
         try {
             var parent = temporaryParent == null
@@ -719,8 +719,16 @@ final class GpuPreviewService {
             request.publish(State.STARTING, "Starting GPU interior renderer…");
             session = com.vibeminer.rendering.bgfx.WorldGlobalTransport.launch(
                     parent, owned.input(), null, globalStarter);
-            request.global.opened().accept(new GlobalOpened(session, initial));
+            if (!request.stopping) {
+                try {
+                    request.global.opened().accept(new GlobalOpened(session, initial));
+                } catch (RuntimeException | Error ignored) {
+                    /* Observational view delivery cannot interrupt native ownership/cleanup. */
+                }
+            }
             var terminated = session.terminated();
+            var consumed = session.inputConsumed();
+            var ready = session.ready();
             boolean closeSent = false, readyShown = false;
             while (!terminated.isDone()) {
                 if (request.stopping && !closeSent) {
@@ -728,12 +736,16 @@ final class GpuPreviewService {
                     request.publish(State.STOPPING, "Stopping GPU interior renderer…");
                     session.closeAsync();
                 }
-                var consumed = session.inputConsumed();
                 if (!ownedClosed && consumed.isDone() && !consumed.isCompletedExceptionally()) {
                     ownedClosed = true;
-                    owned.close();
+                    try {
+                        owned.close();
+                    } catch (RuntimeException | Error deletion) {
+                        // Unknown input retirement is fatal and sticky for the service.
+                        retirementUnknown = true;
+                        throw deletion;
+                    }
                 }
-                var ready = session.ready();
                 if (!readyShown && ready.isDone()) {
                     readyShown = true;
                     if (ready.isCompletedExceptionally()) {
@@ -751,9 +763,12 @@ final class GpuPreviewService {
         } catch (Throwable error) {
             failure = error;
             message = globalMessage(error);
+            if (error instanceof com.vibeminer.rendering.bgfx.WorldGlobalTransport.UnconfirmedExit) {
+                retirementUnknown = true;
+            }
         } finally {
             preparing.set(false);
-            boolean drained = true;
+            boolean drained = !retirementUnknown;
             if (session != null) {
                 if (!session.terminated().isDone()) {
                     session.closeAsync();
@@ -763,8 +778,9 @@ final class GpuPreviewService {
                 } catch (Throwable ended) {
                     if (failure == null) failure = ended;
                 }
-                // Input/mapping deletion requires actual process exit, never kill intent.
-                drained = session.exited();
+                // Input deletion requires actual process exit, never kill intent; mapping/frames
+                // retirement failure is unknown physical retirement.
+                drained &= session.exited() && session.retired();
             }
             if (prepared != null) {
                 try {
@@ -774,7 +790,8 @@ final class GpuPreviewService {
                     drained = false;
                 }
             }
-            if (owned != null && !ownedClosed && drained) {
+            if (owned != null && !ownedClosed && drained
+                    && (session == null || session.exited())) {
                 try {
                     owned.close();
                 } catch (Throwable cleanup) {
@@ -782,9 +799,8 @@ final class GpuPreviewService {
                     drained = false;
                 }
             }
-            if (owned != null && !ownedClosed && !drained) failClosed(request);
-            else if (!drained) failClosed(request);
-            if (failure == null || request.stopping && failure instanceof java.util.concurrent.CancellationException) {
+            if (!drained) failClosed(request);
+            if (failure == null || drained && request.stopping && canceled(failure)) {
                 request.publish(State.CLOSED, "GPU interior renderer stopped");
                 request.finish(null);
             } else {
@@ -792,6 +808,18 @@ final class GpuPreviewService {
                 request.finish(failure);
             }
         }
+    }
+
+    private static boolean canceled(Throwable failure) {
+        // Exact standard cancellation, possibly inside future wrappers; nothing else is clean.
+        Throwable at = failure;
+        for (int depth = 0; depth < 8 && at != null; depth++) {
+            if (at.getClass() == java.util.concurrent.CancellationException.class) return true;
+            if (!(at instanceof java.util.concurrent.CompletionException)
+                    && !(at instanceof java.util.concurrent.ExecutionException)) return false;
+            at = at.getCause();
+        }
+        return false;
     }
 
     /** Bounded user text; never raw paths, provider messages or arbitrary causes. */

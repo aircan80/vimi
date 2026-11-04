@@ -72,6 +72,10 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
         setCenter(viewport);
         viewport.setOnKeyPressed(e -> keys.add(e.getCode()));
         viewport.setOnKeyReleased(e -> keys.remove(e.getCode()));
+        // A key released while unfocused would otherwise keep the camera drifting.
+        viewport.focusedProperty().addListener((o, was, focused) -> {
+            if (!focused) keys.clear();
+        });
         viewport.setOnMouseClicked(e -> viewport.requestFocus());
         viewport.setOnMousePressed(
                 e -> {
@@ -131,12 +135,26 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
                 .exceptionally(ignored -> null);
     }
 
+    private static final java.util.Map<Long, Stage> OPEN = new java.util.HashMap<>();
+
+    /** One window per map; reopening focuses the live one instead of superseding it. */
     static Stage open(Supplier<BuildWorld> worlds, long mapId, String name) {
+        var existing = OPEN.get(mapId);
+        if (existing != null && existing.isShowing()) {
+            existing.toFront();
+            existing.requestFocus();
+            return existing;
+        }
         var view = new GlobalInteriorView(GpuPreviewService.application(), worlds, mapId, name);
         var stage = new Stage();
         stage.setTitle(name + " · interior");
         stage.setScene(new Scene(view, 960, 640));
-        stage.setOnHidden(e -> view.close());
+        stage.setOnHidden(
+                e -> {
+                    view.close();
+                    OPEN.remove(mapId, stage);
+                });
+        OPEN.put(mapId, stage);
         stage.show();
         view.viewport.requestFocus();
         return stage;
