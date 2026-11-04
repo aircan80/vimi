@@ -76,6 +76,13 @@ public interface BuildTables extends AutoCloseable {
                         NativePreparationTypes.State.UNSUPPORTED, access, null, null));
     }
 
+    /** Last compiled effective-view metadata only; never decodes/prepares/acquires a table. */
+    default CompletableFuture<java.util.Optional<HotfixViewInfo>> hotfixInfo(
+            TableTypes.Ref table, Long rowId, TableTypes.Priority priority, Cancellation token) {
+        token.check();
+        return CompletableFuture.completedFuture(java.util.Optional.empty());
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override

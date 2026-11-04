@@ -609,6 +609,30 @@ tasks.register('worldHotLifecycleUiProof', JavaExec) {
     jvmArgs '--enable-native-access=ALL-UNNAMED'
 }
 
+// Authored private cache import and physical file retirement; no live client data.
+tasks.register('clientHotfixStoreTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.ClientHotfixStoreTest'
+}
+
+tasks.register('clientHotfixDetailsTest', JavaExec) {
+    group = 'verification'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.ClientHotfixDetailsTest'
+}
+tasks.named('check') { dependsOn tasks.named('clientHotfixDetailsTest') }
+check.dependsOn clientHotfixStoreTest
+
+tasks.register('nativeHotfixWorkspaceTest', JavaExec) {
+    group = 'verification'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.NativeHotfixWorkspaceTest'
+}
+check.dependsOn nativeHotfixWorkspaceTest
+
 // Authored character choice/pixel/activity and cancellation checks; requires a display.
 tasks.register('raceCustomizationUiTest', JavaExec) {
     dependsOn testClasses
