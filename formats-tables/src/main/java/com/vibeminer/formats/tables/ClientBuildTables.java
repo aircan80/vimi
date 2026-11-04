@@ -907,7 +907,13 @@ final class ClientBuildTables implements BuildTables {
                         if (current == null
                                 || !current.identity().equals(table.identity())
                                 || !source.equals(current.source())
-                                || !evidence.equals(issueEvidence(current))) {
+                                || !evidence.equals(issueEvidence(current))
+                                || current.rowCount() != table.rowCount()
+                                || !current.completion().equals(table.completion())
+                                || !current.header().equals(table.header())
+                                || !current.sections().equals(table.sections())
+                                || !current.keysUsed().equals(table.keysUsed())
+                                || !current.holeKeys().equals(table.holeKeys())) {
                             return new NativePreparationTypes.Result(
                                     NativePreparationTypes.State.SOURCE_CHANGED,
                                     access,

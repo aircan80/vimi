@@ -466,6 +466,24 @@ final class CapturedRowsTest {
                                                                 ? table.source().legacy()
                                                                 : null);
                                             }
+                                            if (mutation == 4) {
+                                                var metadata =
+                                                        table.getClass()
+                                                                .getDeclaredField("metadata");
+                                                metadata.setAccessible(true);
+                                                var completion =
+                                                        replaceRecord(
+                                                                table.completion(),
+                                                                "textIssueCount",
+                                                                table.completion().textIssueCount()
+                                                                        + 1);
+                                                metadata.set(
+                                                        table,
+                                                        replaceRecord(
+                                                                metadata.get(table),
+                                                                "completion",
+                                                                completion));
+                                            }
                                             return CompletableFuture.completedFuture(table);
                                         }
                                         try {
@@ -504,9 +522,26 @@ final class CapturedRowsTest {
         }
     }
 
+    private static Object replaceRecord(Object record, String name, Object replacement)
+            throws ReflectiveOperationException {
+        var components = record.getClass().getRecordComponents();
+        var types = new Class<?>[components.length];
+        var values = new Object[components.length];
+        for (int i = 0; i < components.length; i++) {
+            types[i] = components[i].getType();
+            var accessor = components[i].getAccessor();
+            accessor.setAccessible(true);
+            values[i] =
+                    components[i].getName().equals(name) ? replacement : accessor.invoke(record);
+        }
+        var constructor = record.getClass().getDeclaredConstructor(types);
+        constructor.setAccessible(true);
+        return constructor.newInstance(values);
+    }
+
     @Test
     void finalNativePreparationRejectsChangedSourceAndSameIdentityWrongProof() {
-        for (int mutation = 1; mutation <= 3; mutation++) {
+        for (int mutation = 1; mutation <= 4; mutation++) {
             try (var fixture = new NativeCase()) {
                 fixture.mutation = mutation;
                 var result = fixture.prepare(ignored -> {}, Cancellation.NONE).join();
