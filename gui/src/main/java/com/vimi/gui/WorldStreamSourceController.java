@@ -142,10 +142,13 @@ final class WorldStreamSourceController {
                 WorldFormats.Tile tile,
                 WorldStreamTransport.TileReservation reservation,
                 WorldTerrainStreaming source,
+                com.vibeminer.concepts.world.WorldWaterPreview water,
                 WorldTerrainStreaming.Scope scope) {
             this.tile = tile;
             this.reservation = reservation;
-            producer = new WorldStreamSourceBridge.Producer(source, scope, tile, () -> useful);
+            producer =
+                    new WorldStreamSourceBridge.Producer(
+                            source, water, scope, tile, () -> useful);
         }
     }
 
@@ -175,6 +178,10 @@ final class WorldStreamSourceController {
     // Worker owns every source/transport owner below. FX sees only immutable table aliases under
     // lock.
     private WorldTerrainStreaming source;
+    private com.vibeminer.concepts.world.WorldWaterPreview water;
+    private CompletableFuture<Boolean> waterTables;
+    private long waterTablesStarted;
+    private static final long WATER_TABLE_WAIT_NANOS = 15_000_000_000L;
     private WorldTerrainStreaming.Scope scope;
     private GpuOwner gpu;
     private CompletableFuture<WorldStreamTransport.Session> opening;
@@ -420,6 +427,15 @@ final class WorldStreamSourceController {
                     return;
                 }
                 source=capability.orElseThrow();
+                // Static diagnostic water joins each actual terrain tile; disable with
+                // -Dvimi.world.water=false.
+                if(!"false".equals(System.getProperty("vimi.world.water")))
+                    water=request.world().waterPreview().orElse(null);
+                if(water!=null) {
+                    waterTablesStarted=clock.getAsLong();
+                    waterTables=request.world().prepareWaterTables(qualificationCancellation);
+                    waterTables.whenComplete((ignored, failure) -> kick());
+                }
             }
             try {
                 if (scope == null)
@@ -669,6 +685,12 @@ final class WorldStreamSourceController {
             admissionOrder.removeIf(tile->same(tile,priority));
             admissionOrder.addFirst(priority);
         }
+        if(waterTables!=null && !waterTables.isDone()
+                && clock.getAsLong()-waterTablesStarted<WATER_TABLE_WAIT_NANOS) {
+            // Bounded wait so the first tiles can carry water; terrain proceeds after timeout.
+            publish(Phase.PREPARING, "Preparing water tables");
+            return;
+        }
         for (var tile : admissionOrder) {
             if (unavailable.containsKey(key(tile))) continue;
             boolean found = false;
@@ -684,7 +706,7 @@ final class WorldStreamSourceController {
                 return;
             }
             blockedOnMaterialPool = false;
-            pending = new Pending(tile, reservation.orElseThrow(), source, scope);
+            pending = new Pending(tile, reservation.orElseThrow(), source, waterReady() ? water : null, scope);
             pending.result = pending.reservation.produce(pending.producer);
             pending.result.whenComplete((ignored, failure) -> kick());
             publish(Phase.PREPARING, "Preparing terrain, textures and upload");
@@ -706,10 +728,17 @@ final class WorldStreamSourceController {
                                         : "Waiting for accepted viewport pixels");
     }
 
+    private boolean waterReady() {
+        if(water==null || waterTables==null || !waterTables.isDone()) return false;
+        try { return waterTables.getNow(false); }
+        catch(RuntimeException failed) { return false; }
+    }
+
     private String readyDetail() {
-        int textured = 0, partial = 0, height = 0;
+        int textured = 0, partial = 0, height = 0, watered = 0;
         String reason = "";
         for (var entry : current) {
+            if (entry.source().waterCells() > 0) watered++;
             var facts = entry.source().facts();
             if (facts.outcome() == WorldTerrainStreaming.Outcome.TEXTURED) {
                 textured++;
@@ -732,6 +761,10 @@ final class WorldStreamSourceController {
                 + height
                 + " height fallback"
                 + (reason.isEmpty() ? "" : "; " + reason)
+                + (watered == 0 ? "" : "; static diagnostic water on " + watered)
+                + (water != null && waterTables != null && waterTables.isDone() && !waterReady()
+                        ? "; water tables unavailable"
+                        : "")
                 + (unavailable.isEmpty()
                         ? ""
                         : "; "
@@ -984,6 +1017,8 @@ final class WorldStreamSourceController {
         }
         entries.clear();
         source = null;
+        water = null;
+        waterTables = null;
         scope = null;
         opening = null;
         session = null;

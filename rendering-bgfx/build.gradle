@@ -365,3 +365,21 @@ tasks.register('nativeGpuWorldStreamTransportProof', JavaExec) {
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args layout.buildDirectory.dir('native-world-stream-public-lifecycle').get().asFile.absolutePath
 }
+
+// Isolated incomplete global recipe: six test-resource blobs, DX11 still pending.
+tasks.register('verifyGlobalCandidateShaders', Exec) {
+    commandLine 'python3', rootProject.file('scripts/rendering/compile_bgfx_world_global_candidate.py'), '--verify'
+    inputs.dir('src/main/shaders/world-global')
+    inputs.dir('src/test/resources/com/vibeminer/rendering/bgfx/shaders/global-candidate')
+}
+tasks.register('nativeGpuGlobalWmoProof', JavaExec) {
+    group = 'verification'
+    description = 'Checks isolated standalone global candidate Vulkan pixels and upload ownership.'
+    dependsOn testClasses, tasks.named('verifyGlobalCandidateShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.GlobalWmoNativeProof'
+    timeout = java.time.Duration.ofMinutes(2)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-global-wmo').get().asFile.absolutePath
+}
+tasks.named('check') { dependsOn tasks.named('verifyGlobalCandidateShaders') }
