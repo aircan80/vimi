@@ -771,6 +771,11 @@ public final class WorldStreamSourceControllerTest {
             fixture.until(() -> Files.exists(fixture.directory.resolve("authored-held-unused-credit")));
             var poolBlockedField=WorldStreamSourceController.class.getDeclaredField("blockedOnMaterialPool");
             poolBlockedField.setAccessible(true);
+            fixture.until(() -> {
+                try { return fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.WAITING_CAPACITY
+                        && poolBlockedField.getBoolean(fixture.controller); }
+                catch(IllegalAccessException failure) { throw new AssertionError(failure); }
+            });
             check(poolBlockedField.getBoolean(fixture.controller),
                     "Actual clean source refusal identifies MATERIAL_POOL, not generic parent pressure");
             var reservationField=fixture.gpu.session.getClass().getDeclaredField("tile");
