@@ -158,10 +158,10 @@ public final class HotfixCacheReader {
         for (int at = 0; at < bytes.length; ) {
             token.check();
             int count = Math.min(READ_BYTES, bytes.length - at);
-            var out = ByteBuffer.wrap(bytes, at, count);
+            var out = ByteBuffer.wrap(bytes, at, count).slice();
             source.readRange(entry.payloadOffset() + at, out, token).join();
             token.check();
-            if (out.hasRemaining()) {
+            if (out.position() != count || out.limit() != count) {
                 throw fail("INVALID", "Short hotfix payload read");
             }
             at += count;
@@ -307,12 +307,12 @@ public final class HotfixCacheReader {
                 throw fail("INVALID", "Unexpected hotfix EOF");
             }
             buffer.clear().limit(size);
-            source.readRange(fetched, buffer, token).join();
+            var out = buffer.slice();
+            source.readRange(fetched, out, token).join();
             token.check();
-            if (buffer.hasRemaining()) {
+            if (out.position() != size || out.limit() != size) {
                 throw fail("INVALID", "Short hotfix source read");
             }
-            buffer.flip();
             digest.update(buffer.duplicate());
             fetched += size;
         }
