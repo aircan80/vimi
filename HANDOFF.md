@@ -1,34 +1,38 @@
 # vimi development handoff
 
-## Active overnight checkpoint — inline integration under visual acceptance
+## Latest Linux checkpoint — actual inline textured movement passes
 
-Published application remains alpha20. Reviewed integration is cbb9c72 on
-feature/world-streaming-integration (draft PR153). It includes global WDT declaration
-d8da89f, verified against actual Map249 without reading its WMO or images, and staged
-nonvisible image publication4864637/262e274. This is not yet a working instance viewer.
+Published application remains alpha20; no alpha21 yet. Integration PR153 is now
+b0ef438 on feature/world-streaming-integration. The inline WorldView connection
+8aa5a86, forward-demand planner504f573, lifecycle proofbf0a2d2, source controller
+through4e34703, retry fixture89a4b72 and owned-material cancellation fix46eb7e5 are
+independently reviewed and integrated. Main still contains alpha20 application code.
 
-Root inline branch is feature/world-stream-view-integration at8aa5a86 in
-`/home/aircan/.cache/vimi-worktrees/vimi-world-stream-view-integration`. It connects the
-actual native source controller, isolates legacy acquisition during transitions,
-retains images through loading, and waits for actual CPU/texture/GPU retirement.
-Combined bgfx/GUI checks plus authored CPU retirement UI test pass143 tasks:
-`/home/aircan/.cache/vimi-tmp/world-view-close-and-retirement-check.log`.
-The branch includes parent close fix051e99a and texture worker-start failure681ab4c;
-independent review and additional viewport lifecycle checks remain active.
+Actual frozen inline GUI proof7432cb7 PASSES: 45 forced16-yard steps,46 image
+publications during1838ms, final9 textured tiles (4partial), no height fallback,
+2997 terrain-color samples and inspected terrain image at the formerly sky-only
+viewpoint. Actual close returns atlas claims0. This is a fast-motion diagnostic,
+not sustained FPS, client visual parity or whole-continent coverage. Evidence:
+`/home/aircan/.cache/vimi-tmp/world-stream-real-proof/inline-historical-cancellation-native.log`
+and private `inline-run-7/inline-world.png`. Original/prior libraries remained
+READONLY; network writes used only the diagnostic source cache.
 
-Actual frozen GUI movement still FAILED visual acceptance: the camera tile was ready
-but its downward view extended into a tile still pending, yielding only sky. Do not
-report protocol frame counts as visible terrain success. Evidence is private under
-`/home/aircan/.cache/vimi-tmp/world-stream-real-proof/inline-coverage-frozen.log`.
-Controller604f3fb also has two remaining twelve-owner residency recovery regressions;
-source author is fixing these without raising the cap. Known-sky display feedback
-helper8083502 is tested separately but not yet wired or native-validated. It grants
-no source authority. Root view8aa5a86 is not merged into integration or main.
+Earlier sky-only and fatal cancellation movement runs remain recorded failures.
+The fixes retain useful pixels through pending terrain; a historical raster owns
+no obsolete source pins and never fabricates a presentation ACK. Original owned
+material failures are preserved before JDK25 join adds a cancellation cause wrapper;
+actual material drain still precedes source transfer. Root combined controller/
+concepts checks pass102tasks and added retry tests pass96tasks. Prior integrated
+formats/assets/world/concepts/bgfx/GUI checks pass162tasks before inline wiring.
+Full integrated checks, UI/package gates and hosted checks must pass before release.
 
-All agents are resumed for concrete controller, viewport lifecycle, and independent
-close-path reviews. Continue through actual useful movement images, clean close,
-package checks and the next prerelease. Keep terrain/buildings/instances ahead of
-packaged GPU diagnostics and avoid indefinitely delaying the character milestone.
+Source author is additionally testing asynchronous root-read cancellation with
+original-failure preservation at trusted await sites; no broad dirty-cancellation
+normalization is allowed. Maps agent implements reviewed G1 global WMO source-chain
+inspection only (no renderable/native instance yet). Character audit775c995 identifies
+one shared validated appearance vector as the next character-creator slice.
+Continue toward the next prerelease and then terrain distance/buildings/water,
+instances and character work; do not stop at checkpoints or delay these for tooling.
 
 ## Newest Linux checkpoint — actual three-tile persistent textured GPU proof
 

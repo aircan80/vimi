@@ -27,7 +27,39 @@ latency, FPS, or a representative sustained movement benchmark. The initial loca
 run rendered tile32,32 but correctly refused uncached32,31 with SOURCE_INPUT; that
 failure was not translated into fabricated height geometry.
 
-At integration002eeb8, Commit/Frame cleanup-failure review remains open: a persistent
-commit-file deletion failure must not hot retry indefinitely. This successful-path
-proof does not approve that failure path, enable the GUI, or establish Metal/D3D
-runtime behavior. Published alpha20 and its frozen launcher remain unchanged.
+The later reviewed7234325 fixes persistent commit-file cleanup failure without hot
+retry. Parent clean-close051e99a also preserves fatal dirty cleanup. Those negative
+paths have separate regression evidence; successful pixels alone do not qualify them.
+
+
+## Inline movement acceptance
+
+Frozen application branch7432cb7 on Linux Vulkan passes actual WorldView movement,
+with source controller4e34703, forward-neighbor ordering504f573 and owned material
+cancellation fix46eb7e5. It uses the application GPU service and real native child,
+actual selected-build source files, original/prior READONLY stores and only the
+private proof cache for writes. The diagnostic injects map selection/catalog UI
+metadata, not source qualification; its empty area catalog is not zone evidence.
+
+During45 forced16-yard forward steps at40ms intervals,46 images publish over1838ms.
+After stopping and resizing, the accepted view reaches9/9 textured tiles (4partial,
+0height fallback). The image contains2997 sampled terrain-colored pixels and root
+inspected actual textured hills at the formerly sky-only viewpoint. Cleanup waits
+actual child/source retirement and returns atlas claims0. These event counts are
+not a sustained FPS benchmark or a guarantee for arbitrary hardware/source coverage.
+
+Private evidence: `inline-historical-cancellation-native.log`,
+`inline-run-7/inline-world.png`, `ActualInlineWorldProof.java` and the immutable
+`inline-frozen-7432cb7/manifest.json`, all beneath the private directory above.
+No acquired artwork or diagnostic caches are committed. Earlier `inline-run-1` and
+`inline-run-3` sky-only frames and `inline-run-4/5` cancellation failures are NOT
+accepted passes; they motivated the subsequent causal fixes.
+
+Independent authored native-source lifecycle proofbf0a2d2 covers hidden initial
+qualification before seed, software/GPU transition, hide/resume and clean close.
+Permanent-sky regression4e34703 proves progress to all9 new tiles without a fake
+presentation ACK; retry89a4b72 holds real commit-file cleanup to verify bounded
+retry with immutable membership. These are separate from the actual-image proof.
+Larger distance, city rendering, liquids and Metal/D3D runtime behavior remain open.
+Published alpha20 and its frozen launcher are unchanged; inline enablement currently
+exists on the integration branch pending full release gates.
