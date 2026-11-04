@@ -15,6 +15,8 @@ final class WorldSourceRefusals {
         SOURCE_WORKER(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
         MATERIAL_POOL(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
         ID_INSPECTION(WorldTerrainStreaming.Refusal.Reason.RETRY_LATER),
+        GLOBAL_PROFILE(WorldTerrainStreaming.Refusal.Reason.CAPABILITY_UNAVAILABLE),
+        GLOBAL_WDT_BINDING(WorldTerrainStreaming.Refusal.Reason.SOURCE_INVALIDATED),
         NATIVE_CAPTURE(WorldTerrainStreaming.Refusal.Reason.CAPABILITY_UNAVAILABLE),
         STRICT_ROWS(WorldTerrainStreaming.Refusal.Reason.CAPABILITY_UNAVAILABLE),
         MAP_PROFILE(WorldTerrainStreaming.Refusal.Reason.CAPABILITY_UNAVAILABLE),
