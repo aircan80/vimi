@@ -23,7 +23,10 @@ public interface CapturedRows extends AutoCloseable {
 
     /**
      * Optional limits apply before block/record allocation and row decoding, after opening the
-     * prepared graph. Providers must not emulate this by truncating an unbounded read.
+     * prepared graph. Providers must not emulate this by truncating an unbounded read. The default
+     * fails with the private-constructed BoundedReadUnsupportedException marker without IO.
+     * Providers deliberately declining this capability may delegate to this default; an arbitrary
+     * provider UnsupportedOperationException is not that typed default-capability signal.
      */
     default CompletableFuture<CapturedRowsTypes.Page> readOrdinalPage(
             long firstOrdinal,
@@ -32,8 +35,7 @@ public interface CapturedRows extends AutoCloseable {
             Cancellation token) {
         java.util.Objects.requireNonNull(limits);
         java.util.Objects.requireNonNull(token);
-        return CompletableFuture.failedFuture(
-                new UnsupportedOperationException("Bounded captured row reads unavailable"));
+        return CompletableFuture.failedFuture(CapturedRowsTypes.unsupportedBoundedRead());
     }
 
     /**
