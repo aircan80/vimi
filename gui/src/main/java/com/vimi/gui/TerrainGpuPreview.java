@@ -237,6 +237,10 @@ final class TerrainGpuPreview implements AutoCloseable {
         };
     }
 
+    boolean usesTextures(WorldTextureSnapshot snapshot) {
+        return running && textures == snapshot;
+    }
+
     TerrainTextureStatus textureStatus() {
         return running ? textureStatus : null;
     }

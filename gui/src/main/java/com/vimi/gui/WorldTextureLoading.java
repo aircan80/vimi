@@ -83,7 +83,7 @@ final class WorldTextureLoading implements AutoCloseable {
             worker.execute(() -> run(job));
         } catch (RuntimeException rejected) {
             active = null;
-            status.accept(new Status(false, "Terrain textures unavailable · height shading retained"));
+            status.accept(new Status(false, "Terrain textures unavailable · previous preview retained"));
         }
     }
 
@@ -109,7 +109,7 @@ final class WorldTextureLoading implements AutoCloseable {
             job.result.set(snapshot);
             if (closed || job.canceled) job.releaseResult();
         } catch (RuntimeException error) {
-            failure = "Terrain textures unavailable · height shading retained";
+            failure = "Terrain textures unavailable · previous preview retained";
         } finally {
             if (closed || job.canceled) job.releaseResult();
             final String message = failure;
@@ -132,7 +132,7 @@ final class WorldTextureLoading implements AutoCloseable {
             if (result != null) result.close();
         } else if (result == null) {
             status.accept(new Status(false, failure == null
-                    ? "Terrain textures unavailable · height shading retained" : failure));
+                    ? "Terrain textures unavailable · previous preview retained" : failure));
         } else {
             boolean transferred = false;
             try {

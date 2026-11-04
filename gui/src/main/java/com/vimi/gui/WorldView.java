@@ -83,6 +83,15 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final Label gpuStatus = new Label();
     private final ProgressIndicator gpuActivity = activity("world-gpu-activity", 18);
     private TerrainScene gpuScene;
+    private final ProgressIndicator textureActivity = activity("world-texture-activity", 18);
+    private final Label textureStatus = new Label("Terrain textures not loaded");
+    private final Button retryTextures = new Button("Retry textures");
+    private final WorldTextureLoading textureLoading;
+    private WorldTextureSnapshot textureSnapshot;
+    private TerrainScene textureRequestedScene;
+    private java.util.List<WorldFormats.Tile> sceneTiles = java.util.List.of();
+    private long textureGeneration;
+    private boolean textureSourceBusy, texturePendingFrame, textureWindowReady;
     private TerrainRenderer.Scene presentedScene;
     private boolean gpuVisible;
     private final Button open = new Button("Open explorer"), back = new Button("Back to map");
@@ -121,7 +130,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     private record Prepared(
             TerrainRenderer.Scene scene, TerrainScene gpuScene,
-            TerrainRenderer.Camera camera, double x, double y) {}
+            TerrainRenderer.Camera camera, double x, double y,
+            java.util.List<WorldFormats.Tile> tiles) {}
 
     private static ThreadPoolExecutor worker(String name) {
         return new ThreadPoolExecutor(
@@ -177,7 +187,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
             TerrainRenderer.Scene scene,
             TerrainRenderer.Camera camera,
             int width,
-            int height) {}
+            int height,
+            WorldTextureSnapshot textures,
+            long textureGeneration) implements AutoCloseable {
+        @Override public void close() { if (textures != null) textures.close(); }
+    }
 
     WorldView(BuildPreparation.Job job) {
         this(
@@ -199,8 +213,25 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     show(gpuActivity, update.busy());
                     gpuStatus.setText(update.message());
                     retryGpu.setDisable(update.busy() || update.ready());
-                    publishPrepared();
+                    acceptedGpuStatus(update);
                 }, this::presentGpuFrame, this::requestFrame);
+        textureLoading = new WorldTextureLoading(Platform::runLater, update -> {
+            textureSourceBusy = update.busy();
+            show(textureActivity, update.busy() || texturePendingFrame);
+            textureStatus.setText(update.message());
+            retryTextures.setDisable(update.busy() || texturePendingFrame || gpuScene == null);
+        }, this::acceptTextures);
+        textureStatus.setId("world-texture-status");
+        textureStatus.setWrapText(true);
+        textureStatus.setTooltip(new javafx.scene.control.Tooltip(
+                "Basic diffuse coverage preview with terrain tint; client height blending and layer sharpening are not evaluated."));
+        retryTextures.setId("world-texture-retry");
+        retryTextures.setDisable(true);
+        retryTextures.setOnAction(event -> {
+            textureLoading.hide();
+            textureRequestedScene = null;
+            maybeLoadTextures();
+        });
         gpuEnabled.setSelected(gpu != null);
         gpuEnabled.setDisable(gpu == null);
         gpuEnabled.setId("world-gpu-enabled");
@@ -443,6 +474,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         if (!active || !explorer || camera == null) return;
                         if (gpu != null && !viewportActive()) {
                             minimap.hide();
+                            retireTextures();
                             if (gpuVisible) {
                                 gpu.hide();
                                 gpuVisible = false;
@@ -540,6 +572,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     void invalidate() {
+        retireTextures();
         retireGpu();
         gpuScene = null;
         presentedScene = null;
@@ -561,7 +594,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         timer.stop();
         camera = null;
         terrainScene = null;
-        latest.set(null);
+        replaceRender(null);
         frameGeneration.incrementAndGet();
         cancelPreparation();
         image.setImage(null);
@@ -606,6 +639,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void cancelRequests() {
+        retireTextures();
         currentArea.setText("Terrain area unavailable");
         minimap.hide();
         retireGpu();
@@ -621,7 +655,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         keys.clear();
         timer.stop();
         frameGeneration.incrementAndGet();
-        latest.set(null);
+        replaceRender(null);
         cancelPreparation();
         attempted.retainAll(loaded.keySet());
     }
@@ -647,6 +681,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void selectMap(WorldService.MapInfo map) {
+        retireTextures();
         stopArea(true);
         areaEntry = null;
         selection++;
@@ -666,7 +701,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         show(catalogActivity, false);
         show(firstFrameActivity, false);
         frameGeneration.incrementAndGet();
-        latest.set(null);
+        replaceRender(null);
         inventoryMessage.setText("Loading terrain tile inventory…");
         heading.setText(map + " · Map #" + map.id());
         zones.getItems()
@@ -1029,7 +1064,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                 + " faster · scroll changes speed")),
                         currentArea,
                         position,
-                        new HBox(8, gpuEnabled, gpuActivity, retryGpu, gpuStatus)));
+                        new HBox(8, gpuEnabled, gpuActivity, retryGpu, gpuStatus),
+                        new HBox(8, textureActivity, textureStatus, retryTextures)));
         status.setText("Loading terrain tile " + selected.key() + "…");
         show(firstFrameActivity, true);
         timer.start();
@@ -1038,6 +1074,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void loadTile(WorldFormats.Tile tile, boolean initial) {
+        textureWindowReady = false;
         loadingTile = true;
         busy(
                 initial && areaEntry != null
@@ -1155,10 +1192,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var nativeScene = prepareGpu && !tiles.isEmpty() ? new TerrainScene(tiles.stream()
                 .map(tile -> new TerrainScene.Tile(tile.tile().x(), tile.tile().y(), tile.terrain()))
                 .toList()) : null;
-        return new Prepared(cpu, nativeScene, camera, originX, originY);
+        return new Prepared(cpu, nativeScene, camera, originX, originY,
+                tiles.stream().map(WorldService.LoadedTile::tile).toList());
     }
 
     private void prepareScene(WorldFormats.Terrain initial, Runnable ready) {
+        textureWindowReady = false;
         long scene = ++sceneGeneration, request = selection;
         scenePreparing = true;
         pendingPrepared = null;
@@ -1204,8 +1243,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
         pendingPrepared = null;
         scenePreparing = false;
         var prepared = pending.value();
+        retireTextures();
         terrainScene = prepared.scene();
         gpuScene = prepared.gpuScene();
+        sceneTiles = prepared.tiles();
         if (gpuScene == null && gpu != null) {
             retireGpu();
             gpuStatus.setText("Software terrain · no loaded nearby tiles");
@@ -1266,8 +1307,108 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 prepareScene(null, () -> { busy(null); requestFrame(); loadNext(); });
             } else {
                 busy(null);
+                textureWindowReady = true;
+                maybeLoadTextures();
             }
         }
+    }
+
+    private void replaceRender(Render next) {
+        var previous = latest.getAndSet(next);
+        if (previous != null) previous.close();
+    }
+
+    private void retireTextures() {
+        textureLoading.hide();
+        textureRequestedScene = null;
+        textureSourceBusy = false;
+        texturePendingFrame = false;
+        ++textureGeneration;
+        if (textureSnapshot != null) textureSnapshot.close();
+        textureSnapshot = null;
+        show(textureActivity, false);
+        textureStatus.setText("Terrain textures not loaded");
+        retryTextures.setDisable(true);
+    }
+
+    private void maybeLoadTextures() {
+        if (closed || !active || !explorer || !textureWindowReady || loadingTile || scenePreparing || waveActive
+                || handle == null || inventory == null || gpuScene == null || !viewportActive()
+                || sceneTiles.isEmpty() || textureRequestedScene == gpuScene) return;
+        textureRequestedScene = gpuScene;
+        texturePendingFrame = false;
+        textureLoading.request(handle, inventory.map(), sceneTiles, gpuScene);
+    }
+
+    private void acceptTextures(WorldTextureSnapshot prepared) {
+        if (closed || !active || !explorer || prepared.scene() != gpuScene || stale(selection)) {
+            prepared.close();
+            return;
+        }
+        if (!viewportActive()) {
+            prepared.close();
+            retireTextures();
+            return;
+        }
+        if (waveActive || scenePreparing || loadingTile) {
+            // A newer neighborhood is assembling. Avoid restarting a child for an outgoing scene.
+            prepared.close();
+            textureLoading.hide();
+            textureRequestedScene = null;
+            textureSourceBusy = false;
+            texturePendingFrame = false;
+            show(textureActivity, false);
+            textureStatus.setText("Terrain textures waiting for nearby terrain…");
+            return;
+        }
+        textureSourceBusy = false;
+        ++textureGeneration;
+        if (textureSnapshot != null) textureSnapshot.close();
+        textureSnapshot = null;
+        if (prepared.atlasCount() == 0) {
+            prepared.close();
+            texturePendingFrame = false;
+            show(textureActivity, false);
+            textureStatus.setText("Terrain textures unavailable · height shading retained");
+            retryTextures.setDisable(false);
+        } else {
+            textureSnapshot = prepared;
+            texturePendingFrame = true;
+            show(textureActivity, true);
+            textureStatus.setText("Presenting terrain textures…");
+            retryTextures.setDisable(true);
+        }
+        requestFrame();
+    }
+
+    private void acceptedGpuStatus(TerrainGpuPreview.Status update) {
+        if (publishPrepared() || !update.ready() || textureSnapshot == null) return;
+        if (gpu.usesTextures(textureSnapshot)) {
+            if (update.textures() != null && !textureSourceBusy) finishGpuTextures(update.textures());
+        } else if (texturePendingFrame) {
+            // A warm source may finish before the first height frame. Apply it once that frame
+            // actually presents, without requiring camera input or replacing pending geometry.
+            requestFrame();
+        }
+    }
+
+    private void finishGpuTextures(com.vibeminer.rendering.bgfx.TerrainTextureStatus textures) {
+        texturePendingFrame = false;
+        show(textureActivity, false);
+        retryTextures.setDisable(false);
+        textureStatus.setText(textures.coveredRects() == 0
+                ? "Terrain textures unavailable on GPU · height shading retained"
+                : "Basic terrain textures · " + textures.coveredRects() + "/"
+                        + textures.totalRects() + " regions");
+    }
+
+    private void finishCpuTextures() {
+        texturePendingFrame = false;
+        show(textureActivity, false);
+        retryTextures.setDisable(false);
+        textureStatus.setText(textureSnapshot == null ? "Height shading"
+                : "Basic terrain textures · " + textureSnapshot.coveredChunks() + "/"
+                        + textureSnapshot.totalChunks() + " regions");
     }
 
     private void updateCurrentArea() {
@@ -1287,6 +1428,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             minimap.hide();
             return;
         }
+        maybeLoadTextures();
         updateCurrentArea();
         minimap.update(handle, inventory, origin, originX, originY,
                 camera.x(), camera.y(), camera.yaw());
@@ -1316,8 +1458,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
             }
             gpuVisible = true;
             try {
-                if (gpu.request(gpuScene, TerrainCamera.from(camera), w, h)) {
-                    latest.set(null);
+                if (gpu.request(gpuScene, textureSnapshot, TerrainCamera.from(camera), w, h)) {
+                    replaceRender(null);
                     return;
                 }
             } catch (RuntimeException invalid) {
@@ -1326,7 +1468,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 gpuStatus.setText("GPU terrain unavailable; using software rendering.");
             }
         }
-        latest.set(new Render(frame, selection, terrainScene, camera, w, h));
+        replaceRender(new Render(frame, selection, terrainScene, camera, w, h,
+                textureSnapshot == null ? null : textureSnapshot.retain(), textureGeneration));
         kick();
     }
 
@@ -1358,7 +1501,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
         image.setImage(bitmap);
         presentedScene = terrainScene;
         show(firstFrameActivity, false);
-        status.setText("Terrain explorer · height shading · buildings, water and collision are not rendered");
+        var textures = gpu == null ? null : gpu.textureStatus();
+        status.setText("Terrain explorer · " + (textures != null && textures.coveredRects() > 0
+                ? "basic terrain textures" : "height shading")
+                + " · buildings, water and collision are not rendered");
         return true;
     }
 
@@ -1368,19 +1514,23 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 () -> {
                     try {
                         Render work;
-                        while ((work = latest.getAndSet(null)) != null && !closed) {
+                        while ((work = latest.getAndSet(null)) != null) {
                             var current = work;
-                            try {
-                                var frame =
-                                        TerrainRenderer.render(
-                                                work.scene(),
-                                                work.camera(),
-                                                work.width(),
-                                                work.height(),
-                                                () ->
-                                                        closed
-                                                                || frameGeneration.get()
-                                                                        != current.generation());
+                            try (current) {
+                                if (closed) continue;
+                                java.util.function.BooleanSupplier canceled = () -> closed
+                                        || frameGeneration.get() != current.generation();
+                                TerrainRenderer.Frame frame;
+                                if (current.textures() == null) {
+                                    frame = TerrainRenderer.render(current.scene(), current.camera(),
+                                            current.width(), current.height(), canceled);
+                                } else {
+                                    var rendered = new TerrainRenderer.Frame[1];
+                                    current.textures().withBindings(bindings -> rendered[0] =
+                                            TerrainRenderer.render(current.scene(), current.camera(),
+                                                    current.width(), current.height(), bindings, canceled));
+                                    frame = rendered[0];
+                                }
                                 Platform.runLater(
                                         () -> {
                                             if (stale(current.selection())
@@ -1405,9 +1555,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                 show(gpuActivity, false);
                                             }
                                             show(firstFrameActivity, false);
+                                            if (current.textures() != null
+                                                    && current.textureGeneration() == textureGeneration
+                                                    && !textureSourceBusy) finishCpuTextures();
                                             status.setText(
-                                                    "Terrain explorer · height shading · buildings,"
-                                                        + " water and collision are not rendered"
+                                                    "Terrain explorer · "
+                                                        + (current.textures() == null ? "height shading" : "basic terrain textures")
+                                                        + " · buildings, water and collision are not rendered"
                                                             + (frame.budgetReached()
                                                                     ? " · rendering budget reached"
                                                                     : ""));
@@ -1420,6 +1574,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                     || frameGeneration.get()
                                                             != current.generation()) return;
                                             show(firstFrameActivity, false);
+                                            if (!textureSourceBusy && current.textureGeneration() == textureGeneration) {
+                                                texturePendingFrame = false;
+                                                show(textureActivity, false);
+                                                textureStatus.setText("Terrain texture frame unavailable · previous preview retained");
+                                                retryTextures.setDisable(gpuScene == null);
+                                            }
                                             status.setText(
                                                     "Terrain frame unavailable; previous image"
                                                             + " retained.");
@@ -1439,6 +1599,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         minimap.close();
         if (gpu != null) gpu.close();
         invalidate();
+        textureLoading.close();
         requests.shutdownNow();
         areaRequests.shutdown();
         areaCancellation.shutdown();
