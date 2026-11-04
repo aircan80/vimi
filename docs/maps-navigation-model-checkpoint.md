@@ -22,7 +22,9 @@ navigation with explicit unavailable hit geometry. Duplicate/mixed-snapshot rows
 are rejected. Names have ID fallbacks; unknown fields do not fabricate values.
 
 `hierarchy(id)` returns a bounded recorded path and precise COMPLETE,
-UNKNOWN_PARENT, MISSING_PARENT, CYCLE, TOO_DEEP or SYSTEM_MISMATCH state. Up is
+UNKNOWN_PARENT, MISSING_PARENT, CYCLE, TOO_DEEP, MISSING_SYSTEM or SYSTEM_MISMATCH
+state. Missing system fields remain unknown; only unequal known fields establish a
+mismatch. Region diagnostics preserve that same distinction. Up is
 unavailable for any incomplete/invalid parent chain; direct known-map visits and
 visit-history Back still work. No geographic containment changes a recorded parent.
 
@@ -74,7 +76,7 @@ frames remain explicit LIMITED results. Cancellation is checked during construct
 and pair traversal. Hierarchies are capped at64; resource evidence lists cap tables
 at8and files at256. No worker thread, future, cache, file or HTTP handle is created.
 
-Thirteen authored tests cover typed IDs/Map0, Back versus Up/direct switch, bounded
+Fourteen authored tests cover typed IDs/Map0, Back versus Up/direct switch, bounded
 history/pan, missing/cyclic/deep/cross-system parents, signed asymmetric/inset and
 clipped projection, overlap/evidence, WMO/profile refusal, partial inputs,
 no-biased-work/region-budget refusal, immutable snapshots/count/byte/cancellation gates,

@@ -34,6 +34,7 @@ public final class MapNavigationGraph {
         MISSING_PARENT,
         CYCLE,
         TOO_DEEP,
+        MISSING_SYSTEM,
         SYSTEM_MISMATCH
     }
 
@@ -50,6 +51,7 @@ public final class MapNavigationGraph {
         NO_WORLD_POSITIONS,
         UNSUPPORTED_FLAGS,
         MISSING_SYSTEM,
+        SYSTEM_MISMATCH,
         NO_ASSIGNMENT,
         CHILD_FRAME,
         WMO_CONTEXT,
@@ -273,7 +275,10 @@ public final class MapNavigationGraph {
             if (parent == null) {
                 return hierarchy(HierarchyState.MISSING_PARENT, reversed);
             }
-            if (current.system() == null || !current.system().equals(parent.system())) {
+            if (current.system() == null || parent.system() == null) {
+                return hierarchy(HierarchyState.MISSING_SYSTEM, reversed);
+            }
+            if (!current.system().equals(parent.system())) {
                 return hierarchy(HierarchyState.SYSTEM_MISMATCH, reversed);
             }
             current = parent;
@@ -313,8 +318,10 @@ public final class MapNavigationGraph {
         for (var child : childNodes) {
             check(canceled);
             Reason problem = flags(child);
-            if (parent.system() == null || !parent.system().equals(child.system())) {
+            if (parent.system() == null || child.system() == null) {
                 problem = Reason.MISSING_SYSTEM;
+            } else if (!parent.system().equals(child.system())) {
+                problem = Reason.SYSTEM_MISMATCH;
             }
             if (problem != null) {
                 issues.add(new Issue(problem, child.id()));

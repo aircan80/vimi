@@ -505,6 +505,48 @@ final class MapNavigationTest {
         assertTrue(page.regions().isEmpty());
     }
 
+    @Test
+    void absentCurrentOrParentSystemIsUnknownWhileUnequalKnownSystemsAreAMismatch() {
+        for (int scenario = 0; scenario < 3; scenario++) {
+            Integer parentSystem = scenario == 1 ? null : 0;
+            Integer childSystem = scenario == 0 ? null : scenario == 2 ? 1 : 0;
+            var root =
+                    new Node(
+                            new UiMapId(1),
+                            "Root",
+                            Parent.root(),
+                            parentSystem,
+                            1,
+                            0L,
+                            0L,
+                            new RowSource(MAPS, 1));
+            var child =
+                    new Node(
+                            new UiMapId(2),
+                            "Child",
+                            Parent.of(root.id()),
+                            childSystem,
+                            3,
+                            0L,
+                            0L,
+                            new RowSource(MAPS, 2));
+            var graph = graph(List.of(root, child), List.of());
+            assertEquals(
+                    scenario == 2 ? HierarchyState.SYSTEM_MISMATCH : HierarchyState.MISSING_SYSTEM,
+                    graph.hierarchy(child.id()).state());
+            assertTrue(graph.hierarchy(child.id()).parent().isEmpty());
+            var page = graph.regions(root.id(), 8, () -> false);
+            assertEquals(RegionState.LIMITED, page.state());
+            assertEquals(
+                    scenario == 2 ? Reason.SYSTEM_MISMATCH : Reason.MISSING_SYSTEM,
+                    page.issues().getFirst().reason());
+            assertTrue(page.regions().isEmpty());
+            assertEquals(
+                    child.id(),
+                    MapVisitHistory.start(graph, root.id()).switchTo(child.id()).current().map());
+        }
+    }
+
     private static TableRead table(Table table, String layout, ReadState state) {
         return new TableRead(table, "c".repeat(32), layout, state);
     }
