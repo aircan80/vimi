@@ -134,6 +134,7 @@ final class WorldStreamScopes {
     Scope create(WorldService.MapInfo requested, Cancellation external) {
         begin();
         var operationCancellation = cancelLane;
+        Throwable primary = null;
         try (var registration = external.onCancel(operationCancellation::request)) {
             var token = lifetimeChild;
             operationCancellation.check();
@@ -169,8 +170,11 @@ final class WorldStreamScopes {
                                 maid.present());
                 return scope;
             }
+        } catch (RuntimeException | Error failure) {
+            primary = failure;
+            throw failure;
         } finally {
-            end();
+            end(primary);
         }
     }
 
@@ -209,6 +213,7 @@ final class WorldStreamScopes {
     // Per-operation linked token is protected by the one-active CAS, never exposed in a Scope.
     private Cancellation lifetimeChild;
     private CancelLane cancelLane;
+    private Throwable cleanupFailure;
 
     private static final class CancelLane {
         private final Cancellation child = new Cancellation();
@@ -222,14 +227,24 @@ final class WorldStreamScopes {
                 }
                 requested = true;
             }
-            Thread.startVirtualThread(
-                    () -> {
-                        try {
-                            child.cancel();
-                        } finally {
-                            done.complete(null);
-                        }
-                    });
+            try {
+                Thread.startVirtualThread(
+                        () -> {
+                            try {
+                                child.cancel();
+                                done.complete(null);
+                            } catch (RuntimeException | Error failure) {
+                                done.completeExceptionally(
+                                        new IllegalStateException(
+                                                "Source cancellation callback failed", failure));
+                            }
+                        });
+            } catch (RuntimeException | Error startFailure) {
+                done.completeExceptionally(
+                        new IllegalStateException(
+                                "Source cancellation dispatch failed", startFailure));
+                throw startFailure;
+            }
         }
 
         synchronized void check() {
@@ -239,24 +254,33 @@ final class WorldStreamScopes {
             child.check();
         }
 
-        void sealAndDrain() {
+        void seal() {
+            boolean idle;
             synchronized (this) {
                 sealed = true;
-                if (!requested) {
-                    done.complete(null);
-                }
+                idle = !requested;
             }
+            if (idle) {
+                done.complete(null);
+            }
+        }
+
+        void sealAndDrain() {
+            seal();
             done.join();
         }
     }
 
     private void begin() {
+        requireHealthy();
         if (!working.compareAndSet(false, true)) {
             throw new IllegalStateException("Source preparation busy");
         }
         boolean rejected;
+        Throwable fault;
         synchronized (this) {
-            rejected = closed;
+            fault = cleanupFailure;
+            rejected = closed || fault != null;
             if (!rejected) {
                 cancelLane = new CancelLane();
                 lifetimeChild = cancelLane.child;
@@ -264,27 +288,82 @@ final class WorldStreamScopes {
         }
         if (rejected) {
             working.set(false);
-            drained.complete(null);
+            if (closed) {
+                completeDrain(fault);
+            }
+            if (fault != null) {
+                throw new IllegalStateException("Source cleanup failed", fault);
+            }
             throw new IllegalStateException("Scope source closed");
         }
     }
 
-    private void end() {
-        // Source worker waits for the single off-caller cancellation dispatch to drain.
-        cancelLane.sealAndDrain();
+    private Throwable drainCancellation() {
+        try {
+            cancelLane.sealAndDrain();
+            return null;
+        } catch (RuntimeException | Error failure) {
+            return new IllegalStateException(
+                    "Source cancellation did not finish successfully", failure);
+        }
+    }
+
+    /** Active remains owned until all returned/unreturned R cleanup has completed. */
+    private void releaseWorking(Throwable problem) {
         boolean finish;
+        Throwable terminal;
         synchronized (this) {
+            if (problem != null) {
+                cleanupFailure = problem;
+                current = null;
+                replacement = null;
+            }
             lifetimeChild = null;
             cancelLane = null;
             working.set(false);
             finish = closed;
+            terminal = cleanupFailure;
         }
         if (finish) {
-            drained.complete(null);
+            completeDrain(terminal);
         }
     }
 
+    private synchronized void recordCleanupFailure(Throwable problem) {
+        cleanupFailure = problem;
+        current = null;
+        replacement = null;
+    }
+
+    private void completeDrain(Throwable failure) {
+        if (failure == null) {
+            drained.complete(null);
+        } else {
+            drained.completeExceptionally(failure);
+        }
+    }
+
+    synchronized void requireHealthy() {
+        if (cleanupFailure != null) {
+            throw new IllegalStateException("Source cleanup failed", cleanupFailure);
+        }
+    }
+
+    private void end(Throwable primary) {
+        Throwable failure = null;
+        try {
+            var laneFailure = drainCancellation();
+            if (laneFailure != null) {
+                failure = cleanupFailure(primary, laneFailure);
+            }
+        } finally {
+            releaseWorking(failure);
+        }
+        rethrow(failure);
+    }
+
     synchronized void activate(Scope scope) {
+        requireHealthy();
         checkOpen();
         if (working.get()) {
             throw new IllegalStateException("Source preparation busy");
@@ -300,6 +379,7 @@ final class WorldStreamScopes {
     WorldFormats.Tile recorded(Scope scope, WorldFormats.Tile caller, Cancellation external) {
         begin();
         var operationCancellation = cancelLane;
+        Throwable primary = null;
         try (var registration = external.onCancel(operationCancellation::request)) {
             var token = lifetimeChild;
             operationCancellation.check();
@@ -323,8 +403,11 @@ final class WorldStreamScopes {
                 resolve(scope);
             }
             return caller;
+        } catch (RuntimeException | Error failure) {
+            primary = failure;
+            throw failure;
         } finally {
-            end();
+            end(primary);
         }
     }
 
@@ -791,49 +874,95 @@ final class WorldStreamScopes {
             synchronized (this) {
                 operationCancellation.check();
                 resolve(scope);
-                R transferred = result;
-                result = null;
-                return transferred;
             }
         } catch (RuntimeException | Error failure) {
             primary = failure;
-            throw failure;
-        } finally {
-            Throwable cleanup = primary;
-            try {
-                if (admission != null) {
-                    cleanup = closePreserving(admission::expire, cleanup);
-                }
-                if (result != null) {
-                    cleanup = closePreserving(result, cleanup);
-                }
-            } finally {
-                end();
-            }
-            if (primary == null && cleanup != null) {
-                if (cleanup instanceof Error error) {
-                    throw error;
-                }
-                if (cleanup instanceof RuntimeException failure) {
-                    throw failure;
-                }
-                throw new IllegalStateException("Output cleanup failed", cleanup);
-            }
         }
+        Throwable cleanupProblem = null;
+        try {
+            if (admission != null) {
+                Throwable before = primary;
+                primary = closePreserving(admission::expire, primary);
+                if (primary != before) {
+                    cleanupProblem = primary;
+                }
+            }
+            operationCancellation.seal();
+            if (primary == null) {
+                try {
+                    operationCancellation.check();
+                } catch (RuntimeException | Error failure) {
+                    primary = failure;
+                }
+            }
+            // Known failure/cancellation retires R before awaiting callbacks that may depend on it.
+            if (primary != null && result != null) {
+                Throwable before = primary;
+                primary = closePreserving(result, primary);
+                if (primary != before) {
+                    cleanupProblem = primary;
+                }
+                result = null;
+            }
+            var laneFailure = drainCancellation();
+            if (laneFailure != null) {
+                primary = cleanupFailure(primary, laneFailure);
+                cleanupProblem = primary;
+            }
+            if (cleanupProblem != null) {
+                recordCleanupFailure(cleanupProblem);
+            }
+            if (primary == null) {
+                try {
+                    operationCancellation.check();
+                } catch (RuntimeException | Error failure) {
+                    primary = failure;
+                }
+            }
+            if (primary != null && result != null) {
+                Throwable before = primary;
+                primary = closePreserving(result, primary);
+                if (primary != before) {
+                    cleanupProblem = primary;
+                }
+                result = null;
+            }
+        } finally {
+            releaseWorking(cleanupProblem);
+        }
+        rethrow(primary);
+        return result;
     }
 
     private static Throwable closePreserving(AutoCloseable owner, Throwable primary) {
         try {
             owner.close();
         } catch (Exception | Error failure) {
-            if (primary == null) {
-                return failure;
-            }
-            if (failure != primary) {
-                primary.addSuppressed(failure);
-            }
+            return cleanupFailure(primary, failure);
         }
         return primary;
+    }
+
+    private static IllegalStateException cleanupFailure(Throwable primary, Throwable cleanup) {
+        var fatal =
+                new IllegalStateException(
+                        "Source operation cleanup failed", primary == null ? cleanup : primary);
+        if (primary != null && cleanup != primary) {
+            fatal.addSuppressed(cleanup);
+        }
+        return fatal;
+    }
+
+    private static void rethrow(Throwable failure) {
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        if (failure instanceof RuntimeException runtime) {
+            throw runtime;
+        }
+        if (failure != null) {
+            throw new IllegalStateException("Source operation failed", failure);
+        }
     }
 
     private void validateBinding(Binding binding, Cancellation token) {
@@ -890,6 +1019,7 @@ final class WorldStreamScopes {
     /** Metadata only: no capture, stat, source access or preparation. */
     synchronized boolean isKnown(Scope scope) {
         return !closed
+                && cleanupFailure == null
                 && scope != null
                 && scope.owner == owner
                 && (current != null && current.token().equals(scope)
@@ -918,7 +1048,11 @@ final class WorldStreamScopes {
             finish = !working.get();
         }
         if (finish) {
-            drained.complete(null);
+            Throwable terminal;
+            synchronized (this) {
+                terminal = cleanupFailure;
+            }
+            completeDrain(terminal);
         }
         if (active != null) {
             active.request();
