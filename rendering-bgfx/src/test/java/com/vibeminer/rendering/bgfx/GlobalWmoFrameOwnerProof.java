@@ -236,6 +236,82 @@ public final class GlobalWmoFrameOwnerProof {
                 require(owner.stats().directBytes() == 0, "partial shutdown retirement");
             }
         }
+        Path failedRead = Files.createTempDirectory(directory, "failed-read-");
+        var target =
+                WorldGlobalSceneWriter.Destination.create(failedRead, new Object(), "7".repeat(64));
+        try (var file = WorldGlobalSceneWriter.writeUnadvertised(target, authored, () -> false);
+                var frames = GpuFrameFile.create(failedRead.resolve("frames"), 800, 500)) {
+            var decoded =
+                    GpuGlobalWmoSceneFile.read(target.path(), file.expected().input(), () -> false);
+            var original = new AssertionError("Authored native read issued then failure");
+            var driver =
+                    new GlobalWmoFrameOwner.Driver() {
+                        public int frame() {
+                            return org.lwjgl.bgfx.BGFX.bgfx_frame(
+                                    org.lwjgl.bgfx.BGFX.BGFX_FRAME_NONE);
+                        }
+
+                        public int read(short texture, java.nio.ByteBuffer pixels) {
+                            org.lwjgl.bgfx.BGFX.bgfx_read_texture(texture, pixels, 0, 0);
+                            throw original;
+                        }
+
+                        public long nanoTime() {
+                            return System.nanoTime();
+                        }
+
+                        public void free(java.nio.ByteBuffer pixels) {
+                            org.lwjgl.system.MemoryUtil.memFree(pixels);
+                        }
+                    };
+            var owner = GlobalWmoFrameOwner.allocate(frames, driver);
+            boolean context = false;
+            try {
+                try (var stack = MemoryStack.stackPush()) {
+                    var init = BGFXInit.calloc(stack);
+                    bgfx_init_ctor(init);
+                    init.type(BGFX_RENDERER_TYPE_VULKAN).fallback(false);
+                    init.resolution().width(0).height(0).reset(BGFX_RESET_NONE);
+                    BGFXPlatform.bgfx_render_frame(0);
+                    require(bgfx_init(init), "failed read context");
+                    context = true;
+                }
+                owner.initialize(decoded, () -> false);
+                try {
+                    owner.submit(
+                            new GlobalWmoFrameRequest(
+                                    1, new GlobalWmoCamera(0, 0, 0, 0, 0), 317, 163));
+                    throw new AssertionError("Expected native read failure");
+                } catch (AssertionError failure) {
+                    require(failure == original, "read identity");
+                }
+                try {
+                    owner.advance();
+                    throw new AssertionError("Expected sticky advance failure");
+                } catch (AssertionError failure) {
+                    require(failure == original, "advance identity");
+                }
+                require(frames.readLatest(0) == null, "failed read never publishes");
+            } finally {
+                try {
+                    owner.close();
+                } catch (AssertionError failure) {
+                    require(failure == original, "close identity");
+                } finally {
+                    require(
+                            owner.stats().directBytes() == 6_400_000,
+                            "unknown read retains every destination");
+                    if (context) {
+                        bgfx_shutdown();
+                        owner.afterContextShutdown();
+                    }
+                    decoded.close();
+                }
+            }
+            require(owner.stats().directBytes() == 0, "unknown read actual shutdown retirement");
+        }
+        System.out.println(
+                "GLOBAL_FIXED_READ_FAILURE_PASS sticky=true noPositiveFrame=true actualShutdownBeforeFree=true");
         System.out.println(
                 "GLOBAL_FIXED_PARTIAL_PASS cases=2 sameError=true shutdownBeforeFree=true");
     }
