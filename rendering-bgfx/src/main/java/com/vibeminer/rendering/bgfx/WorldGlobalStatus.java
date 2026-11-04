@@ -4,7 +4,7 @@ import static com.vibeminer.rendering.bgfx.WorldGlobalLayout.require;
 
 /** Bounded immutable-global status syntax, never source authority or a parent pixel receipt. */
 public sealed interface WorldGlobalStatus {
-    int MAX_LINE_BYTES = 256, READY_BYTES = 208, CONSUMED_BYTES = 120;
+    int MAX_LINE_BYTES = 256, READY_BYTES = 208, CONSUMED_BYTES = 120, CLOSED_BYTES = 177;
 
     record Identity(String nonce, String scope, String fileSha256) {
         public Identity {
@@ -88,6 +88,23 @@ public sealed interface WorldGlobalStatus {
         }
     }
 
+    /** All child owners retired; parent still owes actual process/worker/mapping retirement. */
+    record Closed(Identity identity) implements WorldGlobalStatus {
+        public Closed {
+            require(identity != null);
+        }
+
+        @Override
+        public String protocolLine() {
+            return "GLOBAL_CLOSED "
+                    + identity.nonce()
+                    + " "
+                    + identity.scope()
+                    + " "
+                    + identity.fileSha256();
+        }
+    }
+
     enum Code {
         INPUT,
         CAPABILITY
@@ -142,6 +159,10 @@ public sealed interface WorldGlobalStatus {
             case "GLOBAL_INPUT_CONSUMED" -> {
                 require(line.length() < CONSUMED_BYTES && p.length == 3);
                 yield new InputConsumed(p[1], p[2]);
+            }
+            case "GLOBAL_CLOSED" -> {
+                require(line.length() < CLOSED_BYTES && p.length == 4);
+                yield new Closed(new Identity(p[1], p[2], p[3]));
             }
             case "GLOBAL_UNAVAILABLE" -> {
                 require(p.length == 5);
