@@ -136,3 +136,37 @@ Public nonempty requests must belong to that catalog and are revalidated by the 
 selection path during appearance preparation. Empty requests retain default behavior.
 This does not make the catalog a native-membership certificate or promise full client
 customization support. Other race/model/control contexts remain explicitly unsupported.
+
+## First Races control
+
+The Races model panel now shows the service's actual bounded Skin Color choices and
+Reset appearance. Other models/providers show an explicit unavailable/unsupported
+message instead of inert controls. Reset removes overrides and restores recorded
+defaults. Same-context changes retain prior accepted pixels and camera rotation while
+textures prepare, then replace them only through the existing exact-appearance frame
+acceptance callback. Model/class changes reset choices and request their own catalog.
+All callbacks check panel generation, selected build handle and workspace revision.
+
+The existing bounded `LegacyWorldActivity` helper now dispatches panel model/catalog/
+appearance suppliers and token cancellation off JavaFX. One pending latest selection
+waits for actual prior request completion and cancellation callback retirement before
+issuing. Closing retires the panel's requests without closing the borrowed race handle.
+This observes the provider future contract; it is not a new certificate of arbitrary
+custom-provider lower-layer input drain.
+
+`:gui:raceCustomizationUiTest` runs authored geometry/textures through actual JavaFX
+software rendering. It verifies changed accepted pixels, reset and retained rotation,
+prior image retained during held texture preparation, visible activity through final
+frame acceptance, held cancellation with responsive FX and no early replacement,
+stale request/revision suppression, and borrowed source ownership. The screenshot
+`gui/build/ui-review/race-customization.png` contains only authored data. The existing
+Races UI regression now waits for actual worker invocation/UI terminal events rather
+than assuming off-thread requests finish after one or two JavaFX turns; its stale and
+failure assertions remain intact.
+
+Executed combined validation: `:concepts-races:check :gui:check
+:gui:raceCustomizationUiTest :gui:racesUiTest`,135 tasks successful, with display `:0`.
+The public native API also reproduced the actual selected-build524→525→524 proof in
+`public-visible-final.log`; its source-derived catalog contained11 eligible choices
+524–532,7142,7143, default524. Only524/525 have the recorded visible comparison here.
+Tables-only services do not expose controls without file/generated appearance owners.
