@@ -1,7 +1,8 @@
 # Private prepared tile factory reusing the World geometry cache
 
 Status: targeted design checkpoint only. No WorldService cache/factory behavior
-has been changed. Depends on independent approval of the corrected scope engine.
+has been changed. Corrected scope/stamp engine is independently approved; the
+primitive parser dependency and the factory-specific ledger remain under review.
 Models, public LoadedTile semantics, renderer and packet advertisement remain out
 of scope. This specifies concrete ownership before introducing source authority.
 
@@ -62,8 +63,14 @@ old payload into proof.
 
 For an unproven legacy cache entry, do one strict actual root read/parse. If the
 checked geometry fingerprint equals that cached immutable geometry, keep its
-arrays and attach the actual read evidence; discard the temporary comparison
-payload. Otherwise install the checked version in a reserved free slot. Never
+arrays but rebind metadata from the actual checked parse: fresh AreaMetadata,
+actual root receipt and current private admission's full recorded tuple. Geometry
+fingerprint does not certify area IDs/entry facts or companion references. If the
+old version is pinned, do not mutate its metadata behind existing owners: create a
+new counted version entry sharing only immutable geometry payload, with its own
+fresh area/receipt snapshot. An unpinned version may be replaced in its existing
+slot. Old public LoadedTile values remain descriptive snapshots. Discard temporary
+comparison geometry; never attach a new receipt to stale areas. Otherwise install the checked version in a reserved free slot. Never
 bless old geometry using only a fresh CKey without proving byte-derived geometry
 agreement. An unpinned entry may be replaced; a pinned old version survives until
 its consumers retire. Optional legacy evidence from an earlier actual checked
@@ -92,8 +99,13 @@ The private service factory consumes this sequence as one admitted operation:
    build/locale/map/WDT/root/tex0, ALL recorded references, root CKey/length,
    WDT CKey/actual consumed length, fingerprint, recipe/cache key and coverage.
    Qualify the actual immutable native tile using TerrainTextureBinding.qualify.
-5. Revalidate current source identity and scope generation before publishing one
-   owned complete pair. Mismatch closes both claims and reports SOURCE_CHANGED,
+5. Revalidate EVERY consumed positive material binding (WDT/root/tex0 and all
+   consumed diffuse BLPs), plus private root proof and scope generation, before
+   publishing one owned complete pair. The owned source helper's earlier
+   pre-delivery check does not cover time spent qualifying or waiting afterward.
+   Add only a package-internal source-owned transfer-validation operation over an
+   actual private Receipt; do not expose a positive receipt constructor. Preserve
+   source-limit/consumed-length binding and metadata-enrichment tolerance. Mismatch closes both claims and reports SOURCE_CHANGED,
    not height fallback. Pending, cancellation, close and unexpected programming
    failures cannot mint terminal height authority.
 
@@ -162,13 +174,45 @@ helper memory. Aliased cache pins do not duplicate these payloads. No thirteenth
 cache construction slot. Existing legacy view/CPU scene owners remain separately
 named; this is not a global application heap bound.
 
-Propose≤16MiB geometry construction transient allowance, separately charged from
-the material helper:≤8MiB actual root input, up to four bounded per-tile geometry
-representations/copies during parse/comparison (4×1,231,872), and≤2MiB area/parser/
-control allowance. The named sum15,413,248 fits16MiB. Prove actual parser lifetimes
-before implementation acceptance; no retained raw file or temporary comparison
-tile survives into material loading. This narrows hot input relative to legacy
-32MiB and does not widen any scene/atlas/work cap.
+Retained AreaMetadata is an EXISTING separate cache owner, not part of numeric
+geometry arrays or the NEW64KiB factory-control allowance. Charge≤64KiB per entry
+for up to256 AreaChunk records, optional AreaPoint records, immutable list/reference
+storage and wrapper metadata:≤786,432 bytes over twelve entries. Together with
+numeric geometry this names30,351,360 bytes of retained cache data. Shared geometry
+between version entries may reduce actual payload; area versions still count
+separately. The factory must preserve old pinned area snapshots and bind fresh
+ones from the checked source even when geometry bits are equal.
+
+The≤16MiB construction proposal now REQUIRES primitive parser8e57ff1 (or its
+approved integrated equivalent). The pre-refactor boxed Float/Integer ArrayLists
+and per-fan arrays were omitted from the earlier estimate; that old parser is NOT
+covered by this construction bound. No independent parser rewrite is hidden here.
+
+With primitive builders, name a conservative construction envelope separately
+from the material helper:
+
+| Construction owner | Maximum bytes |
+| --- | ---: |
+| Actual root input (hot profile) | 8,388,608 |
+| Four per-tile primitive representations/copies | 4,927,488 |
+| Area/parser/structural controls | 2,097,152 |
+| Named total | **15,413,248** |
+| Margin below16MiB | **1,363,968** |
+
+Primitive resize bounds make the four-payload term reviewable: worst combined
+old+new float backing counts are84,565+111,360; index counts149,464+196,608.
+Conservatively simultaneous resize arrays total2,167,988 payload bytes, plus at
+most one full exact-trim and one full defensive Terrain output copy (2,463,744)
+=4,631,732 payload bytes. The four-payload term leaves295,756 bytes for array and
+builder overhead. Actual stages are more sequential; do not add old boxed owners
+to a primitive implementation or silently use this ledger on boxed code. Reviewed
+parser/area controls must remain within their separate2MiB allowance.
+
+No raw root input, growth backing or temporary comparison geometry survives into
+material loading. This is logical distinct-owner accounting, not measured heap
+peak/RSS; allocator/GC liveness is separate. It narrows hot input relative to legacy
+32MiB and does not widen any scene/atlas/work cap. The independent architect still
+must accept the actual complete factory implementation's lifetimes.
 
 Reserve a NEW64KiB source-factory metadata allowance (twelve cache/evidence entries,
 twelve output owners, bounded callback pin records and active/latest descriptors),
@@ -183,14 +227,18 @@ logical owner limits, not process/JVM/RSS or measured allocation peaks.
 Use real numeric Map capture→checked WDT/root→actual material source fixtures.
 Assert legacy cache hit behavior, no second cache, checked warm reuse without root
 reopen, unproven legacy upgrade requiring actual checked read, equal fingerprint
-reuse, changed CK/geometry version retention while pinned and eviction only after
-last pin. Hold all twelve slots and verify no thirteenth root allocation/read;
+reuse, same geometry bits with changed MCNK AreaID/root CKey (fresh new metadata,
+old pinned metadata unchanged), changed companion refs, changed CK/geometry version
+retention while pinned and eviction only after last pin. Hold all twelve slots and verify no thirteenth root allocation/read;
 close/drop speculative pins and verify metadata wake/retry. Never accept a forged
 LoadedTile/receipt or wrong scope/reference as authority.
 
 READY, partial, genuine terminal unavailable, protected/changed root, POOL_BUSY,
 unsupported source configuration and cancellation must remain distinct. Compare
-actual WDT/root lengths and exact texture receipt binding. Race close against
+actual WDT/root lengths and exact texture receipt binding. Hold the factory after
+actual material batch delivery, change tex0 or a consumed diffuse binding, then
+resume: transfer must report SOURCE_CHANGED and release owners, never height
+fallback or stale positive appearance. Race close against
 held scoped payload callbacks, queued/failed writer and source IO; existing pins
 remain valid, new work is rejected, final cache/atlas claims and callbacks drain.
 No factory implementation or WorldService modification starts before this targeted
