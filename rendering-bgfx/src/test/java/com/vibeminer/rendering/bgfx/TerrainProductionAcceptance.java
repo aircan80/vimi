@@ -90,6 +90,7 @@ public final class TerrainProductionAcceptance {
         Files.createDirectories(output);
         try (var gpu = new Harness()) {
             projection(gpu, output);
+            horizontalOrientation(gpu, output);
             color(gpu);
             clipping(gpu);
             depth(gpu);
@@ -102,6 +103,23 @@ public final class TerrainProductionAcceptance {
                         + " actual Vulkan production terrain frames; independent analytic projection, native color, depth, bounds and persistent ownership\n");
         System.out.println(
                 "Production terrain independent acceptance PASS: " + frames + " native frames");
+    }
+
+    private static void horizontalOrientation(Harness gpu, Path output) throws Exception {
+        // Authored native +Y panel: at yaw zero its center projects RIGHT of the camera.
+        // This pins actual shader/readback orientation, independently of eye()/screenX().
+        var plusY = triangle(v(10, 3, -1), v(10, 5, -1), v(10, 4, 2));
+        int[] image = gpu.render(List.of(plusY), ZERO);
+        pixel(image, 210, 128, 0xff2c4729);
+        exact(image, 46, 128, 0xff83abc3);
+        var bitmap = new BufferedImage(WIDTH, HEIGHT, BufferedImage.TYPE_INT_ARGB);
+        bitmap.setRGB(0, 0, WIDTH, HEIGHT, image, 0, WIDTH);
+        ImageIO.write(bitmap, "png", output.resolve("terrain-native-plus-y-right.png").toFile());
+        // Positive yaw turns toward that actual right-side landmark.
+        image = gpu.render(List.of(plusY), ZERO.look(Math.atan2(4, 10), 0));
+        pixel(image, 128, 128, 0xff2c4729);
+        bitmap.setRGB(0, 0, WIDTH, HEIGHT, image, 0, WIDTH);
+        ImageIO.write(bitmap, "png", output.resolve("terrain-positive-yaw-centers-right.png").toFile());
     }
 
     private static void pixel(int[] image, int x, int y, int expected) {
