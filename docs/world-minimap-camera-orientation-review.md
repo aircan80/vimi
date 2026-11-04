@@ -1,6 +1,8 @@
 # Minimap and actual camera orientation review — 2026-11-04
 
-Reviewed main `dc7c5a4`. No application behavior is changed by this review.
+Historical investigation at main `dc7c5a4`, frozen in `2c88252`. The subsequent
+[geographic camera correction](world-camera-geographic-correction.md) resolves the
+lateral discrepancy documented below; this page preserves the initial evidence.
 
 ## Findings
 

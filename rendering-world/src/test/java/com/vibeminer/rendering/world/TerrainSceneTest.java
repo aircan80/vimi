@@ -56,8 +56,8 @@ final class TerrainSceneTest {
     void freeFlightAndReversedProjectionHaveIndependentNativeAxisAndAsymmetricFrameOracles() {
         var camera = new TerrainCamera(10, 20, 30, 0, 0);
         var eye = camera.eye(14, 22, 31);
-        assertEquals(new TerrainCamera.Eye(2, 1, 4), eye);
-        assertEquals(360, TerrainCamera.screenX(eye, 400, 200));
+        assertEquals(new TerrainCamera.Eye(-2, 1, 4), eye);
+        assertEquals(40, TerrainCamera.screenX(eye, 400, 200));
         assertEquals(20, TerrainCamera.screenY(eye, 400, 200));
         var quarter = new TerrainCamera(10, 20, 30, Math.PI / 2, 0).eye(10, 24, 32);
         assertEquals(0, quarter.right(), 1e-12);
@@ -72,7 +72,34 @@ final class TerrainSceneTest {
         assertTrue(.5 / 1999.9 > .5 / 1999.91);
         assertThrows(ReadOnlyBufferException.class, matrix::array);
         assertEquals(camera, TerrainCamera.from(camera.software()));
-        assertEquals(new TerrainCamera(12, 23, 34, 0, 0), camera.move(2, 3, 4));
+        assertEquals(new TerrainCamera(12, 17, 34, 0, 0), camera.move(2, 3, 4));
         assertEquals(1.5, camera.look(0, 2).pitch());
+    }
+
+    @Test
+    void geographicRightAndForwardAgreeForMovementEyeAndGpuMatrixAtEveryCardinal() {
+        // Independent geographic oracles: +X north, +Y west; screen right is east at north.
+        double[][] directions = {{1, 0, 0, -1}, {0, 1, 1, 0}, {-1, 0, 0, 1}, {0, -1, -1, 0}};
+        double[] yaws = {0, Math.PI / 2, Math.PI, -Math.PI / 2};
+        var origin = new TerrainScene.Origin(0, 0, 0);
+        for (int i = 0; i < yaws.length; i++) {
+            var camera = new TerrainCamera(0, 0, 0, yaws[i], 0);
+            var forward = camera.move(10, 0, 0);
+            var right = camera.move(0, 4, 0);
+            assertEquals(10 * directions[i][0], forward.x(), 1e-12);
+            assertEquals(10 * directions[i][1], forward.y(), 1e-12);
+            assertEquals(4 * directions[i][2], right.x(), 1e-12);
+            assertEquals(4 * directions[i][3], right.y(), 1e-12);
+            double x = forward.x() + right.x(), y = forward.y() + right.y();
+            var eye = camera.eye(x, y, 2);
+            assertEquals(4, eye.right(), 1e-12);
+            assertEquals(10, eye.depth(), 1e-12);
+            var matrix = camera.modelToEye(origin);
+            assertEquals(4, matrix.get(0) * x + matrix.get(4) * y + matrix.get(12), 1e-6);
+            assertEquals(-10, matrix.get(2) * x + matrix.get(6) * y + matrix.get(14), 1e-6);
+            var software = camera.software().move(10, 4, 2);
+            assertEquals(x, software.x(), 1e-12);
+            assertEquals(y, software.y(), 1e-12);
+        }
     }
 }

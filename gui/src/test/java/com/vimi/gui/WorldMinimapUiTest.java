@@ -101,6 +101,13 @@ public final class WorldMinimapUiTest {
                 update(source, inventory, camera.x(), camera.y(), camera.yaw());
                 require(snapshot().getPixelReader().getArgb(90, 50) == colors[i],
                         "actual camera forward landmark stays ahead: " + names[i]);
+                require(snapshot().getPixelReader().getArgb(130, 90) == colors[(i + 3) % 4],
+                        "actual camera right-hand landmark stays right: " + names[i]);
+                var right = camera.move(0, SIDE / 4, 0);
+                int rightU = (int) Math.round((Y - right.y()) / SIDE * 256);
+                int rightV = (int) Math.round((X - right.x()) / SIDE * 256);
+                require(argb[rightV * 256 + rightU] == colors[(i + 3) % 4],
+                        "actual positive strafe reaches right-hand landmark: " + names[i]);
                 saveScreenshot("camera-forward-" + names[i] + ".png");
             }
             orientation.getSelectionModel().select(0);

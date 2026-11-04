@@ -15,7 +15,8 @@ import org.junit.jupiter.api.Test;
 
 class TerrainBorrowedRendererTest {
     @Test
-    void nineBorrowedSurfacesPreservePreChangeHeightFogClippingAndCameraGoldens() throws Exception {
+    void nineBorrowedSurfacesPreserveHeightFogClippingGoldensAfterCorrectingHorizontalHandedness()
+            throws Exception {
         var raw = new ArrayList<WorldFormats.Terrain>();
         var nativeTiles = new ArrayList<TerrainScene.Tile>();
         for (int i = 0; i < 9; i++) {
@@ -35,7 +36,8 @@ class TerrainBorrowedRendererTest {
                         new TerrainRenderer.Camera(0, 0, 0, 0, 0),
                         new TerrainRenderer.Camera(-500, -10, 80, .2, -.1),
                         new TerrainRenderer.Camera(1300, 0, 40, Math.PI, -.2));
-        // Captured with the unmodified array-based renderer at integration38acbe5.
+        // Captured at integration38acbe5. Reflect the corrected output before comparison:
+        // the geographic fix must change only horizontal handedness, not shading/depth/holes.
         var hashes =
                 List.of(
                         "e2bd3dd7761c53d4f8339258511fed89a0fb1e57370d447d028bbd260544c3e1",
@@ -52,8 +54,10 @@ class TerrainBorrowedRendererTest {
                     TerrainRenderer.render(scene, cameras.get(i), 128, 96, () -> false).pixels(),
                     frame.pixels());
             var pixels = ByteBuffer.allocate(frame.pixels().length * 4);
-            for (int pixel : frame.pixels()) {
-                pixels.putInt(pixel);
+            for (int row = 0; row < 96; row++) {
+                for (int column = 127; column >= 0; column--) {
+                    pixels.putInt(frame.pixels()[row * 128 + column]);
+                }
             }
             assertEquals(
                     hashes.get(i),
