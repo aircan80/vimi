@@ -71,13 +71,13 @@ public final class NativePreparationWork implements BuildPreparation.Work {
         return new ClientHotfixStore.Scope(ref, locale, info.version());
     }
 
-    private volatile String hotfixSha;
-    private volatile boolean hotfixWatched, hotfixRefreshPending;
+    private volatile String hotfixSha, refreshedHotfixSha;
+    private volatile boolean hotfixWatched;
 
     String hotfixStatus() {
         String status = hotfixStatus;
         if (hotfixSha != null && hotfixWatched) status += " · checked on Refresh sources";
-        if (hotfixRefreshPending)
+        if (hotfixRefreshPending())
             status += "\nRefresh sources imported a newer local cache for this build; reopen to apply it.";
         return status;
     }
@@ -88,12 +88,17 @@ public final class NativePreparationWork implements BuildPreparation.Work {
     void hotfixWatched(boolean value) { hotfixWatched = value; }
 
     /** A newer verified import is bound; this open workspace keeps its loaded snapshot. */
-    boolean hotfixRefreshPending() { return hotfixRefreshPending; }
+    boolean hotfixRefreshPending() {
+        String loaded = hotfixSha, refreshed = refreshedHotfixSha;
+        return loaded != null && refreshed != null && !loaded.equals(refreshed);
+    }
 
-    /** Records a refresh-bound import. Equal or unloaded snapshots need no reopen. */
+    /**
+     * Records a refresh-bound import. The comparison is made when read, so a snapshot whose
+     * adoption completes after this note is still compared; equal snapshots need no reopen.
+     */
     void noteRefreshedHotfix(String sha256) {
-        String loaded = hotfixSha;
-        if (loaded != null && !loaded.equals(sha256)) hotfixRefreshPending = true;
+        refreshedHotfixSha = java.util.Objects.requireNonNull(sha256);
     }
 
     boolean canImportHotfix() {

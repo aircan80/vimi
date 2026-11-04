@@ -1010,13 +1010,21 @@ final class ClientHotfixStore implements AutoCloseable {
             if (token.isCanceled() || canceled(failure)) throw failure;
             return new RefreshResult(scope, RefreshOutcome.FAILED, current, 0, failure);
         }
-        writeWatch(scope, imported.input(), imported.source(), token);
+        Throwable statFailure = null;
+        try {
+            writeWatch(scope, imported.input(), imported.source(), token);
+        } catch (IOException | RuntimeException failure) {
+            if (token.isCanceled() || canceled(failure)) throw failure;
+            // The verified binding is already durable; a stale recorded stat only forces the
+            // next refresh to reverify the same bytes, so report the real outcome plus failure.
+            statFailure = failure;
+        }
         return new RefreshResult(
                 scope,
                 imported.changed() ? RefreshOutcome.UPDATED : RefreshOutcome.UNCHANGED,
                 imported.summary(),
                 scope.buildNumber(),
-                null);
+                statFailure);
     }
 
     /** Header build of a recognizable XFTH v9 file, else -1; full verification follows. */

@@ -133,9 +133,48 @@ public final class SourceRefreshTest {
                     failed.rows().getFirst().state() == SourceRefresh.State.FAILED,
                     "Synchronous provider refusal is isolated");
         }
+        var summary = new AtomicReference<String>("1 newer cache imported; reopen the build to apply");
+        try (var summaries =
+                new SourceRefresh(
+                        List.of(
+                                new SourceRefresh.Provider(
+                                        "summary",
+                                        "Summary",
+                                        () -> true,
+                                        () -> CompletableFuture.completedFuture(null),
+                                        () -> null,
+                                        () -> {},
+                                        summary::get),
+                                new SourceRefresh.Provider(
+                                        "broken-summary",
+                                        "Broken summary",
+                                        () -> true,
+                                        () -> CompletableFuture.completedFuture(null),
+                                        () -> null,
+                                        () -> {},
+                                        () -> {
+                                            throw new IllegalStateException("summary failed");
+                                        })))) {
+            var completed = summaries.start();
+            completed.completion().get(2, TimeUnit.SECONDS);
+            require(
+                    completed.rows().getFirst().state() == SourceRefresh.State.COMPLETE
+                            && completed.rows().getFirst().message().equals(summary.get()),
+                    "Provider completion summary replaces the generic message");
+            require(
+                    completed.rows().get(1).state() == SourceRefresh.State.COMPLETE
+                            && completed.rows().get(1).message().equals("Up to date"),
+                    "A failing completion summary keeps the generic message");
+            summary.set(null);
+            var generic = summaries.start();
+            generic.completion().get(2, TimeUnit.SECONDS);
+            require(
+                    generic.rows().getFirst().message().equals("Up to date"),
+                    "A null completion summary keeps the generic message");
+        }
         System.out.println(
-                "Source refresh: parallelism, coalescing, progress, disabled sources, failures and"
-                        + " cancellation passed");
+                "Source refresh: parallelism, coalescing, progress, disabled sources, failures,"
+                        + " completion summaries and cancellation passed");
     }
 
     private static void require(boolean value, String message) {

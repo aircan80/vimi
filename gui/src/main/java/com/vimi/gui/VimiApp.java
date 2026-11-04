@@ -317,7 +317,9 @@ public final class VimiApp extends Application {
             Platform.runLater(() -> {
                 if (closing) return;
                 for (var result : results) {
-                    if (result.outcome() != ClientHotfixStore.RefreshOutcome.UPDATED) continue;
+                    // Every scoped result carries the binding as it stands after the check, so
+                    // open workspaces compare their loaded snapshot against the actual binding.
+                    if (result.scope() == null || result.summary() == null) continue;
                     for (var job : service.preparation().jobs())
                         if (job.work() instanceof NativePreparationWork work && work.canImportHotfix()
                                 && work.hotfixScope().equals(result.scope()))
