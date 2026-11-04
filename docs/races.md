@@ -304,3 +304,9 @@ on Skin Type choices gated by explicit archive0/1 and prerequisite rows. The cur
 preview does not possess that context and does not ignore those guards. Undead texture
 composition therefore remains unsupported; a black/blank skin prototype is not counted
 as model support.
+
+The same four Night Elf appearances also passed24 actual800×600 Vulkan child frames
+across two cameras and qualified/raw/textures-off modes. CPU/native silhouette IoU was
+at least0.99990829 and intersecting RGB mean error at most0.710152 byte units; four
+children closed normally without per-scene camera restarts. This verifies the existing
+model renderer with these source payloads, not frame rate or other hardware/backends.
