@@ -84,10 +84,39 @@ public final class WorldTextureLoadingTest {
             for (var call : calls) call.result().complete(WorldTerrainTextureSource.BatchResult.unsupported(TILES));
             for (var outcome : delivered) { if (outcome.snapshot() != null) outcome.snapshot().close(); }
         }
+        workerStartErrorDoesNotLeavePhantomRetirement();
         idleWaitsProviderAndFxRetirement();
         idleWaitsWorkerFinallyAfterFx();
         idleFailuresDoNotHang();
         System.out.println("WorldTextureLoadingTest PASS: off-owner reads, latest-only work, activity, rejection and late close");
+    }
+
+    private static void workerStartErrorDoesNotLeavePhantomRetirement() throws Exception {
+        var original = new AssertionError("Authored worker creation failure");
+        var delivered = new java.util.concurrent.atomic.AtomicInteger();
+        var entered = new CompletableFuture<Void>();
+        var loader = new WorldTextureLoading(task -> task.run(), ignored -> {}, ignored -> delivered.incrementAndGet());
+        try {
+            var field = WorldTextureLoading.class.getDeclaredField("worker");field.setAccessible(true);
+            ((java.util.concurrent.ThreadPoolExecutor)field.get(loader)).setThreadFactory(task -> { throw original; });
+            try {
+                loader.request(source(CompletableFuture.completedFuture(
+                        WorldTerrainTextureSource.BatchResult.unsupported(TILES)),entered),
+                        map(1),TILES,scene());
+                throw new AssertionError("Expected original worker creation error");
+            } catch (AssertionError observed) { require(observed == original,"Exact fatal Error preserved"); }
+            require(!loader.hasActiveWork(), "No phantom active descriptor after worker creation fails");
+            require(!entered.isDone() && delivered.get() == 0, "No provider call or fabricated terminal result");
+            var viewField = WorldTextureLoading.class.getDeclaredField("view");viewField.setAccessible(true);
+            var view = viewField.get(loader);
+            var strong = view.getClass().getDeclaredField("strongScene");strong.setAccessible(true);
+            require(strong.get(view) == null, "Failed unstarted job retires its strong scene alias");
+            try {
+                loader.whenIdle().get(1,TimeUnit.SECONDS);
+                throw new AssertionError("Failed worker creation cannot certify successful retirement");
+            } catch (java.util.concurrent.ExecutionException expected) { }
+            expectFailed(loader.whenIdle()); // A fresh fence cannot turn the sticky failure positive.
+        } finally { loader.close(); }
     }
 
     private static BuildWorld source(CompletableFuture<WorldTerrainTextureSource.BatchResult> result,

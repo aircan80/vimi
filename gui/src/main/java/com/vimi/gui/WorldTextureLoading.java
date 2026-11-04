@@ -131,6 +131,13 @@ final class WorldTextureLoading implements AutoCloseable {
                 job.view.releaseScene();
                 try { idle.run(); } finally { retired(job, true, true, rejected); }
             }
+        } catch (Error fatal) {
+            // No supplier/mailbox exists after failed worker creation. Keep the fatal outcome
+            // sticky before returning the SAME Error; never fabricate a provider result.
+            active = null;
+            job.view.releaseScene();
+            retired(job, true, true, fatal);
+            throw fatal;
         }
     }
 
