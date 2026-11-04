@@ -14,6 +14,15 @@ PR159 Linux/Windows checks pass; earlier macOS jobs failed hosted runner acquisi
 All five platform packages remain required before publishing alpha.22. Never move
 published tags or overwrite frozen launchers.
 
+Candidate runtime30aabaf passes fullcheck/assemble/installDist, five changed-path
+FX suites, actual persistent GPU owner proof and native material proof:482tasks,
+174executed,275fromcache,33up-to-date,29s. Log:
+`/home/aircan/.cache/vimi-tmp/alpha22-ready-final-check.log`. Documentation-only
+release notes follow atb631b73. ActualGPUowner proof performed104replacements,
+92contentrevisions,1469framesduringuploads; refs0/pendingreadbacks0 atclose.
+These counters are diagnostic behavior, not a sustained FPS benchmark.
+
+
 Parallel world development continues on `feature/world-next-integration`, with
 independently approved water geometry, standalone native draw component and closed
 Source-to-file bridge. See that branch's latest checkpoint/roadmap for ongoing work.
