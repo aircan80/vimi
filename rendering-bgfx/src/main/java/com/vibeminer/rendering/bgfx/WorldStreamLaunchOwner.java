@@ -101,6 +101,8 @@ final class WorldStreamLaunchOwner {
         private volatile boolean attachmentDone;
         private volatile IOException failure;
         private boolean sealed;
+        // Guarded by lock; only the already-admitted callback can finish bounded bootstrap.
+        private Thread attachmentThread;
 
         private Handle(
                 WorldStreamPreparedFiles.LaunchFiles files,
@@ -139,7 +141,9 @@ final class WorldStreamLaunchOwner {
             }
             var done = new AtomicBoolean();
             synchronized (lock) {
-                if (sealed || stopping.get() || workers.size() == 6) {
+                if (sealed
+                        || stopping.get() && Thread.currentThread() != attachmentThread
+                        || workers.size() == 6) {
                     throw new IllegalStateException("World worker registration is closed/full");
                 }
                 workers.add(done);
@@ -201,7 +205,14 @@ final class WorldStreamLaunchOwner {
                                                         closeAsync();
                                                     }
                                                 });
-                                        if (!stopping.get()) {
+                                        boolean admitted;
+                                        synchronized (lock) {
+                                            admitted = !stopping.get();
+                                            if (admitted) {
+                                                attachmentThread = Thread.currentThread();
+                                            }
+                                        }
+                                        if (admitted) {
                                             attachment.attach(child, this);
                                         }
                                     } catch (Throwable error) {
@@ -212,6 +223,7 @@ final class WorldStreamLaunchOwner {
                                         }
                                     } finally {
                                         synchronized (lock) {
+                                            attachmentThread = null;
                                             sealed = true;
                                         }
                                         attachmentDone = true;

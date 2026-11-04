@@ -31,6 +31,64 @@ class WorldStreamLaunchOwnerTest {
             new WorldStreamEnvelope.Session(new WorldStreamState.Nonce(10, 20), "ab".repeat(32), 1);
 
     @Test
+    void actualExitDuringAdmittedAttachmentStillRegistersAndDrainsItsBoundedWorkers()
+            throws Exception {
+        var child = new Child();
+        var admitted = new CountDownLatch(1);
+        var releaseAttachment = new CountDownLatch(1);
+        var lateEntered = new CountDownLatch(1);
+        var releaseLate = new CountDownLatch(1);
+        var owner =
+                WorldStreamLaunchOwner.launch(
+                        WorldStreamPreparedFiles.create(directory, SESSION, null),
+                        arguments -> child,
+                        (process, handle) -> {
+                            handle.runWorker("first", () -> {});
+                            admitted.countDown();
+                            releaseAttachment.await();
+                            handle.runWorker(
+                                    "late-drain",
+                                    () -> {
+                                        lateEntered.countDown();
+                                        releaseLate.await();
+                                    });
+                        },
+                        0,
+                        3000);
+        try {
+            assertTrue(admitted.await(2, TimeUnit.SECONDS));
+            child.exit(0);
+            owner.childExited().get(2, TimeUnit.SECONDS);
+            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!owner.stopping() && System.nanoTime() < until) {
+                Thread.sleep(2);
+            }
+            assertTrue(owner.stopping());
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> owner.runWorker("foreign-after-stop", () -> {}));
+            assertFalse(owner.terminatedAndDrained().isDone());
+            releaseAttachment.countDown();
+            assertTrue(
+                    lateEntered.await(2, TimeUnit.SECONDS),
+                    "Already admitted attachment must finish registering its actual workers");
+            assertFalse(
+                    owner.terminatedAndDrained().isDone(),
+                    "Actual exit is not completion of the late registered worker");
+            assertTrue(Files.exists(owner.files().framePath()));
+            releaseLate.countDown();
+            owner.terminatedAndDrained().get(3, TimeUnit.SECONDS);
+            org.junit.jupiter.api.Assertions.assertNull(owner.failure());
+            assertFalse(Files.exists(owner.files().directory()));
+        } finally {
+            releaseAttachment.countDown();
+            releaseLate.countDown();
+            owner.closeAsync();
+            owner.terminatedAndDrained().get(3, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void hostileStarterAndWorkerMessagesCannotSuppressFailureOrClose() throws Exception {
         var touched = new AtomicBoolean();
         var unknown =

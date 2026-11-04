@@ -315,10 +315,18 @@ class WorldStreamTransportTest {
                     new WorldStreamTransport.Camera(
                             1, 1, 800, 500, new TerrainCamera(1, 2, 3, .2, .1)));
             long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
-            while (!Files.exists(observed) && System.nanoTime() < until) {
+            String expectedCamera = "CAM 1 1 800 500 1.0 2.0 3.0 0.2 0.1";
+            String observedCommands = "";
+            while (System.nanoTime() < until) {
+                if (Files.exists(observed)) {
+                    observedCommands = Files.readString(observed);
+                    if (observedCommands.contains(expectedCamera)) {
+                        break;
+                    }
+                }
                 Thread.sleep(5);
             }
-            assertTrue(Files.readString(observed).contains("CAM 1 1 800 500 1.0 2.0 3.0 0.2 0.1"));
+            assertTrue(observedCommands.contains(expectedCamera));
             var receipt = session.closeAsync().get(5, TimeUnit.SECONDS);
             session.completion().get(2, TimeUnit.SECONDS);
             assertEquals(child.get().pid(), receipt.childPid().orElseThrow());
