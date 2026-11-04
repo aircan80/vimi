@@ -921,7 +921,12 @@ final class WorldStreamScopes {
             }
             if (primary == null) {
                 try {
-                    operationCancellation.check();
+                    synchronized (this) {
+                        requireHealthy();
+                        external.check();
+                        operationCancellation.check();
+                        resolve(scope);
+                    }
                 } catch (RuntimeException | Error failure) {
                     primary = failure;
                 }
