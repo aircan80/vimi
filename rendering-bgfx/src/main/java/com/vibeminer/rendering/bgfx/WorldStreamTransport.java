@@ -755,6 +755,12 @@ public final class WorldStreamTransport {
                 capacityChanged();
             } catch (Throwable failed) {
                 fail(failed);
+                // Retire this actual worker exceptionally; never requeue a sticky failed delete.
+                if (failed instanceof Error fatal) {
+                    throw fatal;
+                }
+                throw new java.io.UncheckedIOException(
+                        WorldStreamLaunchOwner.Handle.detached(failed));
             }
         }
 
