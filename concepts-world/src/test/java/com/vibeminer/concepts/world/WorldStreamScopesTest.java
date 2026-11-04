@@ -35,6 +35,343 @@ final class WorldStreamScopesTest {
             new WorldFormats.Tile(7, 19, 2, 0, 0, 0, 0, 3, 0, 0);
 
     @Test
+    void wmoRecordedRootUsesTwoMiBCeilingBeforeOpenAndRejectsUnusedTex0() {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var source = new WorldStreamScopes(tables.handle(), files.files());
+        try {
+            var scope = source.create(REQUEST, Cancellation.NONE);
+            files.sources.put(2L, new byte[(2 << 20) + 1]);
+            assertThrows(
+                    IllegalStateException.class,
+                    () ->
+                            source.withRecordedTile(
+                                    scope,
+                                    TILE,
+                                    WorldStreamScopes.UseProfile.BASIC_WMO,
+                                    Cancellation.NONE,
+                                    admission -> {
+                                        admission.readRecorded(
+                                                WorldStreamScopes.RecordedInput.ROOT);
+                                        throw new AssertionError("Oversized WMO root accepted");
+                                    }));
+            assertEquals(0, files.opens(2));
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            source.withRecordedTile(
+                                    scope,
+                                    TILE,
+                                    WorldStreamScopes.UseProfile.BASIC_WMO,
+                                    Cancellation.NONE,
+                                    admission -> {
+                                        admission.readRecorded(
+                                                WorldStreamScopes.RecordedInput.TEX0);
+                                        throw new AssertionError("Unused WMO tex0 accepted");
+                                    }));
+            assertEquals(0, files.opens(3));
+        } finally {
+            source.closeAsync().join();
+            tables.close();
+        }
+    }
+
+    @Test
+    void unchangedRootWithNewScopeCompanionsRebindsMetadataWithoutReread() {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var source = new WorldStreamScopes(tables.handle(), files.files());
+        var cache = new WorldGeometryCache();
+        try {
+            var scope = source.create(REQUEST, Cancellation.NONE);
+            var first =
+                    source.withRecordedTile(
+                            scope,
+                            TILE,
+                            WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                            Cancellation.NONE,
+                            cache::prepare);
+            var wdt = files.sources.get(1L).clone();
+            java.nio.ByteBuffer.wrap(wdt)
+                    .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                    .putInt(12 + 40 + 8 + 4096 * 8 + 8 + (7 * 64 + 19) * 32 + 12, 4);
+            files.sources.put(1L, wdt);
+            files.changedId = 1;
+            files.changeAfterRead = true;
+            var nextScope = source.create(REQUEST, Cancellation.NONE);
+            var tuple = new WorldFormats.Tile(7, 19, 2, 0, 0, 0, 0, 4, 0, 0);
+            var next =
+                    source.withRecordedTile(
+                            nextScope,
+                            tuple,
+                            WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                            Cancellation.NONE,
+                            cache::prepare);
+            assertEquals(1, files.opens(2));
+            assertEquals(tuple, cache.legacyGet(WorldGeometryCache.key(7, null, tuple)).tile());
+            first.withTile(
+                    old ->
+                            next.withTile(
+                                    current ->
+                                            org.junit.jupiter.api.Assertions.assertSame(
+                                                    old, current)));
+            first.close();
+            next.close();
+        } finally {
+            cache.closeAsync().join();
+            source.closeAsync().join();
+            tables.close();
+        }
+    }
+
+    @Test
+    void legacyGeometryIsRequalifiedAndMalformedConstructionDoesNotConsumeCredit() {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var source = new WorldStreamScopes(tables.handle(), files.files());
+        var cache = new WorldGeometryCache();
+        try {
+            var scope = source.create(REQUEST, Cancellation.NONE);
+            var parsed = WorldFormats.adtTile(files.sources.get(2L), () -> false);
+            var descriptive = new WorldFormats.Tile(7, 19, 2, 0, 0, 999, 0, 999, 0, 0);
+            String key = WorldGeometryCache.key(7, "IgnoredDirectory", TILE);
+            cache.legacyPut(
+                    key,
+                    new WorldService.LoadedTile(
+                            descriptive, parsed.terrain(), null, parsed.areas()));
+            var prepared =
+                    source.withRecordedTile(
+                            scope,
+                            TILE,
+                            WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                            Cancellation.NONE,
+                            cache::prepare);
+            assertEquals(1, files.opens(2), "Public legacy arrays never establish source proof");
+            org.junit.jupiter.api.Assertions.assertSame(
+                    parsed.terrain(), cache.legacyGet(key).terrain());
+            assertEquals(
+                    TILE,
+                    cache.legacyGet(key).tile(),
+                    "Current admitted companion tuple replaces old DTO");
+            prepared.close();
+            cache.closeAsync().join();
+            var fresh = new WorldGeometryCache();
+            try {
+                byte[] original = files.sources.get(2L);
+                files.sources.put(2L, new byte[16]);
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () ->
+                                source.withRecordedTile(
+                                        scope,
+                                        TILE,
+                                        WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                                        Cancellation.NONE,
+                                        fresh::prepare));
+                files.sources.put(2L, original);
+                var recovered =
+                        source.withRecordedTile(
+                                scope,
+                                TILE,
+                                WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                                Cancellation.NONE,
+                                fresh::prepare);
+                recovered.close();
+            } finally {
+                fresh.closeAsync().join();
+            }
+        } finally {
+            cache.closeAsync().join();
+            source.closeAsync().join();
+            tables.close();
+        }
+    }
+
+    @Test
+    void twelvePinnedGeometryVersionsSurviveReplacementAndReleaseAllowsNextSourceRead() {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var source = new WorldStreamScopes(tables.handle(), files.files());
+        var cache = new WorldGeometryCache();
+        var outputs = new ArrayList<WorldGeometryCache.Prepared>();
+        try {
+            var scope = source.create(REQUEST, Cancellation.NONE);
+            var original = files.sources.get(2L);
+            for (int i = 0; i < 12; i++) {
+                var changed = original.clone();
+                java.nio.ByteBuffer.wrap(changed)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                        .putFloat(20 + 112, 10 + i);
+                files.sources.put(2L, changed);
+                files.changedId = 2;
+                files.changeAfterRead = i % 2 != 0;
+                outputs.add(
+                        source.withRecordedTile(
+                                scope,
+                                TILE,
+                                WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                                Cancellation.NONE,
+                                cache::prepare));
+            }
+            assertEquals(12, files.opens(2));
+            assertNotEquals(outputs.getFirst().fingerprint(), outputs.getLast().fingerprint());
+            outputs.getFirst().withTile(tile -> assertTrue(tile.vertexCount() > 0));
+            files.changeAfterRead = false;
+            assertThrows(
+                    IllegalStateException.class,
+                    () ->
+                            source.withRecordedTile(
+                                    scope,
+                                    TILE,
+                                    WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                                    Cancellation.NONE,
+                                    cache::prepare));
+            assertEquals(12, files.opens(2));
+            outputs.removeFirst().close();
+            var next =
+                    source.withRecordedTile(
+                            scope,
+                            TILE,
+                            WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                            Cancellation.NONE,
+                            cache::prepare);
+            outputs.add(next);
+            assertEquals(13, files.opens(2));
+        } finally {
+            for (var output : outputs) {
+                output.close();
+            }
+            cache.closeAsync().join();
+            source.closeAsync().join();
+            tables.close();
+        }
+    }
+
+    @Test
+    void preparedGeometryReusesActualProofWithoutRootRereadAndRefreshesEqualGeometryAreas()
+            throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var source = new WorldStreamScopes(tables.handle(), files.files());
+        var cache = new WorldGeometryCache();
+        try {
+            var scope = source.create(REQUEST, Cancellation.NONE);
+            var first =
+                    source.withRecordedTile(
+                            scope,
+                            TILE,
+                            WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                            Cancellation.NONE,
+                            cache::prepare);
+            int rootReads = files.opens(2);
+            var repeated =
+                    source.withRecordedTile(
+                            scope,
+                            TILE,
+                            WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                            Cancellation.NONE,
+                            cache::prepare);
+            assertEquals(
+                    rootReads, files.opens(2), "Qualified unchanged root reuses existing geometry");
+            first.withTile(
+                    old ->
+                            repeated.withTile(
+                                    current ->
+                                            org.junit.jupiter.api.Assertions.assertSame(
+                                                    old, current)));
+            var changed = files.sources.get(2L).clone();
+            java.nio.ByteBuffer.wrap(changed)
+                    .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                    .putInt(20 + 52, 12345);
+            files.sources.put(2L, changed);
+            files.changedId = 2;
+            files.changeAfterRead = true;
+            var refreshed =
+                    source.withRecordedTile(
+                            scope,
+                            TILE,
+                            WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                            Cancellation.NONE,
+                            cache::prepare);
+            assertEquals(rootReads + 1, files.opens(2));
+            assertEquals(first.fingerprint(), refreshed.fingerprint());
+            first.withTile(
+                    old ->
+                            refreshed.withTile(
+                                    current ->
+                                            org.junit.jupiter.api.Assertions.assertSame(
+                                                    old, current)));
+            assertEquals(0, first.areas().chunks().getFirst().areaId());
+            assertEquals(12345, refreshed.areas().chunks().getFirst().areaId());
+            first.close();
+            repeated.close();
+            refreshed.close();
+        } finally {
+            cache.closeAsync().join();
+            source.closeAsync().join();
+            tables.close();
+        }
+    }
+
+    @Test
+    void preparedGeometryOutputCreditRejectsBeforeIoAndCloseDrainsBorrowedFrame() throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var source = new WorldStreamScopes(tables.handle(), files.files());
+        var cache = new WorldGeometryCache();
+        var entered = new CountDownLatch(1);
+        var release = new CompletableFuture<Void>();
+        try {
+            var scope = source.create(REQUEST, Cancellation.NONE);
+            var outputs = new ArrayList<WorldGeometryCache.Prepared>();
+            for (int i = 0; i < 12; i++) {
+                outputs.add(
+                        source.withRecordedTile(
+                                scope,
+                                TILE,
+                                WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                                Cancellation.NONE,
+                                cache::prepare));
+            }
+            int reads = files.totalOpens();
+            assertThrows(
+                    IllegalStateException.class,
+                    () ->
+                            source.withRecordedTile(
+                                    scope,
+                                    TILE,
+                                    WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                                    Cancellation.NONE,
+                                    cache::prepare));
+            assertEquals(reads, files.totalOpens());
+            var borrower =
+                    CompletableFuture.runAsync(
+                            () ->
+                                    outputs.getFirst()
+                                            .withTile(
+                                                    tile -> {
+                                                        assertTrue(tile.vertexCount() > 0);
+                                                        entered.countDown();
+                                                        release.join();
+                                                        assertTrue(tile.indexCount() > 0);
+                                                    }));
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            var drain = cache.closeAsync();
+            assertFalse(drain.isDone());
+            assertThrows(
+                    IllegalStateException.class, () -> outputs.getFirst().withTile(tile -> {}));
+            release.complete(null);
+            borrower.join();
+            drain.join();
+        } finally {
+            release.complete(null);
+            cache.closeAsync().join();
+            source.closeAsync().join();
+            tables.close();
+        }
+    }
+
+    @Test
     void externalCancellationNeverRunsHeldLowerCallbacksOnCallerAndDrainsBeforeNextJob()
             throws Exception {
         var lowerEntered = new CountDownLatch(1);
@@ -685,6 +1022,37 @@ final class WorldStreamScopesTest {
                     var scope = source.create(REQUEST, Cancellation.NONE);
                     assertEquals(1, scope.wdtId());
                     assertEquals(TILE, source.recorded(scope, TILE, Cancellation.NONE));
+                    AutoCloseable owned =
+                            source.withRecordedTile(
+                                    scope,
+                                    TILE,
+                                    WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                                    Cancellation.NONE,
+                                    admission -> {
+                                        try (var root =
+                                                admission.readRecorded(
+                                                        WorldStreamScopes.RecordedInput.ROOT)) {
+                                            org.junit.jupiter.api.Assertions.assertNull(
+                                                    root.declaredLength());
+                                            assertEquals(8 << 20, root.sourceLimit());
+                                            assertEquals(
+                                                    files.sources.get(2L).length,
+                                                    root.consumedLength());
+                                        }
+                                        try (var root =
+                                                admission.readRecorded(
+                                                        WorldStreamScopes.RecordedInput.ROOT)) {
+                                            assertEquals(
+                                                    (long) files.sources.get(2L).length,
+                                                    root.declaredLength());
+                                        }
+                                        return (AutoCloseable) () -> {};
+                                    });
+                    try {
+                        owned.close();
+                    } catch (Exception failure) {
+                        throw new AssertionError(failure);
+                    }
                 }
             } finally {
                 source.closeAsync().join();

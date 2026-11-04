@@ -76,11 +76,15 @@ final class WorldStreamScopes {
 
     private static final class Source implements AutoCloseable {
         private final String key;
+        private final Long declaredLength;
+        private final int sourceLimit;
         private byte[] bytes;
 
-        Source(String key, byte[] bytes) {
+        Source(String key, byte[] bytes, Long declaredLength, int sourceLimit) {
             this.key = key;
             this.bytes = bytes;
+            this.declaredLength = declaredLength;
+            this.sourceLimit = sourceLimit;
         }
 
         String key() {
@@ -355,11 +359,23 @@ final class WorldStreamScopes {
         private Source source;
         private TileAdmission admission;
         private final Binding binding;
+        private final Long declaredLength;
+        private final int sourceLimit;
 
         private Input(Source source, TileAdmission admission, Binding binding) {
             this.source = source;
             this.admission = admission;
             this.binding = binding;
+            this.declaredLength = source.declaredLength;
+            this.sourceLimit = source.sourceLimit;
+        }
+
+        Long declaredLength() {
+            return declaredLength;
+        }
+
+        int sourceLimit() {
+            return sourceLimit;
         }
 
         byte[] bytes() {
@@ -399,6 +415,7 @@ final class WorldStreamScopes {
         private Cancellation token;
         private final WorldFormats.Tile recorded;
         private final UseProfile profile;
+        private final long mapId;
         private final ArrayList<Binding> bindings = new ArrayList<>();
         private Input input;
         private final long threadId = Thread.currentThread().threadId();
@@ -415,6 +432,7 @@ final class WorldStreamScopes {
             this.token = token;
             this.recorded = recorded;
             this.profile = profile;
+            this.mapId = proof.token().mapId();
             bindings.add(
                     new Binding(proof.token().wdtId(), proof.token().wdtKey(), proof.wdtLength()));
         }
@@ -438,12 +456,61 @@ final class WorldStreamScopes {
             return recorded;
         }
 
+        UseProfile profile() {
+            check();
+            return profile;
+        }
+
+        long mapId() {
+            check();
+            return mapId;
+        }
+
+        Cancellation cancellation() {
+            check();
+            return token;
+        }
+
+        /** Rechecks a private cache's existing actual-read proof; never constructs such a proof. */
+        boolean reuseRecordedRoot(String key, long length) {
+            check();
+            if (reserved || input != null) {
+                throw new IllegalStateException("Input credit busy");
+            }
+            var fresh = engine.stat(recorded.rootId(), token);
+            if (!Objects.equals(key, fresh.contentKey())
+                    || fresh.size() != null && fresh.size() != length) {
+                return false;
+            }
+            if (length < 12 || length > (profile == UseProfile.BASIC_WMO ? 2 << 20 : 8 << 20)) {
+                throw new IllegalArgumentException("Root proof bound");
+            }
+            var binding = new Binding(recorded.rootId(), key, length);
+            if (bindings.size() >= (profile == UseProfile.TERRAIN_BASIC ? 67 : 11)) {
+                throw new IllegalStateException("Binding limit");
+            }
+            for (var prior : bindings) {
+                if (prior.id() == binding.id() && !prior.equals(binding)) {
+                    throw new IllegalStateException("Source changed");
+                }
+            }
+            if (!bindings.contains(binding)) {
+                bindings.add(binding);
+            }
+            return true;
+        }
+
         Input readRecorded(RecordedInput kind) {
             check();
             long id =
                     switch (kind) {
                         case ROOT -> recorded.rootId();
-                        case TEX0 -> recorded.tex0Id();
+                        case TEX0 -> {
+                            if (profile != UseProfile.TERRAIN_BASIC) {
+                                throw new IllegalArgumentException("Unused WMO tex0 input");
+                            }
+                            yield recorded.tex0Id();
+                        }
                         case OBJ0 -> {
                             if (profile != UseProfile.BASIC_WMO) {
                                 throw new IllegalArgumentException("Wrong input profile");
@@ -451,7 +518,11 @@ final class WorldStreamScopes {
                             yield recorded.obj0Id();
                         }
                     };
-            return readCandidate(id, 8 << 20);
+            return readCandidate(
+                    id,
+                    profile == UseProfile.BASIC_WMO && kind == RecordedInput.ROOT
+                            ? 2 << 20
+                            : 8 << 20);
         }
 
         /** Actual bytes only: private WMO factory must independently prove parent ancestry. */
@@ -1268,7 +1339,7 @@ final class WorldStreamScopes {
                     || after.size() != null && after.size() != bytes.capacity()) {
                 throw new IllegalStateException("Source changed during read");
             }
-            return new Source(before.contentKey(), bytes.array());
+            return new Source(before.contentKey(), bytes.array(), before.size(), limit);
         }
     }
 
