@@ -1,5 +1,31 @@
 # vimi development handoff
 
+## Current delivery — Maps loading fix and alpha.21 packaging correction
+
+PR153 merged at dc7c5a4 after all hosted Linux/Windows/macOS checks passed.
+Immutable tag v0.1.0-alpha.21 points there. Publication run41850955713 failed
+Linux ARM64 because the class-only verified JavaFX SDK adapter did not receive
+its separate native directory during the new image publication check. No
+alpha.21 release was published. Do not move its tag or claim publication.
+
+PR159 combines independently reviewed native-path fix c1a00cf with Maps readiness
+fix da707e2 (integrated f012ce0). Maps was omitted from the shared TABLES_READY
+availability rule, causing a stale Loading/Not ready tab despite loaded content.
+The causal readiness regression fails before the fix. Root combined readiness
+and image checks pass96 tasks; class-only JavaFX JAR proof fails without natives
+and passes with the separate native path. Next unused planned tag alpha.22 has
+release notes ready; hosted checks and actual five-platform packaging must pass.
+Published application remains alpha.20 until a complete later release is verified.
+
+Parallel next-feature branch feature/world-next-integration lives in HOME cache,
+currently e74c8d3: reviewed G2 private instance payload e7d5f32 and raw water parser
+73608b8, root checks62+7 tasks. No renderer/GUI claim. Agents continue the pure
+global packet codec, approved single-root water Source qualification, and shared
+character geometry/atlas choices. Do not merge these unfinished features into
+an urgent Maps/build correction. Broader Maps revision refresh, worker Error
+retirement and World catalog error placeholders remain followups.
+
+
 ## Current alpha21 delivery gate — pool retry correction
 
 Newest runtime/integration checkpoint is dfe9817, superseding9dbad51 only with
