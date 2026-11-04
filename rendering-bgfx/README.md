@@ -94,7 +94,7 @@ python -m unittest discover -s scripts/rendering -p '*_test.py'
 Gradle shader tasks (`verifyShaders`, `shaderBuildHelperTest`, `compileShaders` and
 the terrain/world verification tasks) run `python` on Windows and `python3` on
 other systems. Select another interpreter with `-Ppython=<path-or-name>`, for example
-`./gradlew :rendering-bgfx:check -Ppython=/opt/homebrew/bin/python3`. Use `python3` in
+`./gradlew :rendering-bgfx:check -Ppython="$(command -v python3)"`. Use `python3` in
 place of `python` for the direct commands above where only `python3` is installed.
 
 The optional compiler cache defaults to ignored `.local/toolchains/bgfx-3.4.3`;

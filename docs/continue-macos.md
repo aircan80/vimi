@@ -39,9 +39,11 @@ uname -m
 
 ### Select Java 25 for Gradle
 
-`openjdk@25` is keg-only, so Homebrew does not link it into `PATH`. If `java -version`
-reports a newer JDK (for example the unversioned `openjdk` formula at Java 26), the
-Gradle 9.1 wrapper fails while compiling build scripts:
+`openjdk@25` is keg-only, so Homebrew does not link it into `PATH`. The wrapper runs
+`$JAVA_HOME/bin/java` when `JAVA_HOME` is set and `java` from `PATH` otherwise; check
+with `./gradlew --version` (the `Launcher JVM` line). If that is a newer JDK (for
+example the unversioned `openjdk` formula at Java 26), Gradle 9.1 fails while
+compiling build scripts:
 
 ```text
 BUG! exception in phase 'semantic analysis' in source unit '_BuildScript_' Unsupported class file major version 70
@@ -51,7 +53,7 @@ Gradle 9.1 runs on Java 25 at most. Choose one of these per-shell or per-command
 options; none of them changes the system Java or Homebrew links:
 
 ```sh
-# Option 1: the exports above, in each terminal (or a shell profile you edit yourself).
+# Option 1: set JAVA_HOME in each terminal (or in a shell profile you edit yourself).
 export JAVA_HOME="$(brew --prefix openjdk@25)/libexec/openjdk.jdk/Contents/Home"
 
 # Option 2: keep the current JAVA_HOME and run only the Gradle daemon on Java 25.
@@ -74,7 +76,7 @@ works. To use a specific interpreter, pass `-Ppython=<path-or-name>`:
 
 ```sh
 python3 --version
-./gradlew :rendering-bgfx:check -Ppython="$(brew --prefix python)/bin/python3"
+./gradlew :rendering-bgfx:check -Ppython="$(command -v python3)"
 ```
 
 From `vimi`, install the reference's pinned SDK using Microsoft's
