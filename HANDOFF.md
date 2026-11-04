@@ -1,5 +1,36 @@
 # vimi development handoff
 
+## Latest delivery and future-work checkpoint
+
+PR150 is FF-merged on main atc9cd4f3. Combined local check/assemble and World,
+minimap/network/Talent FX passes474tasks; actual Vulkan World proof passes91tasks.
+All hosted PR gates passed. Five-platform packaging dry run41759415353 passed.
+Immutable alpha.18 tag now points toc9cd4f3; do not move or overwrite it.
+Publication run41760647382 passed Linux x64/ARM64, Windows and Apple Silicon;
+Intel Mac failed only the existing100ms watchdog cleanup test (0 expected/1
+observed). Full logs `/tmp/vimi-alpha18-macos-x64.log` identify the timing-sensitive
+assertion atGpuParentWatchdogTest:60. Unchanged-tag failed-job rerun is queued.
+Do not claim alpha.18 published until release metadata/assets are verified.
+Frozen new development launcher `.local/apps/preview-ddcc4c7/bin/vimi-gui-prototype`
+passes packaged UI/native24-shader smoke; code matches alpha.18 (later changes
+were documentation). Alpha.17 remains latest verified published release for now.
+
+Future work is separate and not part of alpha.18:
+- `spike/world-persistent-gpu` through716b1ad: all four offline shader profiles,
+  scoped root-reviewed Vulkan precision,99frames/2,085,944 analytic samples
+  including sloped UV surfaces. Feasibility only, no production hot renderer.
+- `feature/world-hot-protocol` throughdeeece7: pure slot/credit/frame gate and
+  fixed session/commit codecs independently approved through3133f29. Source-owned
+  preparation API design is under review; no source factory/renderer wiring yet.
+- `feature/maps-navigation-model` through8e4a224: bounded pure hierarchy/history,
+  assignment hit choices and resource evidence;14authored tests pass. Root reviewed
+  API/classes and requested/fixed missing-vs-mismatched system reasons. No facade/UI.
+- `review/terrain-packed-planner` docsda5efd3 preserves source-free49tile findings:
+  flat49fits caps but~2.4s/~82M work; holes omit far tiles at geometry cap; rough
+  terrain refuses at100M work. Full stitched-plan acceptance/test emitter and a
+  separate multi-source batch/material design must precede view-distance wiring.
+
+
 ## Current Linux continuation — alpha.18 integration
 
 Latest published release remains alpha.17 at c70e88d; its frozen launcher is
