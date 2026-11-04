@@ -18,8 +18,8 @@ Server2025 runners and are unsigned/unnotarized prereleases.
 
 Windows testing is expected to use the downloaded installer, without installing a
 JDK or checking out this repository. Installers keep runtime files separate from
-per-user Vimi data. Windows uses LOCALAPPDATA/Vimi, macOS uses its Application
-Support directory, and Linux follows XDG_DATA_HOME (otherwise ~/.local/share/vimi).
+per-user Vimi data. Windows uses LOCALAPPDATA/vimi, macOS uses ~/Library/Application Support/vimi,
+and Linux uses $XDG_DATA_HOME/vimi (otherwise ~/.local/share/vimi).
 Uninstalling an application package does not intentionally delete the library.
 Back up valuable local data before testing a version that explicitly changes its
 storage format; each release notes any such change.
