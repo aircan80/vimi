@@ -576,3 +576,12 @@ tasks.register('worldCpuRetirementUiTest', JavaExec) {
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.WorldCpuRetirementUiTest'
 }
+
+tasks.register('worldHotLifecycleUiProof', JavaExec) {
+    group = 'verification'
+    description = 'Authored qualified HOT World source and actual inline GPU lifecycle; requires Vulkan and an FX display.'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldHotLifecycleUiProof'
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
