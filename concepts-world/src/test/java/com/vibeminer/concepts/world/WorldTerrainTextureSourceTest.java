@@ -178,7 +178,7 @@ class WorldTerrainTextureSourceTest {
         return data.array();
     }
 
-    private static class Files {
+    static class Files {
         final Map<Long, byte[]> sources = new ConcurrentHashMap<>();
         final Map<Long, AtomicInteger> stats = new ConcurrentHashMap<>(),
                 opens = new ConcurrentHashMap<>();
