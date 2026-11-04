@@ -354,3 +354,14 @@ tasks.register('nativeGpuWorldWmoColdChildProof', JavaExec) {
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args layout.buildDirectory.dir('world-wmo-cold-child-proof').get().asFile.absolutePath
 }
+
+tasks.register('nativeGpuWorldStreamTransportProof', JavaExec) {
+    group = 'verification'
+    description = 'Exercises actual native startup, camera publication and drain through the public World transport.'
+    dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamTransportProof'
+    timeout = java.time.Duration.ofMinutes(1)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-world-stream-public-lifecycle').get().asFile.absolutePath
+}
