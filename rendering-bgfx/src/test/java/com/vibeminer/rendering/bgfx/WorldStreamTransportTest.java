@@ -25,6 +25,45 @@ class WorldStreamTransportTest {
             new WorldStreamTransport.Spec("ab".repeat(32), 1, WorldStreamTransport.Backend.VULKAN);
 
     @Test
+    void publicInitializationFailsBoundedlyWhileHeldStarterStillOwnsFiles() throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var path = new AtomicReference<Path>();
+        var prepared = WorldStreamTransport.prepare(directory, spec);
+        var session =
+                prepared.launch(
+                        arguments -> {
+                            path.set(Path.of(arguments.get(1)));
+                            entered.countDown();
+                            release.await();
+                            throw new java.io.IOException("authored late no-child return");
+                        },
+                        50,
+                        100);
+        try {
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> session.initialized().get(2, TimeUnit.SECONDS));
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> session.completion().get(2, TimeUnit.SECONDS));
+            assertFalse(session.terminatedAndDrained().isDone());
+            assertTrue(Files.exists(path.get().resolve("frames.wsf")));
+            assertThrows(
+                    IllegalStateException.class,
+                    () ->
+                            session.camera(
+                                    new WorldStreamTransport.Camera(
+                                            1, 1, 800, 500, new TerrainCamera(0, 0, 0, 0, 0))));
+        } finally {
+            release.countDown();
+        }
+        assertTrue(session.terminatedAndDrained().get(3, TimeUnit.SECONDS).childPid().isEmpty());
+        assertFalse(Files.exists(path.get()));
+    }
+
+    @Test
     void closedIsNotPermissionToIgnoreTrailingProtocolBytes() throws Exception {
         var child = new WorldStreamLaunchOwnerTest.Child();
         var prepared = WorldStreamTransport.prepare(directory, spec);
