@@ -533,7 +533,7 @@ final class WorldPreparedTerrain {
         try {
             Throwable materialFailure = null;
             try {
-                batch = operation.result().join();
+                batch = operation.awaitResult();
             } catch (RuntimeException | Error failure) {
                 materialFailure = failure;
                 throw failure;

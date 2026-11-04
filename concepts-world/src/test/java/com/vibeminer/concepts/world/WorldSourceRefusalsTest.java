@@ -27,6 +27,62 @@ import org.junit.jupiter.api.Timeout;
 @Timeout(15)
 @SuppressWarnings("try")
 class WorldSourceRefusalsTest {
+    @Test
+    void canceledOwnedMaterialPreservesOriginalStopAfterActualDrainAndScopeRemainsUsable()
+            throws Exception {
+        var entered = new CompletableFuture<Void>();
+        var release = new CompletableFuture<Void>();
+        var once = new AtomicBoolean();
+        var files =
+                new WorldTerrainTextureSourceTest.Files() {
+                    @Override
+                    FileTypes.FileStat stat(long id, Cancellation token) {
+                        if (id == 10 && once.compareAndSet(false, true)) {
+                            entered.complete(null);
+                            release.join();
+                            token.check();
+                        }
+                        return super.stat(id, token);
+                    }
+                };
+        try (var fixture = new Fixture(files)) {
+            var stop = new Cancellation();
+            var preparing =
+                    CompletableFuture.supplyAsync(
+                            () ->
+                                    fixture.source.prepareAndWrite(
+                                            fixture.scope,
+                                            TILE,
+                                            stop,
+                                            (borrow, cancel) -> (AutoCloseable) () -> {}));
+            try {
+                entered.get(5, TimeUnit.SECONDS);
+                stop.cancel();
+                assertFalse(preparing.isDone(), "Held material work must actually retire");
+                release.complete(null);
+                var failure =
+                        assertThrows(
+                                ExecutionException.class, () -> preparing.get(5, TimeUnit.SECONDS));
+                assertEquals(
+                        CancellationException.class,
+                        failure.getCause().getClass(),
+                        "A clean owned material stop must not become a source failure");
+                assertEquals(null, failure.getCause().getCause());
+                assertEquals(0, failure.getCause().getSuppressed().length);
+                assertEquals(0, fixture.pool.stats().leaseClaims());
+                try (var fresh = fixture.prepare()) {
+                    fresh.withPayload(
+                            borrow ->
+                                    assertEquals(
+                                            WorldTerrainStreaming.Outcome.TEXTURED,
+                                            borrow.facts().outcome()));
+                }
+            } finally {
+                release.complete(null);
+            }
+        }
+    }
+
     private static final WorldService.MapInfo MAP =
             new WorldService.MapInfo(7, "Authored", null, 0, 1L);
     private static final WorldFormats.Tile TILE =
