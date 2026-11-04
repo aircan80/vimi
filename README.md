@@ -7,6 +7,10 @@ Mermaid diagram, including the independent Questie backend.
 Download, preparation and local query commands are documented in the
 [Questie backend guide](questie/README.md).
 
+See the [data-flow and privacy inventory](docs/data-flow-inventory.md) for network
+destinations and local storage, and the [security review](docs/security-review.md)
+for trust boundaries, findings and follow-up work.
+
 The [unified pack library](docs/unified-storage-services.md) stores object bytes in
 packfiles with one SQLite index, ownership catalog and build-status registry.
 The native app currently loads build metadata and reports persisted status/sizes;
