@@ -207,6 +207,7 @@ public final class WorldUiTest {
                                                                             + " central activity");
                                                                 restartAfterOldTileIssued(
                                                                         view, tile, tileCalls, oldTile,
+                                                                        () -> neighborToken.get() != null,
                                                                         () -> {
                                                                             require(
                                                                                     scene.lookup(
@@ -281,46 +282,9 @@ public final class WorldUiTest {
                                                                                     "Deactivation"
                                                                                         + " retires"
                                                                                         + " activity");
-                                                                            require(
-                                                                                    neighborToken
-                                                                                            .get()
-                                                                                            .isCanceled(),
-                                                                                    "Leaving World"
-                                                                                        + " cancels"
-                                                                                        + " background"
-                                                                                        + " tile"
-                                                                                        + " acquisition");
-                                                                            neighbor.complete(
-                                                                                    new WorldService
-                                                                                            .LoadedTile(
-                                                                                            new WorldFormats
-                                                                                                    .Tile(
-                                                                                                    33,
-                                                                                                    32,
-                                                                                                    11,
-                                                                                                    0,
-                                                                                                    0),
-                                                                                            terrain(),
-                                                                                            null));
-                                                                            view.activate();
-                                                                            snapshot(scene);
-                                                                            view.close();
-                                                                            require(
-                                                                                    !view.lookup(
-                                                                                                    "#world-catalog-activity")
-                                                                                            .isVisible(),
-                                                                                    "Close retires"
-                                                                                        + " catalog"
-                                                                                        + " activity");
-                                                                            require(
-                                                                                    closes.get()
-                                                                                            == 0,
-                                                                                    "View borrows"
-                                                                                        + " the workspace"
-                                                                                        + " handle");
-                                                                            stage.close();
-                                                                            externalRetirementAndFailure(
-                                                                                    done);
+                                                                            finishAfterNeighborStops(
+                                                                                    view, stage, scene, neighborToken,
+                                                                                    neighbor, closes, done);
                                                                         },
                                                                         done);
                                                             },
@@ -1312,9 +1276,30 @@ public final class WorldUiTest {
                 done);
     }
 
+    private static void finishAfterNeighborStops(
+            WorldView view, Stage stage, Scene scene,
+            java.util.concurrent.atomic.AtomicReference<Cancellation> neighborToken,
+            CompletableFuture<WorldService.LoadedTile> neighbor, AtomicInteger closes,
+            CompletableFuture<Void> done) {
+        // Cancellation callbacks run off FX; observe delivery instead of assuming synchronous IO.
+        await(() -> neighborToken.get().isCanceled(), () -> {
+            neighbor.complete(new WorldService.LoadedTile(
+                    new WorldFormats.Tile(33, 32, 11, 0, 0), terrain(), null));
+            view.activate();
+            snapshot(scene);
+            view.close();
+            require(!view.lookup("#world-catalog-activity").isVisible(),
+                    "Close retires catalog activity");
+            require(closes.get() == 0, "View borrows the workspace handle");
+            stage.close();
+            externalRetirementAndFailure(done);
+        }, done);
+    }
+
     private static void restartAfterOldTileIssued(
             WorldView view, WorldFormats.Tile tile, AtomicInteger calls,
-            CompletableFuture<WorldService.LoadedTile> oldTile, Runnable afterImage,
+            CompletableFuture<WorldService.LoadedTile> oldTile,
+            java.util.function.BooleanSupplier neighborStarted, Runnable afterImage,
             CompletableFuture<Void> done) {
         // Opening only schedules acquisition. Exercise a genuinely issued old request, rather
         // than assuming a queued request has started before the immediate back/open actions.
@@ -1325,8 +1310,8 @@ public final class WorldUiTest {
             for (int at = 2; at < high.length; at += 3) high[at] = 900;
             oldTile.complete(new WorldService.LoadedTile(tile,
                     new WorldFormats.Terrain(high, terrain().triangles(), 1), null));
-            await(() -> ((ImageView) view.lookup("#world-frame")).getImage() != null,
-                    afterImage, done);
+            await(() -> ((ImageView) view.lookup("#world-frame")).getImage() != null
+                            && neighborStarted.getAsBoolean(), afterImage, done);
         }, done);
     }
 
