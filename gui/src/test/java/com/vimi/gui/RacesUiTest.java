@@ -704,6 +704,8 @@ public final class RacesUiTest {
         var latestPreview =
                 new CompletableFuture<com.vibeminer.concepts.races.RaceMediaTypes.Preview>();
         var revision = new java.util.concurrent.atomic.AtomicLong(1);
+        var oldCalls = new java.util.concurrent.atomic.AtomicInteger();
+        var latestCalls = new java.util.concurrent.atomic.AtomicInteger();
         BuildRaces handle =
                 new BuildRaces() {
                     public CompletableFuture<RaceTypes.Catalog> catalog(Cancellation token) {
@@ -722,6 +724,7 @@ public final class RacesUiTest {
 
                     public CompletableFuture<com.vibeminer.concepts.races.RaceMediaTypes.Preview>
                             preview(long race, long playerClass, long model, Cancellation token) {
+                        if (model == 1) oldCalls.incrementAndGet(); else latestCalls.incrementAndGet();
                         return model == 1 ? oldPreview : latestPreview;
                     }
 
@@ -748,7 +751,7 @@ public final class RacesUiTest {
         new Scene(current, 800, 600);
         current.applyCss();
         current.layout();
-        Platform.runLater(
+        afterFx(() -> oldCalls.get() > 0 && activityCount(retired) == 0,
                 () -> {
                     try {
                         require(
@@ -772,18 +775,18 @@ public final class RacesUiTest {
                                         .orElseThrow();
                         model.getSelectionModel().select(1);
                         model.fireEvent(new javafx.event.ActionEvent());
-                        revision.incrementAndGet();
                         oldPreview.completeExceptionally(new IllegalStateException("Older mesh"));
-                        Platform.runLater(
+                        afterFx(() -> latestCalls.get() > 0,
                                 () -> {
                                     try {
+                                        revision.incrementAndGet();
                                         require(
                                                 activityCount(current) > 0,
                                                 "Older mesh completion cannot clear newer model"
                                                         + " acquisition");
                                         latestPreview.completeExceptionally(
                                                 new IllegalStateException("Current retired mesh"));
-                                        Platform.runLater(
+                                        afterFx(() -> activityCount(current) == 0,
                                                 () -> {
                                                     try {
                                                         require(
@@ -804,20 +807,20 @@ public final class RacesUiTest {
                                                         retired.close();
                                                         previewDone.completeExceptionally(failure);
                                                     }
-                                                });
+                                                }, previewDone);
                                     } catch (Throwable failure) {
                                         current.close();
                                         retired.close();
                                         previewDone.completeExceptionally(failure);
                                     }
-                                });
+                                }, previewDone);
                     } catch (Throwable failure) {
                         current.close();
                         retired.close();
                         variantDone.completeExceptionally(failure);
                         previewDone.completeExceptionally(failure);
                     }
-                });
+                }, previewDone);
         var appearance =
                 new CompletableFuture<com.vibeminer.concepts.races.RaceAppearanceTypes.Result>();
         var appearanceRevision = new java.util.concurrent.atomic.AtomicLong(1);
@@ -875,44 +878,17 @@ public final class RacesUiTest {
         new Scene(composed, 800, 600);
         composed.applyCss();
         composed.layout();
-        Platform.runLater(
-                () ->
-                        Platform.runLater(
-                                () -> {
-                                    try {
-                                        require(
-                                                activityCount(composed) > 0,
-                                                "Appearance is visibly pending");
-                                        appearanceRevision.incrementAndGet();
-                                        appearance.completeExceptionally(
-                                                new IllegalStateException("Retired appearance"));
-                                        Platform.runLater(
-                                                () -> {
-                                                    try {
-                                                        require(
-                                                                activityCount(composed) == 0
-                                                                        && labels(composed)
-                                                                                .contains(
-                                                                                        "Build"
-                                                                                            + " changed."
-                                                                                            + " Reload"
-                                                                                            + " model"
-                                                                                            + " records."),
-                                                                "Retired appearance clears all"
-                                                                        + " activity");
-                                                        composed.close();
-                                                        appearanceDone.complete(null);
-                                                    } catch (Throwable failure) {
-                                                        composed.close();
-                                                        appearanceDone.completeExceptionally(
-                                                                failure);
-                                                    }
-                                                });
-                                    } catch (Throwable failure) {
-                                        composed.close();
-                                        appearanceDone.completeExceptionally(failure);
-                                    }
-                                }));
+        afterFx(() -> composed.lookup("#model-appearance-activity").isVisible(), () -> {
+            require(activityCount(composed) > 0, "Appearance is visibly pending");
+            appearanceRevision.incrementAndGet();
+            appearance.completeExceptionally(new IllegalStateException("Retired appearance"));
+            afterFx(() -> activityCount(composed) == 0, () -> {
+                require(labels(composed).contains("Build changed. Reload model records."),
+                        "Retired appearance clears all activity");
+                composed.close();
+                appearanceDone.complete(null);
+            }, appearanceDone);
+        }, appearanceDone);
         var failedAppearance =
                 new CompletableFuture<com.vibeminer.concepts.races.RaceAppearanceTypes.Result>();
         var failureSource =
@@ -934,56 +910,18 @@ public final class RacesUiTest {
         new Scene(failedPanel, 800, 600);
         failedPanel.applyCss();
         failedPanel.layout();
-        Platform.runLater(
-                () ->
-                        Platform.runLater(
-                                () -> {
-                                    try {
-                                        require(
-                                                failedPanel
-                                                        .lookup("#model-appearance-activity")
-                                                        .isVisible(),
-                                                "Failed appearance starts with persistent viewport"
-                                                        + " phase");
-                                        failedAppearance.completeExceptionally(
-                                                new IllegalStateException(
-                                                        "Authored texture failure"));
-                                        Platform.runLater(
-                                                () -> {
-                                                    try {
-                                                        require(
-                                                                !failedPanel
-                                                                                .lookup(
-                                                                                        "#model-appearance-activity")
-                                                                                .isVisible()
-                                                                        && !failedPanel
-                                                                                .lookup(
-                                                                                        "#race-model-activity")
-                                                                                .isVisible()
-                                                                        && labels(failedPanel)
-                                                                                .stream()
-                                                                                .anyMatch(
-                                                                                        text ->
-                                                                                                text
-                                                                                                        .contains(
-                                                                                                                "Textured"
-                                                                                                                    + " appearance"
-                                                                                                                    + " is unavailable")),
-                                                                "Texture failure clears phase with"
-                                                                        + " honest terminal state");
-                                                        failedPanel.close();
-                                                        appearanceErrorDone.complete(null);
-                                                    } catch (Throwable failure) {
-                                                        failedPanel.close();
-                                                        appearanceErrorDone.completeExceptionally(
-                                                                failure);
-                                                    }
-                                                });
-                                    } catch (Throwable failure) {
-                                        failedPanel.close();
-                                        appearanceErrorDone.completeExceptionally(failure);
-                                    }
-                                }));
+        afterFx(() -> failedPanel.lookup("#model-appearance-activity").isVisible(), () -> {
+            require(failedPanel.lookup("#model-appearance-activity").isVisible(),
+                    "Failed appearance starts with persistent viewport phase");
+            failedAppearance.completeExceptionally(new IllegalStateException("Authored texture failure"));
+            afterFx(() -> !failedPanel.lookup("#model-appearance-activity").isVisible()
+                    && !failedPanel.lookup("#race-model-activity").isVisible(), () -> {
+                require(labels(failedPanel).stream().anyMatch(text -> text.contains("Textured appearance is unavailable")),
+                        "Texture failure clears phase with honest terminal state");
+                failedPanel.close();
+                appearanceErrorDone.complete(null);
+            }, appearanceErrorDone);
+        }, appearanceErrorDone);
     }
 
     private static void voiceRetirementFeedback() {
@@ -1310,7 +1248,7 @@ public final class RacesUiTest {
                                         1, 0, 1, 1, 1)),
                         List.of(),
                         null));
-        Platform.runLater(
+        afterFx(() -> previewCalls.get() == 1,
                 () -> {
                     try {
                         require(
@@ -1321,7 +1259,7 @@ public final class RacesUiTest {
                                 "Pending mesh keeps model activity visible");
                         mesh.completeExceptionally(
                                 new IllegalStateException("Authored mesh failure"));
-                        Platform.runLater(
+                        afterFx(() -> activityCount(panel) == 0,
                                 () -> {
                                     try {
                                         require(
@@ -1339,12 +1277,28 @@ public final class RacesUiTest {
                                     } catch (Throwable error) {
                                         loadingChecks.completeExceptionally(error);
                                     }
-                                });
+                                }, loadingChecks);
                     } catch (Throwable error) {
                         panel.close();
                         loadingChecks.completeExceptionally(error);
                     }
-                });
+                }, loadingChecks);
+    }
+
+    private static void afterFx(java.util.function.BooleanSupplier ready, Runnable action,
+            CompletableFuture<Void> completion) {
+        afterFx(ready, action, completion, System.nanoTime() + TimeUnit.SECONDS.toNanos(5));
+    }
+
+    private static void afterFx(java.util.function.BooleanSupplier ready, Runnable action,
+            CompletableFuture<Void> completion, long deadline) {
+        try {
+            if (ready.getAsBoolean()) { action.run(); return; }
+            if (System.nanoTime() >= deadline) throw new AssertionError("Timed out waiting for actual model request/UI completion");
+            var pause = new javafx.animation.PauseTransition(javafx.util.Duration.millis(10));
+            pause.setOnFinished(event -> afterFx(ready, action, completion, deadline));
+            pause.play();
+        } catch (Throwable failure) { completion.completeExceptionally(failure); }
     }
 
     private static long activityCount(javafx.scene.Node node) {

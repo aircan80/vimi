@@ -49,10 +49,10 @@ class TerrainRendererTextureTest {
                     double distance = (50 - camera.z()) / dz;
                     double nx =
                             camera.x()
-                                    + distance * (cp * cy - horizontal * sy - vertical * sp * cy);
+                                    + distance * (cp * cy + horizontal * sy - vertical * sp * cy);
                     double ny =
                             camera.y()
-                                    + distance * (cp * sy + horizontal * cy - vertical * sp * sy);
+                                    + distance * (cp * sy - horizontal * cy - vertical * sp * sy);
                     if (distance < .51
                             || nx >= -.01
                             || nx <= -533.32
@@ -97,7 +97,7 @@ class TerrainRendererTextureTest {
         double vertical = -.5 / 128;
         double distance = -100 / (Math.sin(-.1) + vertical * Math.cos(-.1));
         double nx = -1100 + distance * (Math.cos(-.1) - vertical * Math.sin(-.1));
-        double ny = -266 + distance * (.5 / 128);
+        double ny = -266 - distance * (.5 / 128);
         int tx = (int) Math.floor(-ny * .96), ty = (int) Math.floor(-nx * .96);
         assertTrue(ty >= 0 && ty < 256);
         double far = Math.cos(-.1) * 1100 + Math.sin(-.1) * -100;

@@ -671,7 +671,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 e -> {
                     if (camera != null) {
                         camera =
-                                camera.look((e.getX() - mouseX) * .006, (mouseY - e.getY()) * .006);
+                                camera.look((mouseX - e.getX()) * .006, (mouseY - e.getY()) * .006);
                         mouseX = e.getX();
                         mouseY = e.getY();
                         requestFrame();
@@ -763,8 +763,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                 - ((keys.contains(KeyCode.Q) || keys.contains(KeyCode.X)) ? 1 : 0);
                         double
                                 turn =
-                                        ((keys.contains(KeyCode.RIGHT) ? 1 : 0)
-                                                        - (keys.contains(KeyCode.LEFT) ? 1 : 0))
+                                        ((keys.contains(KeyCode.LEFT) ? 1 : 0)
+                                                        - (keys.contains(KeyCode.RIGHT) ? 1 : 0))
                                                 * dt,
                                 tilt =
                                         ((keys.contains(KeyCode.UP) ? 1 : 0)
@@ -816,6 +816,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                             catalogLoading = false;
                                             show(catalogActivity, false);
                                             if (error != null || data == null) {
+                                                maps.setPlaceholder(new Label("Map records unavailable; use Reload to retry."));
                                                 status.setText(
                                                         "Map records unavailable; use Reload after"
                                                                 + " preparation");

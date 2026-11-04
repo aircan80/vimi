@@ -87,3 +87,17 @@ packager. Those are build inputs; end users receive the files in the package.
 The packaged application image is launched on every platform. Installer creation is
 checked, but installing/uninstalling the MSI/DMG/DEB/RPM is not automated yet.
 Windows installation is the next manual validation on the user’s Windows machine.
+
+## SDK-backed JavaFX checks
+
+When supplying `-PjavafxSdkRepository` for the Linux ARM64 SDK adapter, also
+supply `-PjavafxNativeLibrary=/absolute/path/to/verified/native`. Its class JARs
+and native libraries are separate; GUI JavaExec checks need both. The desktop
+workflow forwards both verified outputs before packaging. Ordinary Maven-backed
+platform builds keep their bundled native-library lookup.
+
+The alpha.21 publication run exposed the missing native path in the detached image
+publication check and was blocked. Its tag is preserved. A local causal proof using
+class-only JavaFX JARs fails without the native path and passes with it; the GUI
+image publication task also passes (95 tasks). Actual ARM64 verification remains
+a five-platform package gate for the next prerelease.

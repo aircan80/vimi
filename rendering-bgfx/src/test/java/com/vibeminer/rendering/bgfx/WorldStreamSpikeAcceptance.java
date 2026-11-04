@@ -140,8 +140,8 @@ public final class WorldStreamSpikeAcceptance {
                                 sy = Math.sin(.08),
                                 cp = Math.cos(-.04),
                                 sp = Math.sin(-.04);
-                        double rayX = cy * cp - sy * right - cy * sp * up;
-                        double rayY = sy * cp + cy * right - sy * sp * up;
+                        double rayX = cy * cp + sy * right - cy * sp * up;
+                        double rayY = sy * cp - cy * right - sy * sp * up;
                         double distance = (origin + 100 - camera.x()) / rayX;
                         double nativeY = camera.y() + distance * rayY;
                         double u = (origin + 200 - nativeY) * .001875;
@@ -201,8 +201,8 @@ public final class WorldStreamSpikeAcceptance {
                                 sy = Math.sin(.08),
                                 cp = Math.cos(-.04),
                                 sp = Math.sin(-.04);
-                        double rayX = cy * cp - sy * right - cy * sp * up;
-                        double rayY = sy * cp + cy * right - sy * sp * up;
+                        double rayX = cy * cp + sy * right - cy * sp * up;
+                        double rayY = sy * cp - cy * right - sy * sp * up;
                         double distance =
                                 (100 - (camera.x() - origin) + .25 * (camera.y() - origin))
                                         / (rayX - .25 * rayY);

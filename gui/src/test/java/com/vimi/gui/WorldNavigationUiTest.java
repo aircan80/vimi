@@ -233,6 +233,39 @@ public final class WorldNavigationUiTest {
             timer.handle(1_200_000_000L);
             require(((TerrainRenderer.Camera)get(view,"camera")).z()==actual,"Key release stops movement");
         }
+        // Actual viewport key events and timer, with independent north/east direction oracles.
+        for (var code : List.of(KeyCode.LEFT, KeyCode.RIGHT, KeyCode.A, KeyCode.D, KeyCode.W)) {
+            var start = new TerrainRenderer.Camera(10000-SIZE/2,20000-SIZE/2,500,0,0);
+            set(view,"camera",start);
+            set(view,"lastTick",0L);
+            key(viewport,code,true);
+            timer.handle(2_000_000_000L);
+            timer.handle(2_100_000_000L);
+            key(viewport,code,false);
+            var moved=(TerrainRenderer.Camera)get(view,"camera");
+            if (code == KeyCode.LEFT || code == KeyCode.RIGHT) {
+                double wanted = code == KeyCode.LEFT ? .1 : -.1;
+                require(Math.abs(moved.yaw()-wanted)<1e-12,"Actual turn key geographic yaw: "+code);
+                var nativeCamera=com.vibeminer.rendering.world.TerrainCamera.from(moved);
+                var east=nativeCamera.eye(start.x()+10,start.y()-4,start.z());
+                require(code == KeyCode.RIGHT ? east.right()<4 : east.right()>4,
+                        "Actual key turns toward the same side in native projection: "+code);
+            } else if (code == KeyCode.W) {
+                require(Math.abs(moved.x()-start.x()-8)<1e-9,"W moves north at yaw zero");
+            } else {
+                double wanted = code == KeyCode.D ? -8 : 8;
+                require(Math.abs(moved.y()-start.y()-wanted)<1e-9,"Actual strafe key geographic direction: "+code);
+            }
+        }
+        for (double delta : new double[] {-25,25}) {
+            var start=new TerrainRenderer.Camera(10000-SIZE/2,20000-SIZE/2,500,0,0);
+            set(view,"camera",start);
+            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_PRESSED,50,50);
+            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_DRAGGED,50+delta,50);
+            mouse(viewport,javafx.scene.input.MouseEvent.MOUSE_RELEASED,50+delta,50);
+            var moved=(TerrainRenderer.Camera)get(view,"camera");
+            require(Math.abs(moved.yaw()+delta*.006)<1e-12,"Mouse drag turns toward actual screen side");
+        }
         var before = new TerrainRenderer.Camera(10000-SIZE/2,20000-SIZE/2,500,.7,-.8);
         set(view,"camera",before);
         double originalSpeed = (double)get(view,"speed");
@@ -257,6 +290,12 @@ public final class WorldNavigationUiTest {
         require(bounded.x()<=1_000_000&&bounded.y()<=1_000_000&&bounded.z()<=1_000_000,"Wheel remains within camera coordinate bounds");
         set(view,"camera",before);
         set(view,"speed",originalSpeed);
+    }
+
+    private static void mouse(Node node,javafx.event.EventType<javafx.scene.input.MouseEvent> type,double x,double y) {
+        Event.fireEvent(node,new javafx.scene.input.MouseEvent(type,x,y,x,y,javafx.scene.input.MouseButton.PRIMARY,1,
+                false,false,false,false,type!=javafx.scene.input.MouseEvent.MOUSE_RELEASED,
+                false,false,false,false,true,new PickResult(node,x,y)));
     }
 
     private static void scroll(Node target,double delta,boolean shift) {

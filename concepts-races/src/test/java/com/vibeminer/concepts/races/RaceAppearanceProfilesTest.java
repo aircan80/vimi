@@ -87,6 +87,81 @@ final class RaceAppearanceProfilesTest {
     }
 
     @Test
+    void nightElfOpaqueProfilesRejectCutoutAndUnprovenDrawState() throws Exception {
+        for (var profile :
+                List.of(
+                        RaceAppearanceProfiles.Profile.NIGHT_ELF_MALE,
+                        RaceAppearanceProfiles.Profile.NIGHT_ELF_FEMALE)) {
+            var body = fixture(false, false, 272, 0, 0, 0, 65535, false);
+            var hair = fixture(true, false, 272, 4, 0, 3, 65535, false);
+            assertTrue(
+                    RaceAppearanceProfiles.reviewedDraw(
+                            profile, body.model(), batch(0), body.facts(), 1));
+            assertTrue(
+                    RaceAppearanceProfiles.reviewedDraw(
+                            profile, hair.model(), batch(0), hair.facts(), 1));
+            assertFalse(
+                    RaceAppearanceProfiles.dwarfDraw(
+                            profile, hair.model(), batch(0), hair.facts(), 1));
+            for (var invalid :
+                    List.of(
+                            fixture(true, false, 274, 4, 0, 3, 65535, false),
+                            fixture(true, false, 272, 0, 0, 3, 65535, false),
+                            fixture(true, false, 272, 5, 0, 3, 65535, false),
+                            fixture(true, false, 272, 4, 1, 3, 65535, false),
+                            fixture(true, false, 272, 4, 0, 1, 65535, false),
+                            fixture(true, false, 272, 4, 0, 3, 0, false),
+                            fixture(true, false, 272, 4, 0, 3, 65535, true),
+                            fixture(true, true, 272, 4, 0, 3, 65535, false))) {
+                assertFalse(
+                        RaceAppearanceProfiles.reviewedDraw(
+                                profile, invalid.model(), batch(0), invalid.facts(), 1));
+            }
+            assertFalse(
+                    RaceAppearanceProfiles.reviewedDraw(
+                            profile, hair.model(), batch(16), hair.facts(), 1));
+            assertFalse(
+                    RaceAppearanceProfiles.reviewedDraw(
+                            profile, hair.model(), batch(0), body.facts(), 1));
+            assertFalse(
+                    RaceAppearanceProfiles.reviewedDraw(
+                            profile, hair.model(), batch(0), hair.facts(), 2));
+            for (int field : new int[] {0, 1, 4, 5, 6, 7, 8, 9, 10, 11, 12}) {
+                int[] values = {16, 0, 0, 0, 0, -1, 0, 0, 1, 0, 65535, 0, 0};
+                values[field] = field == 5 || field == 10 ? 0 : values[field] + 1;
+                var invalid =
+                        new M2Types.Batch(
+                                values[0],
+                                values[1],
+                                values[2],
+                                values[3],
+                                values[4],
+                                values[5],
+                                values[6],
+                                values[7],
+                                values[8],
+                                values[9],
+                                values[10],
+                                values[11],
+                                values[12]);
+                assertFalse(
+                        RaceAppearanceProfiles.reviewedDraw(
+                                profile, hair.model(), invalid, hair.facts(), 1));
+            }
+        }
+        var hair = fixture(true, false, 272, 4, 0, 3, 65535, false);
+        assertFalse(
+                RaceAppearanceProfiles.reviewedDraw(null, hair.model(), batch(0), hair.facts(), 1));
+        assertFalse(
+                RaceAppearanceProfiles.reviewedDraw(
+                        RaceAppearanceProfiles.Profile.LEGACY,
+                        hair.model(),
+                        batch(0),
+                        hair.facts(),
+                        1));
+    }
+
+    @Test
     void admittedMaleHairCutoutDiscards127WithoutDepthAndAccepts128BeforeBody() throws Exception {
         var hair = fixture(true, false, 272, 4, 1, 3, 65535, false);
         var body = fixture(false, false, 272, 0, 0, 0, 65535, false);
@@ -134,6 +209,51 @@ final class RaceAppearanceProfilesTest {
             assertTrue(((pixel >>> (alpha == 127 ? 16 : 8)) & 255) > 100);
             assertEquals(0, pixel & (alpha == 127 ? 0x00ffff : 0xff00ff));
         }
+    }
+
+    @Test
+    void admittedNightElfOpaqueHairIgnoresSourceAlphaAndKeepsItsDepth() throws Exception {
+        var hair = fixture(true, false, 272, 4, 0, 3, 65535, false);
+        assertTrue(
+                RaceAppearanceProfiles.reviewedDraw(
+                        RaceAppearanceProfiles.Profile.NIGHT_ELF_MALE,
+                        hair.model(),
+                        batch(0),
+                        hair.facts(),
+                        1));
+        var hairSurface =
+                RaceAppearanceProfiles.surface(
+                        batch(0),
+                        hair.model().materials().getFirst(),
+                        hair.model().textures().getFirst(),
+                        0);
+        var geometry =
+                new PreviewMesh(
+                        new float[] {
+                            .2f, -1, -1, .2f, 1, -1, .2f, 0, 1, -.2f, -1, -1, -.2f, 1, -1, -.2f, 0,
+                            1
+                        },
+                        new int[] {0, 1, 2, 3, 4, 5},
+                        List.of(new PreviewMesh.Part(0, 0, 3), new PreviewMesh.Part(0, 3, 3)));
+        var appearance =
+                new MeshAppearance(
+                        geometry,
+                        new float[12],
+                        List.of(hairSurface, new MeshAppearance.Surface(1, 1, false, false, false)),
+                        List.of(
+                                new MeshAppearance.Texture(1, 1, new int[] {0x0000ff00}),
+                                new MeshAppearance.Texture(1, 1, new int[] {0xffff0000})));
+        int pixel =
+                StaticMeshRenderer.render(
+                                appearance,
+                                200,
+                                200,
+                                new StaticMeshRenderer.View(0, 0, 1, false, Set.of(0)),
+                                () -> false)
+                        .argb()[100 * 200 + 100];
+        assertTrue(((pixel >>> 8) & 255) > 100);
+        assertEquals(0, pixel & 0xff00ff);
+        assertEquals(255, pixel >>> 24);
     }
 
     @Test

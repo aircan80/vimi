@@ -222,6 +222,63 @@ public final class WorldStreamNativeProof {
                 "Committed pixels " + Integer.toHexString(pixel));
     }
 
+    private static void geographicSides(
+            WorldStreamNativeOwner owner, WorldFrameFileV2 reader, Path directory)
+            throws Exception {
+        // A full native tile spans X/Y [-533.333,0]. Look north from its east and west sides.
+        // Independent geometry bounds, not camera projection helpers, determine its screen side.
+        for (boolean eastSide : new boolean[] {true, false}) {
+            var view = new TerrainCamera(-600, eastSide ? -600 : 67, 150, 0, -.3);
+            owner.submit(new WorldStreamControl.Camera(NONCE, ++camera, 1, WIDTH, HEIGHT, view));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            WorldFrameFileV2.Frame frame = null;
+            while (System.nanoTime() < deadline) {
+                owner.advance();
+                var candidate = read(reader, 1, 1);
+                if (candidate != null && candidate.metadata().camera() == camera) {
+                    frame = candidate;
+                    break;
+                }
+            }
+            require(frame != null, "Geographic side camera publication");
+            int left = 0, right = 0;
+            int[] pixels = new int[WIDTH * HEIGHT];
+            frame.pixels().get(pixels);
+            for (int y = 0; y < HEIGHT; y++) {
+                for (int x = 0; x < WIDTH; x++) {
+                    int argb = pixels[y * WIDTH + x];
+                    if (Math.abs((argb >>> 16 & 255) - 180) <= 1
+                            && Math.abs((argb >>> 8 & 255) - 20) <= 1
+                            && Math.abs((argb & 255) - 30) <= 1) {
+                        if (x < WIDTH / 2) {
+                            left++;
+                        } else {
+                            right++;
+                        }
+                    }
+                }
+            }
+            require(
+                    eastSide ? left > 1000 && right == 0 : right > 1000 && left == 0,
+                    "Actual streaming geographic side: east="
+                            + eastSide
+                            + " left="
+                            + left
+                            + " right="
+                            + right);
+            var image = new BufferedImage(WIDTH, HEIGHT, BufferedImage.TYPE_INT_ARGB);
+            image.setRGB(0, 0, WIDTH, HEIGHT, pixels, 0, WIDTH);
+            ImageIO.write(
+                    image,
+                    "png",
+                    directory
+                            .resolve(eastSide ? "north-from-east.png" : "north-from-west.png")
+                            .toFile());
+        }
+        owner.submit(command(++camera, WIDTH, HEIGHT, 1));
+        color(accepted(owner, reader, 1), 180);
+    }
+
     @SuppressWarnings("try")
     public static void main(String[] args) throws Exception {
         Path base = Path.of(args[0]);
@@ -259,6 +316,7 @@ public final class WorldStreamNativeProof {
                 frame.pixels().get(pixels);
                 image.setRGB(0, 0, WIDTH, HEIGHT, pixels, 0, WIDTH);
                 ImageIO.write(image, "png", directory.resolve("world-stream-native.png").toFile());
+                geographicSides(owner, reader, directory);
                 var reusedLease = new WorldStreamState.Lease(0, 2, 2);
                 var reused =
                         prepare(worker, directory, 2, reusedLease, 7, 19, 60, true)
