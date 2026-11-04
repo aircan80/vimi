@@ -4,19 +4,25 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.builds.BuildTypes.BuildRef;
 import com.vibeminer.formats.db2.Db2Types;
+import com.vibeminer.formats.db2.NativeIssueIdentity;
 import com.vibeminer.formats.definitions.TableSchema;
 import com.vibeminer.formats.definitions.WowLocale;
+import com.vibeminer.formats.generated.GeneratedTableSource;
 import com.vibeminer.formats.tables.BuildTables;
 import com.vibeminer.formats.tables.CapturedRows;
 import com.vibeminer.formats.tables.CapturedRowsTypes;
 import com.vibeminer.formats.tables.TableTypes;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
+import java.util.function.UnaryOperator;
 import org.junit.jupiter.api.Test;
 
 final class MapNavigationSourceTest {
@@ -24,7 +30,10 @@ final class MapNavigationSourceTest {
             new BuildRef("wowf", "a".repeat(32), "b".repeat(32), "us");
 
     private static final class Fixture {
-        int active, opens, closes, reads;
+        int active, opens, closes, reads, eofReads;
+        boolean emptyMaps, emptyAssignments, boundedUnavailable, badInitialEof, badFinalEof;
+        UnaryOperator<CapturedRowsTypes.Receipt> initialEdit = UnaryOperator.identity();
+        UnaryOperator<CapturedRowsTypes.Receipt> finalEdit = UnaryOperator.identity();
         boolean changed, unsupported, limit, borrowedClosed, unknownIssues;
         boolean assignmentUnavailable, badParent, badFlags, badAssignment, limitedParent;
         Cancellation cancelOnRead;
@@ -57,7 +66,14 @@ final class MapNavigationSourceTest {
                 return CompletableFuture.completedFuture(CapturedRowsTypes.Capture.unsupported());
             }
             assertEquals(0, active++);
-            var receipt = receipt(name, changed && opens > 2 ? "d" : "c", unknownIssues);
+            boolean finalCapture = opens > 2;
+            var base =
+                    receipt(
+                            name,
+                            changed && finalCapture ? "d" : "c",
+                            unknownIssues,
+                            name.equals("UiMap") ? emptyMaps : emptyAssignments);
+            var receipt = (finalCapture ? finalEdit : initialEdit).apply(base);
             CapturedRows rows =
                     new CapturedRows() {
                         boolean closed;
@@ -79,6 +95,10 @@ final class MapNavigationSourceTest {
                             assertEquals(MapNavigationSource.LIMITS, limits);
                             assertEquals(1, count);
                             reads++;
+                            if (boundedUnavailable) {
+                                return CompletableFuture.failedFuture(
+                                        new UnsupportedOperationException("strict unavailable"));
+                            }
                             if (cancelOnRead != null) {
                                 cancelOnRead.cancel();
                             }
@@ -93,6 +113,28 @@ final class MapNavigationSourceTest {
                                                 null,
                                                 "LIMIT",
                                                 null));
+                            }
+                            if (n == receipt.rowCount()) {
+                                eofReads++;
+                                var issues =
+                                        (finalCapture ? badFinalEof : badInitialEof)
+                                                ? List.of(
+                                                        new CapturedRowsTypes.CellIssue(
+                                                                n,
+                                                                0,
+                                                                CapturedRowsTypes.CellState.LIMITED,
+                                                                "EOF_LIMIT"))
+                                                : List.<CapturedRowsTypes.CellIssue>of();
+                                return CompletableFuture.completedFuture(
+                                        new CapturedRowsTypes.Page(
+                                                receipt.graphIdentity(),
+                                                n,
+                                                CapturedRowsTypes.ReadState.READ,
+                                                List.of(),
+                                                null,
+                                                null,
+                                                null,
+                                                issues));
                             }
                             boolean maps = name.equals("UiMap");
                             var values =
@@ -157,10 +199,10 @@ final class MapNavigationSourceTest {
     }
 
     private static CapturedRowsTypes.Receipt receipt(
-            String name, String key, boolean unknownIssues) {
+            String name, String key, boolean unknownIssues, boolean empty) {
         boolean maps = name.equals("UiMap");
         String layout = maps ? "DB51D55F" : "C9CC8DFB";
-        long count = maps ? 2 : 1;
+        long count = empty ? 0 : maps ? 2 : 1;
         var columns = new ArrayList<Db2Types.Column>();
         var fields = new ArrayList<TableSchema.SchemaColumn>();
         if (maps) {
@@ -195,16 +237,28 @@ final class MapNavigationSourceTest {
                         null,
                         new TableTypes.Counts(count, count, 0, 0, "fixture", layout),
                         key.repeat(32));
+        var nativeTuple =
+                NativeIssueIdentity.tuple(
+                        GeneratedTableSource.NATIVE_IDENTITY_FORMAT,
+                        "native-row-issues-v1",
+                        "java-db2-native-producer-v1",
+                        "enUS",
+                        key.repeat(32),
+                        "b".repeat(64),
+                        "c".repeat(64),
+                        "reader",
+                        "rows",
+                        null);
         var evidence =
                 new CapturedRowsTypes.IssueChannelEvidence(
                         CapturedRowsTypes.IssueChannelState.VERIFIED_NATIVE,
                         "native-row-issues-v1",
                         "java-db2-native-producer-v1",
                         key.repeat(32),
-                        "a".repeat(64),
+                        sha(nativeTuple),
                         "b".repeat(64),
                         "c".repeat(64),
-                        "d".repeat(64));
+                        NativeIssueIdentity.columns(columns));
         return new CapturedRowsTypes.Receipt(
                 BUILD,
                 "enUS",
@@ -214,7 +268,7 @@ final class MapNavigationSourceTest {
                 "a".repeat(64),
                 "b".repeat(64),
                 key.repeat(32),
-                "source",
+                "native-tuple-hex=" + HexFormat.of().formatHex(nativeTuple),
                 "c".repeat(64),
                 "reader",
                 "rows",
@@ -272,7 +326,8 @@ final class MapNavigationSourceTest {
         assertEquals(2, result.graph().nodes().size());
         assertEquals(4, f.opens);
         assertEquals(4, f.closes);
-        assertEquals(3, f.reads);
+        assertEquals(7, f.reads);
+        assertEquals(4, f.eofReads);
         assertEquals(0, f.active);
         assertFalse(f.borrowedClosed);
     }
@@ -380,5 +435,239 @@ final class MapNavigationSourceTest {
                 MapNavigationSource.read(f.tables(), Cancellation.NONE).state());
         assertEquals(0, f.reads);
         assertEquals(0, f.active);
+    }
+
+    private static String sha(byte[] input) {
+        try {
+            return HexFormat.of()
+                    .formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(input));
+        } catch (java.security.NoSuchAlgorithmException failure) {
+            throw new IllegalStateException(failure);
+        }
+    }
+
+    private static final class ReceiptEdit {
+        final CapturedRowsTypes.Receipt original;
+        String graph, source;
+        List<Db2Types.Column> columns;
+        Db2Types.Header header;
+        List<Db2Types.Section> sections;
+        List<String> holes;
+        List<CapturedRowsTypes.KeyFingerprint> keys;
+
+        ReceiptEdit(CapturedRowsTypes.Receipt r) {
+            original = r;
+            graph = r.graphIdentity();
+            source = r.sourceIdentity();
+            columns = r.columns();
+            header = r.header();
+            sections = r.sections();
+            holes = r.holeKeys();
+            keys = r.effectiveKeys();
+        }
+
+        CapturedRowsTypes.Receipt build() {
+            var r = original;
+            return new CapturedRowsTypes.Receipt(
+                    r.build(),
+                    r.locale(),
+                    r.table(),
+                    r.schema(),
+                    columns,
+                    r.definitionSha256(),
+                    r.blockIdentity(),
+                    graph,
+                    source,
+                    r.readerOptions(),
+                    r.readerRevision(),
+                    r.rowEncoding(),
+                    r.encodingScope(),
+                    r.rowCount(),
+                    header,
+                    r.completion(),
+                    sections,
+                    holes,
+                    keys,
+                    r.retention(),
+                    r.membership(),
+                    r.issueChannelEvidence());
+        }
+    }
+
+    private static CapturedRowsTypes.Receipt edit(
+            CapturedRowsTypes.Receipt r, Consumer<ReceiptEdit> change) {
+        var builder = new ReceiptEdit(r);
+        change.accept(builder);
+        return builder.build();
+    }
+
+    @Test
+    void nativeCertificateCannotBeBorrowedFromAnotherGraph() {
+        var f = new Fixture();
+        f.initialEdit = r -> edit(r, b -> b.graph = "d".repeat(32));
+        f.finalEdit = f.initialEdit;
+        var result = MapNavigationSource.read(f.tables(), Cancellation.NONE);
+        assertEquals(MapNavigationSourceTypes.State.UNSUPPORTED, result.state());
+        assertNull(result.graph());
+        assertEquals(0, f.reads);
+        assertEquals(0, f.active);
+    }
+
+    @Test
+    void nativeCertificateCannotBeBorrowedFromAnotherColumnStream() {
+        var f = new Fixture();
+        f.initialEdit =
+                r ->
+                        edit(
+                                r,
+                                b -> {
+                                    var columns = new ArrayList<>(r.columns());
+                                    var c = columns.getFirst();
+                                    columns.set(
+                                            0,
+                                            new Db2Types.Column(
+                                                    c.name() + "Other",
+                                                    c.kind(),
+                                                    c.isId(),
+                                                    c.interpretation(),
+                                                    c.narrowing()));
+                                    b.columns = columns;
+                                    b.header =
+                                            new Db2Types.Header(
+                                                    r.header().schemaVersion(),
+                                                    r.header().tableHash(),
+                                                    r.header().layoutHash(),
+                                                    r.header().declaredRecords(),
+                                                    r.header().declaredCopyRecords(),
+                                                    r.header().recordSize(),
+                                                    columns,
+                                                    r.header().format());
+                                });
+        f.finalEdit = f.initialEdit;
+        var result = MapNavigationSource.read(f.tables(), Cancellation.NONE);
+        assertEquals(MapNavigationSourceTypes.State.UNSUPPORTED, result.state());
+        assertNull(result.graph());
+        assertEquals(0, f.reads);
+        assertEquals(0, f.active);
+    }
+
+    @Test
+    void sourceTupleMustMatchNativeProof() {
+        var f = new Fixture();
+        f.initialEdit = r -> edit(r, b -> b.source = "native-tuple-hex=00");
+        f.finalEdit = f.initialEdit;
+        assertEquals(
+                MapNavigationSourceTypes.State.UNSUPPORTED,
+                MapNavigationSource.read(f.tables(), Cancellation.NONE).state());
+        assertEquals(0, f.reads);
+        assertEquals(0, f.active);
+    }
+
+    @Test
+    void finalHeaderSectionHoleAndEffectiveKeyChangesRefusePublication() {
+        List<Consumer<ReceiptEdit>> changes =
+                List.of(
+                        b -> {
+                            var h = b.header;
+                            b.header =
+                                    new Db2Types.Header(
+                                            h.schemaVersion(),
+                                            h.tableHash(),
+                                            h.layoutHash(),
+                                            h.declaredRecords(),
+                                            h.declaredCopyRecords(),
+                                            h.recordSize() + 1,
+                                            h.columns(),
+                                            h.format());
+                        },
+                        b ->
+                                b.sections =
+                                        List.of(
+                                                new Db2Types.Section(
+                                                        0, 2, 0, "", false, 0, 0, false)),
+                        b -> b.holes = List.of("0123456789abcdef"),
+                        b ->
+                                b.keys =
+                                        List.of(
+                                                new CapturedRowsTypes.KeyFingerprint(
+                                                        "0123456789abcdef", "a".repeat(64))));
+        for (var change : changes) {
+            var f = new Fixture();
+            f.finalEdit = r -> edit(r, change);
+            var result = MapNavigationSource.read(f.tables(), Cancellation.NONE);
+            assertEquals(MapNavigationSourceTypes.State.STALE, result.state());
+            assertNull(result.graph());
+            assertEquals(0, f.active);
+        }
+    }
+
+    @Test
+    void emptyNativeTablesStillRequireBoundedEofCapability() {
+        var f = new Fixture();
+        f.emptyMaps = true;
+        f.emptyAssignments = true;
+        f.boundedUnavailable = true;
+        var result = MapNavigationSource.read(f.tables(), Cancellation.NONE);
+        assertEquals(MapNavigationSourceTypes.State.UNSUPPORTED, result.state());
+        assertNull(result.graph());
+        assertEquals(1, f.reads);
+        assertEquals(0, f.active);
+    }
+
+    @Test
+    void emptyNativeTablesProbeInitialAndFreshFinalEof() {
+        var f = new Fixture();
+        f.emptyMaps = true;
+        f.emptyAssignments = true;
+        var result = MapNavigationSource.read(f.tables(), Cancellation.NONE);
+        assertEquals(MapNavigationSourceTypes.State.READY, result.state());
+        assertEquals(0, result.graph().nodes().size());
+        assertEquals(4, f.eofReads);
+        assertEquals(4, f.reads);
+        assertEquals(4, f.closes);
+    }
+
+    @Test
+    void initialAndFinalEofLimitationsAreNotEmptyReadyTables() {
+        for (boolean finalEof : List.of(false, true)) {
+            var f = new Fixture();
+            f.emptyMaps = true;
+            f.emptyAssignments = true;
+            if (finalEof) {
+                f.badFinalEof = true;
+            } else {
+                f.badInitialEof = true;
+            }
+            var result = MapNavigationSource.read(f.tables(), Cancellation.NONE);
+            assertEquals(MapNavigationSourceTypes.State.STALE, result.state());
+            assertNull(result.graph());
+            assertEquals(0, f.active);
+        }
+    }
+
+    @Test
+    void metadataScalarsAreBoundBeforeNativeHashHelpers() {
+        var r = receipt("UiMap", "c", false, false);
+        var bad =
+                edit(
+                        r,
+                        b -> {
+                            var columns = new ArrayList<>(r.columns());
+                            var c = columns.getFirst();
+                            columns.set(
+                                    0,
+                                    new Db2Types.Column(
+                                            "x".repeat(129),
+                                            c.kind(),
+                                            c.isId(),
+                                            c.interpretation(),
+                                            c.narrowing()));
+                            b.columns = columns;
+                        });
+        var refusal =
+                assertThrows(
+                        UnsupportedOperationException.class,
+                        () -> MapCaptureIdentity.validate(bad));
+        assertTrue(refusal.getMessage().contains("Oversized scalar"));
     }
 }

@@ -21,6 +21,7 @@ import static com.vibeminer.concepts.locations.MapNavigationTypes.WorldRect;
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.formats.db2.Db2Types;
 import com.vibeminer.formats.tables.BuildTables;
+import com.vibeminer.formats.tables.CapturedRows;
 import com.vibeminer.formats.tables.CapturedRowsTypes;
 import com.vibeminer.formats.tables.TableTypes;
 import java.util.ArrayList;
@@ -88,9 +89,11 @@ final class MapNavigationSource {
                 refuse(State.STALE, "SOURCE_CHANGED");
             }
             try (var rows = capture.rows()) {
-                if (!stamp(expected.table(), rows.receipt()).equals(expected)) {
+                var receipt = rows.receipt();
+                if (!stamp(expected.table(), receipt).equals(expected)) {
                     refuse(State.STALE, "SOURCE_CHANGED");
                 }
+                probeEof(rows, receipt);
             }
         }
         token.check();
@@ -238,6 +241,7 @@ final class MapNavigationSource {
                     }
                 }
             }
+            probeEof(rows, receipt);
             stamps.add(stamp);
             if (name.equals("UiMap")) {
                 mapPartial |= partial;
@@ -372,53 +376,89 @@ final class MapNavigationSource {
                 || r.rowCount() != r.table().counts().readableRows()) {
             refuse(State.UNSUPPORTED, "UNQUALIFIED_RECEIPT");
         }
-        // Canonical record/list field framing is detached and bounded before encoding each string.
+        try {
+            MapCaptureIdentity.validate(r);
+        } catch (UnsupportedOperationException | IllegalArgumentException failure) {
+            refuse(State.UNSUPPORTED, "UNQUALIFIED_NATIVE_BINDING");
+        }
         return new TableStamp(
                 name,
                 r.table().contentKey(),
                 r.table().counts().layoutHash(),
                 r.graphIdentity(),
-                digest(
-                        List.of(
-                                r.build(),
-                                r.locale(),
-                                r.table(),
-                                r.sourceIdentity(),
-                                r.blockIdentity(),
-                                r.readerOptions(),
-                                r.readerRevision(),
-                                r.rowEncoding(),
-                                r.encodingScope() == null ? "" : r.encodingScope(),
-                                r.completion(),
-                                r.issueChannelEvidence())),
+                digest(r),
                 digest(List.of(r.schema(), r.columns(), r.definitionSha256())),
                 r.rowCount());
     }
 
+    private void probeEof(CapturedRows rows, CapturedRowsTypes.Receipt receipt) {
+        token.check();
+        var eof = rows.readOrdinalPage(receipt.rowCount(), 1, LIMITS, token).join();
+        if (eof.state() == CapturedRowsTypes.ReadState.CANCELED) {
+            throw new java.util.concurrent.CancellationException();
+        }
+        if (eof.state() == CapturedRowsTypes.ReadState.LIMIT_EXCEEDED) {
+            refuse(State.LIMIT_EXCEEDED, "EOF_READ_LIMIT");
+        }
+        if (eof.state() != CapturedRowsTypes.ReadState.READ
+                || !eof.identity().equals(receipt.graphIdentity())
+                || eof.firstOrdinal() != receipt.rowCount()
+                || !eof.rows().isEmpty()
+                || !eof.cellIssues().isEmpty()
+                || eof.nextOrdinal() != null) {
+            refuse(State.STALE, "CAPTURE_EOF_CHANGED");
+        }
+        token.check();
+    }
+
     private static String digest(Object value) {
         try {
-            var output = new java.io.ByteArrayOutputStream();
-            var data = new java.io.DataOutputStream(output);
-            encode(value, data, output, 0);
-            return HexFormat.of()
-                    .formatHex(
-                            java.security.MessageDigest.getInstance("SHA-256")
-                                    .digest(output.toByteArray()));
+            var hash = java.security.MessageDigest.getInstance("SHA-256");
+            var bounded = new BoundedDigest(hash);
+            var out = new java.io.DataOutputStream(bounded);
+            out.writeUTF("vimi-maps-capture-stamp-v2");
+            encode(value, out, 0);
+            out.flush();
+            return HexFormat.of().formatHex(hash.digest());
         } catch (ReflectiveOperationException
                 | java.io.IOException
-                | java.security.NoSuchAlgorithmException e) {
-            throw new IllegalStateException(e);
+                | java.security.NoSuchAlgorithmException failure) {
+            throw new IllegalStateException(failure);
         }
     }
 
-    private static void encode(
-            Object value,
-            java.io.DataOutputStream out,
-            java.io.ByteArrayOutputStream bytes,
-            int depth)
+    private static final class BoundedDigest extends java.io.OutputStream {
+        private final java.security.MessageDigest hash;
+        private int bytes;
+
+        BoundedDigest(java.security.MessageDigest hash) {
+            this.hash = hash;
+        }
+
+        private void claim(int count) {
+            if (count < 0 || bytes > MapCaptureIdentity.MAX_CANONICAL_BYTES - count) {
+                refuse(State.LIMIT_EXCEEDED, "STAMP_LIMIT");
+            }
+            bytes += count;
+        }
+
+        @Override
+        public void write(int value) {
+            claim(1);
+            hash.update((byte) value);
+        }
+
+        @Override
+        public void write(byte[] value, int offset, int count) {
+            claim(count);
+            hash.update(value, offset, count);
+        }
+    }
+
+    private static void encode(Object value, java.io.DataOutputStream out, int depth)
             throws java.io.IOException, ReflectiveOperationException {
-        if (depth > 12 || bytes.size() > 16384) {
-            refuse(State.LIMIT_EXCEEDED, "STAMP_LIMIT");
+        if (depth > 16) {
+            refuse(State.LIMIT_EXCEEDED, "STAMP_DEPTH");
         }
         if (value == null) {
             out.writeByte(0);
@@ -426,41 +466,45 @@ final class MapNavigationSource {
         }
         if (value instanceof List<?> list) {
             if (list.size() > 256) {
-                refuse(State.LIMIT_EXCEEDED, "STAMP_LIMIT");
+                refuse(State.LIMIT_EXCEEDED, "STAMP_LIST");
             }
             out.writeByte(1);
             out.writeInt(list.size());
-            for (var v : list) {
-                encode(v, out, bytes, depth + 1);
+            for (var item : list) {
+                encode(item, out, depth + 1);
             }
         } else if (value.getClass().isRecord()) {
             out.writeByte(2);
-            var parts = value.getClass().getRecordComponents();
-            out.writeInt(parts.length);
-            for (var part : parts) {
-                encode(part.getAccessor().invoke(value), out, bytes, depth + 1);
+            var fields = value.getClass().getRecordComponents();
+            out.writeInt(fields.length);
+            for (var field : fields) {
+                encode(field.getAccessor().invoke(value), out, depth + 1);
             }
+        } else if (value instanceof java.time.Instant instant) {
+            out.writeByte(3);
+            out.writeLong(instant.getEpochSecond());
+            out.writeInt(instant.getNano());
         } else {
             String text;
             if (value instanceof Enum<?> e) {
+                out.writeByte(4);
                 text = e.name();
             } else if (value instanceof String s) {
+                out.writeByte(5);
                 text = s;
             } else if (value instanceof Number || value instanceof Boolean) {
+                out.writeByte(6);
                 text = String.valueOf(value);
             } else {
-                throw new Refusal(State.UNSUPPORTED, "STAMP_TYPE_UNSUPPORTED");
+                throw new UnsupportedOperationException("Canonical stamp type");
             }
-            if (text.length() > 4096 || bytes.size() + 5L + 4L * text.length() > 16384) {
-                refuse(State.LIMIT_EXCEEDED, "STAMP_LIMIT");
+            // All receipt/schema strings were admitted by the prehash scalar/aggregate profile.
+            if (text.length() > 8256) {
+                refuse(State.LIMIT_EXCEEDED, "STAMP_SCALAR");
             }
             byte[] encoded = text.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            out.writeByte(3);
             out.writeInt(encoded.length);
             out.write(encoded);
-        }
-        if (bytes.size() > 16384) {
-            refuse(State.LIMIT_EXCEEDED, "STAMP_LIMIT");
         }
     }
 
