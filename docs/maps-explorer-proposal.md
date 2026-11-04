@@ -133,8 +133,9 @@ Click regions need additional qualification:
    through the parent's signed Region/UiMin/UiMax transform and clip it to that
    parent's assignment domain and the image extent. Retain both row IDs and keys.
    Child full-extent coordinates, finite nondegenerate bounds and same-system
-   parentage are required initially. A partial child/WMO frame needs a separately
-   reviewed rule. Distinct valid pairings remain distinct candidates.
+   parentage are required initially. A parent declaring no world positions, or
+   unsupported frame-affecting flags, does not qualify for this derived route.
+   A partial child/WMO frame needs a separately reviewed rule. Distinct valid pairings remain distinct candidates.
 3. Missing, degenerate, contradictory or nonintersecting frames leave a child
    available in the list/picker, without an invented hotspot. Never infer a map
    link from a similar name, filename or numeric equality between ID domains.
