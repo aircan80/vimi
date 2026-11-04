@@ -127,6 +127,7 @@ public final class WorldService implements BuildWorld {
     private Catalog catalog;
     private WorldAreaNavigation areaNavigation;
     private WorldPlacementSource placements;
+    private WorldAreaAudio areaAudio;
     private final TerrainAtlasPool atlasPool;
     private volatile WorldTerrainTextureSource terrainTextures;
     private WorldPreparedTerrain preparedTerrain;
@@ -588,6 +589,39 @@ public final class WorldService implements BuildWorld {
     }
 
     @Override
+    public CompletableFuture<WorldAreaAudio.Plan> areaAudio(
+            long mapId,
+            WorldCurrentArea.Result area,
+            WorldAreaAudio.Variant variant,
+            Cancellation token) {
+        var source = audioSource();
+        return source == null
+                ? CompletableFuture.failedFuture(
+                        new IllegalStateException("World workspace closed"))
+                : source.plan(mapId, area, variant, token);
+    }
+
+    @Override
+    public CompletableFuture<WorldAreaAudio.AudioFile> audioFile(
+            long fileDataId, Cancellation token) {
+        var source = audioSource();
+        return source == null
+                ? CompletableFuture.failedFuture(
+                        new IllegalStateException("World workspace closed"))
+                : source.file(fileDataId, token);
+    }
+
+    private synchronized WorldAreaAudio audioSource() {
+        if (closing != null) {
+            return null;
+        }
+        if (areaAudio == null) {
+            areaAudio = new WorldAreaAudio(tables, files);
+        }
+        return areaAudio;
+    }
+
+    @Override
     public synchronized CompletableFuture<WorldTerrainTextureSource.BatchResult> terrainTextures(
             MapInfo map,
             List<WorldFormats.Tile> tiles,
@@ -619,6 +653,7 @@ public final class WorldService implements BuildWorld {
         WorldPlacementSource placementSource;
         WorldTerrainTextureSource textureSource;
         WorldPreparedTerrain preparedSource;
+        WorldAreaAudio audioSource;
         synchronized (this) {
             if (closing != null) {
                 return closing.copy();
@@ -628,6 +663,7 @@ public final class WorldService implements BuildWorld {
             cache.invalidate();
             navigation = areaNavigation;
             placementSource = placements;
+            audioSource = areaAudio;
             textureSource = terrainTextures;
             preparedSource = preparedTerrain;
             if (preparedSource != null) {
@@ -658,6 +694,10 @@ public final class WorldService implements BuildWorld {
                                             placementSource == null
                                                     ? CompletableFuture.completedFuture(null)
                                                     : placementSource.closeAsync(),
+                                    () ->
+                                            audioSource == null
+                                                    ? CompletableFuture.completedFuture(null)
+                                                    : audioSource.closeAsync(),
                                     () ->
                                             textureSource == null
                                                     ? CompletableFuture.completedFuture(null)

@@ -15,9 +15,9 @@ The user authorized all items below and autonomous continued work, including ove
 | Dungeons/raids | Raw WDT facts released; strict zero-global transform direction reviewed; actual group/texture diagnostics complete; narrow global declaration source reviewed and actual Map249 proof passed; WMO/image scene source remains next | Qualified global transforms/materials and scene mode integration; first actual instance, interior navigation and safe camera framing |
 | Water | Raw MH2O parser independently approved on separate branch with actual20/26-layer proofs; source qualification design ready | Qualified source/layout and bounded visible rendering |
 | NPC/monster placement | Authorized | Verified spawn coordinate domains, model/display mapping, height/floor/phase provenance, bounded instances; static placement first |
-| Area music | Authorized | Actual area/subzone music relationships, supported playback, transition fades, mute/volume and missing-source state |
+| Area music | Recorded AreaTable/ZoneMusic/SoundKit playback with fades, mute/volume, day/night slot and visible missing-source state ([checkpoint](world-area-audio-checkpoint.md)); WMO interiors, underwater and intro music not evaluated | Actual area/subzone music relationships, supported playback, transition fades, mute/volume and missing-source state |
 | Sky/lighting/fog and time of day | Authorized | Qualified source tables/material rules and measurable bounded implementation |
-| Ambient audio | Authorized | Recorded environmental sound relationships; separate music/effects volume and ownership |
+| Ambient audio | Recorded AreaTable/SoundAmbience loops with separate toggle/volume and owned channel lifetime ([checkpoint](world-area-audio-checkpoint.md)); emitters, start/stop kits and mixing not evaluated | Recorded environmental sound relationships; separate music/effects volume and ownership |
 | Walk/fly movement | Authorized | Ground following, sprint, smooth camera; collision separately qualified |
 | Click-to-inspect | Authorized | Object/creature selection, names/IDs/source details without blocking FX |
 | Search/travel/bookmarks | Authorized | Validated coordinates and map identity, saved camera bookmarks and safe jumps |

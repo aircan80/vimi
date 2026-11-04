@@ -70,6 +70,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             status = new Label("Choose a map"),
             position = new Label();
     private final Label currentArea = new Label("Terrain area unavailable");
+    private final WorldAudioControls audio = new WorldAudioControls();
     private final Canvas tiles = new Canvas(512, 512);
     private final Label inventoryMessage = new Label("Choose a map to see its terrain inventory.");
     private final StackPane tileInventory = new StackPane(tiles, inventoryMessage);
@@ -905,6 +906,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private void cancelRequests() {
         retireTextures();
         currentArea.setText("Terrain area unavailable");
+        audio.area(null, -1, null);
         minimap.hide();
         retireGpu();
         stopArea(false);
@@ -1340,6 +1342,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                         "WASD move · Space/E up · Q/X down · drag or arrows to look · Shift"
                                                 + " faster · wheel zooms · Shift+wheel changes speed")),
                         currentArea,
+                        audio.node(),
                         position,
                         new HBox(8, gpuEnabled, gpuActivity, retryGpu, gpuStatus),
                         new HBox(8, textureActivity, textureStatus, retryTextures)));
@@ -1902,11 +1905,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private void updateCurrentArea() {
         if (camera==null || catalog==null || inventory==null) {
             currentArea.setText("Terrain area unavailable");
+            audio.area(null, -1, null);
             return;
         }
         var area = com.vibeminer.concepts.world.WorldCurrentArea.locate(
                 inventory.map().id(),camera.x(),camera.y(),loaded.values(),catalog.areaIndex());
         currentArea.setText(area.label());
+        audio.area(handle, inventory.map().id(), area);
     }
 
     private void requestFrame() {
@@ -2084,7 +2089,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
         textureStatus.setText(snapshot.detail());
         retryGpu.setDisable(busy);
         retryTextures.setDisable(true);
-        if (snapshot.area() != null) currentArea.setText(snapshot.area().label());
+        if (snapshot.area() != null) {
+            currentArea.setText(snapshot.area().label());
+            audio.area(inventory == null ? null : handle,
+                    inventory == null ? -1 : inventory.map().id(), snapshot.area());
+        }
         if (camera != null) position.setText(String.format(java.util.Locale.ROOT,
                 "Tile %d,%d · x %.1f / y %.1f / altitude %.1f · %.0f yards/s · %d / %d tiles",
                 tileX(), tileY(), camera.x(), camera.y(), camera.z(), speed,
@@ -2317,6 +2326,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     @Override
     public void close() {
         closed = true;
+        audio.close();
         resumeCamera = null;
         streamingImages.clear();
         minimap.close();

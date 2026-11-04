@@ -143,8 +143,12 @@ and [EgLinkRepository](../eg-link/src/main/java/com/vibeminer/eglink/EgLinkRepos
   argument lists. GPU file paths/classpaths appear in child arguments. Audio uses
   pipes for encoded input and decoded PCM rather than an audio temporary file.
   `RaceVoices` can cache decoded PCM as a generated library object for later playback;
-  closing the preview does not erase that derivative. Child JVMs inherit user
-  privileges and environment; they are not OS sandboxes.
+  closing the preview does not erase that derivative. World explorer music/ambience
+  (off by default) streams original Vorbis/MPEG bytes from memory through an
+  `AudioStreamDecoder` child pipe to the audio line and persists no PCM derivative; a
+  single-file ambience loop holds at most 16 MiB of decoded PCM in memory until the area
+  changes or the channel stops. Child JVMs inherit user privileges and environment; they
+  are not OS sandboxes.
 - Runtime reads also include packaged JARs, pinned bundled definitions, shaders,
   native libraries, JRE configuration and OS fonts/drivers/audio resources. Native
   loading and OS-specific caches are not fully enumerable from Java source alone.
@@ -158,6 +162,8 @@ Evidence: [GpuPreviewService](../gui/src/main/java/com/vimi/gui/GpuPreviewServic
 [WorldStreamPreparedFiles](../rendering-bgfx/src/main/java/com/vibeminer/rendering/bgfx/WorldStreamPreparedFiles.java),
 [WorldStreamTransport](../rendering-bgfx/src/main/java/com/vibeminer/rendering/bgfx/WorldStreamTransport.java),
 [VoiceDecoder](../formats-audio/src/main/java/com/vibeminer/formats/audio/VoiceDecoder.java),
+[AudioStreamDecoder](../formats-audio/src/main/java/com/vibeminer/formats/audio/AudioStreamDecoder.java),
+[WorldAudioPlayback](../gui/src/main/java/com/vimi/gui/WorldAudioPlayback.java),
 and [RaceVoices](../concepts-races/src/main/java/com/vibeminer/concepts/races/RaceVoices.java)
 `decode` / generated PCM read and write.
 
