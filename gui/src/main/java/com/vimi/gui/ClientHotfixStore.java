@@ -169,11 +169,22 @@ final class ClientHotfixStore implements AutoCloseable {
                 cancel ->
                         unchecked(
                                 () -> {
+                                    // Drop any earlier watch before binding, so a failure can
+                                    // never leave an old original able to override this choice.
+                                    deleteWatch(scope, cancel);
                                     var imported = importActual(scope, original, false, cancel);
-                                    if (watch)
-                                        writeWatch(
-                                                scope, imported.input(), imported.source(), cancel);
-                                    else deleteWatch(scope, cancel);
+                                    if (watch) {
+                                        try {
+                                            writeWatch(
+                                                    scope,
+                                                    imported.input(),
+                                                    imported.source(),
+                                                    Cancellation.NONE);
+                                        } catch (IOException | RuntimeException ignored) {
+                                            // The binding is committed; the reopened workspace
+                                            // reports the scope as unwatched and can retry.
+                                        }
+                                    }
                                     return imported.summary();
                                 }));
     }
@@ -882,7 +893,16 @@ final class ClientHotfixStore implements AutoCloseable {
     }
 
     /** Private opt-in record of one original location plus its last verified size/mtime. */
-    private record Watch(Scope scope, Path original, long size, long modifiedNanos) {}
+    private record Watch(
+            Scope scope, Path original, long size, long modifiedNanos, String fileKey) {}
+
+    /** Filesystem identity (for example device/inode), so atomic replacement is detected. */
+    private static String fileIdentity(BasicFileAttributes attributes) {
+        return Base64.getUrlEncoder()
+                .withoutPadding()
+                .encodeToString(
+                        String.valueOf(attributes.fileKey()).getBytes(StandardCharsets.UTF_8));
+    }
 
     private void writeWatch(
             Scope scope, Path input, BasicFileAttributes source, Cancellation token)
@@ -904,6 +924,7 @@ final class ClientHotfixStore implements AutoCloseable {
                                 .encodeToString(input.toString().getBytes(StandardCharsets.UTF_8)),
                         Long.toString(source.size()),
                         Long.toString(source.lastModifiedTime().to(TimeUnit.NANOSECONDS)),
+                        fileIdentity(source),
                         "");
         writeAtomic(watch(scope), text.getBytes(StandardCharsets.UTF_8), token);
     }
@@ -921,13 +942,14 @@ final class ClientHotfixStore implements AutoCloseable {
         byte[] bytes = readPrivate(file);
         if (bytes == null) throw new IOException("Client-cache watch disappeared");
         var lines = new String(bytes, StandardCharsets.UTF_8).split("\n", -1);
-        if (lines.length != 12
+        if (lines.length != 13
                 || !lines[0].equals("vimi-client-hotfix-watch-v1")
                 || !lines[1].matches("[0-9a-f]{64}")
                 || !file.getFileName().toString().equals(lines[1] + ".watch")
                 || !lines[9].matches("0|[1-9][0-9]{0,8}")
                 || !lines[10].matches("-?[0-9]{1,19}")
-                || !lines[11].isEmpty()) throw new IOException("Client-cache watch is invalid");
+                || !lines[11].matches("[A-Za-z0-9_-]{0,512}")
+                || !lines[12].isEmpty()) throw new IOException("Client-cache watch is invalid");
         try {
             var scope =
                     new Scope(
@@ -946,7 +968,11 @@ final class ClientHotfixStore implements AutoCloseable {
             if (!scope.key().equals(lines[1]) || !original.isAbsolute())
                 throw new IllegalArgumentException();
             return new Watch(
-                    scope, original, Long.parseLong(lines[9]), Long.parseLong(lines[10]));
+                    scope,
+                    original,
+                    Long.parseLong(lines[9]),
+                    Long.parseLong(lines[10]),
+                    lines[11]);
         } catch (RuntimeException invalid) {
             throw new IOException("Client-cache watch is invalid", invalid);
         }
@@ -964,10 +990,16 @@ final class ClientHotfixStore implements AutoCloseable {
         }
         files.sort(null);
         var results = new java.util.ArrayList<RefreshResult>();
-        for (Path file : files) {
-            token.check();
-            var result = refreshOne(file, token);
-            if (result != null) results.add(result);
+        // On cancellation, stop and return what was already checked: those bindings are
+        // durable, and the caller still reports the run as canceled from its own token.
+        try {
+            for (Path file : files) {
+                token.check();
+                var result = refreshOne(file, token);
+                if (result != null) results.add(result);
+            }
+        } catch (IOException | RuntimeException failure) {
+            if (!(token.isCanceled() || canceled(failure))) throw failure;
         }
         return List.copyOf(results);
     }
@@ -979,12 +1011,24 @@ final class ClientHotfixStore implements AutoCloseable {
             watch = readWatch(file);
             current = readManifest(watch.scope());
         } catch (IOException | RuntimeException invalid) {
+            // An unreadable private record cannot be cleared from any workspace; remove it
+            // (regular files only) so it fails one refresh rather than every refresh.
+            try {
+                regular(file);
+                Files.delete(file);
+            } catch (IOException | RuntimeException ignored) {
+                /* Reported below; the next refresh retries the removal. */
+            }
             return new RefreshResult(null, RefreshOutcome.FAILED, null, 0, invalid);
         }
         var scope = watch.scope();
         if (current == null) {
             // A watch never outlives its binding through this store; drop an orphan quietly.
-            deleteWatch(scope, token);
+            try {
+                deleteWatch(scope, token);
+            } catch (IOException | RuntimeException failure) {
+                if (token.isCanceled()) throw failure;
+            }
             return null;
         }
         BasicFileAttributes now;
@@ -996,7 +1040,8 @@ final class ClientHotfixStore implements AutoCloseable {
             return new RefreshResult(scope, RefreshOutcome.FAILED, current, 0, unreadable);
         }
         if (now.size() == watch.size()
-                && now.lastModifiedTime().to(TimeUnit.NANOSECONDS) == watch.modifiedNanos())
+                && now.lastModifiedTime().to(TimeUnit.NANOSECONDS) == watch.modifiedNanos()
+                && fileIdentity(now).equals(watch.fileKey()))
             return new RefreshResult(
                     scope, RefreshOutcome.UNCHANGED, current, scope.buildNumber(), null);
         Imported imported;

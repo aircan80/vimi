@@ -653,6 +653,40 @@ public final class ClientHotfixStoreTest {
             check(refresh(store).isEmpty(), "disabled scope is never re-enabled by refresh");
             check(store.open(SCOPE, Cancellation.NONE).get(3, TimeUnit.SECONDS) == null,
                     "disabled stays disabled");
+
+            // Atomic replacement keeping size and mtime is still detected by file identity.
+            rewrite(original, cache(70707, 6), 6);
+            store.importCache(SCOPE, original, true, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            var keptTime = Files.getLastModifiedTime(original);
+            Path replacement = root.resolve("DBCache.bin.new");
+            Files.write(replacement, cache(70707, 7));
+            Files.setLastModifiedTime(replacement, keptTime);
+            Files.move(replacement, original, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            var replaced = refresh(store);
+            var replacedKey = Files.readAttributes(original,
+                    java.nio.file.attribute.BasicFileAttributes.class).fileKey();
+            if (replacedKey != null) {
+                check(replaced.size() == 1
+                                && replaced.getFirst().outcome() == ClientHotfixStore.RefreshOutcome.UPDATED,
+                        "same size/mtime replacement detected by file identity");
+                check(boundPayload(store)[0] == 7, "replacement applied");
+            }
+
+            // A corrupt private watch record fails one refresh, then is removed.
+            Path watches = root.resolve("store").resolve("watches");
+            Path record;
+            try (var listed = Files.list(watches)) {
+                record = listed.findFirst().orElseThrow();
+            }
+            Files.writeString(record, "not a watch record\n");
+            var corrupt = refresh(store);
+            check(corrupt.size() == 1 && corrupt.getFirst().scope() == null
+                            && corrupt.getFirst().outcome() == ClientHotfixStore.RefreshOutcome.FAILED,
+                    "corrupt watch reported once");
+            check(refresh(store).isEmpty(), "corrupt watch removed after reporting");
+            check(boundPayload(store)[0] == (replacedKey != null ? 7 : 6),
+                    "corrupt watch keeps the binding");
         } finally {
             remove(root);
         }

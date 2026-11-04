@@ -330,8 +330,21 @@ public final class VimiApp extends Application {
                 if (result.failure() != null)
                     System.getLogger(VimiApp.class.getName()).log(System.Logger.Level.WARNING,
                             "Client hotfix refresh check failed: {0}", ClientHotfixDetails.failure(result.failure()));
+            if (token.isCanceled()) throw new java.util.concurrent.CancellationException();
             if (ClientHotfixDetails.refreshFailed(results))
                 throw new IllegalStateException(hotfixRefreshSummary);
+        }).exceptionally(error -> {
+            // Store-level failures can carry private paths; the row only shows fixed text.
+            Throwable cause = error;
+            while (cause instanceof java.util.concurrent.CompletionException && cause.getCause() != null)
+                cause = cause.getCause();
+            if (cause instanceof java.util.concurrent.CancellationException canceled) throw canceled;
+            if (cause instanceof IllegalStateException summary && hotfixRefreshSummary != null
+                    && hotfixRefreshSummary.equals(summary.getMessage())) throw summary;
+            System.getLogger(VimiApp.class.getName()).log(System.Logger.Level.WARNING,
+                    "Client hotfix refresh failed: {0}", ClientHotfixDetails.failure(cause));
+            throw new IllegalStateException("Client caches could not be checked: "
+                    + ClientHotfixDetails.failure(cause));
         });
     }
 
