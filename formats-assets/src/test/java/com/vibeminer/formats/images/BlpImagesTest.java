@@ -299,7 +299,7 @@ final class BlpImagesTest {
                 identity.startsWith(
                         "vibeminer-generated-image v1\n"
                                 + CONTENT
-                                + "\nblp2-rgba8-v2\nmip=3\nlimits="));
+                                + "\nblp2-rgba8-v3\nmip=3\nlimits="));
         BuildRef build = new AssetFilesFixture().build();
         assertEquals(
                 identity
