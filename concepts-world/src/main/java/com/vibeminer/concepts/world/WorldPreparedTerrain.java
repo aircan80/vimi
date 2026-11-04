@@ -14,6 +14,9 @@ import java.util.function.Consumer;
  * Service-owned terrain qualification. Generic written resources never establish source authority.
  */
 final class WorldPreparedTerrain {
+    static final long MAX_RECEIPT_BYTES = 2048L + 64L * 512;
+    static final long MAX_OUTPUT_RECEIPT_BYTES = 12 * MAX_RECEIPT_BYTES;
+
     enum Outcome {
         TEXTURED,
         HEIGHT_FALLBACK
@@ -73,6 +76,11 @@ final class WorldPreparedTerrain {
             return owner.root;
         }
 
+        String geometrySha256() {
+            check();
+            return owner.geometrySha256;
+        }
+
         WorldTerrainTextureSource.Receipt material() {
             check();
             return owner.receipt;
@@ -126,6 +134,7 @@ final class WorldPreparedTerrain {
         private WorldStreamScopes.AdmissionMetadata metadata;
         private WorldTerrainTextureSource.FileBinding root;
         private WorldFormats.AreaMetadata areas;
+        private String geometrySha256;
         private WorldTerrainTextureSource.Receipt receipt;
         private TerrainTextureBinding.Metadata texture;
         private WorldTerrainTextureSource.State materialState;
@@ -162,6 +171,11 @@ final class WorldPreparedTerrain {
             throw new IllegalStateException("Terrain output closed");
         }
 
+        private synchronized void attachReceipt(WorldTerrainTextureSource.Receipt value) {
+            check();
+            receipt = value;
+        }
+
         private void attachAtlas(TerrainAtlasPool.Lease value) {
             synchronized (this) {
                 if (!closed) {
@@ -188,6 +202,45 @@ final class WorldPreparedTerrain {
         synchronized R written() {
             check();
             return written;
+        }
+
+        /** Synchronous independently pinned ownership move; callback and cleanup run off FX. */
+        void withWrittenResource(Consumer<R> use) {
+            Objects.requireNonNull(use);
+            R resource;
+            synchronized (this) {
+                check();
+                if (constructing || callbacks != 0 || written == null) {
+                    throw new IllegalStateException("Terrain resource callback unavailable");
+                }
+                callbacks++;
+                resource = written;
+            }
+            Throwable primary = null;
+            try {
+                use.accept(resource);
+            } catch (RuntimeException | Error failure) {
+                primary = failure;
+                throw failure;
+            } finally {
+                synchronized (this) {
+                    callbacks--;
+                }
+                try {
+                    retire();
+                } catch (RuntimeException | Error failure) {
+                    if (primary == null) {
+                        throw failure;
+                    }
+                    if (primary != failure) {
+                        primary.addSuppressed(failure);
+                    }
+                }
+            }
+        }
+
+        private synchronized long receiptBytes() {
+            return receipt == null ? 0 : receipt.metadataBytes();
         }
 
         void withPayload(Consumer<Borrow> use) {
@@ -285,6 +338,7 @@ final class WorldPreparedTerrain {
                 metadata = null;
                 root = null;
                 areas = null;
+                geometrySha256 = null;
                 receipt = null;
                 texture = null;
             }
@@ -427,6 +481,7 @@ final class WorldPreparedTerrain {
             owned.attachGeometry(world.prepareGeometry(admission));
             owned.root = owned.geometry.rootBinding();
             owned.areas = owned.geometry.areas();
+            owned.geometrySha256 = owned.geometry.fingerprint();
             prepareMaterial(admission, owned);
             owned.withPayload(
                     borrow ->
@@ -529,7 +584,8 @@ final class WorldPreparedTerrain {
                     || !receipt.geometrySha256().equals(owned.geometry.fingerprint())) {
                 throw new IllegalStateException("Material source differs");
             }
-            owned.receipt = receipt;
+            profileReceipt(receipt);
+            owned.attachReceipt(receipt);
             owned.attachAtlas(batch.retainAtlas(tile.x(), tile.y()).orElseThrow());
             try {
                 owned.geometry.withTile(
@@ -569,6 +625,55 @@ final class WorldPreparedTerrain {
                 batch.close();
             }
         }
+    }
+
+    /** Conservative charge per issued owner, even when several alias the same pool receipt. */
+    synchronized long retainedReceiptBytes() {
+        long total = 0;
+        for (var output : outputs) {
+            total += output.receiptBytes();
+        }
+        if (total > MAX_OUTPUT_RECEIPT_BYTES) {
+            throw new IllegalStateException("Issued receipt metadata bound");
+        }
+        return total;
+    }
+
+    private static void profileReceipt(WorldTerrainTextureSource.Receipt receipt) {
+        if (receipt.diffuse().size() > 64
+                || receipt.metadataBytes() > MAX_RECEIPT_BYTES
+                || receipt.cacheKey() != null && !hex(receipt.cacheKey(), 64)
+                || !hex(receipt.geometrySha256(), 64)
+                || receipt.build().product().length() > 32
+                || receipt.build().buildConfig().length() != 32
+                || receipt.build().cdnConfig().length() != 32
+                || receipt.build().region() != null && receipt.build().region().length() > 32
+                || receipt.locale().length() > 16) {
+            throw new IllegalStateException("Material receipt metadata profile");
+        }
+        for (var mip : receipt.diffuse()) {
+            if (!hex(mip.file().contentKey(), 32)
+                    || mip.encoding().length() > 16
+                    || !switch (mip.encoding()) {
+                        case "PALETTED", "BC1", "BC2", "BC3", "BGRA8" -> true;
+                        default -> false;
+                    }) {
+                throw new IllegalStateException("Material mip metadata profile");
+            }
+        }
+    }
+
+    private static boolean hex(String text, int length) {
+        if (text == null || text.length() != length) {
+            return false;
+        }
+        for (int i = 0; i < length; i++) {
+            char c = text.charAt(i);
+            if (!(c >= '0' && c <= '9' || c >= 'a' && c <= 'f')) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private void release(WrittenTile<?> value, Throwable failure) {
