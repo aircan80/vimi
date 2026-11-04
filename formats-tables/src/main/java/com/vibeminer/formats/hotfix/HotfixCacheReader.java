@@ -159,7 +159,7 @@ public final class HotfixCacheReader {
             token.check();
             int count = Math.min(READ_BYTES, bytes.length - at);
             var out = ByteBuffer.wrap(bytes, at, count).slice();
-            source.readRange(entry.payloadOffset() + at, out, token).join();
+            await(source.readRange(entry.payloadOffset() + at, out, token));
             token.check();
             if (out.position() != count || out.limit() != count) {
                 throw fail("INVALID", "Short hotfix payload read");
@@ -178,6 +178,20 @@ public final class HotfixCacheReader {
         var holes = source.holes();
         if (source.length() != length || holes == null || !holes.isEmpty()) {
             throw fail("SOURCE_CHANGED", "Hotfix source metadata changed");
+        }
+    }
+
+    private static void await(CompletableFuture<Void> read) {
+        Throwable failure = read.handle((ignored, error) -> error).join();
+        if (failure instanceof RuntimeException runtime) {
+            throw runtime;
+        }
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        if (failure != null) {
+            throw new java.util.concurrent.CompletionException(
+                    "Hotfix source read failed", failure);
         }
     }
 
@@ -308,7 +322,7 @@ public final class HotfixCacheReader {
             }
             buffer.clear().limit(size);
             var out = buffer.slice();
-            source.readRange(fetched, out, token).join();
+            await(source.readRange(fetched, out, token));
             token.check();
             if (out.position() != size || out.limit() != size) {
                 throw fail("INVALID", "Short hotfix source read");

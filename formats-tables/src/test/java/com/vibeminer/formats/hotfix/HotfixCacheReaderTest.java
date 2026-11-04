@@ -312,66 +312,125 @@ final class HotfixCacheReaderTest {
 
     @Test
     void independentShrunkReadLimitCannotHideTrailingBytes() {
-        var bytes=Arrays.copyOf(cache(entry(70,1,1,1,new byte[0])),80);
-        var source=new Source(Db2ByteSource.memory(bytes)) {
-            @Override public CompletableFuture<Void> readRange(long offset,ByteBuffer out,Cancellation token) {
-                if(offset==44)out.limit(32);
-                return super.readRange(offset,out,token);
-            }
-        };
-        assertThrows(RuntimeException.class,()->HotfixCacheReader.inspect(source,BUILD,new HotfixCacheReader.Limits(),Cancellation.NONE).join());
+        var bytes = Arrays.copyOf(cache(entry(70, 1, 1, 1, new byte[0])), 80);
+        var source =
+                new Source(Db2ByteSource.memory(bytes)) {
+                    @Override
+                    public CompletableFuture<Void> readRange(
+                            long offset, ByteBuffer out, Cancellation token) {
+                        if (offset == 44) {
+                            out.limit(32);
+                        }
+                        return super.readRange(offset, out, token);
+                    }
+                };
+        assertThrows(
+                RuntimeException.class,
+                () ->
+                        HotfixCacheReader.inspect(
+                                        source,
+                                        BUILD,
+                                        new HotfixCacheReader.Limits(),
+                                        Cancellation.NONE)
+                                .join());
     }
 
     @Test
     void independentSelectedZeroBodyStillRequiresTheFullReadContract() {
-        var shorten=new java.util.concurrent.atomic.AtomicBoolean();
-        var source=new Source(Db2ByteSource.memory(cache(entry(70,1,1,1,new byte[4])))) {
-            @Override public CompletableFuture<Void> readRange(long offset,ByteBuffer out,Cancellation token) {
-                if(shorten.get())out.limit(out.position()+1);
-                return super.readRange(offset,out,token);
-            }
-        };
-        var index=HotfixCacheReader.inspect(source,BUILD,new HotfixCacheReader.Limits(),Cancellation.NONE).join();
+        var shorten = new java.util.concurrent.atomic.AtomicBoolean();
+        var source =
+                new Source(Db2ByteSource.memory(cache(entry(70, 1, 1, 1, new byte[4])))) {
+                    @Override
+                    public CompletableFuture<Void> readRange(
+                            long offset, ByteBuffer out, Cancellation token) {
+                        if (shorten.get()) {
+                            out.limit(out.position() + 1);
+                        }
+                        return super.readRange(offset, out, token);
+                    }
+                };
+        var index =
+                HotfixCacheReader.inspect(
+                                source, BUILD, new HotfixCacheReader.Limits(), Cancellation.NONE)
+                        .join();
         shorten.set(true);
-        assertThrows(HotfixFormatException.class,()->HotfixCacheReader.readPayloadBlocking(source,index,0,4,Cancellation.NONE));
+        assertThrows(
+                HotfixFormatException.class,
+                () ->
+                        HotfixCacheReader.readPayloadBlocking(
+                                source, index, 0, 4, Cancellation.NONE));
     }
 
     @Test
     void independentMismatchedBuildReadCapacityCannotExposeBodyBytes() {
-        var capacity=new AtomicInteger();
-        var source=new Source(Db2ByteSource.memory(cache(entry(70,1,1,1,new byte[70000])))) {
-            @Override public CompletableFuture<Void> readRange(long offset,ByteBuffer out,Cancellation token) {
-                capacity.set(out.capacity());return super.readRange(offset,out,token);
-            }
-        };
-        assertThrows(RuntimeException.class,()->HotfixCacheReader.inspect(source,BUILD+1,new HotfixCacheReader.Limits(),Cancellation.NONE).join());
-        assertEquals(44,capacity.get());
+        var capacity = new AtomicInteger();
+        var source =
+                new Source(Db2ByteSource.memory(cache(entry(70, 1, 1, 1, new byte[70000])))) {
+                    @Override
+                    public CompletableFuture<Void> readRange(
+                            long offset, ByteBuffer out, Cancellation token) {
+                        capacity.set(out.capacity());
+                        return super.readRange(offset, out, token);
+                    }
+                };
+        assertThrows(
+                RuntimeException.class,
+                () ->
+                        HotfixCacheReader.inspect(
+                                        source,
+                                        BUILD + 1,
+                                        new HotfixCacheReader.Limits(),
+                                        Cancellation.NONE)
+                                .join());
+        assertEquals(44, capacity.get());
     }
 
     @Test
     void independentAsyncCancellationKeepsOriginalFailureAfterActualReadRetires() throws Exception {
-        var hold=new java.util.concurrent.atomic.AtomicBoolean();
-        var entered=new CompletableFuture<Void>();
-        var lower=new CompletableFuture<Void>();
-        var source=new Source(Db2ByteSource.memory(cache(entry(70,1,1,1,new byte[4])))) {
-            @Override public CompletableFuture<Void> readRange(long offset,ByteBuffer out,Cancellation token) {
-                if(hold.get()){entered.complete(null);return lower;}
-                return super.readRange(offset,out,token);
-            }
-        };
-        var index=HotfixCacheReader.inspect(source,BUILD,new HotfixCacheReader.Limits(),Cancellation.NONE).join();
-        var stop=new Cancellation();var result=new CompletableFuture<Throwable>();hold.set(true);
-        Thread.ofVirtual().start(()->{
-            try { HotfixCacheReader.readPayloadBlocking(source,index,0,4,stop);
-                result.completeExceptionally(new AssertionError("Canceled read escaped"));
-            }catch(Throwable failure){result.complete(failure);}
-        });
+        var hold = new java.util.concurrent.atomic.AtomicBoolean();
+        var entered = new CompletableFuture<Void>();
+        var lower = new CompletableFuture<Void>();
+        var source =
+                new Source(Db2ByteSource.memory(cache(entry(70, 1, 1, 1, new byte[4])))) {
+                    @Override
+                    public CompletableFuture<Void> readRange(
+                            long offset, ByteBuffer out, Cancellation token) {
+                        if (hold.get()) {
+                            entered.complete(null);
+                            return lower;
+                        }
+                        return super.readRange(offset, out, token);
+                    }
+                };
+        var index =
+                HotfixCacheReader.inspect(
+                                source, BUILD, new HotfixCacheReader.Limits(), Cancellation.NONE)
+                        .join();
+        var stop = new Cancellation();
+        var result = new CompletableFuture<Throwable>();
+        hold.set(true);
+        Thread.ofVirtual()
+                .start(
+                        () -> {
+                            try {
+                                HotfixCacheReader.readPayloadBlocking(source, index, 0, 4, stop);
+                                result.completeExceptionally(
+                                        new AssertionError("Canceled read escaped"));
+                            } catch (Throwable failure) {
+                                result.complete(failure);
+                            }
+                        });
         try {
-            entered.get(3,TimeUnit.SECONDS);stop.cancel();
-            assertFalse(result.isDone(),"Actual lower read still owns its destination");
-            var original=new java.util.concurrent.CancellationException();lower.completeExceptionally(original);
-            assertSame(original,root(result.get(3,TimeUnit.SECONDS)));
-        }finally{lower.completeExceptionally(new java.util.concurrent.CancellationException());result.get(3,TimeUnit.SECONDS);}
+            entered.get(3, TimeUnit.SECONDS);
+            stop.cancel();
+            assertFalse(result.isDone(), "Actual lower read still owns its destination");
+            var original = new java.util.concurrent.CancellationException();
+            lower.completeExceptionally(original);
+            assertSame(original, root(result.get(3, TimeUnit.SECONDS)));
+        } finally {
+            lower.completeExceptionally(new java.util.concurrent.CancellationException());
+            result.get(3, TimeUnit.SECONDS);
+        }
     }
 
     private static void put(byte[] bytes, int at, int value) {
