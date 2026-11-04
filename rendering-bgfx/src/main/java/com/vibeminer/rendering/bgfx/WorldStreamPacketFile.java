@@ -144,6 +144,9 @@ final class WorldStreamPacketFile implements AutoCloseable {
                 existingFileLane.execute(() -> delete(plan));
             } catch (RuntimeException refused) {
                 plan.completion().completeExceptionally(failure(refused));
+            } catch (Error fatal) {
+                plan.completion().completeExceptionally(failure(fatal));
+                throw fatal;
             }
         }
         return plan.completion().copy();
@@ -166,14 +169,15 @@ final class WorldStreamPacketFile implements AutoCloseable {
             plan.completion().complete(null);
         } catch (IOException | RuntimeException failed) {
             plan.completion().completeExceptionally(failure(failed));
+        } catch (Error fatal) {
+            plan.completion().completeExceptionally(failure(fatal));
+            throw fatal;
         }
     }
 
-    private static IOException failure(Exception failed) {
-        String message = failed.getMessage();
-        if (message == null) {
-            message = failed.getClass().getSimpleName();
-        }
+    private static IOException failure(Throwable failed) {
+        // No arbitrary Throwable.getMessage/getCause callback or retained failure graph.
+        String message = "Packet file cleanup failed: " + failed.getClass().getName();
         var detached = new IOException(message.substring(0, Math.min(256, message.length())));
         detached.setStackTrace(new StackTraceElement[0]);
         return detached;
