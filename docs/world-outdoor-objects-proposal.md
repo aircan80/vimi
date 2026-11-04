@@ -53,9 +53,35 @@ order) and is reported, never silently truncated inside a building.
 
 ## Delivery
 
-1. Source + neutral data + packet codec (this repository's concepts-world, rendering-world,
-   rendering-bgfx) with synthetic tests.
-2. Hot child object pass and control command: one immutable objects packet per committed
-   neighborhood, uploaded on the native owner thread, drawn after terrain with the same
-   camera; failure leaves terrain unchanged and is reported.
-3. GUI: World Explorer status shows drawn/omitted building counts and the BASIC disclosure.
+1. Source: new `WorldStreamScopes` use profile with the bounds above, a multi-placement,
+   multi-group exterior factory and an immutable neutral per-tile object set, with
+   synthetic chunk-stream tests (malformed, unsupported flags, interior groups, blend
+   modes, caps and deterministic omission order).
+2. Packet and child: an immutable per-tile objects file written next to the tile packet and
+   named in the reserved tile-header range under a new session profile, so it shares the
+   slot's OFFER/COMMIT/CANCEL/retirement lifetime. The child decodes it on the existing
+   decoder worker, uploads in bounded steps and drops it with the slot generation. Object
+   failure leaves the tile's terrain committed and is reported in status.
+3. GUI: World Explorer status shows drawn and omitted building counts and the BASIC
+   disclosure.
+
+## Hot-path facts that shape delivery
+
+- The hot child rebases to the camera every frame (`BgfxWorldStreamRenderer.draw`: origin is
+  the float camera position, `u_worldRebase` subtracts it). An object pass computes each
+  placement's model matrix as double placement position minus that origin, then casts once
+  to float, on the native owner thread, after the terrain slot loop and before the ticket.
+- The control protocol has no optional sections; every field is validated. Tile packets
+  (`tile-<txn>.wst`) already carry OFFER/CREDIT/COMMIT/CANCEL lifetimes per slot.
+- `WorldStreamScopes` admits one source operation at a time, and streaming mode has no
+  `TerrainScene`. Object preparation is therefore its own serialized source operation per
+  tile, queued after that tile's terrain write, never nested inside it.
+- The existing package-private WMO entry points need a public `WorldTerrainStreaming`
+  facade for the GUI, unwrapping the private scope token as `prepareAndWrite` does.
+
+## Coordination
+
+The dungeon lane's `WorldGlobalAssetFactory` and `BgfxGlobalWmoRenderer`
+(feature/world-next-integration) target GLOBAL WMO-only maps with origin zero. This slice
+reuses main's `BgfxWorldWmoPass` shaders and must not fork a second global renderer.
+Shared WMO group qualification should converge once either side merges.
