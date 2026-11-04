@@ -1,0 +1,95 @@
+package com.vibeminer.rendering.bgfx;
+
+/** Fixed, bounded acknowledgement of optional native terrain atlas upload, before first READY. */
+public record TerrainTextureStatus(
+        State state,
+        int activeAtlases,
+        int sceneTiles,
+        int coveredRects,
+        int totalRects,
+        Code code) {
+    public enum State {
+        READY,
+        PARTIAL,
+        UNAVAILABLE
+    }
+
+    public enum Code {
+        NONE,
+        INPUT_UNAVAILABLE,
+        CHECKSUM,
+        BINDING,
+        MAPPING,
+        UPLOAD,
+        CAPABILITY
+    }
+
+    public TerrainTextureStatus {
+        java.util.Objects.requireNonNull(state);
+        java.util.Objects.requireNonNull(code);
+        if (sceneTiles < 1
+                || sceneTiles > 9
+                || activeAtlases < 0
+                || activeAtlases > sceneTiles
+                || totalRects != sceneTiles * 256
+                || coveredRects < activeAtlases
+                || coveredRects > activeAtlases * 256
+                || state != state(activeAtlases, sceneTiles, coveredRects)
+                || state == State.READY && code != Code.NONE) {
+            throw new IllegalArgumentException("Invalid terrain texture acknowledgement");
+        }
+    }
+
+    public static TerrainTextureStatus of(int active, int tiles, int covered, Code code) {
+        return new TerrainTextureStatus(
+                state(active, tiles, covered), active, tiles, covered, tiles * 256, code);
+    }
+
+    private static State state(int active, int tiles, int covered) {
+        return active == 0
+                ? State.UNAVAILABLE
+                : active == tiles && covered == tiles * 256 ? State.READY : State.PARTIAL;
+    }
+
+    public String protocolLine() {
+        return "VIMI_GPU TEXTURES 1 "
+                + state
+                + " "
+                + activeAtlases
+                + " "
+                + sceneTiles
+                + " "
+                + coveredRects
+                + " "
+                + totalRects
+                + " "
+                + code;
+    }
+
+    public static TerrainTextureStatus parse(String line) {
+        if (line == null || line.length() > 160) {
+            throw new IllegalArgumentException("Invalid texture status length");
+        }
+        var parts = line.split(" ", -1);
+        if (parts.length != 9
+                || !parts[0].equals("VIMI_GPU")
+                || !parts[1].equals("TEXTURES")
+                || !parts[2].equals("1")) {
+            throw new IllegalArgumentException("Invalid texture status framing");
+        }
+        return new TerrainTextureStatus(
+                State.valueOf(parts[3]),
+                number(parts[4]),
+                number(parts[5]),
+                number(parts[6]),
+                number(parts[7]),
+                Code.valueOf(parts[8]));
+    }
+
+    private static int number(String text) {
+        if (!text.matches("0|[1-9][0-9]{0,3}")) {
+            throw new IllegalArgumentException("Invalid texture status count");
+        }
+        return Integer.parseInt(text);
+    }
+}
