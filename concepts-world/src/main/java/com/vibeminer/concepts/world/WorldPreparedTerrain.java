@@ -597,16 +597,12 @@ final class WorldPreparedTerrain {
         }
         Thread.startVirtualThread(
                 () -> {
-                    Throwable failure = null;
                     for (var value : retired) {
                         try {
                             value.close();
-                        } catch (RuntimeException | Error error) {
-                            if (failure == null) {
-                                failure = error;
-                            } else {
-                                failure.addSuppressed(error);
-                            }
+                        } catch (RuntimeException | Error recorded) {
+                            // WrittenTile.retire records this in release BEFORE rethrowing.
+                            // Continue closing the other outputs; outputsDrained reports it once.
                         }
                     }
                     boolean empty;
@@ -619,15 +615,9 @@ final class WorldPreparedTerrain {
                         completeOutputs(terminal);
                     }
                     var pending = CompletableFuture.allOf(scopes.closeAsync(), outputsDrained);
-                    Throwable cleanup = failure;
                     pending.whenComplete(
                             (ignored, error) -> {
-                                if (cleanup != null) {
-                                    if (error != null) {
-                                        cleanup.addSuppressed(error);
-                                    }
-                                    drained.completeExceptionally(cleanup);
-                                } else if (error != null) {
+                                if (error != null) {
                                     drained.completeExceptionally(error);
                                 } else {
                                     drained.complete(null);
