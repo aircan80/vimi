@@ -12,6 +12,20 @@ import java.util.ArrayList;
 
 /** Portable rows-v1 unsigned LEB128 and strict UTF-8 row codec. */
 public final class RowCodec {
+    public record DecodeLimits(
+            int maxRecordBytes, int maxValues, int maxIssues, int maxStringBytes) {
+        public DecodeLimits {
+            if (maxRecordBytes < 1
+                    || maxRecordBytes > GeneratedTypes.MAX_OBJECT_BYTES
+                    || maxValues < 1
+                    || maxIssues < 1
+                    || maxStringBytes < 1
+                    || maxStringBytes > GeneratedTypes.MAX_OBJECT_BYTES) {
+                throw new IllegalArgumentException("Invalid row decode limits");
+            }
+        }
+    }
+
     private RowCodec() {}
 
     public static byte[] encode(Db2Types.Row row) {
@@ -69,22 +83,39 @@ public final class RowCodec {
     }
 
     public static Db2Types.Row decode(long id, byte[] bytes) {
+        return decodeInternal(id, bytes, null);
+    }
+
+    public static Db2Types.Row decode(long id, byte[] bytes, DecodeLimits limits) {
+        return decodeInternal(id, bytes, java.util.Objects.requireNonNull(limits));
+    }
+
+    private static Db2Types.Row decodeInternal(long id, byte[] bytes, DecodeLimits limits) {
+        if (limits != null && bytes.length > limits.maxRecordBytes()) {
+            throw limit();
+        }
         try {
-            var input = new Decoder(bytes);
+            var input = new Decoder(bytes, limits);
             int flags = input.byteValue();
             if ((flags & ~7) != 0) {
                 throw corrupt();
             }
             Long source = (flags & 2) != 0 ? input.number(0xffffffffL) : null;
             int count = input.count();
+            if (limits != null && count > limits.maxValues()) {
+                throw limit();
+            }
             var values = new ArrayList<String>();
             for (int i = 0; i < count; i++) {
                 values.add(input.string());
             }
             ArrayList<Db2Types.TextIssue> issues = null;
             if ((flags & 4) != 0) {
-                issues = new ArrayList<>();
                 int n = input.count();
+                if (limits != null && n > limits.maxIssues()) {
+                    throw limit();
+                }
+                issues = new ArrayList<>();
                 for (int i = 0; i < n; i++) {
                     issues.add(
                             new Db2Types.TextIssue(
@@ -104,10 +135,12 @@ public final class RowCodec {
 
     private static final class Decoder {
         final byte[] bytes;
+        final DecodeLimits limits;
         int at;
 
-        Decoder(byte[] bytes) {
+        Decoder(byte[] bytes, DecodeLimits limits) {
             this.bytes = bytes;
+            this.limits = limits;
         }
 
         int byteValue() {
@@ -148,6 +181,9 @@ public final class RowCodec {
             if (n > bytes.length - at) {
                 throw corrupt();
             }
+            if (limits != null && n > limits.maxStringBytes()) {
+                throw limit();
+            }
             var value =
                     StandardCharsets.UTF_8
                             .newDecoder()
@@ -161,5 +197,9 @@ public final class RowCodec {
 
     private static GeneratedStoreException corrupt() {
         return new GeneratedStoreException(GeneratedTypes.CORRUPT, "Malformed rows-v1 record");
+    }
+
+    private static GeneratedStoreException limit() {
+        return new GeneratedStoreException(GeneratedTypes.LIMIT, "Row decode limit");
     }
 }
