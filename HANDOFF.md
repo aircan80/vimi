@@ -2,6 +2,40 @@
 
 ## Current Linux checkpoint — alpha20 released, persistent World integration active
 
+Latest reviewed integration checkpoint: `baf1b26` on
+`feature/world-streaming-integration` (draft PR153), not main or a release.
+Combined source/rendering-world/bgfx/GUI checks pass149tasks in
+`/tmp/vimi-world-source-cold-parent-combined-check.log`. Integrated optional cold
+WMO child also passes actual Vulkan valid pixels/camera/resize/EOF/CLOSE and
+malformed/missing/absent-annex behavior:
+`/tmp/vimi-world-cold-child-integrated-native.log`. Buildings are not wired into
+WorldView yet. Existing frozen alpha20 launcher remains unchanged.
+
+Internal qualified terrain factory de2f7f6 plus f7f1ae3/34586d4/c995b2a/c62e520
+is root and independently approved, integrated43d6fb8 through38e3f4e. Scope
+invalidation distinguishes bounded standard async cancellation from source failure;
+source close requests active admission cancellation BEFORE arbitrary returned output
+cleanup. Root forced36tasks pass `/tmp/vimi-source-close-final-root-review.log`;
+independent51scope fixtures pass. Public opaque concepts facade is being implemented
+by java_world_streaming; no public DTO can mint this source qualification.
+
+Parent cancellation lane6e63202 is root reviewed/integrated12e027c; independent
+root38task check passes `/tmp/vimi-world-cancel-root-review.log`. It schedules one
+callback off caller, preserves callback+producer actual retirement, and does not
+add a watcher per registration. Parent public Session/packet producer/status loops
+remain active work in certificate_architecture_review; a matching CLOSE during
+native startup needs the isolated watchdog followup under review. GUI persistent
+streaming integration still waits on those concrete APIs.
+
+Cold WMO owner/CLI da2c83b plus bounded-status fix7ca0c33 is root approved and
+integratedc09a6ac/2facf9f. One attempt per context remains charged through actual
+bgfx shutdown; loading/initialized/ready/unavailable statuses are additive. Actual
+source-to-native tower pixels already passed; no entire city or dungeon claim.
+Maps agent is auditing global-instance opaque RGB proposal and its first source
+slice; BC3 alpha is meaningfully nonopaque and omission must be explicitly named.
+No global production profile or memory increase is approved.
+
+
 The user stayed on Linux and explicitly requested continued overnight work with parallel
 agents and prereleases. Latest VERIFIED release is
 [alpha20](https://github.com/aircan80/vimi/releases/tag/v0.1.0-alpha.20), source
