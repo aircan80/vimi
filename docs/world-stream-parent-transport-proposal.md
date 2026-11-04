@@ -64,7 +64,13 @@ public final class WorldStreamTransport {
     public static final class PacketDestination {
         public Path path(); // exact private tile-<tx>.wst destination
         public StopRegistration onStopping(Runnable requestCancellation);
+        public PreparationRefusal refusal(Refusal reason, String detail);
         // Opaque writer context; no public protocol counter setters or sourceVerified flag.
+    }
+    public enum Refusal { RETRY_LATER, CAPABILITY_UNAVAILABLE, SOURCE_INVALIDATED }
+    public static final class PreparationRefusal extends Exception {
+        // Private constructor: PacketDestination.refusal creates bounded scalar failures.
+        public Refusal reason();
     }
     public interface StopRegistration extends AutoCloseable {
         @Override void close(); // metadata-only seal, never a callback join/drain proof
@@ -217,6 +223,25 @@ This preserves the instruction that the **transport receives only finalized unpu
 packet metadata**. It does not accept live source/geometry/atlas payloads or infer provenance.
 The producer is source-owned application orchestration; transport supplies a bounded worker
 and lifetime envelope, not a game-source capability.
+
+### Typed non-packet producer outcomes
+
+The trusted bridge can `throw destination.refusal(reason, detail)` for RETRY_LATER (capacity/
+presentation backpressure), CAPABILITY_UNAVAILABLE (no qualified configured source path), or
+SOURCE_INVALIDATED (the actual source/scope retired or changed). PreparationRefusal is a closed
+scalar exception with private constructor, reason enum and at most256-character detached detail.
+It has no source DTO, original cause/suppressed graph, writable stack or Source/Scope handle.
+This is not a source-evidence or material-fallback capability. Source-specific errors are mapped
+only by the closed application bridge; transport does not import or infer source result types.
+
+A refusal never becomes a height packet, empty geometry, GPU READY or an immediate retry loop.
+The reservation fails with that distinguishable reason while the old active table/child remains
+operational. Its unused lease is canceled only after real producer/callback retirement and
+registered file cleanup, using the existing CANCEL_UNUSED/high-water flow. No next producer
+can consume that credit early. Controller retry requires a genuine capacity/presentation or
+source-generation event; source invalidation can additionally make the controller drain/recreate
+the map scope/session. Cancellation follows the same existing unused/established retirement
+flow. An unclassified producer exception is fatal, never retry-later or height fallback.
 
 OFFER publishes only the exact ticket basename/length/full SHA and current nonce/lease. The
 packet-writer adapter must bind actual XY/header/session/lease to that destination. Source and
