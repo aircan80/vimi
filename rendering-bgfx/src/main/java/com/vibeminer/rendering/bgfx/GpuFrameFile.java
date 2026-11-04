@@ -16,6 +16,7 @@ import java.nio.file.StandardOpenOption;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Objects;
 import java.util.zip.CRC32C;
 
 /**
@@ -268,8 +269,53 @@ public final class GpuFrameFile implements AutoCloseable {
         STAMP.setRelease(mapping, offset, stamp);
     }
 
+    /** Fixed metadata selection, never a Source/presentation capability or callback under lock. */
+    record GlobalSelection(long minimumRevision, long maximumRevision, int width, int height) {
+        GlobalSelection {
+            if (minimumRevision < 1
+                    || maximumRevision < minimumRevision
+                    || width < 1
+                    || width > 800
+                    || height < 1
+                    || height > 500) {
+                throw new IllegalArgumentException("Invalid global frame selection");
+            }
+        }
+
+        boolean matches(long revision, int actualWidth, int actualHeight) {
+            return revision >= minimumRevision
+                    && revision <= maximumRevision
+                    && actualWidth == width
+                    && actualHeight == height;
+        }
+    }
+
+    synchronized void requireGlobalSession(long expectedNonce) throws IOException {
+        checkOpenSession();
+        if (expectedNonce == 0
+                || sessionNonce != expectedNonce
+                || maxWidth != 800
+                || maxHeight != 500) {
+            throw new IOException("Global frame mapping identity differs");
+        }
+    }
+
+    /** Filters fixed scalar metadata BEFORE detached pixel allocation. No arbitrary predicate. */
+    synchronized Frame readLatestGlobal(long afterSequence, GlobalSelection selection)
+            throws IOException {
+        Objects.requireNonNull(selection);
+        if (maxWidth != 800 || maxHeight != 500) {
+            throw new IOException("Global frame mapping dimensions differ");
+        }
+        return latest(afterSequence, selection);
+    }
+
     /** Returns the newest safely copied frame, or null for absent/stale/torn/corrupt slots. */
     public synchronized Frame readLatest(long afterSequence) throws IOException {
+        return latest(afterSequence, null);
+    }
+
+    private Frame latest(long afterSequence, GlobalSelection selection) throws IOException {
         checkOpenSession();
         if (afterSequence < 0) {
             throw new IllegalArgumentException("Negative GPU sequence");
@@ -284,7 +330,7 @@ public final class GpuFrameFile implements AutoCloseable {
         }
         candidates.sort(Comparator.comparingLong(Candidate::stamp).reversed());
         for (var candidate : candidates) {
-            var frame = read(candidate);
+            var frame = read(candidate, selection);
             if (frame != null) {
                 return frame;
             }
@@ -292,7 +338,7 @@ public final class GpuFrameFile implements AutoCloseable {
         return null;
     }
 
-    private Frame read(Candidate candidate) {
+    private Frame read(Candidate candidate, GlobalSelection selection) {
         long offset = candidate.offset();
         byte[] bytes = mapping.asSlice(offset, SLOT_HEADER_BYTES).toArray(ValueLayout.JAVA_BYTE);
         var metadata = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
@@ -312,6 +358,9 @@ public final class GpuFrameFile implements AutoCloseable {
                 || metadata.getLong(40) != sessionNonce
                 || metadata.getLong(48) != 0
                 || metadata.getLong(56) != 0) {
+            return null;
+        }
+        if (selection != null && !selection.matches(revision, width, height)) {
             return null;
         }
         // All sizes and framing are checked before allocating the detached image.
