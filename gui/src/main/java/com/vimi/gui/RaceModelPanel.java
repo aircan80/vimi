@@ -30,6 +30,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
     private final ComboBox<RaceMediaTypes.Variant> variants = new ComboBox<>();
     private final Label state = new Label("Loading model variants…");
     private final Label definition = new Label();
+    private RaceMediaTypes.Variant assessedModel;
     private final ModelPreviewView viewer = new ModelPreviewView();
     private final ProgressIndicator activity = new ProgressIndicator(-1);
     private final VBox evidence = new VBox(7);
@@ -215,7 +216,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
             definition.setVisible(false);
             return;
         }
-        showDefinition(model);
+        showDefinition(latest(model));
         long request = generation;
         var selected = classes.getValue();
         long classId = selected == null ? 0 : selected.id();
@@ -239,6 +240,17 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                             if (stale(request)) {
                                                 return;
                                             }
+                                            // The preview reassesses the definition; show its
+                                            // latest result rather than the list's first read.
+                                            var assessed =
+                                                    result != null
+                                                                    && result.variant() != null
+                                                                    && result.variant().chrModelId()
+                                                                            == model.chrModelId()
+                                                            ? result.variant()
+                                                            : model;
+                                            assessedModel = assessed;
+                                            showDefinition(assessed);
                                             if (error != null
                                                     || result == null
                                                     || result.mesh() == null) {
@@ -263,7 +275,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                                                             + " · M2 FileDataID "
                                                                             + model
                                                                                     .modelFileDataId()),
-                                                            definitionEvidence(model),
+                                                            definitionEvidence(assessed),
                                                             new Label(
                                                                     result.restored()
                                                                             ? "Restored derived"
@@ -287,6 +299,13 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                         }));
     }
 
+    /** The most recent preview assessment of this model, or the listed one before any. */
+    private RaceMediaTypes.Variant latest(RaceMediaTypes.Variant model) {
+        return assessedModel != null && assessedModel.chrModelId() == model.chrModelId()
+                ? assessedModel
+                : model;
+    }
+
     /** Names the selected display's definition only when its recorded source states it. */
     private void showDefinition(RaceMediaTypes.Variant model) {
         definition.setText("Model definition: " + model.definition().label());
@@ -301,11 +320,11 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                         "Definition "
                                 + value.state()
                                 + (value.quality() == null ? "" : " · " + value.quality())
-                                + (value.standardDisplayId() > 0 || value.highDisplayId() > 0
-                                        ? " · SD display "
-                                                + value.standardDisplayId()
-                                                + " · HD display "
-                                                + value.highDisplayId()
+                                + (value.standardDisplayId() > 0
+                                        ? " · SD display " + value.standardDisplayId()
+                                        : "")
+                                + (value.highDisplayId() > 0
+                                        ? " · HD display " + value.highDisplayId()
                                         : "")
                                 + " · "
                                 + value.message());
@@ -378,7 +397,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                                                             + " · M2 FileDataID "
                                                                             + model
                                                                                     .modelFileDataId()),
-                                                            definitionEvidence(model),
+                                                            definitionEvidence(latest(model)),
                                                             new Label(
                                                                     result.restored()
                                                                             ? "Restored composed"

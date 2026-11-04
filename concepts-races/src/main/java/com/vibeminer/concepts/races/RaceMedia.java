@@ -63,9 +63,15 @@ final class RaceMedia {
             com.vibeminer.formats.db2.Db2Types.Row race = null;
             try {
                 races = owner.schema("ChrRaces", token, definitionNotes);
-                race = get(races, raceId, token, definitionNotes);
-            } catch (RacesService.Projection unavailable) {
+                if (RaceModelDefinitions.pairProfile(races)) {
+                    race = get(races, raceId, token, definitionNotes);
+                }
+            } catch (java.util.concurrent.CancellationException canceled) {
+                throw canceled;
+            } catch (RuntimeException unavailable) {
+                token.check();
                 races = null;
+                race = null;
             }
             for (var row : joins.rows) {
                 token.check();

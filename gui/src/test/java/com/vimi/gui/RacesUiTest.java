@@ -150,7 +150,12 @@ public final class RacesUiTest {
                                                         RaceTypes.State.PARTIAL,
                                                         new com.vibeminer.concepts.races
                                                                 .RaceMediaTypes.Variant(
-                                                                1, 0, 1, 1, 1),
+                                                                1,
+                                                                0,
+                                                                1,
+                                                                1,
+                                                                1,
+                                                                authoredDefinition()),
                                                         mesh,
                                                         java.util.Set.of(0),
                                                         List.of(

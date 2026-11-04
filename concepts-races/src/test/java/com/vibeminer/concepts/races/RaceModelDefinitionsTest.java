@@ -139,6 +139,11 @@ final class RaceModelDefinitionsTest {
             assertEquals(2, result.variants().size());
             assertEquals(20, result.variants().get(0).displayId());
             assertEquals(21, result.variants().get(1).displayId());
+            // Each preview reassesses the definition from the same sources.
+            for (var variant : result.variants()) {
+                var preview = service.preview(1, 1, variant.chrModelId(), Cancellation.NONE).join();
+                assertEquals(variant, preview.variant());
+            }
             return result.variants();
         } finally {
             service.closeAsync().join();
@@ -155,7 +160,7 @@ final class RaceModelDefinitionsTest {
         assertNull(definition.quality());
         assertNull(definition.source());
         assertTrue(definition.message().contains(reason), definition.message());
-        assertTrue(definition.label().startsWith("Definition not stated · "));
+        assertTrue(definition.label().startsWith("not stated · "));
     }
 
     @Test
@@ -241,6 +246,20 @@ final class RaceModelDefinitionsTest {
         var found = variants(races(PAIR, row(1, "20", "21", "20", "24")));
         refused(found.get(0).definition(), DefinitionState.AMBIGUOUS, "cannot be distinguished");
         assertEquals(DefinitionState.SELECTED, found.get(1).definition().state());
+    }
+
+    @Test
+    void displayOutsideAnAmbiguousPairIsUnmatchedNotAmbiguous() {
+        var found = variants(races(PAIR, row(1, "40", "41", "40", "41")));
+        refused(found.get(0).definition(), DefinitionState.UNMATCHED, "matches neither");
+        refused(found.get(1).definition(), DefinitionState.UNMATCHED, "matches neither");
+    }
+
+    @Test
+    void displayIdOutsideTheUnsignedRangeIsUnreadableNotAMissingPair() {
+        var found = variants(races(PAIR, row(1, "20", "21", "4294967296", "23")));
+        refused(found.get(0).definition(), DefinitionState.UNREADABLE, "32-bit range");
+        assertEquals(0, found.get(0).definition().highDisplayId());
     }
 
     @Test

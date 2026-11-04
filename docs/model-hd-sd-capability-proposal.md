@@ -10,11 +10,11 @@ Every other case is a refusal with its reason. The selected display does not cha
 
 | State | Meaning |
 | --- | --- |
-| `UNSUPPORTED_PROFILE` | The layout has no pair, has only one side, or a side is unverified or unlinked. Current 70755 always ends here. |
+| `UNSUPPORTED_PROFILE` | The layout has no pair, has only one side, or a side is unverified or unlinked. Readable current 70755 ChrRaces ends here; the race row is not even read. |
 | `NO_RECORDED_PAIR` | Both fields are verified, but one side records zero. |
 | `AMBIGUOUS` | Both fields name the same display. |
 | `UNMATCHED` | The selected display is neither recorded side. |
-| `UNREADABLE` | ChrRaces, the race row or a cell is unavailable. Retry can reassess it. |
+| `UNREADABLE` | ChrRaces, the race row or a cell is unavailable, or a display ID is out of range. Each preview reassesses it. |
 
 Fallback slots, file names, LODs, mips and polygon counts are never evidence. Definition failures never discard or degrade the recorded variants. This slice adds no toggle. A selector that switches to the counterpart display is a later slice and needs the full composition chain described below.
 

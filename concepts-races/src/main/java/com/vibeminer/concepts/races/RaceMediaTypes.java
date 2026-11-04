@@ -62,7 +62,7 @@ public final class RaceMediaTypes {
         public String label() {
             return state == DefinitionState.SELECTED
                     ? quality + " · " + source
-                    : "Definition not stated · " + message;
+                    : "not stated · " + message;
         }
     }
 
