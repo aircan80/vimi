@@ -1,8 +1,6 @@
 package com.vibeminer.rendering.bgfx;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -21,8 +19,128 @@ class WorldStreamTransportCommitCleanupTest {
     @TempDir Path directory;
 
     @Test
-    void failedCommitDeletionIsTerminalRatherThanAnUnboundedRetry()
+    void failedUnadvertisedOwnedCommitCleanupAlsoRetiresFileWorkerWithoutRetry() throws Exception {
+        var child = new WorldStreamLaunchOwnerTest.Child();
+        var ended = new CountDownLatch(1);
+        child.onExit().thenRun(ended::countDown);
+        var own = new AtomicReference<Path>();
+        var prepared =
+                WorldStreamTransport.prepare(
+                        directory,
+                        new WorldStreamTransport.Spec(
+                                "ab".repeat(32), 1, WorldStreamTransport.Backend.VULKAN));
+        var session =
+                prepared.launch(
+                        arguments -> {
+                            own.set(Path.of(arguments.get(1)));
+                            var descriptor =
+                                    WorldStreamEnvelope.decodeSession(
+                                            Files.readAllBytes(own.get().resolve("session.wss")),
+                                            arguments.get(3));
+                            String prefix =
+                                    "WS2 "
+                                            + HexFormat.of().toHexDigits(descriptor.nonce().high())
+                                            + HexFormat.of().toHexDigits(descriptor.nonce().low())
+                                            + " ";
+                            byte[] bytes =
+                                    (prefix
+                                                    + "SESSION TERRAIN_BASIC_V1\n"
+                                                    + prefix
+                                                    + "CREDIT 1 0 1\n")
+                                            .getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+                            child.input =
+                                    new java.io.InputStream() {
+                                        int at;
+
+                                        @Override
+                                        public int read() throws java.io.IOException {
+                                            if (at < bytes.length) {
+                                                return bytes[at++] & 255;
+                                            }
+                                            try {
+                                                ended.await();
+                                            } catch (InterruptedException error) {
+                                                throw new java.io.IOException(error);
+                                            }
+                                            return -1;
+                                        }
+                                    };
+                            return child;
+                        });
+        Path held = null;
+        try {
+            session.initialized().get(2, TimeUnit.SECONDS);
+            var sf = WorldStreamTransport.Session.class.getDeclaredField("state");
+            sf.setAccessible(true);
+            var state = (WorldStreamParentState) sf.get(session);
+            var metadata = state.prepareCommit(1, java.util.List.of());
+            var opClass =
+                    Class.forName(
+                            "com.vibeminer.rendering.bgfx.WorldStreamTransport$Session$CommitOperation");
+            var constructor =
+                    opClass.getDeclaredConstructor(
+                            java.util.concurrent.CompletableFuture.class,
+                            java.util.List.class,
+                            WorldStreamParentState.Commit.class,
+                            Path.class);
+            constructor.setAccessible(true);
+            var path = own.get().resolve("commit-" + metadata.transaction + ".wsc");
+            Files.createDirectory(path);
+            held = path.resolve("held");
+            Files.writeString(held, "persistent unadvertised cleanup refusal");
+            Object operation =
+                    constructor.newInstance(
+                            new java.util.concurrent.CompletableFuture<>(),
+                            java.util.List.of(),
+                            metadata,
+                            path);
+            var created = opClass.getDeclaredField("created");
+            created.setAccessible(true);
+            created.setBoolean(operation, true);
+            var opField = WorldStreamTransport.Session.class.getDeclaredField("commitOperation");
+            opField.setAccessible(true);
+            var lockField = WorldStreamTransport.Session.class.getDeclaredField("lock");
+            lockField.setAccessible(true);
+            synchronized (lockField.get(session)) {
+                opField.set(session, operation);
+            }
+            session.closeAsync();
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> session.terminatedAndDrained().get(4, TimeUnit.SECONDS));
+            assertFalse(child.isAlive());
+            assertTrue(Files.exists(held));
+            assertProducerFileWorkerDone(session);
+        } finally {
+            session.closeAsync();
+            try {
+                session.terminatedAndDrained().get(5, TimeUnit.SECONDS);
+            } catch (java.util.concurrent.ExecutionException expected) {
+                /* Failed cleanup stays failed. */
+            }
+            if (held != null) {
+                Files.deleteIfExists(held);
+                Files.deleteIfExists(held.getParent());
+            }
+            Files.deleteIfExists(own.get());
+        }
+    }
+
+    private static void assertProducerFileWorkerDone(WorldStreamTransport.Session session)
             throws Exception {
+        var ownerField = WorldStreamTransport.Session.class.getDeclaredField("owner");
+        ownerField.setAccessible(true);
+        var owner = (WorldStreamLaunchOwner.Handle) ownerField.get(session);
+        var workersField = WorldStreamLaunchOwner.Handle.class.getDeclaredField("workers");
+        workersField.setAccessible(true);
+        var workers = (java.util.List<?>) workersField.get(owner);
+        assertTrue(
+                ((java.util.concurrent.atomic.AtomicBoolean) workers.get(3)).get(),
+                "Actual producer/file worker finally ran; no retry spin");
+    }
+
+    @Test
+    void failedCommitDeletionIsTerminalRatherThanAnUnboundedRetry() throws Exception {
         Path source = directory.resolve("Commit.java");
         Files.writeString(
                 source,
@@ -178,18 +296,28 @@ class WorldStreamTransportCommitCleanupTest {
             assertFalse(stop.getBoolean(chosen));
             assertFalse(committing.isDone());
             release.countDown();
-            try { committing.get(3, TimeUnit.SECONDS); }
-            catch (java.util.concurrent.ExecutionException expected) { /* Failure may win acknowledgement. */ }
-            assertThrows(java.util.concurrent.ExecutionException.class,
+            try {
+                committing.get(3, TimeUnit.SECONDS);
+            } catch (java.util.concurrent.ExecutionException expected) {
+                /* Failure may win acknowledgement. */
+            }
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
                     () -> session.terminatedAndDrained().get(4, TimeUnit.SECONDS));
+            assertProducerFileWorkerDone(session);
         } finally {
             release.countDown();
             var commitPath = file.get().getParent().resolve("commit-2.wsc");
             Files.deleteIfExists(commitPath.resolve("held"));
-            if (Files.isDirectory(commitPath)) { Files.deleteIfExists(commitPath); }
+            if (Files.isDirectory(commitPath)) {
+                Files.deleteIfExists(commitPath);
+            }
             session.closeAsync();
-            try { session.terminatedAndDrained().get(5, TimeUnit.SECONDS); }
-            catch (java.util.concurrent.ExecutionException expected) { /* Sticky failed cleanup. */ }
+            try {
+                session.terminatedAndDrained().get(5, TimeUnit.SECONDS);
+            } catch (java.util.concurrent.ExecutionException expected) {
+                /* Sticky failed cleanup. */
+            }
         }
     }
 }
