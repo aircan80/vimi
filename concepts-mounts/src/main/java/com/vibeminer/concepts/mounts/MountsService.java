@@ -84,6 +84,33 @@ public final class MountsService implements BuildMounts {
     }
 
     @Override
+    public CompletableFuture<com.vibeminer.concepts.models.DisplayModelTypes.Idle> idle(
+            long mountId, long variantRecordId, Cancellation token) {
+        checkId(mountId);
+        checkId(variantRecordId);
+        if (models == null) {
+            return BuildMounts.super.idle(mountId, variantRecordId, token);
+        }
+        return overview(mountId, token)
+                .thenCompose(
+                        detail ->
+                                detail.variants().stream()
+                                        .filter(v -> v.recordId() == variantRecordId)
+                                        .findFirst()
+                                        .map(variant -> models.idle(variant.displayId(), token))
+                                        .orElseGet(
+                                                () ->
+                                                        CompletableFuture.completedFuture(
+                                                                com.vibeminer.concepts.models
+                                                                        .DisplayModelTypes.Idle
+                                                                        .unavailable(
+                                                                                "Selected mount"
+                                                                                        + " appearance"
+                                                                                        + " is"
+                                                                                        + " unavailable."))));
+    }
+
+    @Override
     public CompletableFuture<MountTypes.Catalog> catalog(Cancellation token) {
         return submit(token, this::initialize);
     }
