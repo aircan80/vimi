@@ -24,7 +24,7 @@ interface WorldSessionHandle {
     void updateCamera(WorldCamera camera); // replaces one metadata-only latest value
     OfferResult offer(PreparedWorldTile owned); // consumes on every outcome
     CommitResult commit(WorldDrawTable desired); // metadata only, expected+next revision
-    void cancel(long transaction); // idempotent latest transaction cancellation
+    void cancel(long offerTransaction); // idempotent reference cancellation; handle supplies lease
     CompletionStage<Void> closeAsync(); // completes after child+packet owners drain
 }
 ```
@@ -63,7 +63,12 @@ generation>0, creditSerial>0)`. The first FREE slot is deterministic, but slot o
 never defines draw order. A generation increments before each new lease, including
 canceled/rejected offers. Child-generated generations prevent ABA. Parent offer
 transaction IDs increase once per accepted credit, and all messages bind nonce,
-transaction and lease. Credit serials increase globally; repeated/stale credit
+transaction and lease. OFFER/COMMIT use a shared strictly increasing new-command
+high-water mark. CANCEL references an established offer transaction and does not
+advance or compare against that mark. The parent reserves an offer transaction
+before writing and never lets a later OFFER/COMMIT overtake that unpublished
+writer; at most one latest commit metadata descriptor may wait. Camera/CLOSE
+remain independent. This preserves publish order without buffering another tile. Credit serials increase globally; repeated/stale credit
 messages cannot grant another owner. At most one credit is issued/consumed at a
 time, even when several of the ten fixed slots are FREE.
 
@@ -90,7 +95,8 @@ Commands (each begins `WS2 <nonce32>`):
 - `CAM <cameraRev> <policyEpoch> <width> <height> <x> <y> <z> <yaw> <pitch>`
 - `OFFER <tx> <creditSerial> <slot> <slotGen> <basename> <length> <sha256>`
 - `COMMIT <tx> <basename> <sha256>`
-- `CANCEL <tx> <slot> <slotGen>`
+- `CANCEL <offerTx> <slot> <slotGen>`
+- `CANCEL_UNUSED <freshTx> <creditSerial> <slot> <slotGen>`
 - `CLOSE`
 
 Camera revisions strictly increase. Policy epochs never regress; a newer resize
@@ -112,15 +118,43 @@ is closed and the input may be deleted, not that upload credit returned. STAGED
 means validated geometry and its terminal material pair finished upload; it says
 nothing about displayed pixels. COMMITTED is state acceptance, not presentation.
 Terminal rejection does not itself return credit; a separate CREDIT follows safe
-drain. Duplicate tx receives a bounded STALE_TRANSACTION rejection, never a second
-commit or credit. Pure fixtures accept duplicates without allocating payloads.
+drain. A duplicate/nonincreasing new OFFER/COMMIT transaction receives a bounded
+STALE_TRANSACTION rejection, never a second commit or credit. CANCEL instead
+matches the current in-flight offerTx and exact lease, even if a later rejected
+COMMIT has advanced the new-command high-water mark. Repeating that CANCEL while
+cancel-drain runs is a no-op; repeating it after retirement reports bounded STALE
+and cannot change generation or grant credit again. Pure fixtures process all
+replays without allocating payloads.
+
+CANCEL_UNUSED is specifically for a granted credit whose parent writer retires
+before advertising OFFER. The parent first cancels and drains its writer, closes
+its channel, releases candidate/borrows and removes any unpublished temp/final
+file; only then sends its reserved fresh transaction and exact lease/credit serial.
+The child requires CREDIT_ISSUED with no established OFFER, freshTx above the
+new-command high-water mark, and the current nonce/lease/credit serial. It binds
+and retires that unused grant without opening or claiming consumption of a file;
+there is no INPUT_CONSUMED for this case. It emits CANCELED and, after its empty
+drain, one next-generation CREDIT. It advances the new-command high-water mark.
+A racing already-advertised OFFER makes CANCEL_UNUSED invalid: use established
+CANCEL instead. A stale/replayed unused cancellation cannot consume a newer lease.
+Parent close may simply drain the writer then close the session without requesting
+another credit.
 
 The native owner must not write to a potentially blocked pipe. One status writer
 owns a bounded 16-entry mailbox: metadata-only progress is coalesced, credit and
 terminal statuses are reliable until orderly close. Stop granting credit before
-mailbox capacity is exhausted. A parent that stops draining stdout is handled by
-existing liveness/watchdog termination, not an unbounded status queue or owner
-stall. CLOSED may be superseded by confirmed process termination during failure.
+mailbox capacity is exhausted. A live parent that stops draining stdout is not detected by the existing parent-PID
+watchdog. Add a dedicated bounded status-progress deadline: when reliable status
+is queued/in flight, five seconds without writer completion flags session failure
+from an independent monotonic watchdog. The owner stops admission and initiates
+close without joining the blocked writer. If process drain has not completed
+within a further five seconds, that watchdog terminates the child; OS process exit
+reclaims its blocked pipe/native owners. Parent deletion/arbiter release still
+waits for confirmed process termination. Normal parent death/EOF/CLOSE uses the
+existing early watchdog plus explicit drain. No unbounded queue or native-owner
+pipe write is permitted. CLOSED may be superseded by confirmed process termination
+during failure. These new status deadline mechanics require authored tests and
+must not be described as an already implemented watchdog capability.
 
 ## File layouts
 
@@ -193,6 +227,19 @@ binding geometry and available WDT/root source identity plus explicit reason.
 Textured input validates geometry hash, coverage/pixel alpha and UV envelope using
 existing admission rules before packing. It never substitutes guessed textures.
 
+The header's geometry SHA is exactly `TerrainGeometryFingerprint.REVISION`
+`native-terrain-geometry-v1`, not SHA-256 of the bare payload. Hash ASCII domain
+bytes `VIMI_TERRAIN_GEOMETRY_V1` followed by a single NUL, then five32-bit
+little-endian integers in order: tileX, tileY, totalChunks, vertexCount, indexCount.
+Append every XYZ float's raw IEEE754 bits as little-endian32-bit words in source
+vertex order, then every index as a little-endian32-bit word in source triangle
+order. All these values exist in this packet; no per-chunk record is required.
+Compute from the same decoded bytes that packing consumes and compare against
+both packet declaration and qualified source receipt before parent publication.
+The child recomputes the same fingerprint for structural binding; it does not
+thereby authenticate the receipt. The independent full-file digest also covers
+header/source metadata and atlas, so it remains a separate identity.
+
 Commit file `VIMIWSC2`, exactly256 bytes:
 
 | Offset | Bytes | Field |
@@ -235,6 +282,7 @@ native feasibility; this checkpoint makes no driver-memory guarantee.
 
 ```
 CREDIT_ISSUED -> WRITING(parent) -> READING -> VALIDATED -> UPLOADING -> STAGED
+CREDIT_ISSUED/WRITING(parent) + CANCEL_UNUSED(after writer drain) -> FREE
 STAGED + valid COMMIT -> ACTIVE (whole ordered table exchanged between frames)
 READING/VALIDATED/UPLOADING/STAGED + CANCEL -> CANCEL_DRAIN
 bad packet -> REJECT_DRAIN
@@ -286,10 +334,15 @@ BGRA8 pixels; total mapping stays **4,800,256 bytes**, exactly the existing brid
 charge. Descriptor offsets: stamp uint64 at0, nonce16 at8, cameraRev uint64 at24,
 contentRev uint64 at32, policyEpoch uint64 at40, width uint32 at48, height uint32
 at52, CRC32C uint32 at56, payloadBytes uint32 at60. Frame sequence is stamp>>>1;
-zero is empty, odd is writing, even is complete, and sequence never wraps. Writer
-release-publishes odd, writes metadata+pixels+CRC, then release-publishes even;
-reader acquire-checks the same even stamp before/after copying and validating
-metadata+pixels CRC. CRC covers descriptor bytes8..55 and60..63 plus exact payload;
+zero is empty, odd is writing, even is complete. Sequence is at most
+`Long.MAX_VALUE >>> 1`; close before it could overflow. Retain the existing
+GpuFrameFile seqlock's two-sided fences explicitly: writer release-publishes odd,
+executes `VarHandle.fullFence()` **before** any mutable descriptor/pixel write,
+writes metadata+pixels+CRC, then release-publishes even. Reader acquire-loads the
+first even stamp, copies descriptor+pixels and checks CRC, executes
+`VarHandle.fullFence()` **after** that copy/check and **before** its second
+acquire-load of stamp, and accepts only the same even value. Release/acquire
+alone does not replace either fence. CRC covers descriptor bytes8..55 and60..63 plus exact payload;
 never trust dimensions/length before bounds checks. Torn-write fixtures must pin
 ordering before wiring. Readback submission captures these values with the
 immutable active table; later commit never relabels old pixels. No detached frame
@@ -323,7 +376,11 @@ publication, cancellation at every IO boundary and candidate close-once.
 
 A deterministic host/child model drives >100 lease reuse cycles, stale CREDIT,
 replayed OFFER/COMMIT/CANCEL, slot ABA, commit order/coplanar priority, expected
-revision mismatch, canceled decode completion, held release callbacks, mailbox
+revision mismatch, established CANCEL after a later rejected COMMIT, repeated
+CANCEL during/after drain, canceled WRITING with no OFFER ever advertised,
+CANCEL_UNUSED replay against a reused lease, stale writer completion, canceled
+decode completion, held release callbacks, blocked status writer with a live
+parent and independently advanced monotonic timeout, mailbox
 capacity, EOF and close. Assert exactly one incoming buffer owner, no ACTIVE
 partial pair,≤9 active, ten slots, input consumption versus credit distinction,
 continued camera revisions while decode/uploads are held, no owner waits, and
