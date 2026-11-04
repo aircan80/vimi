@@ -294,7 +294,7 @@ public final class AuthoredGlobalSource implements AutoCloseable {
                                 switch (method.getName()) {
                                     case "build" -> BUILD;
                                     case "locale" -> "enUS";
-                                    case "stat" ->
+                                    case "stat", "statContent" ->
                                             CompletableFuture.completedFuture(
                                                     stat(
                                                             ((FileTypes.FileRef) args[0])

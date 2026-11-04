@@ -66,30 +66,83 @@ public final class RecordFileWriter implements AutoCloseable {
                 () -> {
                     // Validation failures leave the writer usable; failures after mutation finish
                     // it.
-                    if (duplicate((int) id)) {
-                        throw new DuplicateId();
-                    }
+                    append(id, owned[0], cancellation);
+                    return null;
+                },
+                false,
+                cancellation);
+    }
+
+    /**
+     * Appends {@code ids[i]} with {@code records[i]} for every index, in order, in one worker call.
+     * The file is byte-identical to calling {@link #add} for each pair. A failure on the first
+     * record leaves the writer usable exactly as {@code add} would; a failure after any record was
+     * appended finishes the writer, since the batch cannot be partially retried.
+     */
+    public CompletableFuture<Void> addAll(
+            List<Long> ids, List<byte[]> records, Cancellation cancellation) {
+        int size = ids.size();
+        long[] ownedIds = new long[size];
+        byte[][] owned = new byte[size][];
+        return operation(
+                () -> {
                     cancellation.check();
-                    if (block.size() > 0 && owned[0].length >= options.blockBytes()) {
-                        closeBlock(cancellation);
+                    if (records.size() != size) {
+                        throw new IllegalArgumentException("Record and id counts differ");
                     }
-                    if (count == ids.length) {
-                        ids = Arrays.copyOf(ids, Math.min(ids.length * 2, options.maxRecords()));
+                    if (size > options.maxRecords() - count) {
+                        throw RecordFormat.limit("Record count or size exceeds configured bound");
                     }
-                    ids[count++] = (int) id;
-                    if (seen != null) {
-                        seen.add((int) id);
+                    for (int i = 0; i < size; i++) {
+                        long id = ids.get(i);
+                        byte[] record = Objects.requireNonNull(records.get(i));
+                        RecordFormat.id(id);
+                        if (record.length > options.maxRecordBytes()) {
+                            throw RecordFormat.limit(
+                                    "Record count or size exceeds configured bound");
+                        }
+                        ownedIds[i] = id;
+                        owned[i] = record.clone();
                     }
-                    RecordFormat.writeVar(block, id);
-                    RecordFormat.writeVar(block, owned[0].length);
-                    block.writeBytes(owned[0]);
-                    if (block.size() >= options.blockBytes()) {
-                        closeBlock(cancellation);
+                },
+                () -> {
+                    for (int i = 0; i < size; i++) {
+                        try {
+                            append(ownedIds[i], owned[i], cancellation);
+                        } catch (DuplicateId e) {
+                            if (i == 0) {
+                                throw e;
+                            }
+                            throw new IllegalArgumentException("Duplicate record id");
+                        }
                     }
                     return null;
                 },
                 false,
                 cancellation);
+    }
+
+    private void append(long id, byte[] record, Cancellation cancellation) {
+        if (duplicate((int) id)) {
+            throw new DuplicateId();
+        }
+        cancellation.check();
+        if (block.size() > 0 && record.length >= options.blockBytes()) {
+            closeBlock(cancellation);
+        }
+        if (count == ids.length) {
+            ids = Arrays.copyOf(ids, Math.min(ids.length * 2, options.maxRecords()));
+        }
+        ids[count++] = (int) id;
+        if (seen != null) {
+            seen.add((int) id);
+        }
+        RecordFormat.writeVar(block, id);
+        RecordFormat.writeVar(block, record.length);
+        block.writeBytes(record);
+        if (block.size() >= options.blockBytes()) {
+            closeBlock(cancellation);
+        }
     }
 
     public CompletableFuture<RecordFileInfo> complete(GeneratedKey key, byte[] metadata) {

@@ -43,7 +43,7 @@ class ClientCloseDrainTest {
                                         switch (m.getName()) {
                                             case "build" -> TablesContract.BUILD;
                                             case "locale" -> "enUS";
-                                            case "stat" -> {
+                                            case "stat", "statContent" -> {
                                                 statEntered.complete(null);
                                                 yield stat;
                                             }
