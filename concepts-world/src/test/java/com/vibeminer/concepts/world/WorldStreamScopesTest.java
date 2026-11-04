@@ -35,6 +35,55 @@ final class WorldStreamScopesTest {
             new WorldFormats.Tile(7, 19, 2, 0, 0, 0, 0, 3, 0, 0);
 
     @Test
+    void admissionMetadataIsDetachedActualNamespaceAndWdtReadObservation() throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var source = new WorldStreamScopes(tables.handle(), files.files());
+        var snapshot = new WorldStreamScopes.AdmissionMetadata[1];
+        try {
+            var scope = source.create(REQUEST, Cancellation.NONE);
+            AutoCloseable result =
+                    source.withRecordedTile(
+                            scope,
+                            TILE,
+                            WorldStreamScopes.UseProfile.BASIC_WMO,
+                            Cancellation.NONE,
+                            admission -> {
+                                snapshot[0] = admission.metadata();
+                                return (AutoCloseable) () -> {};
+                            });
+            result.close();
+            source.closeAsync().join();
+            var metadata = snapshot[0];
+            assertEquals(files.files().build(), metadata.build());
+            assertEquals("enUS", metadata.locale());
+            assertNotEquals(0, metadata.owner());
+            assertEquals(1, metadata.generation());
+            assertEquals(7, metadata.mapId());
+            assertEquals(scope.digest(), metadata.scopeDigest());
+            assertEquals(1, metadata.wdtId());
+            assertEquals(scope.wdtKey(), metadata.wdtKey());
+            assertEquals(files.sources.get(1L).length, metadata.wdtLength());
+            assertEquals((long) files.sources.get(1L).length, metadata.wdtDeclaredLength());
+            assertEquals(1 << 20, metadata.wdtSourceLimit());
+            for (var field : metadata.getClass().getDeclaredFields()) {
+                assertTrue(Modifier.isFinal(field.getModifiers()));
+                assertFalse(
+                        field.getType() == WorldStreamScopes.class
+                                || field.getType() == WorldStreamScopes.Scope.class
+                                || field.getType() == BuildTables.class
+                                || field.getType() == com.vibeminer.files.BuildFiles.class);
+            }
+            for (var constructor : metadata.getClass().getDeclaredConstructors()) {
+                assertTrue(Modifier.isPrivate(constructor.getModifiers()));
+            }
+        } finally {
+            source.closeAsync().join();
+            tables.close();
+        }
+    }
+
+    @Test
     void worldServiceCloseReturnsBeforeHeldLowerCancellationAndRejectsNewWork() throws Exception {
         var entered = new CountDownLatch(1);
         var lowerEntered = new CountDownLatch(1);

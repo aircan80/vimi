@@ -101,9 +101,22 @@ final class WorldStreamScopes {
         }
     }
 
-    private record Maid(String key, long length, int[] tuples, BitSet present) {}
+    private record Maid(
+            String key,
+            long length,
+            Long declaredLength,
+            int sourceLimit,
+            int[] tuples,
+            BitSet present) {}
 
-    private record Proof(Scope token, MapBinding map, long wdtLength, int[] maid, BitSet present) {}
+    private record Proof(
+            Scope token,
+            MapBinding map,
+            long wdtLength,
+            Long wdtDeclaredLength,
+            int wdtSourceLimit,
+            int[] maid,
+            BitSet present) {}
 
     private final BuildTables tables;
     private final BuildFiles files;
@@ -162,7 +175,15 @@ final class WorldStreamScopes {
                 var scope =
                         new Scope(
                                 owner, ++generation, map.mapId(), map.wdtId(), maid.key(), digest);
-                replacement = new Proof(scope, map, maid.length(), maid.tuples(), maid.present());
+                replacement =
+                        new Proof(
+                                scope,
+                                map,
+                                maid.length(),
+                                maid.declaredLength(),
+                                maid.sourceLimit(),
+                                maid.tuples(),
+                                maid.present());
                 return scope;
             }
         } finally {
@@ -192,7 +213,13 @@ final class WorldStreamScopes {
                     maid[ordinal * 8 + i] = (int) refs[i];
                 }
             }
-            return new Maid(wdt.key(), wdt.bytes().length, maid, present);
+            return new Maid(
+                    wdt.key(),
+                    wdt.bytes().length,
+                    wdt.declaredLength,
+                    wdt.sourceLimit,
+                    maid,
+                    present);
         }
     }
 
@@ -410,12 +437,81 @@ final class WorldStreamScopes {
         }
     }
 
+    /** Detached observations only; no services, Scope, heavy proof or replay authority. */
+    static final class AdmissionMetadata {
+        private final BuildRef build;
+        private final String locale, scopeDigest, wdtKey;
+        private final long owner, generation, mapId, wdtId, wdtLength;
+        private final Long wdtDeclaredLength;
+        private final int wdtSourceLimit;
+
+        private AdmissionMetadata(WorldStreamScopes engine, Proof proof) {
+            build = engine.build;
+            locale = engine.locale;
+            var scope = proof.token();
+            owner = scope.owner;
+            generation = scope.generation;
+            mapId = scope.mapId();
+            scopeDigest = scope.digest();
+            wdtId = scope.wdtId();
+            wdtKey = scope.wdtKey();
+            wdtLength = proof.wdtLength();
+            wdtDeclaredLength = proof.wdtDeclaredLength();
+            wdtSourceLimit = proof.wdtSourceLimit();
+        }
+
+        BuildRef build() {
+            return build;
+        }
+
+        String locale() {
+            return locale;
+        }
+
+        long owner() {
+            return owner;
+        }
+
+        long generation() {
+            return generation;
+        }
+
+        long mapId() {
+            return mapId;
+        }
+
+        String scopeDigest() {
+            return scopeDigest;
+        }
+
+        long wdtId() {
+            return wdtId;
+        }
+
+        String wdtKey() {
+            return wdtKey;
+        }
+
+        long wdtLength() {
+            return wdtLength;
+        }
+
+        Long wdtDeclaredLength() {
+            return wdtDeclaredLength;
+        }
+
+        int wdtSourceLimit() {
+            return wdtSourceLimit;
+        }
+    }
+
     static final class TileAdmission {
         private WorldStreamScopes engine;
         private Cancellation token;
         private final WorldFormats.Tile recorded;
         private final UseProfile profile;
         private final long mapId;
+        private final AdmissionMetadata metadata;
         private final ArrayList<Binding> bindings = new ArrayList<>();
         private Input input;
         private final long threadId = Thread.currentThread().threadId();
@@ -433,6 +529,7 @@ final class WorldStreamScopes {
             this.recorded = recorded;
             this.profile = profile;
             this.mapId = proof.token().mapId();
+            this.metadata = new AdmissionMetadata(engine, proof);
             bindings.add(
                     new Binding(proof.token().wdtId(), proof.token().wdtKey(), proof.wdtLength()));
         }
@@ -454,6 +551,11 @@ final class WorldStreamScopes {
         WorldFormats.Tile recorded() {
             check();
             return recorded;
+        }
+
+        AdmissionMetadata metadata() {
+            check();
+            return metadata;
         }
 
         UseProfile profile() {
