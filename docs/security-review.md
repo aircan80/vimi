@@ -7,7 +7,7 @@ endpoints, private libraries, downloaded game data or credentials were used. No
 application behavior was changed. The companion [data-flow inventory](data-flow-inventory.md)
 describes destinations, user triggers and storage in detail.
 
-The important boundaries are the desktop user's account, authenticated remote
+The important boundaries are the desktop user's account, HTTPS source hosts and their
 publishers, downloaded game/community formats, writable local caches and native
 libraries/drivers. No critical or high-severity exploitable issue was confirmed by
 this review. The findings below are hardening and privacy risks with explicit
@@ -83,7 +83,8 @@ legitimate acquisitions can consume substantial disk. This is intentional storag
 behavior with privacy/availability consequences, not an identified unauthorized
 upload. OS permissions and encryption are the current privacy boundary.
 
-Remediation: provide a reviewable storage-usage/retention view, distinguish deleting
+Remediation: extend existing storage-usage reporting with explicit retention and
+disposal controls, distinguish deleting
 a build/catalog entry from deleting retained bytes, add an optional total disk
 budget and document full-library disposal and backups. Do not silently delete
 retained originals. Consider owner-only directory creation and test permissions
