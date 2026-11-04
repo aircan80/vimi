@@ -37,4 +37,5 @@ rejecting unreviewed handmade tuples. No acquired game texture is committed. The
 regression reproduced the original BC2-only refusal before the fix.
 
 Status: independently reviewed and integrated into the alpha.22 candidate,
-PR162; final platform validation/publication pending. Actual reported texture files and macOS runtime have not been rerun here.
+PR162. Decoder tests passed35 forced tasks; source/packet tests passed43 forced
+tasks independently. Publication and platform package checks remain pending. Actual reported texture files and macOS runtime have not been rerun here.
