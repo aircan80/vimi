@@ -25,7 +25,9 @@ import org.lwjgl.system.MemoryStack;
 
 /** Native linkage and packaged-resource proof; deliberately does not initialize a GPU. */
 public final class GpuRuntimeProbe {
-    public static final int PACKAGED_SHADER_BLOBS = 32;
+    private static final List<String> SHADER_RECIPES =
+            List.of("", "terrain/", "terrain/sky/", "world-stream/", "world-wmo/");
+    public static final int PACKAGED_SHADER_BLOBS = SHADER_RECIPES.size() * 4 * 2;
     private static final String SHADERS = "/com/vibeminer/rendering/bgfx/shaders/";
 
     private GpuRuntimeProbe() {}
@@ -57,10 +59,9 @@ public final class GpuRuntimeProbe {
             }
         }
         verifyBackends(System.getProperty("os.name"), backends);
-        verifyShaders("");
-        verifyShaders("terrain/");
-        verifyShaders("terrain/sky/");
-        verifyShaders("world-stream/");
+        for (String recipe : SHADER_RECIPES) {
+            verifyShaders(recipe);
+        }
         System.out.println(
                 "Native runtime: LWJGL "
                         + Version.getVersion()
@@ -127,7 +128,12 @@ public final class GpuRuntimeProbe {
             if (input == null) {
                 throw new IOException("Missing packaged shader resource: " + path);
             }
-            return input.readAllBytes();
+            int limit = path.startsWith("world-wmo/") && path.endsWith(".bin") ? 16384 : 1 << 20;
+            byte[] bytes = input.readNBytes(limit + 1);
+            if (bytes.length > limit) {
+                throw new IOException("Packaged shader resource exceeds its bound");
+            }
+            return bytes;
         }
     }
 }

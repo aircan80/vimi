@@ -320,3 +320,17 @@ tasks.register('nativeGpuWorldStreamSessionProof', JavaExec) {
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args layout.buildDirectory.dir('native-world-stream-owner').get().asFile.absolutePath
 }
+
+
+// The cold WMO pass has a separate recipe/manifest; existing shader bytes stay unchanged.
+tasks.register('verifyWorldWmoShaders', Exec) {
+    group = 'verification'
+    description = 'Verifies dedicated cold BASIC WMO shader profiles offline.'
+    inputs.files(shaderHelper, rootProject.file('scripts/rendering/compile_bgfx_world_wmo.py'))
+    inputs.dir(layout.projectDirectory.dir('src/main/shaders/world-wmo'))
+    inputs.dir(layout.projectDirectory.dir('src/main/resources/com/vibeminer/rendering/bgfx/shaders/world-wmo'))
+    workingDir rootProject.layout.projectDirectory
+    commandLine pythonExecutable.get(), rootProject.file('scripts/rendering/compile_bgfx_world_wmo.py').absolutePath, '--verify'
+}
+tasks.named('processResources') { dependsOn tasks.named('verifyWorldWmoShaders') }
+tasks.named('check') { dependsOn tasks.named('verifyWorldWmoShaders') }
