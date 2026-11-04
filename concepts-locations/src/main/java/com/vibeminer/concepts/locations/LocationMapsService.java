@@ -69,6 +69,11 @@ public final class LocationMapsService implements BuildLocationMaps {
     }
 
     @Override
+    public CompletableFuture<MapNavigationSourceTypes.Result> navigation(Cancellation token) {
+        return submit(token, request -> MapNavigationSource.read(tables, request));
+    }
+
+    @Override
     public CompletableFuture<MapTypes.Resolution> resolve(
             LocationTypes.Location location, Cancellation token) {
         Objects.requireNonNull(location);
