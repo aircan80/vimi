@@ -59,3 +59,11 @@ Its latest Linux and Windows source checks pass; hosted macOS jobs failed to acq
 runners, including one infrastructure retry. Alpha.21 remains unpublished; do not
 retag it. A future combined candidate still needs final integration checks and all
 five platform package gates before publication.
+
+Root combined verification at6e57190: `check assemble` PASSED474 tasks
+(102 executed,8 from cache,364 up-to-date), log
+`/home/aircan/.cache/vimi-tmp/world-next-current-full-check.log`. This includes the
+reviewed PR159 code changes fb80a21/a3fbb5f/6e57190 and liquid Source/mapping,
+but excludes the still-reviewed flat geometry implementation and unfinished native
+instance renderer/bridge. Separate root liquid owner/mapping checks passed42 tasks.
+Documentation-only updates efa9afc/e6527ba follow that tested source head.
