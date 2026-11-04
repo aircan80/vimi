@@ -81,3 +81,19 @@ Followup review and integrated checks:
   Independent actual Vulkan proof also passes19 readbacks. Root inspected the
   authored asymmetric landmark image. This remains a private draw component;
   DX11 artifacts, fixed frame/process owner and GUI enablement are still pending.
+
+Closed source/file bridge c62ac04 is independently approved and integrated0bd6416
+with genuine fixture2a688ce. Root GUI/world checks pass144tasks (57executed);
+full combined `check assemble` then passes479tasks (57executed), log
+`/home/aircan/.cache/vimi-tmp/world-next-bridge-native-full-check.log`.
+
+Ready user-facing fixes are isolated in release/world-character-alpha22, PR162:
+https://github.com/aircan80/vimi/pull/162 . Its runtime30aabaf passes full checks,
+assembly/installDist, five FX suites and native material/persistent-owner proofs:
+482tasks (174executed). This avoids delaying camera/Maps/character improvements
+for unfinished global/water code. Hosted/package gates remain pending. Alpha.20
+is still the latest published version; no tag was moved.
+
+Windows candidate shader workflow PR161, integrated here28d778b, generates actual
+DX11 artifacts with explicit opt-in. Eight-profile candidate completion is pending
+that job; six-test-resource/default-forty verification remains unchanged.

@@ -21,8 +21,10 @@ root bgfx checks plus actual19-readback Vulkan proof pass41 tasks. No instance o
 
 See [world-next-integration-checkpoint.md](docs/world-next-integration-checkpoint.md)
 and [world-experience-roadmap.md](docs/world-experience-roadmap.md) for component
-proofs and remaining gates. Agents continue renderer2cb independent review,
-Source-to-file bridge c62 independent review, and flat-water composition design.
+proofs and remaining gates. Renderer2cb and Source-to-file bridge c62 are now independently approved and
+integrated. Agents implement the fixed frame owner and liquid Source/writer join,
+and design explicit GLOBAL child/parent dispatch. Ready user features are isolated
+in PR162; DX11 artifact generation is queued in PR161.
 Bridge depends on genuine test-only Source fixture736a929. Keep frozen agent
 branches unchanged; promote reviewed commits into integration, then check.
 
