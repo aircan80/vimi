@@ -132,12 +132,17 @@ asserts observations only; the combined factory still must use the service's exa
 configured helper and actual qualified receipt/pixel checks to mint its private
 positive tile capability.
 
-Packet-file retirement and resident payload retirement are separate. The returned
-R owns only its unadvertised packet file/channel and may close idempotently at
-INPUT_CONSUMED. WrittenTile owns the singular base geometry/atlas owners through
-STAGED/current/presented residency and closes both base owners and R at final
-retirement. A transport packet cannot retain WrittenTile or source handles. A
-later closed GUI bridge will own one WrittenTile holder per opaque resident and
-share metadata aliases across pending/current/presented tables; it cannot create
-additional base retains. That bridge's late-cancellation handoff remains a
-separate implementation/review checkpoint.
+Packet-file retirement and resident payload retirement are separate. Initially R
+owns the unadvertised file/channel. Only after successful final source checks may
+the closed bridge atomically MOVE that file capability into TransportOwnedPacket.
+After the one-shot move, R is an inert no-delete shell; source service/WrittenTile
+closure must not delete input still owned by the child reader. Shared idempotent
+close without ownership transfer is insufficient. Before transfer, failed/canceled
+source ownership closes R and its unadvertised file. After transfer, only transport
+retires the actual file at exact INPUT_CONSUMED or confirmed child/IO drain.
+WrittenTile retains the singular base geometry/atlas owners through residency;
+its final close retires those owners and invokes its now-inert R shell. A transport
+packet cannot retain WrittenTile or source handles. The GUI bridge owns one payload
+holder per opaque resident, shared by metadata-only pending/current/presented tables,
+without repeated base retains. Its move-versus-source-close/late-cancel races need
+causal tests in the separate bridge implementation/review checkpoint.
