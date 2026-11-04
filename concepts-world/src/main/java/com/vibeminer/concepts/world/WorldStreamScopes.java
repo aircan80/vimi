@@ -343,19 +343,7 @@ final class WorldStreamScopes {
             synchronized (this) {
                 proof = resolve(scope);
             }
-            try {
-                if (!revalidateMap(proof.map(), token)
-                        || !scope.wdtKey().equals(stat(scope.wdtId(), token).contentKey())) {
-                    throw new IllegalStateException("Scope source changed");
-                }
-            } catch (RuntimeException failure) {
-                if (!token.isCanceled()) {
-                    synchronized (this) {
-                        invalidate(scope);
-                    }
-                }
-                throw failure;
-            }
+            validateProof(proof, token);
             int ordinal = caller.y() * 64 + caller.x();
             if (!proof.present().get(ordinal)) {
                 throw new IllegalArgumentException("Unrecorded terrain coordinate");
@@ -807,14 +795,28 @@ final class WorldStreamScopes {
                 throw new IllegalStateException("Final binding observation limit");
             }
             for (var binding : admission.bindings) {
-                validateBinding(binding, token);
+                try {
+                    validateBinding(binding, token);
+                } catch (RuntimeException | Error failure) {
+                    if (binding.id() == scope.wdtId()) {
+                        invalidateFailedProof(scope, token, failure);
+                    }
+                    throw failure;
+                }
             }
             for (var observed : admission.materialObservations) {
-                token.check();
-                var fresh = files.stat(FileTypes.FileRef.id(observed.fileId()), token).join();
-                token.check();
-                if (!observed.matches(fresh)) {
-                    throw new IllegalStateException("Material source changed");
+                try {
+                    token.check();
+                    var fresh = files.stat(FileTypes.FileRef.id(observed.fileId()), token).join();
+                    token.check();
+                    if (!observed.matches(fresh)) {
+                        throw new IllegalStateException("Material source changed");
+                    }
+                } catch (RuntimeException | Error failure) {
+                    if (observed.fileId() == scope.wdtId()) {
+                        invalidateFailedProof(scope, token, failure);
+                    }
+                    throw failure;
                 }
             }
             validateProof(proof, token);
@@ -876,15 +878,38 @@ final class WorldStreamScopes {
     }
 
     private void validateProof(Proof proof, Cancellation token) {
-        if (!revalidateMap(proof.map(), token)) {
-            throw new IllegalStateException("Map source changed");
+        try {
+            if (!revalidateMap(proof.map(), token)) {
+                throw new IllegalStateException("Map source changed");
+            }
+            validateBinding(
+                    new Binding(proof.token().wdtId(), proof.token().wdtKey(), proof.wdtLength()),
+                    token);
+            synchronized (this) {
+                resolve(proof.token());
+            }
+        } catch (RuntimeException | Error failure) {
+            invalidateFailedProof(proof.token(), token, failure);
+            throw failure;
         }
-        validateBinding(
-                new Binding(proof.token().wdtId(), proof.token().wdtKey(), proof.wdtLength()),
-                token);
-        synchronized (this) {
-            resolve(proof.token());
+    }
+
+    private void invalidateFailedProof(Scope scope, Cancellation token, Throwable failure) {
+        if (!token.isCanceled()
+                && !(failure instanceof java.util.concurrent.CancellationException)) {
+            synchronized (this) {
+                invalidate(scope);
+            }
         }
+    }
+
+    /** Metadata only: no capture, stat, source access or preparation. */
+    synchronized boolean isKnown(Scope scope) {
+        return !closed
+                && scope != null
+                && scope.owner == owner
+                && (current != null && current.token().equals(scope)
+                        || replacement != null && replacement.token().equals(scope));
     }
 
     synchronized int retainedProofs() {

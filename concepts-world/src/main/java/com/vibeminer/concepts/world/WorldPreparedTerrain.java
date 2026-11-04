@@ -119,6 +119,7 @@ final class WorldPreparedTerrain {
     /** One base geometry pin and at most one base atlas lease, moved through residency. */
     static final class WrittenTile<R extends AutoCloseable> implements AutoCloseable {
         private WorldPreparedTerrain source;
+        private WorldStreamScopes.Scope scope;
         private WorldGeometryCache.Prepared geometry;
         private TerrainAtlasPool.Lease atlas;
         private R written;
@@ -135,12 +136,17 @@ final class WorldPreparedTerrain {
         private boolean constructing = true, closed;
         private int callbacks;
 
-        private WrittenTile(WorldPreparedTerrain source) {
+        private WrittenTile(WorldPreparedTerrain source, WorldStreamScopes.Scope scope) {
             this.source = source;
+            this.scope = scope;
+        }
+
+        synchronized boolean isOpen() {
+            return !closed && source != null && !source.invalidated && source.scopes.isKnown(scope);
         }
 
         private synchronized void check() {
-            if (closed || source == null || source.invalidated) {
+            if (!isOpen()) {
                 throw new IllegalStateException("Terrain output closed");
             }
         }
@@ -269,6 +275,7 @@ final class WorldPreparedTerrain {
                 }
                 owner = source;
                 source = null;
+                scope = null;
                 retiredGeometry = geometry;
                 retiredAtlas = atlas;
                 retiredWritten = written;
@@ -359,12 +366,13 @@ final class WorldPreparedTerrain {
         }
     }
 
-    private synchronized <R extends AutoCloseable> WrittenTile<R> reserve() {
+    private synchronized <R extends AutoCloseable> WrittenTile<R> reserve(
+            WorldStreamScopes.Scope scope) {
         checkOpen();
         if (outputs.size() >= 12) {
             throw new IllegalStateException("Terrain output credit busy");
         }
-        var value = new WrittenTile<R>(this);
+        var value = new WrittenTile<R>(this, Objects.requireNonNull(scope));
         outputs.add(value);
         return value;
     }
@@ -375,7 +383,7 @@ final class WorldPreparedTerrain {
             Cancellation cancel,
             Output<R> writer) {
         Objects.requireNonNull(writer);
-        var owned = this.<R>reserve();
+        var owned = this.<R>reserve(scope);
         boolean transferred = false;
         Throwable primary = null;
         try {

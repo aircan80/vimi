@@ -35,6 +35,167 @@ final class WorldStreamScopesTest {
             new WorldFormats.Tile(7, 19, 2, 0, 0, 0, 0, 3, 0, 0);
 
     @Test
+    void terrainScopeMetadataValidityRejectsNewBorrowButPreservesEnteredHistoricalPayload()
+            throws Exception {
+        var files = new WorldTerrainTextureSourceTest.Files();
+        var tables = new Tables(files);
+        var pool = new TerrainAtlasPool();
+        var world = new WorldService(tables.handle(), files.files(), pool);
+        var entered = new CompletableFuture<Void>();
+        var release = new CompletableFuture<Void>();
+        WorldPreparedTerrain.WrittenTile<AutoCloseable> first = null, second = null;
+        try {
+            var source = world.preparedTerrain();
+            var current = source.createScope(REQUEST, Cancellation.NONE);
+            source.activate(current);
+            first =
+                    source.prepareAndWrite(
+                            current,
+                            TILE,
+                            Cancellation.NONE,
+                            (borrow, cancel) -> (AutoCloseable) () -> {});
+            var historical = first;
+            var reading =
+                    CompletableFuture.runAsync(
+                            () ->
+                                    historical.withPayload(
+                                            borrow -> {
+                                                var metadata = borrow.metadata();
+                                                var root = borrow.root();
+                                                var areas = borrow.areas();
+                                                entered.complete(null);
+                                                release.join();
+                                                assertTrue(metadata == borrow.metadata());
+                                                assertTrue(root == borrow.root());
+                                                assertTrue(areas == borrow.areas());
+                                                assertTrue(
+                                                        borrow.tile().vertices().remaining() > 0);
+                                                assertTrue(
+                                                        borrow.texture().pixels().remaining() > 0);
+                                            }));
+            entered.get(5, TimeUnit.SECONDS);
+            var replacement = source.createScope(REQUEST, Cancellation.NONE);
+            second =
+                    source.prepareAndWrite(
+                            replacement,
+                            TILE,
+                            Cancellation.NONE,
+                            (borrow, cancel) -> (AutoCloseable) () -> {});
+            assertTrue(first.isOpen() && second.isOpen(), "Current and replacement both known");
+            source.activate(replacement);
+            int stats = files.stats.values().stream().mapToInt(AtomicInteger::get).sum();
+            int opens = files.totalOpens(), captures = tables.captures.get();
+            assertFalse(first.isOpen());
+            assertTrue(second.isOpen());
+            assertThrows(IllegalStateException.class, () -> historical.withPayload(borrow -> {}));
+            assertThrows(IllegalStateException.class, historical::written);
+            assertEquals(stats, files.stats.values().stream().mapToInt(AtomicInteger::get).sum());
+            assertEquals(opens, files.totalOpens());
+            assertEquals(captures, tables.captures.get(), "Validity checks never capture source");
+            assertEquals(
+                    2,
+                    pool.stats().leaseClaims(),
+                    "Historical base remains owned until retirement");
+            release.complete(null);
+            reading.get(5, TimeUnit.SECONDS);
+        } finally {
+            release.complete(null);
+            if (first != null) {
+                first.close();
+            }
+            if (second != null) {
+                second.close();
+            }
+            world.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+            tables.close();
+        }
+    }
+
+    @Test
+    void initialAndFinalMapOrWdtFailureInvalidateKnownScopeWhileCancellationPreservesIt()
+            throws Exception {
+        for (int mode = 0; mode < 5; mode++) {
+            var files = new WorldTerrainTextureSourceTest.Files();
+            var tables = new Tables(files);
+            var pool = new TerrainAtlasPool();
+            var world = new WorldService(tables.handle(), files.files(), pool);
+            var cancel = new Cancellation();
+            WorldPreparedTerrain.WrittenTile<AutoCloseable> previous = null;
+            int selected = mode;
+            var retired = new AtomicInteger();
+            try {
+                var source = world.preparedTerrain();
+                var scope = source.createScope(REQUEST, Cancellation.NONE);
+                source.activate(scope);
+                previous =
+                        source.prepareAndWrite(
+                                scope,
+                                TILE,
+                                Cancellation.NONE,
+                                (borrow, token) -> (AutoCloseable) () -> {});
+                if (mode == 0) {
+                    tables.stampMode = 1;
+                }
+                if (mode == 1) {
+                    files.changedId = 1;
+                    files.changeAfterRead = true;
+                }
+                assertThrows(
+                        RuntimeException.class,
+                        () ->
+                                source.prepareAndWrite(
+                                        scope,
+                                        TILE,
+                                        cancel,
+                                        (borrow, token) -> {
+                                            if (selected == 2) {
+                                                tables.stampMode = 1;
+                                            }
+                                            if (selected == 3) {
+                                                files.changedId = 1;
+                                                files.changeAfterRead = true;
+                                            }
+                                            if (selected == 4) {
+                                                cancel.cancel();
+                                            }
+                                            return (AutoCloseable) retired::incrementAndGet;
+                                        }));
+                assertEquals(mode >= 2 ? 1 : 0, retired.get());
+                int stats = files.stats.values().stream().mapToInt(AtomicInteger::get).sum();
+                int opens = files.totalOpens(), captures = tables.captures.get();
+                assertEquals(mode == 4, previous.isOpen());
+                assertEquals(
+                        stats, files.stats.values().stream().mapToInt(AtomicInteger::get).sum());
+                assertEquals(opens, files.totalOpens());
+                assertEquals(captures, tables.captures.get());
+                if (mode == 4) {
+                    previous.withPayload(borrow -> assertTrue(borrow.texture() != null));
+                    try (var recovered =
+                            source.prepareAndWrite(
+                                    scope,
+                                    TILE,
+                                    Cancellation.NONE,
+                                    (borrow, token) -> (AutoCloseable) () -> {})) {
+                        assertTrue(recovered.isOpen());
+                    }
+                } else {
+                    var invalid = previous;
+                    assertThrows(
+                            IllegalStateException.class, () -> invalid.withPayload(borrow -> {}));
+                }
+            } finally {
+                if (previous != null) {
+                    previous.close();
+                }
+                world.closeAsync().get(5, TimeUnit.SECONDS);
+                pool.closeAsync().get(5, TimeUnit.SECONDS);
+                tables.close();
+            }
+        }
+    }
+
+    @Test
     void combinedTerrainSourceCloseReportsEachCleanupFailureOnceWithoutThrowableCycles()
             throws Exception {
         var files = new WorldTerrainTextureSourceTest.Files();
