@@ -57,7 +57,7 @@ public final class WorldNavigationUiTest {
                 tiles.add(new WorldFormats.Tile(x,y,10000+x*64+y,0,20000+x*64+y));
         }
         public CompletableFuture<WorldService.Catalog> catalog(Cancellation token) {
-            return CompletableFuture.completedFuture(new WorldService.Catalog(List.of(map),List.of(),List.of()));
+            return CompletableFuture.completedFuture(new WorldService.Catalog(List.of(map),List.of(new WorldService.Area(12,"Elwynn Forest",0,1),new WorldService.Area(9,"Northshire Valley",12,1),new WorldService.Area(10,"Northshire Abbey",9,1),new WorldService.Area(11,"Eastvale Logging Camp",12,1)),List.of()));
         }
         public CompletableFuture<WorldService.Inventory> inventory(WorldService.MapInfo selected,Cancellation token) {
             return CompletableFuture.completedFuture(new WorldService.Inventory(map,new WorldFormats.World(tiles,false),null));
@@ -73,7 +73,9 @@ public final class WorldNavigationUiTest {
                 unavailableCalls.incrementAndGet();
                 return CompletableFuture.completedFuture(new WorldService.LoadedTile(tile,null,"Authored unavailable neighbor"));
             }
-            var value = new WorldService.LoadedTile(tile,terrain,null);
+            long areaId=tile.x()==X?(tile.y()==Y?9:10):11;
+            var metadata=new WorldFormats.AreaMetadata(List.of(new WorldFormats.AreaChunk(7,7,areaId,(float)(maxX-SIZE/2+16),(float)(maxY-SIZE/2+16),0,null)));
+            var value = new WorldService.LoadedTile(tile,terrain,null,metadata);
             if (hold) {
                 var result = new CompletableFuture<WorldService.LoadedTile>();
                 releases.add(() -> result.complete(value));
@@ -171,7 +173,12 @@ public final class WorldNavigationUiTest {
         fixture.allowed.set(expected);
         set(view,"camera",new TerrainRenderer.Camera(10000-(dx+.5)*SIZE,20000-(dy+.5)*SIZE,100,0,0));
         invoke(view,"loadNext");
-        await(fixture,() -> settled(view,expected),() -> move(view,fixture,index+1));
+        await(fixture,() -> settled(view,expected),() -> {
+            invoke(view,"requestFrame");
+            String expectedArea=dx==0?(dy==0?"Elwynn Forest · Northshire Valley":"Elwynn Forest · Northshire Valley · Northshire Abbey"):"Elwynn Forest · Eastvale Logging Camp";
+            require(((javafx.scene.control.Label)view.lookup("#world-current-area")).getText().equals("Terrain area: "+expectedArea),"Moving camera updates recorded zone/subzone: "+expectedArea);
+            move(view,fixture,index+1);
+        });
     }
 
     private static void unavailableRetainsGeometry(WorldView view, Fixture fixture, Runnable next) {
@@ -199,6 +206,7 @@ public final class WorldNavigationUiTest {
                 viewport.resize(viewport.getWidth()+17,viewport.getHeight()+11);
                 invoke(view,"requestFrame");
                 require(!view.lookup("#world-minimap").isVisible(),"Retired source cannot reveal minimap after resize");
+                require(((javafx.scene.control.Label)view.lookup("#world-current-area")).getText().equals("Terrain area unavailable"),"Retired source cannot retain current-area name");
                 require(fixture.minimapCalls.get()==before,"Retired source cannot request artwork after resize");
                 DONE.complete(null);
             });

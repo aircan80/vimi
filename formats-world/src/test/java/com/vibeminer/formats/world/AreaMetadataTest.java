@@ -32,6 +32,29 @@ class AreaMetadataTest {
     }
 
     @Test
+    void combinedTileRetainsIdenticalGeometryAndAreaEvidenceFromOneWalker() {
+        byte[] bytes = WorldFormatsTest.adt(0x10000, 0, 1);
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(HEADER + 52, 12);
+        var combined = WorldFormats.adtTile(bytes, () -> false);
+        org.junit.jupiter.api.Assertions.assertArrayEquals(
+                WorldFormats.adt(bytes, () -> false).vertices(), combined.terrain().vertices());
+        org.junit.jupiter.api.Assertions.assertArrayEquals(
+                WorldFormats.adt(bytes, () -> false).triangles(), combined.terrain().triangles());
+        assertEquals(WorldFormats.adtAreas(bytes, () -> false), combined.areas());
+        var huge =
+                new java.util.AbstractList<WorldFormats.AreaChunk>() {
+                    public int size() {
+                        return 257;
+                    }
+
+                    public WorldFormats.AreaChunk get(int i) {
+                        throw new AssertionError("Oversized metadata copied");
+                    }
+                };
+        assertThrows(IllegalArgumentException.class, () -> new WorldFormats.AreaMetadata(huge));
+    }
+
+    @Test
     void lowAndHighHolesChooseFirstRenderedCellAndFullyHoledChunkHasNoEntry() {
         var high = WorldFormats.adtAreas(WorldFormatsTest.adt(0x10000, 0, 1), () -> false);
         assertEquals(310, high.chunks().getFirst().entryReference().z());

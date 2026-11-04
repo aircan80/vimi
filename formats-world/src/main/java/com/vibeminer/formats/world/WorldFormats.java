@@ -204,10 +204,10 @@ public final class WorldFormats {
 
     public record AreaMetadata(List<AreaChunk> chunks) {
         public AreaMetadata {
-            chunks = List.copyOf(chunks);
             if (chunks.isEmpty() || chunks.size() > 256) {
                 throw invalid("Invalid area metadata bounds");
             }
+            chunks = List.copyOf(chunks);
             boolean[] seen = new boolean[256];
             for (var chunk : chunks) {
                 int at = chunk.y() * 16 + chunk.x();
@@ -226,6 +226,14 @@ public final class WorldFormats {
     /** Metadata shares the geometry profile and validates every source height without a mesh. */
     public static AreaMetadata adtAreas(byte[] bytes, BooleanSupplier canceled) {
         return parseAdt(bytes, canceled, false).areas();
+    }
+
+    /** Geometry and recorded area metadata from one checked source walk. */
+    public record TerrainAreas(Terrain terrain, AreaMetadata areas) {}
+
+    public static TerrainAreas adtTile(byte[] bytes, BooleanSupplier canceled) {
+        var parsed = parseAdt(bytes, canceled, true);
+        return new TerrainAreas(parsed.terrain(), parsed.areas());
     }
 
     /** Native source samples through the same checked walker, never inferred from a mesh. */

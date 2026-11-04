@@ -30,6 +30,23 @@ World area cancels background requests and pauses movement/rendering; returning
 resumes the explorer. Closing/replacing a build drains its world service before
 borrowed tables/files are retired.
 
+## Current terrain zone and subzone
+
+The explorer footer shows the recorded terrain area under the camera, including
+its complete verified parent chain, for example **Elwynn Forest · Northshire
+Valley · Northshire Abbey**. Moving or changing height does not trigger another
+lookup or file request. The name comes from the unique loaded MCNK native XY
+rectangle and AreaTable parent records, independent of camera altitude. Exact
+shared boundaries use one half-open ownership rule; overlapping rectangles,
+unloaded coverage, missing parents, cycles and map mismatches show **Terrain area
+unavailable**. This does not identify WMO interior volumes.
+
+Geometry and area facts are parsed together from the same authenticated root ADT.
+The existing 12-tile service cache retains at most 3,072 chunk-area records, and
+the viewport reuses its bounded loaded neighborhood. The catalog builds one
+immutable ID index on its worker, limited to 100,000 area records; frame updates
+perform bounded metadata lookup without table/file I/O or full catalog scans.
+
 ## First-stage scope
 
 This is a free-fly **terrain preview with height shading**. It renders source

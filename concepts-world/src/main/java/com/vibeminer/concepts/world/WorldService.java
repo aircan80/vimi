@@ -26,24 +26,59 @@ public final class WorldService implements BuildWorld {
         }
     }
 
-    public record Area(long id, String name, long parentId, long mapId) {
+    public record Area(long id, String name, long parentId, long mapId, boolean hierarchyKnown) {
+        public Area(long id, String name, long parentId, long mapId) {
+            this(id, name, parentId, mapId, true);
+        }
+
         @Override
         public String toString() {
             return name == null || name.isBlank() ? "Area #" + id : name;
         }
     }
 
-    public record Catalog(List<MapInfo> maps, List<Area> areas, List<String> issues) {
+    public record Catalog(
+            List<MapInfo> maps,
+            List<Area> areas,
+            List<String> issues,
+            WorldCurrentArea.Index areaIndex) {
+        public Catalog(List<MapInfo> maps, List<Area> areas, List<String> issues) {
+            this(maps, areas, issues, currentAreaIndex(maps, areas, issues));
+        }
+
         public Catalog {
+            if (maps.size() > 10000 || areas.size() > 100000 || issues.size() > 1024) {
+                throw new IllegalArgumentException("World catalog bounds");
+            }
+            java.util.Objects.requireNonNull(areaIndex);
             maps = List.copyOf(maps);
             areas = List.copyOf(areas);
             issues = List.copyOf(issues);
         }
     }
 
+    private static WorldCurrentArea.Index currentAreaIndex(
+            List<MapInfo> maps, List<Area> areas, List<String> issues) {
+        java.util.Objects.requireNonNull(maps);
+        java.util.Objects.requireNonNull(areas);
+        java.util.Objects.requireNonNull(issues);
+        if (maps.size() > 10000 || areas.size() > 100000 || issues.size() > 1024) {
+            throw new IllegalArgumentException("World catalog bounds");
+        }
+        return WorldCurrentArea.Index.of(areas);
+    }
+
     public record Inventory(MapInfo map, WorldFormats.World world, String issue) {}
 
-    public record LoadedTile(WorldFormats.Tile tile, WorldFormats.Terrain terrain, String issue) {}
+    public record LoadedTile(
+            WorldFormats.Tile tile,
+            WorldFormats.Terrain terrain,
+            String issue,
+            WorldFormats.AreaMetadata areas) {
+        public LoadedTile(WorldFormats.Tile tile, WorldFormats.Terrain terrain, String issue) {
+            this(tile, terrain, issue, null);
+        }
+    }
 
     /** Detached top-left ARGB artwork, bounded to one 256-pixel mip. */
     public record Minimap(int width, int height, java.nio.IntBuffer pixels, String issue) {
@@ -152,7 +187,8 @@ public final class WorldService implements BuildWorld {
                                                     row.id(),
                                                     text(schema, row, "AreaName_lang"),
                                                     parent == null ? 0 : parent,
-                                                    map));
+                                                    map,
+                                                    parent != null));
                                 }
                             });
                     catalog = new Catalog(maps, areas, issues);
@@ -230,11 +266,8 @@ public final class WorldService implements BuildWorld {
                         if (ref == null) {
                             return new LoadedTile(tile, null, "No terrain file reference");
                         }
-                        var loaded =
-                                new LoadedTile(
-                                        tile,
-                                        WorldFormats.adt(bytes(ref, cancel), cancel::isCanceled),
-                                        null);
+                        var parsed = WorldFormats.adtTile(bytes(ref, cancel), cancel::isCanceled);
+                        var loaded = new LoadedTile(tile, parsed.terrain(), null, parsed.areas());
                         cache.put(key, loaded);
                         while (cache.size() > 12) {
                             cache.remove(cache.keySet().iterator().next());
@@ -291,7 +324,8 @@ public final class WorldService implements BuildWorld {
                             throw new IllegalStateException(
                                     "Terrain source changed; find terrain again");
                         }
-                        var metadata = WorldFormats.adtAreas(source.bytes(), cancel::isCanceled);
+                        var parsed = WorldFormats.adtTile(source.bytes(), cancel::isCanceled);
+                        var metadata = parsed.areas();
                         var entry =
                                 metadata.chunks().stream()
                                         .filter(
@@ -308,9 +342,8 @@ public final class WorldService implements BuildWorld {
                             throw new IllegalStateException(
                                     "Terrain entry evidence changed; find terrain again");
                         }
-                        var terrain = WorldFormats.adt(source.bytes(), cancel::isCanceled);
                         cancel.check();
-                        return new LoadedTile(match.tile(), terrain, null);
+                        return new LoadedTile(match.tile(), parsed.terrain(), null, metadata);
                     } catch (java.util.concurrent.CancellationException canceled) {
                         throw canceled;
                     } catch (RuntimeException failure) {
