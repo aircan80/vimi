@@ -146,8 +146,11 @@ final class WorldStreamScopes {
             Maid maid = readMaid(map.wdtId(), token);
             // Recheck the qualified selected row and WDT identity before committing a proof.
             if (!maps.revalidate(map, token)
-                    || !maid.key().equals(stat(map.wdtId(), token).contentKey())) {
-                throw new IllegalStateException("Scope source changed");
+                    || !maid.key()
+                            .equals(
+                                    stat(map.wdtId(), token, WorldSourceRefusals.Site.MAP_BINDING)
+                                            .contentKey())) {
+                throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MAP_BINDING);
             }
             String digest = digest(map, maid.key());
             synchronized (this) {
@@ -274,7 +277,7 @@ final class WorldStreamScopes {
     private void begin() {
         requireHealthy();
         if (!working.compareAndSet(false, true)) {
-            throw new IllegalStateException("Source preparation busy");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_WORKER);
         }
         boolean rejected;
         Throwable fault;
@@ -294,7 +297,7 @@ final class WorldStreamScopes {
             if (fault != null) {
                 throw new IllegalStateException("Source cleanup failed", fault);
             }
-            throw new IllegalStateException("Scope source closed");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.OWNER_RETIRED);
         }
     }
 
@@ -366,10 +369,10 @@ final class WorldStreamScopes {
         requireHealthy();
         checkOpen();
         if (working.get()) {
-            throw new IllegalStateException("Source preparation busy");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_WORKER);
         }
         if (replacement == null || !replacement.token().equals(scope)) {
-            throw new IllegalStateException("Stale scope");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SCOPE_RETIRED);
         }
         current = replacement;
         replacement = null;
@@ -667,7 +670,8 @@ final class WorldStreamScopes {
             if (reserved || input != null) {
                 throw new IllegalStateException("Input credit busy");
             }
-            var fresh = engine.stat(recorded.rootId(), token);
+            var fresh =
+                    engine.stat(recorded.rootId(), token, WorldSourceRefusals.Site.SOURCE_BINDING);
             if (!Objects.equals(key, fresh.contentKey())
                     || fresh.size() != null && fresh.size() != length) {
                 return false;
@@ -681,7 +685,7 @@ final class WorldStreamScopes {
             }
             for (var prior : bindings) {
                 if (prior.id() == binding.id() && !prior.equals(binding)) {
-                    throw new IllegalStateException("Source changed");
+                    throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_BINDING);
                 }
             }
             if (!bindings.contains(binding)) {
@@ -708,6 +712,9 @@ final class WorldStreamScopes {
                             yield recorded.obj0Id();
                         }
                     };
+            if (kind == RecordedInput.ROOT && id == 0) {
+                throw WorldSourceRefusals.at(WorldSourceRefusals.Site.NUMERIC_ROOT);
+            }
             return readCandidate(
                     id,
                     profile == UseProfile.BASIC_WMO && kind == RecordedInput.ROOT
@@ -769,7 +776,7 @@ final class WorldStreamScopes {
                 var binding = new Binding(id, source.key(), source.bytes().length);
                 for (var prior : bindings) {
                     if (prior.id() == id && !prior.equals(binding)) {
-                        throw new IllegalStateException("Source changed");
+                        throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_BINDING);
                     }
                 }
                 if (!bindings.contains(binding)) {
@@ -861,7 +868,7 @@ final class WorldStreamScopes {
                     var fresh = files.stat(FileTypes.FileRef.id(observed.fileId()), token).join();
                     token.check();
                     if (!observed.matches(fresh)) {
-                        throw new IllegalStateException("Material source changed");
+                        throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MATERIAL_BINDING);
                     }
                 } catch (RuntimeException | Error failure) {
                     if (observed.fileId() == scope.wdtId()) {
@@ -967,17 +974,22 @@ final class WorldStreamScopes {
 
     private void validateBinding(Binding binding, Cancellation token) {
         token.check();
-        var fresh = stat(binding.id(), token);
-        if (!binding.key().equals(fresh.contentKey())
+        var lookup = files.stat(FileTypes.FileRef.id(binding.id()), token).join();
+        token.check();
+        var fresh = lookup.file();
+        if (lookup.state() != FileTypes.FileLookupState.FOUND
+                || fresh == null
+                || fresh.fileDataId() != binding.id()
+                || !binding.key().equals(fresh.contentKey())
                 || fresh.size() != null && fresh.size() != binding.length()) {
-            throw new IllegalStateException("Consumed source changed");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_BINDING);
         }
     }
 
     private void validateProof(Proof proof, Cancellation token) {
         try {
             if (!maps.revalidate(proof.map(), token)) {
-                throw new IllegalStateException("Map source changed");
+                throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MAP_BINDING);
             }
             validateBinding(
                     new Binding(proof.token().wdtId(), proof.token().wdtKey(), proof.wdtLength()),
@@ -1071,7 +1083,7 @@ final class WorldStreamScopes {
         if (replacement != null && replacement.token().equals(scope)) {
             return replacement;
         }
-        throw new IllegalStateException("Stale scope");
+        throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SCOPE_RETIRED);
     }
 
     private void invalidate(Scope scope) {
@@ -1085,18 +1097,25 @@ final class WorldStreamScopes {
 
     private void checkOpen() {
         if (closed) {
-            throw new IllegalStateException("Scope source closed");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.OWNER_RETIRED);
         }
     }
 
     private FileTypes.BuildFile stat(long id, Cancellation token) {
+        return stat(id, token, WorldSourceRefusals.Site.SOURCE_INPUT);
+    }
+
+    private FileTypes.BuildFile stat(
+            long id, Cancellation token, WorldSourceRefusals.Site unbound) {
+        token.check();
         var result = files.stat(FileTypes.FileRef.id(id), token).join();
+        token.check();
         if (result.state() != FileTypes.FileLookupState.FOUND
                 || result.file() == null
                 || result.file().fileDataId() != id
                 || result.file().contentKey() == null
                 || !result.file().contentKey().matches("[0-9a-f]{32}")) {
-            throw new IllegalStateException("Unbound source");
+            throw WorldSourceRefusals.at(unbound);
         }
         return result.file();
     }
@@ -1104,34 +1123,39 @@ final class WorldStreamScopes {
     private Source read(long id, int limit, Cancellation token) {
         var before = stat(id, token);
         if (before.size() != null && before.size() > limit) {
-            throw new IllegalStateException("Source exceeds bound");
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_INPUT);
         }
         var opened = files.openRead(FileTypes.FileRef.id(id), token).join();
         if (opened.stream() == null) {
-            throw new IllegalStateException("Source unavailable");
+            if (opened.state() == FileTypes.FileReadState.COMPLETE) {
+                throw new IllegalStateException("Complete source has no stream");
+            }
+            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_INPUT);
         }
         try (var stream = opened.stream()) {
+            if (before.size() != null && before.size() != stream.length()) {
+                throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_BINDING);
+            }
             if (opened.state() != FileTypes.FileReadState.COMPLETE
                     || !stream.holes().isEmpty()
                     || stream.length() < 12
-                    || stream.length() > limit
-                    || before.size() != null && before.size() != stream.length()) {
-                throw new IllegalStateException("Incomplete source");
+                    || stream.length() > limit) {
+                throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_INPUT);
             }
             var bytes = ByteBuffer.allocate((int) stream.length());
             while (bytes.hasRemaining()) {
                 token.check();
                 if (stream.read(bytes, token).join() <= 0) {
-                    throw new IllegalStateException("Truncated source");
+                    throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_INPUT);
                 }
             }
             token.check();
-            var after = stat(id, token);
+            var after = stat(id, token, WorldSourceRefusals.Site.SOURCE_BINDING);
             // Download/local metadata enrichment is allowed; only consumed source identity binds.
             if (before.fileDataId() != after.fileDataId()
                     || !before.contentKey().equals(after.contentKey())
                     || after.size() != null && after.size() != bytes.capacity()) {
-                throw new IllegalStateException("Source changed during read");
+                throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_BINDING);
             }
             return new Source(before.contentKey(), bytes.array(), before.size(), limit);
         }

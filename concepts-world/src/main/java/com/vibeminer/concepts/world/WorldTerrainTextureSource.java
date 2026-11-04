@@ -1192,6 +1192,10 @@ public final class WorldTerrainTextureSource {
         return fallback;
     }
 
+    static boolean ownedSourceChanged(Throwable failure) {
+        return failure instanceof SourceFailure known && known.reason == Reason.CHANGED;
+    }
+
     private static void propagateCancellation(Request request, RuntimeException failure) {
         request.check();
         Throwable value = failure;

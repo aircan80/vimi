@@ -1671,7 +1671,7 @@ final class WorldStreamScopesTest {
                 byte[] original = files.sources.get(2L);
                 files.sources.put(2L, new byte[16]);
                 assertThrows(
-                        IllegalArgumentException.class,
+                        WorldTerrainStreaming.Refusal.class,
                         () ->
                                 source.withRecordedTile(
                                         scope,
@@ -2611,9 +2611,13 @@ final class WorldStreamScopesTest {
             tables.metadataMode = mode;
             var source = new WorldStreamScopes(tables.handle(), files.files());
             try {
-                assertThrows(
-                        UnsupportedOperationException.class,
-                        () -> source.create(REQUEST, Cancellation.NONE));
+                var refused =
+                        assertThrows(
+                                WorldTerrainStreaming.Refusal.class,
+                                () -> source.create(REQUEST, Cancellation.NONE));
+                assertEquals(
+                        WorldTerrainStreaming.Refusal.Reason.CAPABILITY_UNAVAILABLE,
+                        refused.reason());
                 assertEquals(0, tables.pages.get(), "Oversized metadata refuses before row decode");
                 assertEquals(0, files.totalOpens());
                 assertEquals(0, source.retainedProofs());
@@ -2859,7 +2863,14 @@ final class WorldStreamScopesTest {
                         data,
                         tables.dataReads.get(),
                         "No fallback full scan under failed fresh capability");
-                assertEquals(0, source.retainedProofs());
+                assertEquals(
+                        mode == 7 ? 1 : 0,
+                        source.retainedProofs(),
+                        "Explicit canceled page preserves healthy scope; other failures invalidate");
+                if (mode == 7) {
+                    tables.eofMode = 0;
+                    assertEquals(TILE, source.recorded(scope, TILE, Cancellation.NONE));
+                }
             } finally {
                 source.closeAsync().join();
                 tables.close();
@@ -2945,9 +2956,12 @@ final class WorldStreamScopesTest {
             var scope = source.create(REQUEST, Cancellation.NONE);
             int reads = tables.pages.get();
             tables.metadataMode = 23;
-            assertThrows(
-                    UnsupportedOperationException.class,
-                    () -> source.recorded(scope, TILE, Cancellation.NONE));
+            var refused =
+                    assertThrows(
+                            WorldTerrainStreaming.Refusal.class,
+                            () -> source.recorded(scope, TILE, Cancellation.NONE));
+            assertEquals(
+                    WorldTerrainStreaming.Refusal.Reason.CAPABILITY_UNAVAILABLE, refused.reason());
             assertEquals(
                     reads,
                     tables.pages.get(),
