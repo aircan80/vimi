@@ -34,9 +34,11 @@ public final class WorldStreamTransport {
     public static PreparedSession prepare(Path scratchParent, Spec spec) throws IOException;
 
     public static final class PreparedSession implements AutoCloseable {
-        public List<String> launchArguments(); // flags for the existing GpuViewerMain, not shell text
-        public Session attach(Process applicationOwnedChild) throws IOException;
-        public void close(); // only unattached ownership; called off FX
+        public Session launch(Starter starter); // transfers ownership BEFORE asynchronous start
+        public void close(); // only never-launched ownership; called off FX
+    }
+    @FunctionalInterface public interface Starter {
+        Process start(List<String> launchArguments) throws IOException;
     }
 
     public record Camera(long revision, long policy, int width, int height, TerrainCamera view) {}
@@ -83,7 +85,7 @@ public final class WorldStreamTransport {
         public IntBuffer pixels(); // detached read-only ARGB_PRE, no native/mapping alias
     }
     public static final class DrainReceipt {
-        public long childPid(); public int exitCode();
+        public OptionalLong childPid(); public OptionalInt exitCode();
     }
 }
 ```
@@ -108,25 +110,42 @@ adapter will remain structurally neutral: its successful return never authentica
 The facade does not start an independent world-only child manager. The existing application
 `GpuPreviewService.application()` owns the one-child application policy today. Its future
 adapter holds that SAME arbiter reservation while creating PreparedSession, starting the matched
-Java child from `launchArguments()`, attaching, stopping and receiving DrainReceipt. Models,
+Java child through `launch(Starter)`, stopping and receiving DrainReceipt. Models,
 cold terrain and hot terrain must use the same arbiter. No separate static singleton/semaphore
 inside this facade is presented as proof of application-wide exclusivity.
 
 Preparation is synchronous/off FX and creates a new private temp directory, random nonzero
 128-bit nonce, fixed256-byte session.wss and exactly4,800,256-byte fresh frames mapping.
-Arguments use the current PID, exact backend choice and bootstrap checksum. The existing
+Arguments use the current PID, exact backend choice and bootstrap checksum. The provided
 launcher remains responsible for matched bundled/runtime Java, classpath and native-access
 flags; arguments are a bounded list, never a shell command. DEFAULT uses the existing OS backend
 selection and does not authorize OpenGL or software fallback.
 
-Unattached PreparedSession owns/deletes its own newly created files only. After successful
-attach ownership transfers once to Session; closing the old preparation handle cannot delete
-an attached session. Attach failure after a process exists requires the application arbiter to
-retain that process/permit and stop it; it must not treat a failed method return as proof that
-no child was started. Production attach/start adapter tests must cover that boundary.
+A never-launched PreparedSession owns/deletes only its own newly created files. `launch`
+atomically and irreversibly transfers that ownership to a new Session **before** scheduling or
+invoking Starter. It returns that Session immediately; start runs off caller. After launch is
+requested, closing the old preparation handle cannot delete files, including while Starter is
+blocked, after child start, or when fallible reader/attach setup fails. No public external-start
+then-attach gap remains.
+
+The provided Starter is the existing application arbiter's adapter, not an independent launcher.
+Its contract is precise: return every spawned Process handle, or throw with no child. It must
+locally own/clean any unreturned child if it does additional fallible work; standard
+ProcessBuilder.start returns the handle or throws without a caller-owned child. The adapter
+retains the application permit until the Session's actual DrainReceipt, including initialization
+failure. It cannot release on an initialized-future failure or a bounded close timeout.
+
+A successful Process return transfers its handle irrevocably to Session before any other
+fallible setup. On failure afterwards that Session owns stop/exit/drain, not the old preparation
+object. If Starter throws, the same failed Session still owns mapping/files/readers cleanup and
+exposes its terminal drain future; no transition back to never-launched cleanup is allowed.
+A no-child start failure can mint a DrainReceipt with BOTH childPid/exitCode empty only after
+those local owners drain. A started child has both present, and never obtains a receipt before
+confirmed exit. DrainReceipt describes resource cleanup, not successful rendering: failed
+initialization/process status remains failed even when cleanup subsequently succeeds.
 
 The facade validates the actual Process handle, fresh mapping/session identity and single
-attach state before starting readers. Child errors before SESSION are process failure, not
+launch state before starting readers. Child errors before SESSION are process failure, not
 initialization success. A startup deadline must stop an owned child which never produces valid
 SESSION/CREDIT; propose10seconds, independently tested and configurable only at the test seam.
 Parent death/control-close/status-stall watchdogs in the child remain additional protection.
@@ -184,7 +203,9 @@ status or allowed to block because a diagnostic UI consumer is slow.
 SESSION must be unique and precede CREDIT. Credit serial increments exactly once; slot and
 generation must be inactive/current as appropriate. Validate every status against the currently
 bounded pending operation, not merely its numeric domain. Retain at most nine active Residents,
-one staged/incoming handle, one producer, one commit, and fixed transaction metadata. Terminal
+one staged/incoming handle, one producer, one commit, and fixed transaction metadata.
+None of these handles/commit lists retains nine aliased geometry, source-output or atlas leases;
+those are exclusively the later controller/source factory's independently bounded owners. Terminal
 operation futures are removed immediately; no per-transaction history map. Caller-retained
 metadata handles do not retain pixels, files, source objects or native resources.
 
@@ -212,10 +233,14 @@ resource barrier rather than repeating the cold A/B/C lifetime bug.
 ## Frames and pre-allocation ACK barrier
 
 ONE poll worker reads the v2 mapping at approximately30Hz, with no mapping IO/readback wait on
-FX. Before calling `readLatest`, build an immutable barrier from the actual session plus current
-acknowledged CommitReceipt, policy/dimensions and requested camera interval. Content must equal
+FX. Before calling `readLatest`, require an actual matching CAMERA_APPLIED for the desired
+policy/width/height AND a matching COMMITTED receipt for the selected content. Desired policy
+alone is never an ACK. Build an immutable barrier from those two observed acknowledgements,
+the actual session and the requested camera interval. Missing/stale/coalesced-old CAMERA_APPLIED
+keeps the prior image and performs no detached-pixel read/allocation for that new demand. Content must equal
 that receipt's WorldContentRevision; a stationary-camera old readback cannot satisfy a new
-COMMITTED receipt. Policy/dimension changes advance camera floor; camera-only drag accepts
+COMMITTED receipt. Camera resize may retain the same content receipt: its historical commit
+policy is not substituted for the newly acknowledged camera policy. Policy/dimension changes advance camera floor; camera-only drag accepts
 monotonic lagging completed revisions up to the latest requested revision to avoid starvation.
 
 WorldFrameFileV2 checks required header/ACK identity before allocating detached pixels. Recheck
@@ -254,7 +279,7 @@ closing must not create more threads/tasks.
 That failure is NOT DrainReceipt. Keep files/mapping and the application arbiter permit while
 any child is alive or any parent producer/file writer can still access them. No successor may
 launch after an unknown kill outcome. `terminatedAndDrained` completes only after confirmed
-Process.onExit, actual parent preparation finally, stdin/stdout/stderr workers relinquish their
+Process.onExit, actual parent preparation finally, stdin/stdout/stderr and frame-poll workers relinquish their
 owners, mapping close and directory cleanup. A late process exit can complete that same terminal
 future; no new close attempt is needed. Only its private DrainReceipt authorizes arbiter release.
 A cleanup failure remains explicit and cannot be relabeled successful release/deletion.
