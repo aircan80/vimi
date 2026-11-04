@@ -308,6 +308,67 @@ public final class WorldStreamTransport {
         }
     }
 
+    public static final class CommitReceipt {
+        private final long contentRevision, policy;
+        private final List<Resident> ordered;
+
+        private CommitReceipt(long contentRevision, long policy, List<Resident> ordered) {
+            this.contentRevision = contentRevision;
+            this.policy = policy;
+            this.ordered = List.copyOf(ordered);
+        }
+
+        public long contentRevision() {
+            return contentRevision;
+        }
+
+        public long policy() {
+            return policy;
+        }
+
+        public List<Resident> ordered() {
+            return ordered;
+        }
+    }
+
+    public static final class Frame {
+        private final WorldFrameFileV2.Frame frame;
+        private final CommitReceipt content;
+
+        private Frame(WorldFrameFileV2.Frame frame, CommitReceipt content) {
+            this.frame = frame;
+            this.content = content;
+        }
+
+        public long sequence() {
+            return frame.metadata().sequence();
+        }
+
+        public long cameraRevision() {
+            return frame.metadata().camera();
+        }
+
+        public long policy() {
+            return frame.metadata().policy();
+        }
+
+        public int width() {
+            return frame.metadata().width();
+        }
+
+        public int height() {
+            return frame.metadata().height();
+        }
+
+        public CommitReceipt content() {
+            return content;
+        }
+
+        public java.nio.IntBuffer pixels() {
+            return frame.pixels();
+        }
+    }
+
     public static final class DrainReceipt {
         private final OptionalLong pid;
         private final OptionalInt exit;
@@ -412,6 +473,29 @@ public final class WorldStreamTransport {
         private volatile long capacityRevision;
         private TileReservation tile;
         private WorldStreamPacketFile.Moved input;
+        private boolean commitRequested;
+        private CommitOperation commitOperation;
+        private CommitReceipt currentReceipt;
+        private Frame latestFrame;
+
+        private static final class CommitOperation {
+            final CompletableFuture<CommitReceipt> result;
+            final List<Resident> ordered;
+            final WorldStreamParentState.Commit metadata;
+            final Path path;
+            boolean created, advertised, deleted, outstanding;
+
+            CommitOperation(
+                    CompletableFuture<CommitReceipt> result,
+                    List<Resident> ordered,
+                    WorldStreamParentState.Commit metadata,
+                    Path path) {
+                this.result = result;
+                this.ordered = List.copyOf(ordered);
+                this.metadata = metadata;
+                this.path = path;
+            }
+        }
 
         private Session(WorldStreamEnvelope.Session descriptor) {
             this.descriptor = descriptor;
@@ -473,6 +557,7 @@ public final class WorldStreamTransport {
                     });
             handle.runWorker("stderr", () -> drainErrors(process));
             handle.runWorker("producer-files", () -> files(handle));
+            handle.runWorker("frames", () -> pollFrames(handle));
             handle.runWorker(
                     "cancellation",
                     () -> {
@@ -492,6 +577,187 @@ public final class WorldStreamTransport {
             return completion.copy();
         }
 
+        /** Bounded array snapshot on caller; validation/publication and all IO run off caller. */
+        public CompletableFuture<CommitReceipt> commit(long policy, Resident... ordered) {
+            Objects.requireNonNull(ordered);
+            if (ordered.length > 9 || policy < descriptor.policy()) {
+                throw new IllegalArgumentException("World commit bounds");
+            }
+            var snapshot = ordered.clone();
+            var result = new CompletableFuture<CommitReceipt>();
+            synchronized (lock) {
+                if (closing || owner.stopping()) {
+                    return CompletableFuture.failedFuture(
+                            new java.util.concurrent.CancellationException("World stopped"));
+                }
+                if (commitRequested) {
+                    return CompletableFuture.failedFuture(
+                            new PreparationRefusal(
+                                    Refusal.RETRY_LATER,
+                                    "World commit still owns input",
+                                    new Object()));
+                }
+                commitRequested = true;
+                enqueueFile(() -> prepareCommit(policy, snapshot, result));
+            }
+            return result.copy();
+        }
+
+        private void prepareCommit(
+                long policy, Resident[] ordered, CompletableFuture<CommitReceipt> result) {
+            CommitOperation operation = null;
+            try {
+                if (closing || owner.stopping()) {
+                    throw new java.util.concurrent.CancellationException("World stopped");
+                }
+                var members =
+                        new java.util.ArrayList<WorldStreamParentState.Resident>(ordered.length);
+                for (var member : ordered) {
+                    members.add(Objects.requireNonNull(member).metadata);
+                }
+                WorldStreamParentState.Commit metadata;
+                synchronized (lock) {
+                    if (closing || owner.stopping()) {
+                        throw new java.util.concurrent.CancellationException("World stopped");
+                    }
+                    metadata = state.prepareCommit(policy, members);
+                }
+                if (metadata == null) {
+                    synchronized (lock) {
+                        commitRequested = false;
+                    }
+                    result.completeExceptionally(
+                            new PreparationRefusal(
+                                    Refusal.RETRY_LATER,
+                                    "World commit awaits genuine capacity",
+                                    new Object()));
+                    return;
+                }
+                operation =
+                        new CommitOperation(
+                                result,
+                                java.util.Arrays.asList(ordered),
+                                metadata,
+                                owner.files()
+                                        .directory()
+                                        .resolve("commit-" + metadata.transaction + ".wsc"));
+                synchronized (lock) {
+                    commitOperation = operation;
+                }
+                var leases =
+                        members.stream()
+                                .map(
+                                        m ->
+                                                new WorldStreamEnvelope.Resident(
+                                                        m.lease.slot(), m.lease.generation()))
+                                .toList();
+                byte[] bytes =
+                        WorldStreamEnvelope.encode(
+                                new WorldStreamEnvelope.Commit(
+                                        descriptor.nonce(),
+                                        metadata.transaction,
+                                        metadata.expected,
+                                        metadata.next,
+                                        policy,
+                                        leases));
+                try (var channel =
+                        java.nio.channels.FileChannel.open(
+                                operation.path,
+                                java.nio.file.StandardOpenOption.CREATE_NEW,
+                                java.nio.file.StandardOpenOption.WRITE,
+                                java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                    operation.created = true;
+                    var buffer = java.nio.ByteBuffer.wrap(bytes);
+                    while (buffer.hasRemaining()) {
+                        channel.write(buffer);
+                    }
+                }
+                String sha =
+                        java.util.HexFormat.of()
+                                .formatHex(
+                                        java.security.MessageDigest.getInstance("SHA-256")
+                                                .digest(bytes));
+                synchronized (lock) {
+                    if (closing || owner.stopping()) {
+                        throw new java.util.concurrent.CancellationException(
+                                "World stopped before commit");
+                    }
+                    frames.expectCommit(
+                            metadata.transaction, metadata.expected, metadata.next, policy);
+                    operation.advertised = true;
+                    enqueueCommand(
+                            new WorldStreamControl.Commit(
+                                    descriptor.nonce(), metadata.transaction, sha));
+                }
+            } catch (Throwable failed) {
+                if (operation != null && operation.created && !operation.advertised) {
+                    try {
+                        java.nio.file.Files.deleteIfExists(operation.path);
+                        operation.deleted = true;
+                    } catch (Throwable cleanup) {
+                        fail(cleanup);
+                    }
+                }
+                result.completeExceptionally(WorldStreamLaunchOwner.Handle.detached(failed));
+                fail(failed);
+            }
+        }
+
+        /** Detached pixels only; no mapping IO or array allocation occurs on the caller. */
+        public java.util.Optional<Frame> takeLatestFrame() {
+            synchronized (lock) {
+                var result = latestFrame;
+                latestFrame = null;
+                if (result == null
+                        || closing
+                        || owner.stopping()
+                        || !frames.presented(result.frame.metadata())) {
+                    return java.util.Optional.empty();
+                }
+                return java.util.Optional.of(result);
+            }
+        }
+
+        private void pollFrames(WorldStreamLaunchOwner.Handle handle) throws Exception {
+            long after = 0;
+            while (!handle.stopping()) {
+                var candidate = frames.readLatest(handle.files().frames(), after);
+                if (candidate != null) {
+                    after = candidate.metadata().sequence();
+                    synchronized (lock) {
+                        if (!closing
+                                && !handle.stopping()
+                                && currentReceipt != null
+                                && currentReceipt.contentRevision()
+                                        == candidate.metadata().content()
+                                && frames.current(candidate.metadata())) {
+                            latestFrame = new Frame(candidate, currentReceipt);
+                        }
+                    }
+                }
+                java.util.concurrent.locks.LockSupport.parkNanos(
+                        java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(33));
+            }
+        }
+
+        private void deleteCommit(CommitOperation operation) {
+            try {
+                java.nio.file.Files.deleteIfExists(operation.path);
+                if (operation.advertised) {
+                    state.retireCommitFile(operation.metadata);
+                }
+                synchronized (lock) {
+                    operation.deleted = true;
+                    if (operation.metadata.terminal) {
+                        commitRequested = false;
+                    }
+                }
+                capacityChanged();
+            } catch (Throwable failed) {
+                fail(failed);
+            }
+        }
+
         /** Poll with the controller's existing cadence; a change requests one bounded retry. */
         public long capacityRevision() {
             return capacityRevision;
@@ -509,7 +775,7 @@ public final class WorldStreamTransport {
         /** Cheap metadata reservation; empty means genuine child/file credit is not available. */
         public java.util.Optional<TileReservation> tryReserveTile(int x, int y) {
             synchronized (lock) {
-                if (closing || owner.stopping()) {
+                if (closing || owner.stopping() || commitRequested) {
                     return java.util.Optional.empty();
                 }
                 var reserved = state.reserve(x, y);
@@ -537,6 +803,12 @@ public final class WorldStreamTransport {
         private CompletableFuture<Void> cancel(TileReservation reservation) {
             synchronized (lock) {
                 var terminal = state.cancellation(reservation.ticket);
+                if (terminal == WorldStreamParentState.Cancellation.PENDING
+                        && commitRequested
+                        && reservation.ticket.resident != null) {
+                    return CompletableFuture.failedFuture(
+                            new CancellationRefusal(CancellationReason.COMMIT_PENDING));
+                }
                 if (terminal == WorldStreamParentState.Cancellation.CANCELED) {
                     return CompletableFuture.completedFuture(null);
                 }
@@ -600,6 +872,12 @@ public final class WorldStreamTransport {
                         throw new IllegalStateException("Duplicate cancel credit");
                     }
                     tile.cancelOutstanding = true;
+                }
+                if (command instanceof WorldStreamControl.Commit) {
+                    if (commitOperation == null || commitOperation.outstanding) {
+                        throw new IllegalStateException("Commit command credit");
+                    }
+                    commitOperation.outstanding = true;
                 }
                 outstandingReliable++;
                 reliableCommands.addLast(command);
@@ -767,10 +1045,24 @@ public final class WorldStreamTransport {
                 synchronized (lock) {
                     task = fileTasks.pollFirst();
                     if (task == null) {
-                        if (handle.stopping() && input == null) {
+                        if (handle.stopping()
+                                && input == null
+                                && (commitOperation == null
+                                        || !commitOperation.created
+                                        || commitOperation.deleted)) {
                             return;
                         }
-                        if (handle.stopping() && actualExit && statusesDrained && input != null) {
+                        if (handle.stopping()
+                                && commitOperation != null
+                                && commitOperation.created
+                                && !commitOperation.deleted
+                                && (!commitOperation.advertised || actualExit && statusesDrained)) {
+                            var operation = commitOperation;
+                            task = () -> deleteCommit(operation);
+                        } else if (handle.stopping()
+                                && actualExit
+                                && statusesDrained
+                                && input != null) {
                             var owned = input;
                             var current = tile;
                             task =
@@ -826,6 +1118,7 @@ public final class WorldStreamTransport {
             synchronized (lock) {
                 closing = true;
                 pendingCamera = null;
+                latestFrame = null;
                 lock.notifyAll();
             }
             frames.close();
@@ -900,6 +1193,53 @@ public final class WorldStreamTransport {
                             }
                         }
                         case CAMERA -> frames.applied((WorldStreamStatus.CameraApplied) message);
+                        case INPUT_COMMIT -> {
+                            CommitOperation operation;
+                            synchronized (lock) {
+                                operation = commitOperation;
+                            }
+                            enqueueFile(() -> deleteCommit(operation));
+                        }
+                        case COMMITTED -> {
+                            CommitOperation operation;
+                            CommitReceipt receipt;
+                            synchronized (lock) {
+                                operation = commitOperation;
+                                if (operation == null
+                                        || !operation.outstanding
+                                        || !frames.committed(
+                                                (WorldStreamStatus.Committed) message)) {
+                                    throw new IllegalStateException(
+                                            "Commit acknowledgement correlation");
+                                }
+                                operation.outstanding = false;
+                                retireReliable();
+                                receipt =
+                                        new CommitReceipt(
+                                                operation.metadata.next,
+                                                operation.metadata.policy,
+                                                operation.ordered);
+                                currentReceipt = receipt;
+                                if (operation.deleted) {
+                                    commitRequested = false;
+                                }
+                            }
+                            capacityChanged();
+                            if (!closing && !handle.stopping()) {
+                                operation.result.complete(receipt);
+                            } else {
+                                operation.result.completeExceptionally(
+                                        new java.util.concurrent.CancellationException(
+                                                "World stopped"));
+                            }
+                            TileReservation candidate;
+                            synchronized (lock) {
+                                candidate = tile;
+                            }
+                            if (candidate != null) {
+                                publishCancellation(candidate);
+                            }
+                        }
                         case INPUT_TILE ->
                                 enqueueFile(
                                         () -> {
@@ -961,6 +1301,32 @@ public final class WorldStreamTransport {
                                             "Tile canceled"));
                         }
                         case REJECTED -> {
+                            CommitOperation operation;
+                            synchronized (lock) {
+                                operation = commitOperation;
+                            }
+                            if (operation != null
+                                    && operation.metadata.transaction
+                                            == ((WorldStreamStatus.Rejected) message)
+                                                    .transaction()) {
+                                synchronized (lock) {
+                                    if (!operation.outstanding
+                                            || !frames.rejectCommit(
+                                                    (WorldStreamStatus.Rejected) message)) {
+                                        throw new IllegalStateException(
+                                                "Rejected commit correlation");
+                                    }
+                                    operation.outstanding = false;
+                                    retireReliable();
+                                    if (operation.deleted) {
+                                        commitRequested = false;
+                                    }
+                                }
+                                capacityChanged();
+                                operation.result.completeExceptionally(
+                                        new java.io.IOException("World commit rejected"));
+                                break;
+                            }
                             TileReservation current;
                             boolean cancelPending;
                             synchronized (lock) {
@@ -1024,6 +1390,13 @@ public final class WorldStreamTransport {
             TileReservation current;
             synchronized (lock) {
                 current = tile;
+            }
+            CommitOperation pending;
+            synchronized (lock) {
+                pending = commitOperation;
+            }
+            if (pending != null) {
+                pending.result.completeExceptionally(failure);
             }
             if (current != null) {
                 current.result.completeExceptionally(failure);
