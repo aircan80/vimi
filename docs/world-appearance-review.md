@@ -1,7 +1,7 @@
 # World appearance continuation review
 
 This is an in-progress foundation for visible terrain textures, scenery and water,
-not a delivered rendering feature. Alpha.16 is published separately at46ad728.
+not a delivered rendering feature. Alpha.17 is published separately atc70e88d.
 The user's current policy permits grouping ready parallel features; world imagery
 and scenery take priority over packaged GPU diagnostics.
 
@@ -16,6 +16,11 @@ and scenery take priority over packaged GPU diagnostics.
 | Error reference517979e | Root source review and module checks; bounded exact-rational TEST-ONLY overlap/coverage/error oracle. No runtime budget/performance/fidelity acceptance |
 | Texture design879dd6c / API2960bcb | Source-backed pre-code design. Root approved staged root-grid/mask-reader then pure compositor checkpoints. The source/pool/persistence and render integration still require implementation review |
 | Texture formatsca99757 + f3e1819 | Root/domain source approval after public DTO cap-before-copy correction; shared native grid and lazy split-texture masks, unchanged old geometry. Three source pairs match111,360 original vertex positions and2,024 independent mask hashes. No atlas/render claim |
+| Atlas compositore1a0fd2 | Root/domain approval; basic coverage/tint recipe supports768/768 chunks across three private sources, with12,288 independent RGBA samples. No client nonlinear sharpening/height-blend fidelity claim |
+| Shared poola6d6e62 +59d7a8a | Root/domain final approval;18 reserved/live slots, scoped borrow pins and asynchronous drain. A refused nineteenth reservation preserves pinned cache keys; only cache-only entries are evicted. Integrated concepts/rendering checks pass |
+| Native-XY reference3f8add3 and production math0030477 +2cf897c | Root reviewed exact float-coordinate reference and conservative interval math. Opt-in source-free49-tile schedule completes8,175,616 plane events/63,338,496 scalar groups within explicit16M/100M hard ceilings. No shipping work budget, distance control or latency acceptance |
+| Shared texture binding1e28350 | Root/domain approval; detached qualification metadata, exact original geometry fingerprint, all-source-vertex UV guard, header-rectangle coverage and synchronous readonly pixel borrow. Source authenticity and lease ownership remain caller responsibilities |
+| CPU fallbackbce81d0 | Implemented, independent review pending; optional synchronous binding consumption with inverse-camera point sampling, alpha-zero height fallback and original triangle fog. Analytical ray/plane, clipping, coverage, fog and coplanar checks pass. Not connected to GUI yet |
 | Water source1789221 +96d0969 | Source/parser API design approved; one bounded immutable MH2O owner with explicit low-level layout parsing and separate concepts qualification. No production liquid reader or rendering |
 | SD/HD investigation throughb279d03 | Root reviewed exact-build client UI/API, known-table and sampled ROOT evidence. Local pairing remains unproven; no inert toggle or game setting change |
 
@@ -32,6 +37,11 @@ atlas is a basic diffuse coverage preview with baked source tint and fog. It doe
 not implement client height blending or nonlinear layer sharpening; zero MHID
 entries do not prove those client effects are disabled. Approximation/detail
 policy belongs in the recipe, UI feedback and release notes.
+
+Application ownership and frame-publication gates are recorded in
+[the integration plan](world-terrain-texture-application-plan.md). Memory-only
+batch source/scheduling, native bound geometry/annex codec and GPU shading remain
+active implementation checkpoints. No terrain texture release is allocated yet.
 
 Do not merge visible-render claims from parser/source success alone. CPU/native
 UV, fog, depth, unsupported-chunk fallback and old height-only compatibility need
