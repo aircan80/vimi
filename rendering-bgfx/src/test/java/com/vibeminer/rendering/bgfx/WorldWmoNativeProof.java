@@ -190,12 +190,47 @@ public final class WorldWmoNativeProof {
         {
             var scene = scene(false);
             var data = new WorldWmoAuthoredData(scene, 12, true, false, false, false);
+            // First recorded batch is near red; every later batch is farther green.
+            for (int vertex = 0; vertex < 3; vertex++) {
+                data.positions[vertex * 3] = -4;
+            }
+            for (int at = 255; at < data.indices.length; at++) {
+                data.indices[at] = 3 + at % 3;
+            }
+            for (int image = 1; image < data.images.size(); image++) {
+                byte[] rgba = new byte[256 * 256 * 4];
+                for (int at = 0; at < rgba.length; at += 4) {
+                    rgba[at + 1] = (byte) 255;
+                    rgba[at + 3] = (byte) 255;
+                }
+                data.images.set(
+                        image,
+                        new com.vibeminer.rendering.world.BasicWmoData.Image(
+                                10 + image, 256, 256, ByteBuffer.wrap(rgba)));
+            }
+            var p = packet(scratch, "wmo-self-depth", scene, data);
+            try (var gpu = new Harness();
+                    var terrain = new BgfxTerrainRenderer(scene);
+                    var wmo = BgfxWorldWmoPass.readBound(p.annex(), p.base(), () -> false)) {
+                int[] image = gpu.render(terrain, wmo, new TerrainCamera(0, 0, 0, 0, 0));
+                rgb(
+                        image[128 * SIDE + 128],
+                        223,
+                        0,
+                        0,
+                        1,
+                        "WMO must write depth before later farther batches");
+            }
+        }
+        {
+            var scene = scene(false);
+            var data = new WorldWmoAuthoredData(scene, 12, true, false, false, false);
             var p = packet(scratch, "canceled", scene, data);
             try (var gpu = new Harness();
                     var terrain = new BgfxTerrainRenderer(scene)) {
                 var camera = new TerrainCamera(0, 0, 0, 0, 0);
                 gpu.render(terrain, null, camera);
-                int baseline = Short.toUnsignedInt(bgfx_get_stats().numTextures());
+                var baseline = counts();
                 var canceled = new AtomicBoolean();
                 boolean refused = false;
                 try {
@@ -213,8 +248,11 @@ public final class WorldWmoNativeProof {
                 }
                 gpu.render(terrain, null, camera);
                 require(
-                        Short.toUnsignedInt(bgfx_get_stats().numTextures()) == baseline,
-                        "Canceled upload retained native textures after drain");
+                        counts().equals(baseline),
+                        "Canceled upload retained native handles after drain: "
+                                + counts()
+                                + " vs "
+                                + baseline);
                 // No second WMO allocation in this context: its conservative slot charge retires at
                 // shutdown.
             }
@@ -223,6 +261,20 @@ public final class WorldWmoNativeProof {
                 "WORLD_WMO_NATIVE_PASS acceptedFrames="
                         + acceptedFrames
                         + " sameContextCameraReuse=true maxMesh=19456 maxRgba=1572864 maxDirectTexture=262144 sourceIndependent=true");
+    }
+
+    private record Handles(
+            int vertices, int indices, int textures, int uniforms, int programs, int shaders) {}
+
+    private static Handles counts() {
+        var s = bgfx_get_stats();
+        return new Handles(
+                Short.toUnsignedInt(s.numVertexBuffers()),
+                Short.toUnsignedInt(s.numIndexBuffers()),
+                Short.toUnsignedInt(s.numTextures()),
+                Short.toUnsignedInt(s.numUniforms()),
+                Short.toUnsignedInt(s.numPrograms()),
+                Short.toUnsignedInt(s.numShaders()));
     }
 
     private static void rgb(int pixel, int r, int g, int b, int tolerance, String reason) {
@@ -271,6 +323,11 @@ public final class WorldWmoNativeProof {
                         "Expected reversed zero-to-one Vulkan");
                 GpuViewerMain.requireHardware(
                         Short.toUnsignedInt(caps.vendorId()), Short.toUnsignedInt(caps.deviceId()));
+                System.out.println(
+                        "WMO_PROOF_DEVICE vendor="
+                                + Short.toUnsignedInt(caps.vendorId())
+                                + " device="
+                                + Short.toUnsignedInt(caps.deviceId()));
                 color =
                         valid(
                                 bgfx_create_texture_2d(
