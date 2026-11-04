@@ -112,6 +112,117 @@ final class BlpHandmadeMipTest {
         refused("BLP_INVALID", Arrays.copyOf(bytes, bytes.length - 1));
     }
 
+    private static final int[] BC3_ALPHA = {200, 40, 177, 154, 131, 108, 85, 62};
+    private static final int[][] BC3_COLORS = {
+        {255, 0, 0}, {0, 0, 255}, {170, 0, 85}, {85, 0, 170}
+    };
+
+    /**
+     * One BC3 block: alpha 200/40 eight-value ramp, pixel i alpha index i % 8, colour index (x +
+     * level) % 4.
+     */
+    private static byte[] bc3Block(int level) {
+        var out = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN);
+        long alphaSelectors = 0;
+        int colorSelectors = 0;
+        for (int i = 0; i < 16; i++) {
+            alphaSelectors |= (long) (i % 8) << (i * 3);
+            colorSelectors |= ((i % 4 + level) % 4) << (i * 2);
+        }
+        out.put((byte) 200).put((byte) 40);
+        for (int i = 0; i < 6; i++) {
+            out.put((byte) (alphaSelectors >>> (i * 8)));
+        }
+        return out.put(Blp2DecoderTest.block(0xf800, 0x001f, colorSelectors)).array();
+    }
+
+    /**
+     * Non-square 16x4 handmade BC3 chain whose 4x1, 2x1 and 1x1 levels each keep one whole block.
+     */
+    private static byte[] handmadeBc3NonSquare(int blockBytes) {
+        var mips = new byte[5][];
+        for (int level = 0; level < mips.length; level++) {
+            int w = Math.max(1, 16 >> level), h = Math.max(1, 4 >> level);
+            int blocks = ((w + 3) / 4) * ((h + 3) / 4);
+            var out = ByteBuffer.allocate(blocks * blockBytes);
+            for (int block = 0; block < blocks; block++) {
+                out.put(bc3Block(level), 0, blockBytes);
+            }
+            mips[level] = out.array();
+        }
+        var bytes = Blp2DecoderTest.build(2, 8, 7, 16, 4, mips);
+        bytes[11] = 2;
+        return bytes;
+    }
+
+    @Test
+    void handmadeBc3NonSquareChainDecodesInterpolatedAlphaAndCroppedTerminalBlocks() {
+        var bytes = handmadeBc3NonSquare(16);
+        var mips =
+                Blp2Decoder.readMips(
+                                AssetSource.bytes(bytes),
+                                new Limits(),
+                                Cancellation.NONE,
+                                MipProfile.DECLARED_HANDMADE_V1)
+                        .join();
+        long[] expectedLengths = {64, 32, 16, 16, 16};
+        assertEquals(expectedLengths.length, mips.size());
+        for (int level = 0; level < mips.size(); level++) {
+            int w = Math.max(1, 16 >> level), h = Math.max(1, 4 >> level);
+            assertEquals(w, mips.get(level).width());
+            assertEquals(h, mips.get(level).height());
+            assertEquals(expectedLengths[level], mips.get(level).byteLength());
+            assertEquals(Blp2Types.MipStorage.EXACT, mips.get(level).storage());
+            var image =
+                    Blp2Decoder.decode(
+                                    AssetSource.bytes(bytes),
+                                    level,
+                                    new Limits(),
+                                    Cancellation.NONE,
+                                    MipProfile.DECLARED_HANDMADE_V1)
+                            .join();
+            var expected = new byte[w * h * 4];
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    int px = x % 4, py = y % 4, at = (y * w + x) * 4;
+                    int[] color = BC3_COLORS[(px + level) % 4];
+                    expected[at] = (byte) color[0];
+                    expected[at + 1] = (byte) color[1];
+                    expected[at + 2] = (byte) color[2];
+                    expected[at + 3] = (byte) BC3_ALPHA[(py * 4 + px) % 8];
+                }
+            }
+            assertArrayEquals(expected, image.rgba(), "level " + level);
+        }
+    }
+
+    @Test
+    void malformedOrTruncatedBc3StaysRefusedInHandmadeAndStrictModes() {
+        // BC1-sized (8-byte) blocks under a BC3 header are neither exact nor compact BC3.
+        refused("BLP_INVALID", handmadeBc3NonSquare(8));
+        var valid = handmadeBc3NonSquare(16);
+        // Every cut inside the 16-byte terminal 1x1 block, and inside the first level.
+        for (int cut = 1; cut < 16; cut++) {
+            refused("BLP_INVALID", Arrays.copyOf(valid, valid.length - cut));
+        }
+        refused("BLP_INVALID", Arrays.copyOf(valid, 148 + 63));
+        // Terminal level declared with BC1's 8-byte minimum while the file still holds 16 bytes.
+        var shortTerminal = valid.clone();
+        put(shortTerminal, 84 + 4 * 4, 8);
+        refused("BLP_INVALID", shortTerminal);
+        // Strict (non-handmade) single-level BC3: every truncation and every wrong declared length.
+        var strict = Blp2DecoderTest.build(2, 8, 7, 4, 4, bc3Block(0));
+        assertEquals(16 * 4, Blp2Decoder.decode(AssetSource.bytes(strict)).join().rgba().length);
+        for (int size = 0; size < strict.length; size++) {
+            Blp2DecoderTest.code("BLP_INVALID", Arrays.copyOf(strict, size), 0);
+        }
+        for (int declared : new int[] {8, 15, 17, 32}) {
+            var wrong = Arrays.copyOf(strict, 148 + Math.max(16, declared));
+            put(wrong, 84, declared);
+            Blp2DecoderTest.code("BLP_INVALID", wrong, 0);
+        }
+    }
+
     private static void refused(String code, byte[] bytes) {
         for (boolean metadata : new boolean[] {false, true}) {
             var error =
@@ -271,7 +382,8 @@ final class BlpHandmadeMipTest {
             bytes[11] = (byte) flag;
             refused("BLP_UNSUPPORTED", bytes);
         }
-        for (int[] tuple : new int[][] {{2, 4, 1}, {2, 72, 7}, {2, 0, 0}, {3, 8, 0}, {1, 8, 0}}) {
+        for (int[] tuple :
+                new int[][] {{2, 4, 1}, {2, 72, 7}, {2, 0, 0}, {2, 1, 0}, {3, 8, 0}, {1, 8, 0}}) {
             var bytes = handmade();
             bytes[8] = (byte) tuple[0];
             bytes[9] = (byte) tuple[1];

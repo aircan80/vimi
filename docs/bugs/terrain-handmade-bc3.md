@@ -39,3 +39,13 @@ regression reproduced the original BC2-only refusal before the fix.
 Status: independently reviewed and integrated into the alpha.22 candidate,
 PR162. Decoder tests passed35 forced tasks; source/packet tests passed43 forced
 tasks independently. Publication and platform package checks remain pending. Actual reported texture files and macOS runtime have not been rerun here.
+
+Follow-up coverage (#169 verification): a synthetic non-square 16×4 handmade BC3
+chain checks exact 64/32/16/16/16-byte level sizes (one whole 16-byte block for
+the 4×1, 2×1 and 1×1 levels), interpolated eight-value alpha, per-level colour
+selectors and cropping of partial terminal blocks. BC3 payloads using BC1's
+8-byte blocks, every terminal-block truncation, an 8-byte terminal descriptor and
+wrong strict-mode lengths remain BLP_INVALID. Handmade BC1 (alpha depth 0 or 1)
+and BC2 depth 4 remain BLP_UNSUPPORTED pending their own evidence; strict BC1 with
+and without 1-bit alpha and strict BC2/BC3 decode as before. Terrain diffuse is
+CPU-decoded to RGBA8 and uploaded as RGBA8; no bgfx BC3 texture format is used.
