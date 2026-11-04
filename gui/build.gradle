@@ -312,6 +312,22 @@ tasks.register('providerBrowserUiTest', JavaExec) {
     if (screenshots.isPresent()) systemProperty 'vimi.provider.screenshots', screenshots.get()
 }
 
+tasks.register('worldSpawnsTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldSpawnOverlayTest'
+}
+check.dependsOn worldSpawnsTest
+
+// Authored spawn-marker lifecycle over a live JavaFX scene; opt in because this requires a display.
+tasks.register('worldSpawnsUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldSpawnOverlayUiTest'
+    def screenshot = providers.gradleProperty('worldSpawnsScreenshot')
+    if (screenshot.isPresent()) systemProperty 'vimi.worldSpawns.screenshot', screenshot.get()
+}
+
 tasks.register('worldUiTest', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath

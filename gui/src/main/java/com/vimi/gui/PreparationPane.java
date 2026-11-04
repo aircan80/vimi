@@ -205,7 +205,12 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             setCenter(maps); maps.ensureLoaded(); return;
         }
         if (area.equals("World")) {
-            if (world == null) world = new WorldView(job);
+            if (world == null) {
+                world = new WorldView(job);
+                if (sources != null && job.work() instanceof NativePreparationWork work)
+                    world.attachSpawns(new WorldSpawnOverlay(token -> sources.worldSpawns(job.build(), token),
+                            () -> java.util.List.of(sources.worldSpawnsKey(job.build()), work.revision())));
+            }
             setCenter(world); world.activate(); return;
         }
         if (area.equals("Quests")) {
