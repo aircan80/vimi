@@ -366,6 +366,9 @@ final class WorldStreamScopes {
     }
 
     synchronized void activate(Scope scope) {
+        if (scope == null || scope.owner != owner) {
+            throw new IllegalStateException("Foreign scope");
+        }
         requireHealthy();
         checkOpen();
         if (working.get()) {

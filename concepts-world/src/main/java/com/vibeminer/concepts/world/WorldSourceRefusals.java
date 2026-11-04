@@ -92,10 +92,12 @@ final class WorldSourceRefusals {
             return refusal;
         }
         if (value instanceof CancellationException canceled) {
+            if (canceled.getClass() != CancellationException.class) {
+                return fatalAuxiliary(failure);
+            }
             if (!leaf.clean
                     || canceled.getSuppressed().length != 0
-                    || canceled.getClass() == CancellationException.class
-                            && canceled.getCause() != null) {
+                    || canceled.getCause() != null) {
                 return fatalAuxiliary(failure);
             }
             return canceled;

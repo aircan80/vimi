@@ -58,3 +58,12 @@ transport keeps its current table while retiring the unused reservation after re
 producer/stop-callback/file drain. Optional.empty maps to unavailable capability at
 that bridge without calling legacy providers. Actual SourceInvalidated/capability
 refusal is not an automatic repair/retry loop or permission to release a GPU owner.
+
+Independent review followup: activation checks the scope owner before any expected
+retirement or busy outcome. A foreign/null scope remains a caller error. Only an
+exact JDK CancellationException with no cause or suppression qualifies as clean
+cancellation; unknown subclasses become ordinary fatal failures without inspecting
+overridable cause/message accessors. Three causal fixtures cover foreign activation,
+a subclass containing a cleanup cause, and hostile subclass accessors. The first
+two fail against the frozen original checkpoint. Full concept checks pass with the
+followup. This does not change source profiles, source bindings, or native admission.

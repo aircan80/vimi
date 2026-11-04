@@ -14,6 +14,7 @@ import com.vibeminer.formats.world.WorldFormats;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
@@ -67,6 +68,44 @@ class WorldSourceRefusalsTest {
             }
             pool.closeAsync().get(5, TimeUnit.SECONDS);
             tables.close();
+        }
+    }
+
+    @Test
+    void cancellationSubclassCannotHideAuxiliaryFailure() {
+        var canceled = new CancellationException("provider cancellation") {};
+        canceled.initCause(new IllegalStateException("cleanup failed"));
+        assertFalse(
+                WorldSourceRefusals.boundary(canceled) instanceof CancellationException,
+                "Unknown cancellation subclass with auxiliary failure must remain fatal");
+    }
+
+    @Test
+    void cancellationSubclassAccessorsAreNotInspected() {
+        var canceled =
+                new CancellationException("provider cancellation") {
+                    @Override
+                    public synchronized Throwable getCause() {
+                        throw new AssertionError("arbitrary cause accessor");
+                    }
+
+                    @Override
+                    public String getMessage() {
+                        throw new AssertionError("arbitrary message accessor");
+                    }
+                };
+        assertFalse(WorldSourceRefusals.boundary(canceled) instanceof CancellationException);
+    }
+
+    @Test
+    void foreignScopeActivationIsFatalRatherThanExpectedRetirement() throws Exception {
+        try (var first = new Fixture();
+                var second = new Fixture()) {
+            var error =
+                    assertThrows(RuntimeException.class, () -> second.source.activate(first.scope));
+            assertFalse(
+                    error instanceof WorldTerrainStreaming.Refusal,
+                    "Foreign-owned scope is a caller/program error, not source retirement");
         }
     }
 
