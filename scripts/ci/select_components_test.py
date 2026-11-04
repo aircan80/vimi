@@ -31,6 +31,8 @@ class SelectionTest(unittest.TestCase):
             "generated-store/gradle.lockfile",
             "network-clients/src/main/java/com/vibeminer/network/CdnClient.java",
             "network-clients/src/testFixtures/java/com/vibeminer/network/MemorySources.java",
+            "network-activity/build.gradle",
+            "network-activity/src/main/java/com/vibeminer/activity/NetworkActivity.java",
             "network-clients/build.gradle",
             "network-clients/gradle.lockfile",
             "object-access/src/main/java/com/vibeminer/access/ObjectSource.java",

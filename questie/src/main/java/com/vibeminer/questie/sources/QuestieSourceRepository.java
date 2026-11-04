@@ -1,5 +1,6 @@
 package com.vibeminer.questie.sources;
 
+import com.vibeminer.activity.TransferObserver;
 import com.vibeminer.generated.Cancellation;
 import com.vibeminer.questie.QuestieTypes.Flavor;
 import com.vibeminer.questie.QuestieTypes.Progress;
@@ -51,6 +52,7 @@ public final class QuestieSourceRepository implements AutoCloseable {
     private final Path root;
     private final URI api;
     private final boolean testing;
+    private final TransferObserver observer;
     private final HttpClient http =
             HttpClient.newBuilder()
                     .connectTimeout(Duration.ofSeconds(15))
@@ -86,7 +88,9 @@ public final class QuestieSourceRepository implements AutoCloseable {
     public record ReleaseCheck(
             Release latest, String previousTag, boolean changed, boolean offline, String message) {}
 
-    private QuestieSourceRepository(Path root, URI api, boolean testing) {
+    private QuestieSourceRepository(
+            Path root, URI api, boolean testing, TransferObserver observer) {
+        this.observer = TransferObserver.safe(observer);
         this.root = root.toAbsolutePath().normalize();
         this.api = api;
         this.testing = testing;
@@ -94,15 +98,30 @@ public final class QuestieSourceRepository implements AutoCloseable {
 
     public static CompletableFuture<QuestieSourceRepository> open(
             Path directory, Cancellation token) {
+        return open(directory, token, TransferObserver.NONE);
+    }
+
+    public static CompletableFuture<QuestieSourceRepository> open(
+            Path directory, Cancellation token, TransferObserver observer) {
         return open(
                 directory,
                 URI.create("https://api.github.com/repos/Questie/QuestieDB/"),
                 false,
-                token);
+                token,
+                observer);
     }
 
     static CompletableFuture<QuestieSourceRepository> open(
             Path directory, URI api, boolean testing, Cancellation token) {
+        return open(directory, api, testing, token, TransferObserver.NONE);
+    }
+
+    static CompletableFuture<QuestieSourceRepository> open(
+            Path directory,
+            URI api,
+            boolean testing,
+            Cancellation token,
+            TransferObserver observer) {
         final Path canonical;
         try {
             if (Files.isSymbolicLink(directory)) {
@@ -113,7 +132,7 @@ public final class QuestieSourceRepository implements AutoCloseable {
         } catch (IOException failure) {
             return CompletableFuture.failedFuture(failure);
         }
-        var repository = new QuestieSourceRepository(canonical, api, testing);
+        var repository = new QuestieSourceRepository(canonical, api, testing, observer);
         var result =
                 repository.submit(
                         token,
@@ -658,69 +677,100 @@ public final class QuestieSourceRepository implements AutoCloseable {
             if (etag != null && !etag.isEmpty()) {
                 builder.header("If-None-Match", etag);
             }
-            var future =
-                    http.sendAsync(
-                            builder.GET().build(), HttpResponse.BodyHandlers.ofInputStream());
-            HttpResponse<InputStream> response;
+            var activity = observer.begin(TransferObserver.Kind.QUESTIE);
+            HttpResponse<InputStream> response = null;
+            boolean handedOff = false;
             try {
-                while (true) {
-                    token.check();
+                var future =
+                        http.sendAsync(
+                                builder.GET().build(), HttpResponse.BodyHandlers.ofInputStream());
+                try {
+                    while (true) {
+                        token.check();
+                        try {
+                            response = future.get(100, TimeUnit.MILLISECONDS);
+                            break;
+                        } catch (TimeoutException pending) {
+                            /* Poll explicit cancellation. */
+                        }
+                    }
+                } catch (InterruptedException failure) {
+                    future.whenComplete((late, error) -> closeLate(late, activity));
+                    future.cancel(true);
+                    Thread.currentThread().interrupt();
+                    throw new IOException("Interrupted download", failure);
+                } catch (ExecutionException failure) {
+                    throw new IOException("Download failed", failure.getCause());
+                } catch (RuntimeException failure) {
+                    future.whenComplete((late, error) -> closeLate(late, activity));
+                    future.cancel(true);
+                    throw failure;
+                }
+                activity.headersReceived();
+                if (Set.of(301, 302, 303, 307, 308).contains(response.statusCode())) {
+                    String location =
+                            response.headers()
+                                    .firstValue("location")
+                                    .orElseThrow(
+                                            () -> new IOException("Redirect without location"));
+                    uri = uri.resolve(location);
+                    etag = null;
+                    continue;
+                }
+                var body =
+                        new GuardedBody(response.body(), token, testing ? 2000 : 120000, activity);
+                var result =
+                        new Response(
+                                response.statusCode(),
+                                response.headers().firstValue("etag").orElse(null),
+                                response.headers().firstValue("retry-after").orElse(null),
+                                body);
+                handedOff = true;
+                return result;
+            } finally {
+                if (!handedOff) {
                     try {
-                        response = future.get(100, TimeUnit.MILLISECONDS);
-                        break;
-                    } catch (TimeoutException pending) {
-                        /* Poll explicit cancellation. */
+                        if (response != null) {
+                            response.body().close();
+                        }
+                    } finally {
+                        activity.close();
                     }
                 }
-            } catch (InterruptedException failure) {
-                future.cancel(true);
-                Thread.currentThread().interrupt();
-                throw new IOException("Interrupted download", failure);
-            } catch (ExecutionException failure) {
-                throw new IOException("Download failed", failure.getCause());
-            } catch (RuntimeException failure) {
-                future.whenComplete(
-                        (late, error) -> {
-                            if (late != null) {
-                                try {
-                                    late.body().close();
-                                } catch (IOException ignored) {
-                                    /* Release late body. */
-                                }
-                            }
-                        });
-                future.cancel(true);
-                throw failure;
             }
-            if (Set.of(301, 302, 303, 307, 308).contains(response.statusCode())) {
-                response.body().close();
-                String location =
-                        response.headers()
-                                .firstValue("location")
-                                .orElseThrow(() -> new IOException("Redirect without location"));
-                uri = uri.resolve(location);
-                etag = null;
-                continue;
-            }
-            return new Response(
-                    response.statusCode(),
-                    response.headers().firstValue("etag").orElse(null),
-                    response.headers().firstValue("retry-after").orElse(null),
-                    new GuardedBody(response.body(), token, testing ? 2000 : 120000));
         }
         throw new IOException("Too many redirects");
     }
 
+    private static void closeLate(
+            HttpResponse<InputStream> late, TransferObserver.Attempt activity) {
+        try {
+            if (late != null) {
+                late.body().close();
+            }
+        } catch (IOException ignored) {
+            /* Release late body; original request reports the failure. */
+        } finally {
+            activity.close();
+        }
+    }
+
     /** Closes a stalled HTTP body on explicit cancellation or a finite transfer deadline. */
-    private static final class GuardedBody extends java.io.FilterInputStream {
+    static final class GuardedBody extends java.io.FilterInputStream {
         private final Cancellation token;
         private final java.util.concurrent.atomic.AtomicBoolean ended =
                 new java.util.concurrent.atomic.AtomicBoolean();
         private volatile boolean expired;
         private final Thread watcher;
+        private final TransferObserver.Attempt activity;
 
-        GuardedBody(InputStream body, Cancellation token, long deadlineMillis) {
+        GuardedBody(
+                InputStream body,
+                Cancellation token,
+                long deadlineMillis,
+                TransferObserver.Attempt activity) {
             super(body);
+            this.activity = activity;
             this.token = token;
             long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(deadlineMillis);
             watcher =
@@ -745,18 +795,24 @@ public final class QuestieSourceRepository implements AutoCloseable {
 
         @Override
         public int read(byte[] bytes, int offset, int length) throws IOException {
-            token.check();
-            if (expired) {
-                throw new IOException("HTTP body transfer deadline exceeded");
-            }
             try {
+                token.check();
+                if (expired) {
+                    throw new IOException("HTTP body transfer deadline exceeded");
+                }
+                activity.readStarted();
                 int count = in.read(bytes, offset, length);
+                activity.readFinished(count);
                 token.check();
                 if (expired) {
                     throw new IOException("HTTP body transfer deadline exceeded");
                 }
                 return count;
+            } catch (RuntimeException failure) {
+                activity.close();
+                throw failure;
             } catch (IOException failure) {
+                activity.close();
                 token.check();
                 if (expired) {
                     throw new IOException("HTTP body transfer deadline exceeded", failure);
@@ -778,6 +834,7 @@ public final class QuestieSourceRepository implements AutoCloseable {
                 try {
                     in.close();
                 } finally {
+                    activity.close();
                     if (watcher != null && watcher != Thread.currentThread()) {
                         watcher.interrupt();
                     }

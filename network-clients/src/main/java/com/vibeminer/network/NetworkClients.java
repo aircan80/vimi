@@ -6,6 +6,8 @@ import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.core.StreamReadConstraints;
+import com.vibeminer.activity.TransferObserver;
+import com.vibeminer.activity.TransferObserver.Kind;
 import com.vibeminer.network.HttpEngine.Budget;
 import com.vibeminer.network.HttpEngine.Exchange;
 import com.vibeminer.network.HttpEngine.Fault;
@@ -59,11 +61,15 @@ public final class NetworkClients
     }
 
     public NetworkClients(NetworkOptions options) {
+        this(options, TransferObserver.NONE);
+    }
+
+    public NetworkClients(NetworkOptions options, TransferObserver observer) {
         this(
                 options,
-                new HttpEngine(options, "cdn", options.concurrentFetches()),
-                new HttpEngine(options, "definitions", 2),
-                new HttpEngine(options, "listfile", 1));
+                new HttpEngine(options, "cdn", options.concurrentFetches(), observer),
+                new HttpEngine(options, "definitions", 2, observer),
+                new HttpEngine(options, "listfile", 1, observer));
     }
 
     NetworkClients(
@@ -115,7 +121,8 @@ public final class NetworkClients
                                                 : Map.of(),
                                         token,
                                         budget,
-                                        false)) {
+                                        false,
+                                        Kind.CDN)) {
                             Duration headersAfter = Duration.ofNanos(System.nanoTime() - start);
                             long limit =
                                     Math.min(
@@ -334,7 +341,8 @@ public final class NetworkClients
                 () -> {
                     long start = System.nanoTime();
                     Budget budget = new Budget(options.timeouts().headers());
-                    try (Exchange e = cdn.send(uri, Map.of(), token, budget, false)) {
+                    try (Exchange e =
+                            cdn.send(uri, Map.of(), token, budget, false, Kind.BUILD_METADATA)) {
                         if (e.response.code() == 404) {
                             throw fault(Failure.NOT_FOUND, "Version document not found", 404);
                         }
@@ -385,7 +393,13 @@ public final class NetworkClients
                     try {
                         byte[] json;
                         try (Exchange e =
-                                definitions.send(first, githubHeaders(true), token, budget, true)) {
+                                definitions.send(
+                                        first,
+                                        githubHeaders(true),
+                                        token,
+                                        budget,
+                                        true,
+                                        Kind.DEFINITIONS)) {
                             checkGithub(e);
                             noEncoding(e);
                             json = e.bytes(SourceUrls.COMMIT_BYTES, Failure.PROTOCOL, true);
@@ -394,7 +408,12 @@ public final class NetworkClients
                         at[0] = SourceUrls.definition(revision, tableName);
                         try (Exchange e =
                                 definitions.send(
-                                        at[0], githubHeaders(false), token, budget, true)) {
+                                        at[0],
+                                        githubHeaders(false),
+                                        token,
+                                        budget,
+                                        true,
+                                        Kind.DEFINITIONS)) {
                             checkGithub(e);
                             noEncoding(e);
                             return new DefinitionReply(
@@ -418,7 +437,13 @@ public final class NetworkClients
                 () -> {
                     Budget budget = new Budget(options.timeouts().definitions());
                     try (Exchange exchange =
-                            definitions.send(url, githubHeaders(false), token, budget, true)) {
+                            definitions.send(
+                                    url,
+                                    githubHeaders(false),
+                                    token,
+                                    budget,
+                                    true,
+                                    Kind.TACT_KEYS)) {
                         checkGithub(exchange);
                         noEncoding(exchange);
                         return new NetworkTypes.TactKeyReply(
@@ -453,7 +478,8 @@ public final class NetworkClients
                 () -> {
                     Budget budget = new Budget(options.timeouts().definitions());
                     try (Exchange exchange =
-                            definitions.send(url, githubHeaders(api), token, budget, true)) {
+                            definitions.send(
+                                    url, githubHeaders(api), token, budget, true, Kind.EG_LINK)) {
                         checkGithub(exchange);
                         noEncoding(exchange);
                         return new NetworkTypes.EgLinkReply(
@@ -488,7 +514,8 @@ public final class NetworkClients
                 () -> {
                     Budget budget = new Budget(options.timeouts().definitions());
                     try (Exchange exchange =
-                            definitions.send(url, githubHeaders(api), token, budget, true)) {
+                            definitions.send(
+                                    url, githubHeaders(api), token, budget, true, Kind.POLESTAR)) {
                         checkGithub(exchange);
                         noEncoding(exchange);
                         return new NetworkTypes.PolestarReply(
@@ -584,7 +611,8 @@ public final class NetworkClients
                 () -> {
                     Budget budget = new Budget(options.timeouts().listfile());
                     try (Exchange e =
-                            listfile.send(uri, githubHeaders(true), token, budget, true)) {
+                            listfile.send(
+                                    uri, githubHeaders(true), token, budget, true, Kind.LISTFILE)) {
                         checkGithub(e);
                         noEncoding(e);
                         return new ListfileReply(
@@ -622,7 +650,8 @@ public final class NetworkClients
                                                     rangeHeader(start, SourceUrls.PART_BYTES)),
                                             token,
                                             budget,
-                                            true)) {
+                                            true,
+                                            Kind.LISTFILE)) {
                                 int status = e.response.code();
                                 if (Set.of(301, 302, 303, 307, 308).contains(status)) {
                                     URI location;

@@ -41,3 +41,5 @@ include 'concepts-locations'
 include 'concepts-comparison'
 
 include 'rendering-bgfx'
+
+include 'network-activity'

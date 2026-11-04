@@ -42,6 +42,7 @@ configurations {
     integrationTestRuntimeOnly.extendsFrom testRuntimeOnly
 }
 dependencies {
+    api project(':network-activity')
     api project(':generated-store')
     implementation 'com.fasterxml.jackson.core:jackson-core:2.20.1'
     testImplementation platform('org.junit:junit-bom:5.13.4')

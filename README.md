@@ -240,6 +240,7 @@ consumed with `testImplementation testFixtures(project(':object-store'))`.
 - `files/`: layer 4 build/locale filesystem, decoding, Ensure and community names.
 - `builds/`: layer 3 discovery/catalog, metadata opening/resolution and download tracking.
 - `object-access/`: layer 2 local/shared/CDN coordination, observations and commit feeds.
+- `network-activity/`: JDK-only shared HTTP body-byte and waiting/receiving counters.
 - `network-clients/`: layer 1 HTTP clients, routes/range planning, fakes and loopback tests.
 - `generated-store/`: generated-data wrapper and compressed record files.
 - `object-store/src/main/java`: public store interfaces/types and implementation.

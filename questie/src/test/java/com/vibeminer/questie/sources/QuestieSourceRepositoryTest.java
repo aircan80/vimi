@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.sun.net.httpserver.HttpServer;
+import com.vibeminer.activity.NetworkActivity;
 import com.vibeminer.generated.Cancellation;
 import com.vibeminer.questie.QuestieTypes.Flavor;
 import com.vibeminer.questie.QuestieTypes.SourceSnapshot;
@@ -196,6 +197,130 @@ final class QuestieSourceRepositoryTest {
 
     private static String sha(byte[] bytes) throws Exception {
         return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+    }
+
+    @Test
+    void activityBalancesRedirectHopWithoutCountingUnreadBody() throws Exception {
+        server.createContext(
+                "/redirect/releases/latest",
+                exchange -> {
+                    exchange.getResponseHeaders()
+                            .set("Location", base.resolve("releases/latest").toString());
+                    exchange.sendResponseHeaders(302, -1);
+                    exchange.close();
+                });
+        var meter = new NetworkActivity();
+        try (var repo =
+                QuestieSourceRepository.open(
+                                directory.resolve("questie"),
+                                base.resolve("redirect/"),
+                                true,
+                                Cancellation.NONE,
+                                meter)
+                        .join()) {
+            repo.refresh(Cancellation.NONE).join();
+            assertEquals(release.length, meter.snapshot().receivedBytes());
+            assertEquals(0, meter.snapshot().active());
+        }
+    }
+
+    @Test
+    void activityCoversHeaderWaitAndCancellationWithoutSyntheticBytes() throws Exception {
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var unblock = new java.util.concurrent.CountDownLatch(1);
+        server.createContext(
+                "/held/releases/latest",
+                exchange -> {
+                    entered.countDown();
+                    try {
+                        unblock.await(3, java.util.concurrent.TimeUnit.SECONDS);
+                    } catch (InterruptedException failure) {
+                        Thread.currentThread().interrupt();
+                    }
+                    try {
+                        exchange.sendResponseHeaders(200, -1);
+                    } catch (IOException disconnected) {
+                        /* canceled client */
+                    } finally {
+                        exchange.close();
+                    }
+                });
+        var meter = new NetworkActivity();
+        try (var repo =
+                QuestieSourceRepository.open(
+                                directory.resolve("questie"),
+                                base.resolve("held/"),
+                                true,
+                                Cancellation.NONE,
+                                meter)
+                        .join()) {
+            var token = new Cancellation();
+            var operation = repo.refresh(token);
+            assertTrue(entered.await(2, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(1, meter.snapshot().waitingResponse());
+            assertEquals(0, meter.snapshot().receivedBytes());
+            token.cancel();
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> operation.get(2, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(0, meter.snapshot().active());
+        } finally {
+            unblock.countDown();
+        }
+    }
+
+    @Test
+    void activityCountsMetadataArchiveAndNotCacheOrExpandedFiles() throws Exception {
+        var meter = new NetworkActivity();
+        try (var repo =
+                QuestieSourceRepository.open(
+                                directory.resolve("questie"), base, true, Cancellation.NONE, meter)
+                        .join()) {
+            var latest = repo.refresh(Cancellation.NONE).join().latest();
+            assertEquals(release.length, meter.snapshot().receivedBytes());
+            assertEquals(0, meter.snapshot().active());
+            repo.refresh(Cancellation.NONE).join(); // 304 body has no bytes
+            assertEquals(release.length, meter.snapshot().receivedBytes());
+            repo.acquire(latest, null, Cancellation.NONE).join();
+            long expected = (long) release.length + manifest.length + archive.length;
+            assertEquals(expected, meter.snapshot().receivedBytes());
+            assertEquals(0, meter.snapshot().active());
+            var snapshot = repo.snapshots(Cancellation.NONE).join().getFirst();
+            assertTrue(repo.verify(snapshot, Cancellation.NONE).join());
+            assertEquals(expected, meter.snapshot().receivedBytes());
+            repo.acquire(latest, null, Cancellation.NONE).join(); // rechecks upstream manifest
+            assertEquals(expected + manifest.length, meter.snapshot().receivedBytes());
+            assertEquals(1, downloaded.get());
+        }
+        assertEquals(0, meter.snapshot().active());
+    }
+
+    @Test
+    void activityKeepsActualPartialBytesAfterCancelAndDrain() throws Exception {
+        var meter = new NetworkActivity();
+        try (var repo =
+                QuestieSourceRepository.open(
+                                directory.resolve("questie"), base, true, Cancellation.NONE, meter)
+                        .join()) {
+            var latest = repo.refresh(Cancellation.NONE).join().latest();
+            stalledPath = "/release.json";
+            var token = new Cancellation();
+            var operation = repo.acquire(latest, null, token);
+            assertTrue(bodyStarted.await(2, java.util.concurrent.TimeUnit.SECONDS));
+            long end = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+            while (meter.snapshot().receivedBytes() == release.length && System.nanoTime() < end) {
+                Thread.sleep(5);
+            }
+            assertEquals((long) release.length + 1, meter.snapshot().receivedBytes());
+            assertEquals(1, meter.snapshot().active());
+            token.cancel();
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> operation.get(2, java.util.concurrent.TimeUnit.SECONDS));
+            repo.closeAsync().get(2, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(0, meter.snapshot().active());
+            assertEquals((long) release.length + 1, meter.snapshot().receivedBytes());
+        }
     }
 
     @Test

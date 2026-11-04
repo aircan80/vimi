@@ -1,5 +1,6 @@
 package com.vibeminer.questie;
 
+import com.vibeminer.activity.TransferObserver;
 import com.vibeminer.generated.Cancellation;
 import com.vibeminer.questie.QuestieTypes.EntityKind;
 import com.vibeminer.questie.QuestieTypes.Flavor;
@@ -40,6 +41,11 @@ public final class QuestieRepository implements AutoCloseable {
     }
 
     public static CompletableFuture<QuestieRepository> open(Path directory, Cancellation token) {
+        return open(directory, token, TransferObserver.NONE);
+    }
+
+    public static CompletableFuture<QuestieRepository> open(
+            Path directory, Cancellation token, TransferObserver observer) {
         var result = new CompletableFuture<QuestieRepository>();
         Thread.startVirtualThread(
                 () -> {
@@ -47,7 +53,8 @@ public final class QuestieRepository implements AutoCloseable {
                     try {
                         token.check();
                         source =
-                                QuestieSourceRepository.open(directory.resolve("sources"), token)
+                                QuestieSourceRepository.open(
+                                                directory.resolve("sources"), token, observer)
                                         .join();
                         token.check();
                         var repository =

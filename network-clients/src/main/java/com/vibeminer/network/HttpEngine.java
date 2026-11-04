@@ -1,5 +1,7 @@
 package com.vibeminer.network;
 
+import com.vibeminer.activity.TransferObserver;
+import com.vibeminer.activity.TransferObserver.Kind;
 import com.vibeminer.network.NetworkTypes.Attempt;
 import com.vibeminer.network.NetworkTypes.Failure;
 import java.io.ByteArrayOutputStream;
@@ -43,9 +45,14 @@ final class HttpEngine {
     final NetworkQueue queue;
     private final OkHttpClient client;
     private final Function<URI, URI> wireUri;
+    private final TransferObserver observer;
 
     HttpEngine(NetworkOptions options, String name, int concurrent) {
-        this(options, name, concurrent, null, Function.identity());
+        this(options, name, concurrent, null, Function.identity(), TransferObserver.NONE);
+    }
+
+    HttpEngine(NetworkOptions options, String name, int concurrent, TransferObserver observer) {
+        this(options, name, concurrent, null, Function.identity(), observer);
     }
 
     // Per-instance loopback seam, inaccessible to application consumers; no global test switches.
@@ -55,6 +62,17 @@ final class HttpEngine {
             int concurrent,
             OkHttpClient supplied,
             Function<URI, URI> wireUri) {
+        this(options, name, concurrent, supplied, wireUri, TransferObserver.NONE);
+    }
+
+    HttpEngine(
+            NetworkOptions options,
+            String name,
+            int concurrent,
+            OkHttpClient supplied,
+            Function<URI, URI> wireUri,
+            TransferObserver observer) {
+        this.observer = TransferObserver.safe(observer);
         this.options = options;
         this.wireUri = wireUri;
         OkHttpClient.Builder builder =
@@ -157,6 +175,16 @@ final class HttpEngine {
             Cancellation token,
             Budget budget,
             boolean external) {
+        return send(uri, headers, token, budget, external, Kind.CDN);
+    }
+
+    Exchange send(
+            URI uri,
+            Map<String, String> headers,
+            Cancellation token,
+            Budget budget,
+            boolean external,
+            Kind kind) {
         token.check();
         long remaining = budget.remaining();
         URI target = wireUri.apply(uri);
@@ -193,8 +221,10 @@ final class HttpEngine {
         Cancellation.Registration registration = token.onCancel(call::cancel);
         Response response = null;
         boolean handedOff = false;
+        var activity = observer.begin(kind);
         try {
             response = call.execute();
+            activity.headersReceived();
             if (!waiting.compareAndSet(true, false)) {
                 call.cancel();
                 response.close();
@@ -223,7 +253,13 @@ final class HttpEngine {
                     .timeout(options.timeouts().idle().toNanos(), TimeUnit.NANOSECONDS);
             handedOff = true;
             return new Exchange(
-                    response, call, registration, token, budget, options.clock().instant());
+                    response,
+                    call,
+                    registration,
+                    token,
+                    budget,
+                    options.clock().instant(),
+                    activity);
         } catch (IOException e) {
             token.check();
             budget.remaining();
@@ -244,11 +280,18 @@ final class HttpEngine {
             waiting.set(false);
             timer.cancel(false);
             if (!handedOff) {
-                call.cancel();
-                if (response != null) {
-                    response.close();
+                try {
+                    call.cancel();
+                    if (response != null) {
+                        response.close();
+                    }
+                } finally {
+                    try {
+                        registration.close();
+                    } finally {
+                        activity.close();
+                    }
                 }
-                registration.close();
             }
         }
     }
@@ -261,6 +304,7 @@ final class HttpEngine {
         private final Cancellation token;
         private final Budget budget;
         private boolean eof;
+        private final TransferObserver.Attempt activity;
 
         Exchange(
                 Response response,
@@ -268,13 +312,15 @@ final class HttpEngine {
                 Cancellation.Registration registration,
                 Cancellation token,
                 Budget budget,
-                Instant observedAt) {
+                Instant observedAt,
+                TransferObserver.Attempt activity) {
             this.response = response;
             this.call = call;
             this.registration = registration;
             this.token = token;
             this.budget = budget;
             this.observedAt = observedAt;
+            this.activity = activity;
         }
 
         String header(String name) {
@@ -297,15 +343,21 @@ final class HttpEngine {
         }
 
         int read(byte[] buffer, int length) {
-            token.check();
-            budget.remaining();
             try {
+                token.check();
+                budget.remaining();
+                activity.readStarted();
                 int n = response.body().byteStream().read(buffer, 0, length);
+                activity.readFinished(n);
                 if (n < 0) {
                     eof = true;
                 }
                 return n;
+            } catch (RuntimeException failure) {
+                activity.close();
+                throw failure;
             } catch (IOException e) {
+                activity.close();
                 token.check();
                 budget.remaining();
                 throw fault(
@@ -356,7 +408,11 @@ final class HttpEngine {
             try {
                 response.close();
             } finally {
-                registration.close();
+                try {
+                    registration.close();
+                } finally {
+                    activity.close();
+                }
             }
         }
     }

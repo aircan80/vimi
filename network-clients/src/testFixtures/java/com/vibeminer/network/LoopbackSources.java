@@ -1,5 +1,6 @@
 package com.vibeminer.network;
 
+import com.vibeminer.activity.TransferObserver;
 import java.io.IOException;
 import java.net.URI;
 import java.util.concurrent.TimeUnit;
@@ -23,6 +24,12 @@ public final class LoopbackSources implements AutoCloseable {
     }
 
     public LoopbackSources(NetworkOptions options, Dispatcher dispatcher, boolean http2)
+            throws IOException {
+        this(options, dispatcher, http2, TransferObserver.NONE);
+    }
+
+    public LoopbackSources(
+            NetworkOptions options, Dispatcher dispatcher, boolean http2, TransferObserver observer)
             throws IOException {
         server.setDispatcher(dispatcher);
         OkHttpClient.Builder transport =
@@ -85,9 +92,14 @@ public final class LoopbackSources implements AutoCloseable {
                 new NetworkClients(
                         options,
                         new HttpEngine(
-                                options, "test-cdn", options.concurrentFetches(), supplied, target),
-                        new HttpEngine(options, "test-definitions", 2, supplied, target),
-                        new HttpEngine(options, "test-listfile", 1, supplied, target));
+                                options,
+                                "test-cdn",
+                                options.concurrentFetches(),
+                                supplied,
+                                target,
+                                observer),
+                        new HttpEngine(options, "test-definitions", 2, supplied, target, observer),
+                        new HttpEngine(options, "test-listfile", 1, supplied, target, observer));
     }
 
     public NetworkClients clients() {
