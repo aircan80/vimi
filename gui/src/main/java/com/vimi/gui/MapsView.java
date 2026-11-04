@@ -209,6 +209,8 @@ final class MapsView extends BorderPane implements AutoCloseable {
                 }
                 publish(request, version, source, () -> {
                     if (selectedTables == tables.get()) reload();
+                    else { busy(false); loadedRevision = Long.MIN_VALUE; loadedSource = null;
+                        status.setText("Map table source changed. Reload maps to continue."); }
                 });
             } catch (RuntimeException failure) {
                 failure(request, version, source, "Map table preparation could not finish.", failure);
