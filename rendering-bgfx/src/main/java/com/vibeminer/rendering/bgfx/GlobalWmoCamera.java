@@ -37,9 +37,14 @@ record GlobalWmoCamera(double x, double y, double z, double yaw, double pitch) {
         return terrain().modelToEye(ORIGIN);
     }
 
-    static FloatBuffer projection() {
-        return TerrainCamera.reversedProjection(
-                GlobalWmoNativeScene.WIDTH, GlobalWmoNativeScene.HEIGHT);
+    static FloatBuffer projection(int width, int height) {
+        if (width < 1
+                || height < 1
+                || width > GlobalWmoNativeScene.WIDTH
+                || height > GlobalWmoNativeScene.HEIGHT) {
+            throw new IllegalArgumentException("Invalid global frame dimensions");
+        }
+        return TerrainCamera.reversedProjection(width, height);
     }
 
     private TerrainCamera terrain() {

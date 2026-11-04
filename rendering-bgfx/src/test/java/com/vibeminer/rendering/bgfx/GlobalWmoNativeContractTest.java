@@ -28,8 +28,11 @@ class GlobalWmoNativeContractTest {
         var west = camera.look(Math.PI / 2, 0).move(5, 0, 0);
         assertEquals(5, west.y(), 1e-12);
         assertEquals(-1, camera.modelToEye().get(4));
-        assertEquals(.5f, GlobalWmoCamera.projection().get(14));
-        assertEquals(0, GlobalWmoCamera.projection().get(10));
+        assertEquals(.5f, GlobalWmoCamera.projection(800, 500).get(14));
+        assertEquals(0, GlobalWmoCamera.projection(800, 500).get(10));
+        assertEquals(3.2f, GlobalWmoCamera.projection(320, 160).get(5));
+        assertThrows(IllegalArgumentException.class, () -> GlobalWmoCamera.projection(801, 500));
+        assertThrows(IllegalArgumentException.class, () -> GlobalWmoCamera.projection(800, 0));
         assertThrows(IllegalArgumentException.class, () -> camera.move(8193, 0, 0));
         assertThrows(
                 IllegalArgumentException.class, () -> new GlobalWmoCamera(0, 0, 0, 0, Double.NaN));

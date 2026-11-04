@@ -33,7 +33,7 @@ interface GlobalWmoNativeScene extends AutoCloseable {
      * Draws into the enclosing owner's already configured view0/target, with no clear or frame
      * advance. Source batch order, opaque RGB, two-sided strict GREATER, no fog/lighting.
      */
-    void draw(GlobalWmoCamera camera);
+    void draw(GlobalWmoCamera camera, int width, int height);
 
     /** Queued bytes are conservative lifetime upload totals, not observed driver-release facts. */
     record Stats(
