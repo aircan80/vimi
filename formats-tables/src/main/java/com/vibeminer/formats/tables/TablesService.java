@@ -84,15 +84,7 @@ public final class TablesService implements Tables {
                                                     build,
                                                     locale,
                                                     FilesOpenState.OPEN,
-                                                    new ClientBuildTables(
-                                                            files,
-                                                            open.files(),
-                                                            version,
-                                                            definitions,
-                                                            generated,
-                                                            options,
-                                                            backgroundBuilds,
-                                                            protectedIds),
+                                                    create(open.files(), version),
                                                     null,
                                                     null,
                                                     null);
@@ -102,5 +94,28 @@ public final class TablesService implements Tables {
                                         }
                                     });
                         });
+    }
+
+    private BuildTables create(com.vibeminer.files.BuildFiles opened, String version) {
+        var base =
+                new ClientBuildTables(
+                        files,
+                        opened,
+                        version,
+                        definitions,
+                        generated,
+                        options,
+                        backgroundBuilds,
+                        protectedIds);
+        var hotfix = options.hotfix();
+        if (hotfix == null) {
+            return base;
+        }
+        if (!hotfix.build().equals(opened.build())
+                || !hotfix.locale().equals(opened.locale())
+                || !hotfix.version().equals(version)) {
+            throw new IllegalArgumentException("Hotfix binding differs from selected workspace");
+        }
+        return new HotfixBuildTables(base, options);
     }
 }

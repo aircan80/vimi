@@ -1708,6 +1708,121 @@ final class ClientBuildTables implements BuildTables {
                 });
     }
 
+    record HotfixMetadata(
+            TableTypes.Entry entry,
+            Db2Types.Header header,
+            com.vibeminer.formats.definitions.TableSchema schema,
+            long rows,
+            String identity,
+            Db2Reader.HotfixHeaderFacts raw) {}
+
+    CompletableFuture<HotfixMetadata> hotfixMetadata(
+            TableTypes.Ref ref, TableTypes.Priority priority, Cancellation token) {
+        return hotfixMetadata(ref, priority, token, true);
+    }
+
+    CompletableFuture<HotfixMetadata> hotfixMetadata(
+            TableTypes.Ref ref,
+            TableTypes.Priority priority,
+            Cancellation token,
+            boolean readRawHeader) {
+        return operation(
+                token,
+                t -> {
+                    try (var prepared = prepare(ref, priority, false, false, t)) {
+                        if (!TableQueries.isReadable(prepared.entry().state())
+                                || prepared.definition() == null
+                                || prepared.definition().schema() == null) {
+                            return null;
+                        }
+                        var nativeHeader =
+                                prepared.stored() != null
+                                        ? prepared.stored().header()
+                                        : prepared.direct().header();
+                        if (!readRawHeader) {
+                            return new HotfixMetadata(
+                                    prepared.entry(),
+                                    nativeHeader,
+                                    prepared.definition().schema(),
+                                    prepared.count(),
+                                    prepared.identity(),
+                                    null);
+                        }
+                        long id = prepared.entry().fileDataId();
+                        var before = files.stat(FileRef.id(id), t).join();
+                        if (before.file() == null
+                                || !java.util.Objects.equals(
+                                        before.file().contentKey(),
+                                        prepared.entry().contentKey())) {
+                            throw new IllegalStateException("Hotfix base source changed");
+                        }
+                        var opened = files.openRead(FileRef.id(id), t).join();
+                        if (opened.stream() == null) {
+                            throw new IllegalStateException("Hotfix base header unavailable");
+                        }
+                        Db2Reader.HotfixHeaderFacts raw;
+                        long observedLength;
+                        try (var stream = opened.stream()) {
+                            long length = stream.length();
+                            observedLength = length;
+                            if (length < 72
+                                    || length > limits.maxDecodedBytes()
+                                    || before.file().size() != null
+                                            && before.file().size() != length) {
+                                throw new IllegalStateException(
+                                        "Hotfix base header length differs");
+                            }
+                            int size = (int) Math.min(204, length);
+                            var headerHoles = stream.holes();
+                            if (headerHoles.size() > limits.maxSections()) {
+                                throw new IllegalStateException("Hotfix header hole limit");
+                            }
+                            for (var hole : headerHoles) {
+                                t.check();
+                                if (hole.offset() < size && hole.length() > 0) {
+                                    throw new IllegalStateException(
+                                            "Hotfix base header is protected");
+                                }
+                            }
+                            var prefix = java.nio.ByteBuffer.allocate(size);
+                            while (prefix.hasRemaining()) {
+                                t.check();
+                                int prior = prefix.position();
+                                int count = stream.read(prefix, t).join();
+                                t.check();
+                                if (count <= 0
+                                        || prefix.limit() != size
+                                        || count != prefix.position() - prior) {
+                                    throw new IllegalStateException(
+                                            "Hotfix base header read differs");
+                                }
+                            }
+                            raw = Db2Reader.hotfixHeaderFacts(prefix.array());
+                        }
+                        t.check();
+                        var after = files.stat(FileRef.id(id), t).join();
+                        if (after.file() == null
+                                || !java.util.Objects.equals(
+                                        after.file().contentKey(), prepared.entry().contentKey())
+                                || after.file().size() != null
+                                        && after.file().size() != observedLength
+                                || !raw.format().equals(nativeHeader.format())
+                                || !raw.tableHash().equalsIgnoreCase(nativeHeader.tableHash())
+                                || !raw.layoutHash().equalsIgnoreCase(nativeHeader.layoutHash())) {
+                            throw new IllegalStateException(
+                                    "Hotfix base header/schema source differs");
+                        }
+                        return new HotfixMetadata(
+                                prepared.entry(),
+                                nativeHeader,
+                                prepared.definition().schema(),
+                                prepared.count(),
+                                prepared.identity(),
+                                raw);
+                    }
+                });
+    }
+
     @Override
     public CompletableFuture<TableTypes.Page> page(
             TableTypes.PageRequest request, TableTypes.Priority priority, Cancellation token) {
