@@ -319,6 +319,13 @@ tasks.register('worldSpawnsTest', JavaExec) {
 }
 check.dependsOn worldSpawnsTest
 
+tasks.register('worldPickTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldPickTest'
+}
+check.dependsOn worldPickTest
+
 tasks.register('mapRolesTest', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath

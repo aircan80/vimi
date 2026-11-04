@@ -194,6 +194,10 @@ final class WorldStreamSourceController {
     private final IdentityHashMap<Entry, Optional<TerrainGround.Tile>> heights =
             new IdentityHashMap<>();
     private volatile TerrainGround ground = TerrainGround.empty();
+    // Worker-owned immutable area metadata of current residents, for pure point lookups.
+    private final IdentityHashMap<Entry, Optional<WorldFormats.AreaMetadata>> areaMetadata =
+            new IdentityHashMap<>();
+    private volatile List<WorldFormats.AreaMetadata> areas = List.of();
     private CompletableFuture<WorldStreamTransport.CommitReceipt> commit;
     private WorldStreamTransport.CommitReceipt currentReceipt, acceptedReceipt;
     private Entry staged;
@@ -285,6 +289,15 @@ final class WorldStreamSourceController {
     /** Rendered-surface heights of the current resident tiles; never source or payload handles. */
     TerrainGround ground() {
         return closing ? TerrainGround.empty() : ground;
+    }
+
+    /**
+     * Recorded terrain area at a native point of the current residents. Pure lookup over retained
+     * immutable metadata; never borrows a payload, so any thread may call it.
+     */
+    WorldCurrentArea.Result areaAt(double x, double y) {
+        var known = closing ? List.<WorldFormats.AreaMetadata>of() : areas;
+        return WorldCurrentArea.locateIn(request.map().id(), x, y, known, request.areaIndex());
     }
 
     Optional<Presentation> takePresentation() {
@@ -866,20 +879,31 @@ final class WorldStreamSourceController {
         var live = java.util.Collections.newSetFromMap(new IdentityHashMap<Entry, Boolean>());
         live.addAll(current);
         heights.keySet().retainAll(live);
+        areaMetadata.keySet().retainAll(live);
         var tiles = new ArrayList<TerrainGround.Tile>();
+        var metadata = new ArrayList<WorldFormats.AreaMetadata>();
         for (var entry : current) {
             var known = heights.get(entry);
-            if (known == null) {
+            var recorded = areaMetadata.get(entry);
+            if (known == null || recorded == null) {
                 // Current residents are never retired here; borrow failures surface like updateArea.
+                // One borrow reads both facts so neither depends on a second payload access.
                 TerrainGround.Tile[] built = {null};
-                entry.source().withPayload(
-                        borrow -> built[0] = TerrainGround.Tile.of(borrow.geometry()));
+                WorldFormats.AreaMetadata[] read = {null};
+                entry.source().withPayload(borrow -> {
+                    built[0] = TerrainGround.Tile.of(borrow.geometry());
+                    read[0] = borrow.areas();
+                });
                 known = Optional.ofNullable(built[0]);
+                recorded = Optional.ofNullable(read[0]);
                 heights.put(entry, known);
+                areaMetadata.put(entry, recorded);
             }
             known.ifPresent(tiles::add);
+            recorded.ifPresent(metadata::add);
         }
         ground = TerrainGround.of(tiles);
+        areas = List.copyOf(metadata);
     }
 
     private void updateArea() {

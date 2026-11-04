@@ -56,6 +56,26 @@ the viewport reuses its bounded loaded neighborhood. The catalog builds one
 immutable ID index on its worker, limited to 100,000 area records; frame updates
 perform bounded metadata lookup without table/file I/O or full catalog scans.
 
+## Click to inspect
+
+A still primary click in the explorer reports what lies under the pointer in the
+footer (#180). A drawn NPC spawn marker takes priority: the footer shows the NPC
+name, subname, level and rank from the same Polestar snapshot, the native
+position, and the declared source record (`spawn` record `npc:<id>:<map>:<n>`,
+recorded fields, client build and snapshot). An NPC without a record in that
+snapshot is reported as "name unknown". Hidden markers are never picked.
+
+Elsewhere, a CPU ray through the pixel is cast against the retained
+rendered-surface heights (`TerrainGround`) up to 2,200 yards. A hit reports the map,
+tile, native x/y/z, distance and the recorded terrain area at the hit point. The
+area uses the same lookup as the footer. In GPU streaming mode, the controller's
+retained resident area metadata answers the lookup, so a pick never borrows a
+payload. Unresolved areas report the reason and the recorded area ID. Holes, sky
+and unloaded tiles report that nothing was picked. Picks run on one worker, the
+latest click wins, and results from a closed or changed selection are dropped.
+Buildings, doodads, water and live creatures are not picked, and no identity is
+inferred.
+
 ## First-stage scope
 
 This is a free-fly **terrain preview with BASIC diffuse textures**. It renders
@@ -129,8 +149,12 @@ No source/game assets were copied into the repository.
 ```sh
 ./gradlew :formats-world:check :concepts-world:check :rendering-world:check :gui:check
 # Requires a working JavaFX display:
-./gradlew :gui:worldUiTest
+./gradlew :gui:worldUiTest :gui:worldTravelUiTest :gui:worldSpawnsUiTest
 ```
+
+`:gui:worldPickTest` (part of `:gui:check`) covers ray inversion of the terrain
+projection, surface hits against authored planar heights, holes, sky and
+underground cameras, marker hit order and the disclosure text.
 
 The authored UI fixture exercises selection, stale requests across map and
 explorer sessions, background cancellation, rendering and borrowed lifetimes.
