@@ -1,3 +1,7 @@
+# Current continuation entry point
+
+Read [Linux AI handoff, 2026-11-04](docs/ai-handoff-2026-11-04.md) first. The release and task status below is historical.
+
 # vimi development handoff
 
 ## Current alpha21 delivery gate — pool retry correction
