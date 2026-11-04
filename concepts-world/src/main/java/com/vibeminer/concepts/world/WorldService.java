@@ -292,7 +292,23 @@ public final class WorldService implements BuildWorld {
             }
             navigation = areaNavigation;
         }
-        return navigation.scan(request, token, progress);
+        return navigation
+                .scan(request, token, progress)
+                .thenApply(
+                        result -> {
+                            synchronized (this) {
+                                if (closing == null) {
+                                    return result;
+                                }
+                            }
+                            // The closing marker wins delivery even before off-caller lower
+                            // cancellation runs.
+                            return new WorldAreaNavigation.Result(
+                                    WorldAreaNavigation.State.CANCELED,
+                                    result.progress(),
+                                    result.matches(),
+                                    result.issues());
+                        });
     }
 
     @Override
@@ -513,6 +529,12 @@ public final class WorldService implements BuildWorld {
 
     @Override
     public CompletableFuture<Minimap> minimap(WorldFormats.Tile tile, Cancellation token) {
+        synchronized (this) {
+            if (closing != null) {
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("World workspace closed"));
+            }
+        }
         return minimaps.image(
                 java.util.Objects.requireNonNull(tile), java.util.Objects.requireNonNull(token));
     }
@@ -549,50 +571,89 @@ public final class WorldService implements BuildWorld {
         return terrainTextures.read(map, tiles, token, progress);
     }
 
-    public synchronized CompletableFuture<Void> closeAsync() {
-        if (closing != null) {
-            return closing.copy();
+    public CompletableFuture<Void> closeAsync() {
+        CompletableFuture<Void> completion;
+        WorldAreaNavigation navigation;
+        WorldPlacementSource placementSource;
+        WorldTerrainTextureSource textureSource;
+        synchronized (this) {
+            if (closing != null) {
+                return closing.copy();
+            }
+            closing = new CompletableFuture<>();
+            completion = closing;
+            cache.invalidate();
+            navigation = areaNavigation;
+            placementSource = placements;
+            textureSource = terrainTextures;
         }
-        closing = new CompletableFuture<>();
-        cache.invalidate();
-        lifetime.cancel();
-        worker.shutdown();
-        var areasClosed =
-                areaNavigation == null
-                        ? CompletableFuture.<Void>completedFuture(null)
-                        : areaNavigation.closeAsync();
-        var minimapsClosed = minimaps.closeAsync();
-        var placementsClosed =
-                placements == null
-                        ? CompletableFuture.<Void>completedFuture(null)
-                        : placements.closeAsync();
-        var texturesClosed =
-                terrainTextures == null
-                        ? CompletableFuture.<Void>completedFuture(null)
-                        : terrainTextures.closeAsync();
         Thread.startVirtualThread(
                 () -> {
+                    Throwable failure = null;
+                    worker.shutdown();
                     try {
-                        while (!worker.awaitTermination(1, TimeUnit.SECONDS)) {}
+                        lifetime.cancel();
+                    } catch (RuntimeException | Error error) {
+                        failure = error;
+                    }
+                    var drains = new ArrayList<CompletableFuture<Void>>();
+                    var closes =
+                            List.<java.util.function.Supplier<CompletableFuture<Void>>>of(
+                                    minimaps::closeAsync,
+                                    () ->
+                                            navigation == null
+                                                    ? CompletableFuture.completedFuture(null)
+                                                    : navigation.closeAsync(),
+                                    () ->
+                                            placementSource == null
+                                                    ? CompletableFuture.completedFuture(null)
+                                                    : placementSource.closeAsync(),
+                                    () ->
+                                            textureSource == null
+                                                    ? CompletableFuture.completedFuture(null)
+                                                    : textureSource.closeAsync(),
+                                    cache::closeAsync);
+                    for (var close : closes) {
                         try {
-                            CompletableFuture.allOf(
-                                            areasClosed,
-                                            minimapsClosed,
-                                            placementsClosed,
-                                            texturesClosed)
-                                    .join();
-                        } finally {
-                            cache.closeAsync().join();
+                            drains.add(close.get());
+                        } catch (RuntimeException | Error error) {
+                            failure = appendCloseFailure(failure, error);
                         }
-                        closing.complete(null);
-                    } catch (InterruptedException e) {
+                    }
+                    boolean interrupted = false;
+                    while (!worker.isTerminated()) {
+                        try {
+                            worker.awaitTermination(1, TimeUnit.SECONDS);
+                        } catch (InterruptedException error) {
+                            interrupted = true;
+                            failure = appendCloseFailure(failure, error);
+                        }
+                    }
+                    try {
+                        CompletableFuture.allOf(drains.toArray(CompletableFuture[]::new)).join();
+                    } catch (RuntimeException | Error error) {
+                        failure = appendCloseFailure(failure, error);
+                    }
+                    if (interrupted) {
                         Thread.currentThread().interrupt();
-                        closing.completeExceptionally(e);
-                    } catch (RuntimeException failure) {
-                        closing.completeExceptionally(failure);
+                    }
+                    if (failure == null) {
+                        completion.complete(null);
+                    } else {
+                        completion.completeExceptionally(failure);
                     }
                 });
-        return closing.copy();
+        return completion.copy();
+    }
+
+    private static Throwable appendCloseFailure(Throwable first, Throwable next) {
+        if (first == null) {
+            return next;
+        }
+        if (first != next) {
+            first.addSuppressed(next);
+        }
+        return first;
     }
 
     @Override
