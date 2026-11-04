@@ -66,7 +66,7 @@ public final class WorldMinimapInputUiTest {
                 set("lastNearby", Long.MAX_VALUE);
                 controlEventsNeverSteerWorld();
             });
-            fx(WorldMinimapInputUiTest::popupKeyboardSelectsOrientation);
+            popupKeyboardSelectsOrientation();
             fx(WorldMinimapInputUiTest::viewportStillAcceptsFlightInput);
             System.out.println("World minimap input PASS: actual mouse/key/scroll, popup selection, viewport flight isolation");
         } finally {
@@ -98,15 +98,52 @@ public final class WorldMinimapInputUiTest {
         choice.hide();
     }
 
-    private static void popupKeyboardSelectsOrientation() {
+    private static void popupKeyboardSelectsOrientation() throws Exception {
+        fx(WorldMinimapInputUiTest::openOrientationPopup);
+        // Popup showing/layout and native window focus settle on later FX turns. In particular,
+        // Scene.focusOwner alone can refer to a row whose Node.isFocused is false after another
+        // GUI/native test window took focus. Dispatch navigation in the SAME turn as this check.
+        await(() -> {
+            var choice = (ChoiceBox<?>) view.lookup("#world-minimap-orientation");
+            if (!choice.isShowing()) {
+                openOrientationPopup();
+                return false;
+            }
+            var popup = orientationPopup();
+            if (!popup.isFocused()) {
+                popup.requestFocus();
+                return false;
+            }
+            var root = popup.getScene().getRoot();
+            return root.getLayoutBounds().getWidth() > 0
+                    && root.getLayoutBounds().getHeight() > 0
+                    && root.lookupAll(".menu-item").size() == 2;
+        }, WorldMinimapInputUiTest::selectOrientationWithKeyboard);
+    }
+
+    private static void openOrientationPopup() {
+        stage.toFront();
+        stage.requestFocus();
         var choice = (ChoiceBox<?>) view.lookup("#world-minimap-orientation");
         choice.requestFocus();
-        key(choice, KeyCode.SPACE, true);
-        key(choice, KeyCode.SPACE, false);
+        if (!choice.isShowing()) {
+            key(choice, KeyCode.SPACE, true);
+            key(choice, KeyCode.SPACE, false);
+        }
         require(choice.isShowing(), "Space opens the actual orientation popup");
-        var popup = Window.getWindows().stream()
+        orientationPopup().requestFocus();
+    }
+
+    private static PopupWindow orientationPopup() {
+        return (PopupWindow) Window.getWindows().stream()
                 .filter(window -> window instanceof PopupWindow && window.isShowing())
                 .findFirst().orElseThrow();
+    }
+
+    private static void selectOrientationWithKeyboard() {
+        var choice = (ChoiceBox<?>) view.lookup("#world-minimap-orientation");
+        var popup = orientationPopup();
+        require(popup.isFocused(), "Popup is active before keyboard navigation");
         // Native pointer placement can hover either popup row when its screen position changes.
         // Drive an actual hover into the known first row before testing keyboard navigation;
         // neither the selection model nor the value is changed programmatically.
@@ -122,11 +159,13 @@ public final class WorldMinimapInputUiTest {
         hover(north);
         var focused = java.util.Objects.requireNonNull(popup.getScene().getFocusOwner(),
                 "Orientation popup owns keyboard focus");
-        require("North up".equals(menuText(focused)), "Hover establishes the first popup row");
+        require(focused.isFocused() && "North up".equals(menuText(focused)),
+                "Hover establishes an actively focused first popup row");
         key(focused, KeyCode.DOWN, true);
         key(focused, KeyCode.DOWN, false);
         var selected = java.util.Objects.requireNonNull(popup.getScene().getFocusOwner());
-        require("Heading up".equals(menuText(selected)), "Down moves focus to the second row");
+        require(selected.isFocused() && "Heading up".equals(menuText(selected)),
+                "Down moves active focus to the second row");
         key(selected, KeyCode.ENTER, true);
         key(selected, KeyCode.ENTER, false);
         require("Heading up".equals(choice.getValue()), "Popup keyboard chooses Heading up");
@@ -195,11 +234,19 @@ public final class WorldMinimapInputUiTest {
     }
 
     private static void await(BooleanSupplier condition) throws Exception {
+        await(condition, () -> {});
+    }
+
+    private static void await(BooleanSupplier condition, Runnable action) throws Exception {
         long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
         while (System.nanoTime() < until) {
             var ready = new CompletableFuture<Boolean>();
             Platform.runLater(() -> {
-                try { ready.complete(condition.getAsBoolean()); }
+                try {
+                    boolean satisfied = condition.getAsBoolean();
+                    if (satisfied) action.run();
+                    ready.complete(satisfied);
+                }
                 catch (Throwable error) { ready.completeExceptionally(error); }
             });
             if (ready.get(5, TimeUnit.SECONDS)) return;
