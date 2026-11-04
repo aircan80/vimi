@@ -359,12 +359,119 @@ final class WorldStreamScopesTest {
         }
     }
 
+    @Test
+    void metadataInputsAreProfileBoundedBeforeIdentityHashingOrRowReads() {
+        for (int mode = 1; mode <= 11; mode++) {
+            var files = new WorldTerrainTextureSourceTest.Files();
+            var tables = new Tables(files);
+            tables.metadataMode = mode;
+            var source = new WorldStreamScopes(tables.handle(), files.files());
+            try {
+                assertThrows(
+                        UnsupportedOperationException.class,
+                        () -> source.create(REQUEST, Cancellation.NONE));
+                assertEquals(0, tables.pages.get(), "Oversized metadata refuses before row decode");
+                assertEquals(0, files.totalOpens());
+                assertEquals(0, source.retainedProofs());
+                tables.metadataMode = 0;
+                assertEquals(1, source.create(REQUEST, Cancellation.NONE).wdtId());
+            } finally {
+                source.closeAsync().join();
+                tables.close();
+            }
+        }
+    }
+
+    private static CapturedRowsTypes.Receipt oversizedMetadata(
+            CapturedRowsTypes.Receipt r, int mode) {
+        var columns = new ArrayList<>(r.columns());
+        var schema = r.schema();
+        String revision = r.readerRevision(),
+                encoding = r.rowEncoding(),
+                scope = r.encodingScope(),
+                identity = r.sourceIdentity();
+        switch (mode) {
+            case 1 -> {
+                while (columns.size() < 129) {
+                    columns.add(r.columns().getFirst());
+                }
+            }
+            case 2 ->
+                    columns.set(
+                            0, new Db2Types.Column("n".repeat(129), "integer", true, null, null));
+            case 3 -> columns.set(0, new Db2Types.Column("ID", "k".repeat(33), true, null, null));
+            case 4 ->
+                    columns.set(
+                            0,
+                            new Db2Types.Column(
+                                    "ID",
+                                    "integer",
+                                    true,
+                                    new Db2Types.Interpretation(
+                                            "policy", 32, false, 32, false, "w".repeat(257)),
+                                    null));
+            case 5 -> revision = "r".repeat(129);
+            case 6 -> encoding = "e".repeat(65);
+            case 7 -> scope = "s".repeat(257);
+            case 8 -> identity = "i".repeat(8257);
+            case 9 -> {
+                columns.clear();
+                for (int i = 0; i < 128; i++) {
+                    columns.add(
+                            new Db2Types.Column(
+                                    "n".repeat(128), "k".repeat(32), false, null, null));
+                }
+            }
+            case 10 ->
+                    schema =
+                            new TableSchema(
+                                    java.util.Collections.nCopies(
+                                            129, r.schema().columns().getFirst()),
+                                    r.schema().layoutHashes(),
+                                    r.schema().match(),
+                                    r.schema().locale(),
+                                    null);
+            case 11 ->
+                    schema =
+                            new TableSchema(
+                                    r.schema().columns(),
+                                    r.schema().layoutHashes(),
+                                    r.schema().match(),
+                                    r.schema().locale(),
+                                    "c".repeat(1025));
+            default -> throw new AssertionError();
+        }
+        return new CapturedRowsTypes.Receipt(
+                r.build(),
+                r.locale(),
+                r.table(),
+                schema,
+                columns,
+                r.definitionSha256(),
+                r.blockIdentity(),
+                r.graphIdentity(),
+                identity,
+                r.readerOptions(),
+                revision,
+                encoding,
+                scope,
+                r.rowCount(),
+                r.header(),
+                r.completion(),
+                r.sections(),
+                r.holeKeys(),
+                r.effectiveKeys(),
+                r.retention(),
+                r.membership(),
+                r.issueChannelEvidence());
+    }
+
     private static final class Tables {
         final WorldTerrainTextureSourceTest.Files files;
         final AtomicInteger pages = new AtomicInteger();
         final CountDownLatch entered = new CountDownLatch(1);
         volatile long mapId = 7;
-        volatile int rowCount = 1;
+        volatile int rowCount = 1, metadataMode;
         volatile boolean skipPage, emptyMiddle;
         volatile String wdt = "1", identity = "owned-map-row";
         volatile boolean duplicate,
@@ -463,6 +570,9 @@ final class WorldStreamScopesTest {
                     new CapturedRows() {
                         public CapturedRowsTypes.Receipt receipt() {
                             var r = delegate.receipt();
+                            if (metadataMode != 0) {
+                                return oversizedMetadata(r, metadataMode);
+                            }
                             if (qualified && state == TableTypes.State.READY && !unknownEvidence) {
                                 return r;
                             }
