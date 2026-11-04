@@ -366,9 +366,9 @@ tasks.register('nativeGpuWorldStreamTransportProof', JavaExec) {
     args layout.buildDirectory.dir('native-world-stream-public-lifecycle').get().asFile.absolutePath
 }
 
-// Isolated incomplete global recipe: six test-resource blobs, DX11 still pending.
+// Isolated candidate recipe: eight test-resource blobs, hardware proof remains separate.
 tasks.register('verifyGlobalCandidateShaders', Exec) {
-    commandLine 'python3', rootProject.file('scripts/rendering/compile_bgfx_world_global_candidate.py'), '--verify'
+    commandLine 'python3', rootProject.file('scripts/rendering/compile_bgfx_world_global_candidate.py'), '--include-dx11', '--verify'
     inputs.dir('src/main/shaders/world-global')
     inputs.dir('src/test/resources/com/vibeminer/rendering/bgfx/shaders/global-candidate')
 }
