@@ -533,3 +533,11 @@ tasks.register('worldStreamSourceBridgeTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldStreamSourceBridgeTest'
 }
 check.dependsOn worldStreamSourceBridgeTest
+
+// Detached JavaFX bitmap publication; no window or GPU required.
+tasks.register('worldStreamImagePresentationTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldStreamImagePresentationTest'
+}
+check.dependsOn worldStreamImagePresentationTest
