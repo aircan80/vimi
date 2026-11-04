@@ -107,6 +107,9 @@ final class WorldStreamScopes {
             BitSet present) {}
 
     private final WorldMapProofs maps;
+    private final BuildTables borrowedTables;
+    private WorldTerrainLiquids liquidInspector;
+    private final ArrayList<LiquidCredit> liquidCredits = new ArrayList<>(2);
     private final BuildFiles files;
     private final BuildRef build;
     private final String locale;
@@ -119,6 +122,7 @@ final class WorldStreamScopes {
 
     WorldStreamScopes(BuildTables tables, BuildFiles files) {
         maps = new WorldMapProofs(tables, files);
+        borrowedTables = tables;
         this.files = files;
         build = maps.build();
         locale = maps.locale();
@@ -324,7 +328,7 @@ final class WorldStreamScopes {
             lifetimeChild = null;
             cancelLane = null;
             working.set(false);
-            finish = closed;
+            finish = closed && liquidCredits.isEmpty();
             terminal = cleanupFailure;
         }
         if (finish) {
@@ -419,7 +423,8 @@ final class WorldStreamScopes {
 
     enum UseProfile {
         TERRAIN_BASIC,
-        BASIC_WMO
+        BASIC_WMO,
+        LIQUID_INSPECTION
     }
 
     enum DerivedKind {
@@ -695,6 +700,42 @@ final class WorldStreamScopes {
                 bindings.add(binding);
             }
             return true;
+        }
+
+        void liquidCleanupFailed(WorldLiquidTables.CleanupFailure failure) {
+            checkThread();
+            if (engine == null || profile != UseProfile.LIQUID_INSPECTION) {
+                throw new IllegalStateException("Expired liquid cleanup context");
+            }
+            engine.recordCleanupFailure(failure);
+        }
+
+        void rememberLiquidTable(WorldLiquidTables.Observed observed) {
+            check();
+            if (profile != UseProfile.LIQUID_INSPECTION || reserved || input != null) {
+                throw new IllegalStateException("Liquid table phase differs");
+            }
+            var fresh =
+                    engine.stat(
+                            observed.sourceId(), token, WorldSourceRefusals.Site.SOURCE_BINDING);
+            if (!observed.sourceKey().equals(fresh.contentKey())
+                    || fresh.size() != null && fresh.size() != observed.sourceLength()) {
+                throw new WorldTerrainLiquids.Changed();
+            }
+            var next =
+                    new Binding(observed.sourceId(), observed.sourceKey(), observed.sourceLength());
+            for (var prior : bindings) {
+                if (prior.id() == next.id()) {
+                    if (!prior.equals(next)) {
+                        throw new WorldTerrainLiquids.Changed();
+                    }
+                    return;
+                }
+            }
+            if (bindings.size() == 4) {
+                throw new IllegalStateException("Liquid binding bound");
+            }
+            bindings.add(next);
         }
 
         Input readRecorded(RecordedInput kind) {
@@ -1060,6 +1101,7 @@ final class WorldStreamScopes {
     CompletableFuture<Void> closeAsync() {
         CancelLane active;
         boolean finish;
+        var liquidOwners = new ArrayList<WorldTerrainLiquids.Owner>(2);
         synchronized (this) {
             if (closed) {
                 return drained.copy();
@@ -1068,7 +1110,22 @@ final class WorldStreamScopes {
             current = null;
             replacement = null;
             active = cancelLane;
-            finish = !working.get();
+            finish = !working.get() && liquidCredits.isEmpty();
+            for (var credit : liquidCredits) {
+                credit.closing = true;
+                if (credit.asset != null) {
+                    liquidOwners.add(credit.asset);
+                }
+            }
+        }
+        try {
+            if (active != null) {
+                active.request();
+            }
+        } finally {
+            for (var liquid : liquidOwners) {
+                liquid.close();
+            }
         }
         if (finish) {
             Throwable terminal;
@@ -1077,10 +1134,95 @@ final class WorldStreamScopes {
             }
             completeDrain(terminal);
         }
-        if (active != null) {
-            active.request();
-        }
         return drained.copy();
+    }
+
+    synchronized WorldTerrainLiquids liquids() {
+        checkOpen();
+        requireHealthy();
+        if (liquidInspector == null) {
+            liquidInspector = new WorldTerrainLiquids(this, borrowedTables, files, build, locale);
+        }
+        return liquidInspector;
+    }
+
+    static final class LiquidCredit {
+        private final WorldStreamScopes engine;
+        private final Scope scope;
+        private WorldTerrainLiquids.Owner asset;
+        private boolean closing;
+
+        private LiquidCredit(WorldStreamScopes engine, Scope scope) {
+            this.engine = engine;
+            this.scope = scope;
+        }
+
+        void pin(WorldTerrainLiquids.Owner owner) {
+            engine.pinLiquid(this, owner);
+        }
+
+        void retired() {
+            engine.retireLiquid(this);
+        }
+    }
+
+    synchronized LiquidCredit reserveLiquid(Scope scope) {
+        requireHealthy();
+        resolve(scope);
+        if (liquidCredits.size() == 2) {
+            throw new WorldTerrainLiquids.Pressure();
+        }
+        var credit = new LiquidCredit(this, scope);
+        liquidCredits.add(credit);
+        return credit;
+    }
+
+    synchronized void attachLiquid(LiquidCredit credit, WorldTerrainLiquids.Owner owner) {
+        if (!liquidCredits.contains(credit) || credit.asset != null) {
+            throw new IllegalStateException("Invalid liquid reservation");
+        }
+        credit.asset = owner;
+        if (closed || credit.closing) {
+            throw new java.util.concurrent.CancellationException();
+        }
+    }
+
+    synchronized void publishLiquid(
+            LiquidCredit credit, WorldTerrainLiquids.Owner owner, Cancellation external) {
+        external.check();
+        requireHealthy();
+        resolve(credit.scope);
+        if (!liquidCredits.contains(credit) || credit.asset != owner || credit.closing) {
+            throw new IllegalStateException("Liquid reservation retired");
+        }
+        owner.publish();
+    }
+
+    private synchronized void pinLiquid(LiquidCredit credit, WorldTerrainLiquids.Owner owner) {
+        requireHealthy();
+        resolve(credit.scope);
+        if (!liquidCredits.contains(credit) || credit.asset != owner || credit.closing) {
+            throw new IllegalStateException("Liquid owner unavailable");
+        }
+        owner.pin();
+    }
+
+    private void retireLiquid(LiquidCredit credit) {
+        boolean finish;
+        Throwable terminal;
+        synchronized (this) {
+            liquidCredits.remove(credit);
+            credit.asset = null;
+            finish = closed && !working.get() && liquidCredits.isEmpty();
+            terminal = cleanupFailure;
+        }
+        if (finish) {
+            completeDrain(terminal);
+        }
+    }
+
+    synchronized int liquidCredits() {
+        return liquidCredits.size();
     }
 
     private Proof resolve(Scope scope) {

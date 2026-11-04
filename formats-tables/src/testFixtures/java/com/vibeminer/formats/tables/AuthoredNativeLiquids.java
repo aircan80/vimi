@@ -30,6 +30,13 @@ public final class AuthoredNativeLiquids implements AutoCloseable {
     private final Map<Long, byte[]> raw = new java.util.HashMap<>();
 
     public AuthoredNativeLiquids(BuildFiles borrowed) {
+        this(borrowed, 130, true);
+    }
+
+    public AuthoredNativeLiquids(BuildFiles borrowed, int materialId, boolean includeCopy) {
+        if (materialId < 0 || materialId > 255) {
+            throw new IllegalArgumentException("Authored material ID");
+        }
         var bundled = BundledDefinitions.open(Cancellation.NONE).join();
         var generated = new GeneratedTables(new MemoryGeneratedStore());
         var base = new Db2Types.Limits();
@@ -67,7 +74,9 @@ public final class AuthoredNativeLiquids implements AutoCloseable {
                             block.fields(),
                             type,
                             Long.parseUnsignedLong(hash, 16),
-                            Long.parseUnsignedLong(layout, 16));
+                            Long.parseUnsignedLong(layout, 16),
+                            materialId,
+                            includeCopy);
             raw.put(type ? 1371380L : 1132538L, bytes);
             var decoded =
                     Db2Reader.open(
@@ -198,7 +207,12 @@ public final class AuthoredNativeLiquids implements AutoCloseable {
             DbdTypes.Field definition, int offset, int width, int kind, int packedBit) {}
 
     private static byte[] encode(
-            List<DbdTypes.Field> definitions, boolean type, long hash, long layout) {
+            List<DbdTypes.Field> definitions,
+            boolean type,
+            long hash,
+            long layout,
+            int materialId,
+            boolean includeCopy) {
         var fields = new ArrayList<Field>();
         int prefix = 0, packedBits = 0;
         for (var f : definitions) {
@@ -222,7 +236,7 @@ public final class AuthoredNativeLiquids implements AutoCloseable {
             }
         }
         int records = type ? 3 : 4,
-                copies = type ? 0 : 1,
+                copies = type || !includeCopy ? 0 : 1,
                 recordSize = prefix + (packedBits + 7) / 8;
         int start = 204 + 40 + fields.size() * 28;
         var b =
@@ -275,7 +289,7 @@ public final class AuthoredNativeLiquids implements AutoCloseable {
                 int value =
                         f.definition().column().name().equals("Flags")
                                 ? (type ? 15 : row == 1 ? 0 : 1)
-                                : type ? 130 : new int[] {0, 1, 3, 1}[row];
+                                : type ? materialId : new int[] {0, 1, 3, 1}[row];
                 packed |= (long) value << f.packedBit();
             }
             for (int octet = 0; octet < (packedBits + 7) / 8; octet++) {

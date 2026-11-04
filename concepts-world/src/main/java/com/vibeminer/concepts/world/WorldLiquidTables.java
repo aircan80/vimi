@@ -27,10 +27,23 @@ final class WorldLiquidTables {
     static final class Unavailable extends RuntimeException {
         private static final long serialVersionUID = 1L;
         final Reason reason;
+        private transient Observed actualContext;
+
+        Observed actualContext() {
+            return actualContext;
+        }
 
         private Unavailable(Reason reason) {
             super(reason.name(), null);
             this.reason = reason;
+        }
+    }
+
+    static final class CleanupFailure extends IllegalStateException {
+        private static final long serialVersionUID = 1L;
+
+        private CleanupFailure(Throwable cause) {
+            super("Liquid capture cleanup failed", cause);
         }
     }
 
@@ -88,6 +101,18 @@ final class WorldLiquidTables {
             this.values = Map.copyOf(values);
         }
 
+        long sourceId() {
+            return profile.id;
+        }
+
+        String sourceKey() {
+            return key;
+        }
+
+        long sourceLength() {
+            return length;
+        }
+
         int value(long id) {
             Integer value = values.get(id);
             if (value == null) {
@@ -109,21 +134,38 @@ final class WorldLiquidTables {
 
     private final BuildTables tables;
     private final BuildFiles files;
+    private final com.vibeminer.builds.BuildTypes.BuildRef build;
+    private final String locale;
 
     WorldLiquidTables(BuildTables tables, BuildFiles files) {
+        this(tables, files, files.build(), files.locale());
+    }
+
+    WorldLiquidTables(
+            BuildTables tables,
+            BuildFiles files,
+            com.vibeminer.builds.BuildTypes.BuildRef build,
+            String locale) {
         this.tables = Objects.requireNonNull(tables);
         this.files = Objects.requireNonNull(files);
+        this.build = Objects.requireNonNull(build);
+        this.locale = Objects.requireNonNull(locale);
     }
 
     Observed observe(Profile profile, Set<Long> selected, Cancellation token) {
+        var trace = new Observed[1];
         try {
-            return observeActual(profile, selected, token);
+            return observeActual(profile, selected, token, trace);
         } catch (Unavailable refusal) {
+            refusal.actualContext = trace[0];
             throw cleanOutcome(refusal);
+        } finally {
+            trace[0] = null;
         }
     }
 
-    private Observed observeActual(Profile profile, Set<Long> selected, Cancellation token) {
+    private Observed observeActual(
+            Profile profile, Set<Long> selected, Cancellation token, Observed[] trace) {
         Objects.requireNonNull(profile);
         Objects.requireNonNull(selected);
         Objects.requireNonNull(token);
@@ -139,6 +181,18 @@ final class WorldLiquidTables {
         try (var rows = open(profile, token)) {
             var context = qualify(rows, profile, token);
             var receipt = context.receipt();
+            validateFile(
+                    profile,
+                    receipt.table().contentKey(),
+                    receipt.completion().consumedBytes(),
+                    token);
+            trace[0] =
+                    new Observed(
+                            profile,
+                            context.stamp(),
+                            receipt.table().contentKey(),
+                            receipt.completion().consumedBytes(),
+                            Map.of());
             var values = new HashMap<Long, Integer>();
             long ordinal = 0;
             while (ordinal < receipt.rowCount()) {
@@ -239,13 +293,47 @@ final class WorldLiquidTables {
             if (capture.state() != CapturedRowsTypes.CaptureState.CAPTURED) {
                 throw new IllegalStateException("Contradictory liquid capture");
             }
-            return capture.rows();
+            var actual = capture.rows();
+            return new CapturedRows() {
+                public CapturedRowsTypes.Receipt receipt() {
+                    return actual.receipt();
+                }
+
+                public java.util.concurrent.CompletableFuture<CapturedRowsTypes.Page>
+                        readOrdinalPage(long first, int count, Cancellation stop) {
+                    return actual.readOrdinalPage(first, count, stop);
+                }
+
+                public java.util.concurrent.CompletableFuture<CapturedRowsTypes.Page>
+                        readOrdinalPage(
+                                long first,
+                                int count,
+                                CapturedRowsTypes.ReadLimits limits,
+                                Cancellation stop) {
+                    return actual.readOrdinalPage(first, count, limits, stop);
+                }
+
+                public java.util.concurrent.CompletableFuture<Void> closeAsync() {
+                    return actual.closeAsync();
+                }
+
+                @Override
+                public void close() {
+                    try {
+                        WorldSourceFutures.await(actual.closeAsync());
+                    } catch (RuntimeException | Error failure) {
+                        throw new CleanupFailure(failure);
+                    }
+                }
+            };
         } catch (RuntimeException | Error failure) {
             if (capture.rows() != null) {
                 try {
                     capture.rows().close();
                 } catch (RuntimeException | Error cleanup) {
-                    failure.addSuppressed(cleanup);
+                    var fault = new CleanupFailure(failure);
+                    fault.addSuppressed(cleanup);
+                    throw fault;
                 }
             }
             throw failure;
@@ -268,8 +356,8 @@ final class WorldLiquidTables {
         var c = r.completion();
         var h = r.header();
         var e = r.table();
-        if (!r.build().equals(files.build())
-                || !r.locale().equals(files.locale())
+        if (!r.build().equals(build)
+                || !r.locale().equals(locale)
                 || e.fileDataId() != p.id
                 || !p.name.equals(e.name())
                 || e.state() != TableTypes.State.READY
@@ -302,7 +390,8 @@ final class WorldLiquidTables {
             throw unavailable(Reason.TABLE_PROFILE);
         }
         var schema = r.schema();
-        if (schema.match() != TableSchema.SchemaMatch.LAYOUT
+        if (!schema.locale().code().equals(locale)
+                || schema.match() != TableSchema.SchemaMatch.LAYOUT
                 || schema.layoutHashes().size() != 1
                 || !schema.layoutHashes().getFirst().equalsIgnoreCase(p.layout)) {
             throw unavailable(Reason.TABLE_PROFILE);
@@ -404,6 +493,9 @@ final class WorldLiquidTables {
     }
 
     private void validateFile(Profile p, String key, long length, Cancellation token) {
+        if (!build.equals(files.build()) || !locale.equals(files.locale())) {
+            throw unavailable(Reason.SOURCE_CHANGED);
+        }
         var stat = WorldSourceFutures.await(files.stat(FileTypes.FileRef.id(p.id), token));
         token.check();
         if (stat.state() != FileTypes.FileLookupState.FOUND
@@ -425,8 +517,7 @@ final class WorldLiquidTables {
 
     private static RuntimeException cleanOutcome(Unavailable refusal) {
         if (refusal.getCause() != null || refusal.getSuppressed().length != 0) {
-            return new IllegalStateException(
-                    "Liquid table outcome accompanied by cleanup failure", refusal);
+            return new CleanupFailure(refusal);
         }
         return refusal;
     }
