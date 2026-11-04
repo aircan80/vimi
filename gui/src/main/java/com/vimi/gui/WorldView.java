@@ -3,6 +3,7 @@ package com.vimi.gui;
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.concepts.world.BuildWorld;
 import com.vibeminer.concepts.world.WorldAreaNavigation;
+import com.vibeminer.concepts.world.WorldBookmarks;
 import com.vibeminer.concepts.world.WorldService;
 import com.vibeminer.formats.world.WorldFormats;
 import com.vibeminer.rendering.world.ExplorerMotion;
@@ -96,6 +97,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final CheckBox smoothMotion = new CheckBox("Smooth motion");
     private final Label motionStatus = new Label("Free flight · no collision");
     private final ExplorerMotion motion = new ExplorerMotion();
+    private final WorldTravelPanel travel = new WorldTravelPanel(this::goToBookmark, this::goToCoordinates);
+    private final Button saveBookmark = new Button("Bookmark this view");
+    private String buildLabel = "";
+    // A validated target waiting for its tile's first verified seed; never applied elsewhere.
+    private WorldBookmarks.Target pendingJump;
+    private WorldBookmarks.Bookmark pendingBookmark;
     // Immutable rendered-surface heights of the visible CPU scene; streaming reads its controller.
     private TerrainGround ground = TerrainGround.empty();
     private final Button retryGpu = new Button("Retry GPU");
@@ -395,6 +402,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 () -> job.work() instanceof NativePreparationWork w ? w.worldHandle() : null,
                 () -> job.work() instanceof NativePreparationWork w ? w.revision() : 0,
                 GpuPreviewService.application());
+        buildLabel = job.build().version() + " · " + job.locale();
+    }
+
+    /** Uses the application's bookmark store; the view's own session store is replaced. */
+    void bookmarks(WorldBookmarkStore store) {
+        travel.store(store);
     }
 
     WorldView(
@@ -449,6 +462,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         smoothMotion.setSelected(true);
         smoothMotion.setOnAction(e -> motionChanged());
         motionStatus.setId("world-motion-status");
+        saveBookmark.setId("world-save-bookmark");
+        saveBookmark.setFocusTraversable(false);
+        saveBookmark.setOnAction(e -> saveBookmark());
         gpuStatus.setId("world-gpu-status");
         retryGpu.setId("world-gpu-retry");
         gpuStatus.setWrapText(true);
@@ -802,6 +818,102 @@ final class WorldView extends BorderPane implements AutoCloseable {
         showInventory();
     }
 
+    private void goToBookmark(WorldBookmarks.Bookmark bookmark) {
+        if (catalog == null) {
+            travel.status("Map records are not loaded yet.");
+            return;
+        }
+        var refusal = new WorldBookmarks.Refusal[1];
+        var map = WorldBookmarks.map(bookmark, catalog.maps(), refusal);
+        if (map.isEmpty()) {
+            travel.status(new WorldBookmarks.Resolution(refusal[0], null).explanation() + ".");
+            return;
+        }
+        if (inventory != null && inventory.map().id() == map.get().id()) {
+            travelTo(WorldBookmarks.resolve(bookmark, map.get(), inventory));
+            return;
+        }
+        pendingBookmark = bookmark;
+        if (!maps.getItems().contains(map.get())) {
+            allMaps.setSelected(true);
+            search.clear();
+            filter();
+        }
+        travel.status("Loading the terrain inventory of " + map.get() + "…");
+        if (maps.getSelectionModel().getSelectedItem() == map.get()) selectMap(map.get());
+        else maps.getSelectionModel().select(map.get());
+    }
+
+    private void goToCoordinates(double[] position) {
+        if (inventory == null || inventory.world() == null) {
+            travel.status("Select a map and wait for its terrain inventory first.");
+            return;
+        }
+        travelTo(WorldBookmarks.coordinates(inventory.map(), inventory, position));
+    }
+
+    private void travelTo(WorldBookmarks.Resolution resolution) {
+        if (closed || stale(selection)) return;
+        if (!resolution.usable()) {
+            travel.status(resolution.explanation() + "; no jump was made.");
+            return;
+        }
+        var target = resolution.target();
+        if (inventory == null || inventory.map().id() != target.map().id()) {
+            travel.status("The selected map changed; no jump was made.");
+            return;
+        }
+        areaEntry = null;
+        selected = target.tile();
+        pendingJump = target;
+        travel.status("Opening tile " + target.tile().key() + "; the position is checked against its loaded terrain…");
+        openExplorer();
+    }
+
+    /**
+     * Applies a pending jump to a freshly seeded camera only when the target lies inside the
+     * verified tile maxima. Never lands below the rendered surface when its height is known.
+     */
+    private TerrainRenderer.Camera applyJump(TerrainRenderer.Camera seed, double maxX, double maxY,
+            TerrainGround surface) {
+        var jump = pendingJump;
+        pendingJump = null;
+        if (jump == null || seed == null) return seed;
+        if (origin == null || !origin.equals(jump.tile())
+                || !WorldBookmarks.within(maxX, maxY, jump.x(), jump.y())) {
+            travel.status("Position lies outside the verified terrain tile; opened the tile's"
+                    + " terrain entry instead.");
+            return seed;
+        }
+        double height = surface.heightAt(jump.x(), jump.y());
+        double z = jump.hasZ() ? jump.z() : Double.isNaN(height) ? seed.z() : height + 30;
+        if (!Double.isNaN(height)) z = Math.max(z, height + ExplorerMotion.EYE_HEIGHT);
+        travel.status(String.format(java.util.Locale.ROOT, "Arrived at x %.1f / y %.1f / altitude %.1f%s",
+                jump.x(), jump.y(), z, Double.isNaN(height) ? " · terrain height not loaded yet" : ""));
+        return new TerrainRenderer.Camera(jump.x(), jump.y(), Math.clamp(z, -1_000_000, 1_000_000),
+                jump.yaw(), Math.clamp(jump.pitch(), -1.5, 1.5));
+    }
+
+    private void saveBookmark() {
+        if (camera == null || inventory == null || origin == null) return;
+        String area = currentArea.getText();
+        String name = area.startsWith("Terrain area: ")
+                ? area.substring("Terrain area: ".length()) : inventory.map() + " tile " + tileX() + "," + tileY();
+        if (name.length() > WorldBookmarks.MAX_NAME) name = name.substring(0, WorldBookmarks.MAX_NAME);
+        int tx = WorldBookmarks.tileIndex(camera.x()), ty = WorldBookmarks.tileIndex(camera.y());
+        if (tx < 0 || ty < 0) {
+            travel.status("This position is outside the 64×64 tile grid and cannot be bookmarked.");
+            return;
+        }
+        var map = inventory.map();
+        double yaw = Math.IEEEremainder(camera.yaw(), 2 * Math.PI);
+        travel.save(new WorldBookmarks.Bookmark(name, map.id(),
+                map.directory() == null ? "" : map.directory(), map.name() == null ? "" : map.name(),
+                tx, ty, camera.x(), camera.y(), camera.z(), yaw, camera.pitch(), buildLabel));
+        status.setText("Saved bookmark " + name + " · see Bookmarks & travel on the map page");
+        viewport.requestFocus();
+    }
+
     private int pressed(KeyCode code) {
         return keys.contains(code) ? 1 : 0;
     }
@@ -881,6 +993,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     void invalidate() {
         resumeCamera = null;
+        pendingJump = null;
+        pendingBookmark = null;
         retireTextures();
         retireGpu();
         gpuScene = null;
@@ -999,6 +1113,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
 
     private void selectMap(WorldService.MapInfo map) {
         resumeCamera = null;
+        pendingJump = null;
+        if (pendingBookmark != null && pendingBookmark.mapId() != map.id()) pendingBookmark = null;
         retireTextures();
         stopArea(true);
         areaEntry = null;
@@ -1057,6 +1173,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                 return;
                                             }
                                             inventory = data;
+                                            var waiting = pendingBookmark;
+                                            pendingBookmark = null;
+                                            if (waiting != null && waiting.mapId() == data.map().id())
+                                                Platform.runLater(() -> travelTo(
+                                                        WorldBookmarks.resolve(waiting, data.map(), data)));
                                             if (zones.getSelectionModel().getSelectedItem() != null)
                                                 areaStatus.setText(areaHint());
                                             areaButtons();
@@ -1324,7 +1445,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                 areaMatches,
                                 new Label("Terrain tiles below cover the entire selected map."),
                                 new Label("TERRAIN TILES · click to choose a starting location"),
-                                tileInventory)));
+                                tileInventory,
+                                travel)));
         content.setBottom(new HBox(10, open));
         drawTiles();
         areaButtons();
@@ -1392,7 +1514,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                         "WASD move · Space/E up · Q/X down · drag or arrows to look · Shift"
                                                 + " faster · wheel zooms · Shift+wheel changes speed"
                                                 + " · F walks")),
-                        new HBox(10, walkMode, smoothMotion, motionStatus),
+                        new HBox(10, walkMode, smoothMotion, motionStatus, saveBookmark),
                         currentArea,
                         position,
                         new HBox(8, gpuEnabled, gpuActivity, retryGpu, gpuStatus),
@@ -1616,6 +1738,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             resumeCamera = null;
             originX = prepared.x();
             originY = prepared.y();
+            camera = applyJump(camera, originX, originY, prepared.ground());
             scenePreparing = false;
             loadingTile = false;
             waveActive = true;
@@ -1668,6 +1791,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             camera = prepared.camera();
             originX = prepared.x();
             originY = prepared.y();
+            camera = applyJump(camera, originX, originY, prepared.ground());
         }
         pending.close();
         pending.ready.run();
@@ -2131,6 +2255,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             camera = snapshot.seed().camera().software();
             originX = snapshot.seed().originX();
             originY = snapshot.seed().originY();
+            camera = applyJump(camera, originX, originY, controller.ground());
             streamCamera();
             streamNeighborhood();
         }
@@ -2392,6 +2517,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
     public void close() {
         closed = true;
         resumeCamera = null;
+        pendingJump = null;
+        pendingBookmark = null;
+        travel.close();
         if (spawns != null) spawns.close();
         streamingImages.clear();
         minimap.close();
