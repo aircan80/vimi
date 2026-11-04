@@ -196,6 +196,93 @@ class WorldStreamParentStateTest {
     }
 
     @Test
+    void callerListReentrantCloseCannotPublishCommitAfterItsSnapshot() {
+        var state = ready();
+        var own = offered(state, 7, 19);
+        staged(state, own);
+        var closes =
+                new java.util.AbstractList<WorldStreamParentState.Resident>() {
+                    @Override
+                    public int size() {
+                        return 1;
+                    }
+
+                    @Override
+                    public WorldStreamParentState.Resident get(int index) {
+                        state.close();
+                        return own.resident;
+                    }
+                };
+        assertNull(state.prepareCommit(1, closes));
+        assertEquals(0, state.content());
+        assertNull(state.reserve(8, 19));
+    }
+
+    @Test
+    void heldCallerGetNeverOwnsStateMonitorAndExceptionsLeaveTransactionCounterUntouched()
+            throws Exception {
+        var state = ready();
+        var own = offered(state, 7, 19);
+        staged(state, own);
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var result = new java.util.concurrent.CompletableFuture<WorldStreamParentState.Commit>();
+        var held =
+                new java.util.AbstractList<WorldStreamParentState.Resident>() {
+                    @Override
+                    public int size() {
+                        return 1;
+                    }
+
+                    @Override
+                    public WorldStreamParentState.Resident get(int index) {
+                        entered.countDown();
+                        try {
+                            release.await();
+                        } catch (InterruptedException error) {
+                            throw new AssertionError(error);
+                        }
+                        return own.resident;
+                    }
+                };
+        Thread.ofVirtual()
+                .start(
+                        () -> {
+                            try {
+                                result.complete(state.prepareCommit(1, held));
+                            } catch (Throwable error) {
+                                result.completeExceptionally(error);
+                            }
+                        });
+        try {
+            assertTrue(entered.await(2, java.util.concurrent.TimeUnit.SECONDS));
+            org.junit.jupiter.api.Assertions.assertTimeoutPreemptively(
+                    java.time.Duration.ofMillis(500), () -> assertNull(state.reserve(8, 19)));
+            org.junit.jupiter.api.Assertions.assertTimeoutPreemptively(
+                    java.time.Duration.ofMillis(500), state::close);
+        } finally {
+            release.countDown();
+        }
+        assertNull(result.get(3, java.util.concurrent.TimeUnit.SECONDS));
+        var untouched = ready();
+        var throwsFromGet =
+                new java.util.AbstractList<WorldStreamParentState.Resident>() {
+                    @Override
+                    public int size() {
+                        return 1;
+                    }
+
+                    @Override
+                    public WorldStreamParentState.Resident get(int index) {
+                        throw new IllegalArgumentException("authored caller failure");
+                    }
+                };
+        assertThrows(
+                IllegalArgumentException.class, () -> untouched.prepareCommit(1, throwsFromGet));
+        assertEquals(1, untouched.reserve(7, 19).transaction);
+    }
+
+    @Test
     void rejectionPreservesOldWorldAndClosedOrEofAloneCannotPermitInputDeletion() {
         var state = ready();
         var ticket = offered(state, 7, 19);
