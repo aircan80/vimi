@@ -311,6 +311,22 @@ tasks.register('providerBrowserUiTest', JavaExec) {
     if (screenshots.isPresent()) systemProperty 'vimi.provider.screenshots', screenshots.get()
 }
 
+tasks.register('worldSpawnsTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldSpawnOverlayTest'
+}
+check.dependsOn worldSpawnsTest
+
+// Authored spawn-marker lifecycle over a live JavaFX scene; opt in because this requires a display.
+tasks.register('worldSpawnsUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldSpawnOverlayUiTest'
+    def screenshot = providers.gradleProperty('worldSpawnsScreenshot')
+    if (screenshot.isPresent()) systemProperty 'vimi.worldSpawns.screenshot', screenshot.get()
+}
+
 tasks.register('worldUiTest', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath
@@ -592,6 +608,30 @@ tasks.register('worldHotLifecycleUiProof', JavaExec) {
     mainClass = 'com.vimi.gui.WorldHotLifecycleUiProof'
     jvmArgs '--enable-native-access=ALL-UNNAMED'
 }
+
+// Authored private cache import and physical file retirement; no live client data.
+tasks.register('clientHotfixStoreTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.ClientHotfixStoreTest'
+}
+
+tasks.register('clientHotfixDetailsTest', JavaExec) {
+    group = 'verification'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.ClientHotfixDetailsTest'
+}
+tasks.named('check') { dependsOn tasks.named('clientHotfixDetailsTest') }
+check.dependsOn clientHotfixStoreTest
+
+tasks.register('nativeHotfixWorkspaceTest', JavaExec) {
+    group = 'verification'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.NativeHotfixWorkspaceTest'
+}
+check.dependsOn nativeHotfixWorkspaceTest
 
 // Authored character choice/pixel/activity and cancellation checks; requires a display.
 tasks.register('raceCustomizationUiTest', JavaExec) {

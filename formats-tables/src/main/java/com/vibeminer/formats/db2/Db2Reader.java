@@ -23,6 +23,40 @@ public final class Db2Reader {
 
     private Db2Reader() {}
 
+    /**
+     * Source-neutral bounded raw header facts; callers bind the actual source/schema separately.
+     */
+    public record HotfixHeaderFacts(
+            String format, String tableHash, String layoutHash, int flags, int idFieldIndex) {}
+
+    public static HotfixHeaderFacts hotfixHeaderFacts(byte[] prefix) {
+        if (prefix == null || prefix.length < 4 || prefix.length > 204) {
+            throw new IllegalArgumentException("DB2 header prefix bound");
+        }
+        String format = new String(prefix, 0, 4, java.nio.charset.StandardCharsets.US_ASCII);
+        if (!java.util.List.of("WDC1", "WDC2", "WDC3", "WDC4", "WDC5").contains(format)) {
+            throw new IllegalArgumentException("Unsupported hotfix base format");
+        }
+        int fieldsAt = format.equals("WDC5") ? 136 : 4;
+        if (prefix.length < fieldsAt + 68) {
+            throw new IllegalArgumentException("Truncated hotfix base header");
+        }
+        var bytes = java.nio.ByteBuffer.wrap(prefix).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        if (fieldsAt == 136 && bytes.getInt(4) != 5) {
+            throw new IllegalArgumentException("Unsupported WDC5 schema");
+        }
+        int flags = Short.toUnsignedInt(bytes.getShort(fieldsAt + 36));
+        if (!java.util.List.of(0, 4, 5, 6, 7).contains(flags)) {
+            throw new IllegalArgumentException("Unsupported hotfix base flags");
+        }
+        return new HotfixHeaderFacts(
+                format,
+                String.format(java.util.Locale.ROOT, "%08X", bytes.getInt(fieldsAt + 16)),
+                String.format(java.util.Locale.ROOT, "%08X", bytes.getInt(fieldsAt + 20)),
+                flags,
+                Short.toUnsignedInt(bytes.getShort(fieldsAt + 38)));
+    }
+
     static final class Storage {
         int offset, width, additional, kind, p1, p2, p3, fieldBits, fieldOffset;
         long[] palette = new long[0];

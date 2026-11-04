@@ -21,6 +21,8 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
     private final Timeline clock;
     private final Button retry, cancel;
     private final Node overview;
+    private final javafx.scene.control.Label hotfixSource = new javafx.scene.control.Label();
+    private Button importHotfix, baseData;
     private TalentsView talents;
     private RacesView races;
     private NpcsView npcs;
@@ -46,6 +48,12 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
 
     public PreparationPane(BuildPreparation.Job job, Runnable choose, Runnable release, Runnable enrich,
             BuildDownloads downloads, DataSourcesService sources) {
+        this(job, choose, release, enrich, downloads, sources, null, null);
+    }
+
+    PreparationPane(BuildPreparation.Job job, Runnable choose, Runnable release, Runnable enrich,
+            BuildDownloads downloads, DataSourcesService sources,
+            Runnable importClientCache, Runnable useBaseData) {
         this.job = job;
         this.sources = sources;
         var navigation = new HBox(4);
@@ -69,8 +77,24 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
         cancel.setOnAction(event -> job.cancel());
         var closeButton = new Button("Close build");
         closeButton.setOnAction(event -> release.run());
+        var controls = new HBox(10, cancel, retry, closeButton);
+        if (importClientCache != null && useBaseData != null) {
+            importHotfix = new Button("Import client hotfix cache…");
+            importHotfix.setTooltip(new javafx.scene.control.Tooltip(
+                    "Use a local client cache for this build and locale, including cached "
+                            + "decryption keys. The workspace reopens after verification."));
+            importHotfix.setOnAction(event -> importClientCache.run());
+            baseData = new Button("Use base data");
+            baseData.setTooltip(new javafx.scene.control.Tooltip(
+                    "Stop applying this build and locale's client cache. Imported files remain stored locally."));
+            baseData.setOnAction(event -> useBaseData.run());
+            hotfixSource.setWrapText(true);
+            hotfixSource.getStyleClass().add("muted");
+            controls.getChildren().addAll(importHotfix, baseData);
+        }
         liveOverview =
-                BuildOverviewView.live(job, this::show, new HBox(10, cancel, retry, closeButton), downloads, sources);
+                BuildOverviewView.live(job, this::show,
+                        new javafx.scene.layout.VBox(8, controls, hotfixSource), downloads, sources);
         overview = liveOverview.node();
         show("Overview");
         clock = new Timeline(new KeyFrame(Duration.millis(250), event -> update()));
@@ -86,6 +110,13 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
     private void update() {
         if (closed) return;
         var snapshot = job.snapshot();
+        if (importHotfix != null) {
+            boolean unavailable = !(job.work() instanceof NativePreparationWork work) || !work.canImportHotfix();
+            importHotfix.setDisable(snapshot.busy() || job.enrichingNames() || unavailable);
+            baseData.setDisable(snapshot.busy() || job.enrichingNames() || unavailable);
+            hotfixSource.setText(job.work() instanceof NativePreparationWork work
+                    ? work.hotfixStatus() : "Base data");
+        }
         if (job.work() instanceof NativePreparationWork work
                 && workspaceRevision != work.revision()) {
             workspaceRevision = work.revision();
@@ -171,7 +202,12 @@ public final class PreparationPane extends BorderPane implements AutoCloseable {
             setCenter(maps); maps.ensureLoaded(); return;
         }
         if (area.equals("World")) {
-            if (world == null) world = new WorldView(job);
+            if (world == null) {
+                world = new WorldView(job);
+                if (sources != null && job.work() instanceof NativePreparationWork work)
+                    world.attachSpawns(new WorldSpawnOverlay(token -> sources.worldSpawns(job.build(), token),
+                            () -> java.util.List.of(sources.worldSpawnsKey(job.build()), work.revision())));
+            }
             setCenter(world); world.activate(); return;
         }
         if (area.equals("Quests")) {
