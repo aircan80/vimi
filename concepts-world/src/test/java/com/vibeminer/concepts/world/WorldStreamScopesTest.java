@@ -35,6 +35,62 @@ final class WorldStreamScopesTest {
             new WorldFormats.Tile(7, 19, 2, 0, 0, 0, 0, 3, 0, 0);
 
     @Test
+    void worldServiceCloseReturnsBeforeHeldLowerCancellationAndRejectsNewWork() throws Exception {
+        var entered = new CountDownLatch(1);
+        var lowerEntered = new CountDownLatch(1);
+        var releaseRead = new CompletableFuture<Void>();
+        var releaseLower = new CompletableFuture<Void>();
+        var attached = new java.util.concurrent.atomic.AtomicBoolean();
+        var lowerCalls = new AtomicInteger();
+        var files =
+                new WorldTerrainTextureSourceTest.Files() {
+                    @Override
+                    FileTypes.FileStat stat(long id, Cancellation token) {
+                        if (id == 2 && attached.compareAndSet(false, true)) {
+                            token.onCancel(
+                                    () -> {
+                                        lowerCalls.incrementAndGet();
+                                        lowerEntered.countDown();
+                                        releaseLower.join();
+                                    });
+                            entered.countDown();
+                            releaseRead.join();
+                        }
+                        return super.stat(id, token);
+                    }
+                };
+        var tables = new Tables(files);
+        var service = new WorldService(tables.handle(), files.files());
+        try {
+            var tile = service.tile(REQUEST, TILE, Cancellation.NONE);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            var close = CompletableFuture.supplyAsync(service::closeAsync).get(1, TimeUnit.SECONDS);
+            assertTrue(lowerEntered.await(5, TimeUnit.SECONDS));
+            assertFalse(close.isDone());
+            var rejected =
+                    CompletableFuture.supplyAsync(() -> service.catalog(Cancellation.NONE))
+                            .get(1, TimeUnit.SECONDS);
+            assertTrue(rejected.isCompletedExceptionally());
+            assertTrue(service.minimap(TILE, Cancellation.NONE).isCompletedExceptionally());
+            var repeated = service.closeAsync();
+            assertFalse(repeated.isDone());
+            releaseRead.complete(null);
+            assertThrows(java.util.concurrent.CompletionException.class, tile::join);
+            assertFalse(close.isDone());
+            releaseLower.complete(null);
+            close.join();
+            repeated.join();
+            assertEquals(1, lowerCalls.get());
+            assertEquals(0, files.borrowedClosed.get());
+        } finally {
+            releaseRead.complete(null);
+            releaseLower.complete(null);
+            service.closeAsync().join();
+            tables.close();
+        }
+    }
+
+    @Test
     void wmoRecordedRootUsesTwoMiBCeilingBeforeOpenAndRejectsUnusedTex0() {
         var files = new WorldTerrainTextureSourceTest.Files();
         var tables = new Tables(files);
