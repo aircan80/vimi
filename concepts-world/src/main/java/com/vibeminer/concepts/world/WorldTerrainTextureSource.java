@@ -642,6 +642,10 @@ public final class WorldTerrainTextureSource {
         tasks = pool.tasks();
     }
 
+    boolean matchesNamespace(BuildRef expectedBuild, String expectedLocale) {
+        return build.equals(expectedBuild) && locale.equals(expectedLocale);
+    }
+
     /** Owned result and actual worker/cancellation retirement are deliberately separate. */
     static final class Operation {
         private final CompletableFuture<BatchResult> result;

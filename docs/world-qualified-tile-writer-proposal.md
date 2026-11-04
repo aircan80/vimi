@@ -146,3 +146,56 @@ packet cannot retain WrittenTile or source handles. The GUI bridge owns one payl
 holder per opaque resident, shared by metadata-only pending/current/presented tables,
 without repeated base retains. Its move-versus-source-close/late-cancel races need
 causal tests in the separate bridge implementation/review checkpoint.
+
+
+## Internal combined-factory implementation checkpoint
+
+`WorldService.preparedTerrain()` lazily constructs the engine from the service's
+actual tables/files and reuses its exact configured material helper/application
+pool. It refuses missing configured materials. The source reserves one of twelve
+construction/resident output credits before source work, then performs all geometry,
+material, writer and final source checks under one admission. A private
+AdmissionResult closes a returned failed output before the engine releases active
+admission; failed callbacks close locally constructed aggregate owners before they
+throw. Owned material drain stays inside that admission even on failed results.
+
+The returned WrittenTile has one geometry base pin, at most one atlas base claim,
+private-constructed detached metadata, and R. It creates no RGBA/mesh copies. Source
+close marks its validity gate immediately, dispatches cleanup off caller, rejects
+new borrows and waits existing synchronous borrows/construction/resource cleanup.
+A borrowed view is same-thread, expires and clears its owner/buffers on every exit;
+it keeps only a scalar thread ID, not an owning source/worker after expiry. Accepted
+payload pins remain valid through callback finally. Cleanup attempts R, atlas and
+geometry independently and propagates failures through both the caller and source
+drain; failures cannot silently free the ledger early. Completed owners clear all
+payload/receipt/service references before releasing their counted output credit.
+
+Actual full/partial source receipt build/locale/map/WDT/root/tex0, lengths and exact
+native geometry fingerprint must agree before qualification. TextureBinding's
+source mapping and pixel checks execute only within actual geometry/atlas borrows.
+Known profile-only binding rejection produces its explicit height category, while
+identity changes, busy/unsupported capability, cancellation and unknown failures
+never become height. Partial material state and supported-chunk count remain
+explicit scalars; honest terminal height retains its genuine root proof and typed
+terminal reason without inventing a tex0 receipt.
+
+The new controls/root descriptive scalar objects stay inside the existing 64KiB
+factory-control allowance (twelve outputs, one active borrow/writer per output,
+bounded 67-observation trace, bounded snapshot/reference lists). Cached geometry,
+areas and pool receipt/pixels use their existing separately reviewed owners; there
+is no second geometry/atlas cache. R's file/channel/storage budget belongs to the
+later fixed codec bridge, not a claimed arbitrary-generic-output memory bound.
+
+Authored checks exercise full and partial textures, checked absent height, expired
+writer views, twelve-output/no-thirteenth-I/O admission, repeated native identity
+reuse, source-close while payload/writer is held, exact returned cleanup on final
+source change, held R retirement blocking subsequent source I/O, unknown provider
+errors without height writes, callback-owned unreturned scratch cleanup/recovery,
+and cleanup failures that still release base claims and fail the later drain.
+Private actual-source proof also established Map0 OBSERVED_SELECTED_ROW → actual
+root777947/256 areas/exact geometry fingerprint → tex0 777950/twelve diffuse bindings
+→ qualified 512-square atlas with one output retirement and zero remaining claims.
+Original user library was read-only; configured acquisition wrote only private
+scratch. These are source/ownership checks, not renderer or frame-rate claims.
+Public opaque cross-module API, fixed packet/file-MOVE bridge and GUI integration
+remain separate checkpoints.
