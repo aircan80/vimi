@@ -463,7 +463,7 @@ final class WorldGlobalScopes {
             if (before.size() != null && (before.size() < 12 || before.size() > limit)) {
                 throw unavailable();
             }
-            var opened = files.openRead(FileTypes.FileRef.id(id), token).join();
+            var opened = WorldSourceFutures.await(files.openRead(FileTypes.FileRef.id(id), token));
             stream = opened.stream();
             if (stream == null) {
                 if (opened.state() == FileTypes.FileReadState.COMPLETE) {
@@ -483,12 +483,12 @@ final class WorldGlobalScopes {
             var data = ByteBuffer.allocate((int) stream.length());
             while (data.hasRemaining()) {
                 token.check();
-                if (stream.read(data, token).join() <= 0) {
+                if (WorldSourceFutures.await(stream.read(data, token)) <= 0) {
                     throw unavailable();
                 }
             }
             token.check();
-            if (stream.read(ByteBuffer.allocate(1), token).join() != -1) {
+            if (WorldSourceFutures.await(stream.read(ByteBuffer.allocate(1), token)) != -1) {
                 throw new IllegalStateException("Asset source EOF differs");
             }
             var receipt =
@@ -753,7 +753,9 @@ final class WorldGlobalScopes {
             if (before.size() != null && (before.size() < 12 || before.size() > INPUT_LIMIT)) {
                 throw unavailable();
             }
-            var opened = files.openRead(FileTypes.FileRef.id(map.wdtId()), token).join();
+            var opened =
+                    WorldSourceFutures.await(
+                            files.openRead(FileTypes.FileRef.id(map.wdtId()), token));
             stream = opened.stream();
             if (stream == null) {
                 if (opened.state() == FileTypes.FileReadState.COMPLETE) {
@@ -773,12 +775,12 @@ final class WorldGlobalScopes {
             var bytes = ByteBuffer.allocate((int) stream.length());
             while (bytes.hasRemaining()) {
                 token.check();
-                if (stream.read(bytes, token).join() <= 0) {
+                if (WorldSourceFutures.await(stream.read(bytes, token)) <= 0) {
                     throw unavailable();
                 }
             }
             token.check();
-            if (stream.read(ByteBuffer.allocate(1), token).join() != -1) {
+            if (WorldSourceFutures.await(stream.read(ByteBuffer.allocate(1), token)) != -1) {
                 throw new IllegalStateException("Global source EOF differs");
             }
             var result = parse(map, before.contentKey(), before.size(), bytes.array(), token);
@@ -903,7 +905,7 @@ final class WorldGlobalScopes {
 
     private FileTypes.BuildFile stat(long id, Cancellation token, WorldSourceRefusals.Site site) {
         token.check();
-        var value = files.stat(FileTypes.FileRef.id(id), token).join();
+        var value = WorldSourceFutures.await(files.stat(FileTypes.FileRef.id(id), token));
         token.check();
         if (value.state() != FileTypes.FileLookupState.FOUND
                 || value.file() == null

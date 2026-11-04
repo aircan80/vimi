@@ -519,6 +519,8 @@ class WorldGlobalAssetFactoryTest {
     void heldActualRawReadKeepsClosePendingUntilRealReadAndStreamDrain() throws Exception {
         var entered = new java.util.concurrent.CountDownLatch(1);
         var release = new CompletableFuture<Integer>();
+        var observed = new AtomicReference<RuntimeException>();
+        var originalStop = new java.util.concurrent.CancellationException();
         try (var f =
                 new Fixture(
                         new Files() {
@@ -566,6 +568,7 @@ class WorldGlobalAssetFactoryTest {
                                     result.completeExceptionally(
                                             new AssertionError("Canceled work escaped"));
                                 } catch (RuntimeException expected) {
+                                    observed.set(expected);
                                     result.complete(null);
                                 } catch (Throwable failure) {
                                     result.completeExceptionally(failure);
@@ -576,8 +579,14 @@ class WorldGlobalAssetFactoryTest {
                 var closed = f.scopes.closeAsync();
                 assertFalse(closed.isDone());
                 assertFalse(result.isDone());
-                release.completeExceptionally(new java.util.concurrent.CancellationException());
+                release.completeExceptionally(originalStop);
                 result.get(3, TimeUnit.SECONDS);
+                org.junit.jupiter.api.Assertions.assertSame(originalStop, observed.get());
+                assertEquals(
+                        java.util.concurrent.CancellationException.class,
+                        observed.get().getClass());
+                org.junit.jupiter.api.Assertions.assertNull(observed.get().getCause());
+                assertEquals(0, observed.get().getSuppressed().length);
                 closed.get(3, TimeUnit.SECONDS);
                 assertEquals(f.files.totalOpens(), f.files.closed.get());
                 assertEquals(0, f.files.opens.getOrDefault(301L, new AtomicInteger()).get());
