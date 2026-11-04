@@ -166,11 +166,42 @@ public final class WorldStreamTileWriter {
         }
     }
 
+    /**
+     * Detached validated copy of one actual Source water preparation for a single terrain tile.
+     * Construction is structural only; the application's closed bridge is its sole producer.
+     */
+    public static final class Water {
+        public static final int MAX_CELLS = WorldStreamTileFile.MAX_WATER_CELLS;
+        private final WorldStreamTileFile.Water wire;
+
+        /** Copies every array. Native axes: x north, y west, z up; fixed per-cell indices. */
+        public Water(float[] positions, byte[] depths, int[] indices, int layers) {
+            wire =
+                    new WorldStreamTileFile.Water(
+                            positions.clone(), depths.clone(), indices.clone(), layers);
+        }
+
+        public int cells() {
+            return wire.cells();
+        }
+    }
+
     /** Source R owns this unadvertised file until its independently pinned one-shot MOVE. */
     public static final class PacketFile implements AutoCloseable {
         private final WorldStreamPacketFile file;
         private WorldStreamTransport.PacketDestination destination;
         private WorldStreamTileFile.Header writtenHeader;
+        private boolean waterAttached, waterDropped;
+
+        /** Descriptive: whether the moved packet carries a water trailer. */
+        public synchronized boolean waterAttached() {
+            return waterAttached;
+        }
+
+        /** Descriptive: a water append failed and was rolled back to terrain only. */
+        public synchronized boolean waterDropped() {
+            return waterDropped;
+        }
 
         private PacketFile(
                 WorldStreamPacketFile file,
@@ -183,6 +214,16 @@ public final class WorldStreamTileWriter {
 
         /** Off FX, after source final checks, inside the source's accepted resource callback. */
         public WorldStreamTransport.OwnedPacket move() {
+            return move(null, () -> false);
+        }
+
+        /**
+         * As {@link #move()}, first appending optional water to this still-unadvertised packet. A
+         * water IO failure that restores the terrain-only file degrades to terrain only; water is
+         * optional and never removes terrain. Cancellation still propagates.
+         */
+        public WorldStreamTransport.OwnedPacket move(Water water, BooleanSupplier stopping) {
+            Objects.requireNonNull(stopping);
             WorldStreamPacketFile.Moved moved;
             WorldStreamTransport.PacketDestination target;
             WorldStreamTileFile.Header header;
@@ -190,7 +231,32 @@ public final class WorldStreamTileWriter {
                 if (destination == null) {
                     throw new IllegalStateException("Packet file already moved or closed");
                 }
-                moved = file.move();
+                WorldStreamTileFile.Expected replacement = null;
+                if (water != null) {
+                    var before = file.expected();
+                    try {
+                        replacement =
+                                WorldStreamTileFile.appendWater(
+                                        file.path(), before, writtenHeader, water.wire, stopping);
+                    } catch (IOException failed) {
+                        try {
+                            if (Files.size(file.path()) != before.length()) {
+                                throw new java.io.UncheckedIOException(failed);
+                            }
+                        } catch (IOException unknown) {
+                            failed.addSuppressed(unknown);
+                            throw new java.io.UncheckedIOException(failed);
+                        }
+                        replacement = null;
+                        waterDropped = true;
+                    }
+                }
+                try {
+                    moved = replacement == null ? file.move() : file.moveReplacing(replacement);
+                } catch (IOException failed) {
+                    throw new java.io.UncheckedIOException(failed);
+                }
+                waterAttached = replacement != null;
                 target = destination;
                 header = writtenHeader;
                 destination = null;
