@@ -199,3 +199,17 @@ and frame identity remain tied to actual checked parse, including equal-geometry
 but changed AreaID cases. All result/input/atlas/cache pins drain under callback
 failure, rejected delivery and close. No renderer/packet/GUI wiring is approved
 merely by passing these private source tests.
+
+## Detached metadata implementation checkpoint
+
+`TileAdmission.metadata()` returns private-constructed AdmissionMetadata during the
+callback: actual BuildRef/locale, owner/generation/mapId/scopeDigest and WDT numeric
+ID/CKey/actual consumedLength/nullable before-stat declaredLength/enforced sourceLimit.
+The value retains no Scope, proof arrays, service, engine or source handle. It may
+survive expiry as a descriptive observation; factories accept only the live private
+admission as authority and never accept a caller metadata value to qualify assets.
+Input exposes the same detached before-stat length and exact enforced source limit.
+The private proof registry retains these bounded WDT scalars from its actual read,
+within the existing2KiB per-proof allowance; missing declared size stays unknown.
+BASIC_WMO's separately reviewed narrow ROOT limit is2MiB, OBJ0 is8MiB, TEX0 declines;
+its derived root/group/image limits remain1/32/64KiB. TERRAIN_BASIC ROOT remains8MiB.
