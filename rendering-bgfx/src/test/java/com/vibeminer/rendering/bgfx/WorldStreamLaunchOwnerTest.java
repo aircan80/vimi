@@ -31,6 +31,35 @@ class WorldStreamLaunchOwnerTest {
             new WorldStreamEnvelope.Session(new WorldStreamState.Nonce(10, 20), "ab".repeat(32), 1);
 
     @Test
+    void confirmedExitPrecedesHeldWorkerDrainButIsNeverInferredFromCleanupFailure()
+            throws Exception {
+        var release = new CountDownLatch(1);
+        var attached = new CountDownLatch(1);
+        var child = new Child();
+        var owner =
+                WorldStreamLaunchOwner.launch(
+                        WorldStreamPreparedFiles.create(directory, SESSION, null),
+                        arguments -> child,
+                        (process, handle) -> {
+                            handle.runWorker("held-exit", release::await);
+                            attached.countDown();
+                        },
+                        0,
+                        1000);
+        try {
+            assertTrue(attached.await(2, TimeUnit.SECONDS));
+            owner.closeAsync();
+            owner.childExited().get(2, TimeUnit.SECONDS);
+            assertFalse(child.isAlive());
+            assertFalse(owner.terminatedAndDrained().isDone());
+            assertTrue(Files.exists(owner.files().framePath()));
+        } finally {
+            release.countDown();
+        }
+        owner.terminatedAndDrained().get(3, TimeUnit.SECONDS);
+    }
+
+    @Test
     void startupDeadlineCoversHeldStarterWithoutInventingDrainAndAcknowledgementDisarmsIt()
             throws Exception {
         var prepared = WorldStreamPreparedFiles.create(directory, SESSION, null);
@@ -358,6 +387,7 @@ class WorldStreamLaunchOwnerTest {
         private final AtomicBoolean alive = new AtomicBoolean(true);
         private volatile int code;
         volatile boolean killAllowed = true;
+        volatile boolean observesExit = true;
         volatile OutputStream output = new ByteArrayOutputStream();
         private final ProcessHandle handle =
                 new ProcessHandle() {
@@ -472,6 +502,9 @@ class WorldStreamLaunchOwnerTest {
 
         @Override
         public CompletableFuture<Process> onExit() {
+            if (!observesExit) {
+                throw new UnsupportedOperationException("authored unavailable exit observation");
+            }
             return exited.copy();
         }
 
