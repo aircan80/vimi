@@ -21,6 +21,13 @@ repositories {
     }
     mavenCentral()
 }
+// SDK adapter JARs contain Java classes; their verified native libraries are separate.
+def javafxNativeLibrary = providers.gradleProperty('javafxNativeLibrary').orNull
+if (javafxNativeLibrary) {
+    tasks.withType(JavaExec).configureEach {
+        systemProperty 'java.library.path', javafxNativeLibrary
+    }
+}
 dependencyLocking { lockAllConfigurations() }
 java { toolchain { languageVersion = JavaLanguageVersion.of(25) } }
 
