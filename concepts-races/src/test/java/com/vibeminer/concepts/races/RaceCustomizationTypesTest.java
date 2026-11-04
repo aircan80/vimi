@@ -44,6 +44,51 @@ final class RaceCustomizationTypesTest {
     }
 
     @Test
+    void underreportedCallerListCannotExpandSnapshotOrInvokeToArray() {
+        var picks =
+                new AbstractList<RaceCustomizationTypes.Pick>() {
+                    @Override
+                    public int size() {
+                        return 1;
+                    }
+
+                    @Override
+                    public RaceCustomizationTypes.Pick get(int index) {
+                        throw new AssertionError("Use bounded iteration");
+                    }
+
+                    @Override
+                    public Object[] toArray() {
+                        throw new AssertionError("Never copy the caller array");
+                    }
+
+                    @Override
+                    public java.util.Iterator<RaceCustomizationTypes.Pick> iterator() {
+                        return new java.util.Iterator<>() {
+                            private int next;
+
+                            @Override
+                            public boolean hasNext() {
+                                return next < 1000000;
+                            }
+
+                            @Override
+                            public RaceCustomizationTypes.Pick next() {
+                                if (next == 16) {
+                                    throw new AssertionError(
+                                            "Refuse before reading seventeenth element");
+                                }
+                                return new RaceCustomizationTypes.Pick(++next, 524);
+                            }
+                        };
+                    }
+                };
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new RaceCustomizationTypes.Request(3, 1, 5, picks));
+    }
+
+    @Test
     void requestsDetachAndRejectDuplicateOptionsOrInvalidContext() {
         var picks = new ArrayList<>(List.of(new RaceCustomizationTypes.Pick(30, 525)));
         var request = new RaceCustomizationTypes.Request(3, 1, 5, picks);
