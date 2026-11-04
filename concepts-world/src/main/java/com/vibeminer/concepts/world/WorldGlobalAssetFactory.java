@@ -208,6 +208,10 @@ final class WorldGlobalAssetFactory {
             this.asset = asset;
         }
 
+        boolean isOpen() {
+            return asset.isOpen();
+        }
+
         Manifest facts() {
             return asset.facts();
         }
@@ -331,6 +335,18 @@ final class WorldGlobalAssetFactory {
                 throw WorldSourceRefusals.at(WorldSourceRefusals.Site.GLOBAL_ASSET_CAPACITY);
             }
             pins++;
+        }
+
+        synchronized boolean available() {
+            return qualified && !closing && !retiring && credit != null;
+        }
+
+        boolean isOpen() {
+            WorldGlobalScopes.PayloadCredit source;
+            synchronized (this) {
+                source = credit;
+            }
+            return source != null && source.isOpen(this);
         }
 
         Manifest facts() {

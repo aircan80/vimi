@@ -143,6 +143,24 @@ public final class WorldService implements BuildWorld {
         this.minimaps = new WorldMinimaps(files);
     }
 
+    private WorldGlobalScopes globalCore;
+    private WorldGlobalScenes globalFacade;
+
+    @Override
+    public synchronized java.util.Optional<WorldGlobalScenes> globalScenes() {
+        if (closing != null) {
+            throw new IllegalStateException("World workspace closed");
+        }
+        if (files == null) {
+            return java.util.Optional.empty();
+        }
+        if (globalFacade == null) {
+            globalCore = new WorldGlobalScopes(tables, files);
+            globalFacade = new WorldGlobalScenes(globalCore);
+        }
+        return java.util.Optional.of(globalFacade);
+    }
+
     @Override
     public synchronized java.util.Optional<WorldTerrainStreaming> terrainStreaming() {
         if (closing != null) {
@@ -619,6 +637,7 @@ public final class WorldService implements BuildWorld {
         WorldPlacementSource placementSource;
         WorldTerrainTextureSource textureSource;
         WorldPreparedTerrain preparedSource;
+        WorldGlobalScopes globalSource;
         synchronized (this) {
             if (closing != null) {
                 return closing.copy();
@@ -630,6 +649,10 @@ public final class WorldService implements BuildWorld {
             placementSource = placements;
             textureSource = terrainTextures;
             preparedSource = preparedTerrain;
+            globalSource = globalCore;
+            if (globalFacade != null) {
+                globalFacade.invalidate();
+            }
             if (preparedSource != null) {
                 preparedSource.invalidate();
             }
@@ -647,6 +670,15 @@ public final class WorldService implements BuildWorld {
                         failure = error;
                     }
                     var drains = new ArrayList<CompletableFuture<Void>>();
+                    if (globalSource != null) {
+                        try {
+                            globalSource.closeAsync();
+                        } catch (RuntimeException | Error error) {
+                            failure = appendCloseFailure(failure, error);
+                        } finally {
+                            drains.add(globalSource.whenClosed());
+                        }
+                    }
                     var closes =
                             List.<java.util.function.Supplier<CompletableFuture<Void>>>of(
                                     minimaps::closeAsync,

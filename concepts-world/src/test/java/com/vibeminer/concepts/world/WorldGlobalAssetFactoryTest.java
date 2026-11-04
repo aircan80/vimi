@@ -1614,4 +1614,204 @@ class WorldGlobalAssetFactoryTest {
             assertEquals(1, a.closes.get()); // Unknown deletion never hot-retries.
         }
     }
+
+    @Test
+    void publicFacadeUsesActualSelectionAndExpiresScalarPayload() throws Exception {
+        try (var f = new Fixture()) {
+            var facade = new WorldGlobalScenes(f.scopes);
+            var scope = facade.createScope(MAP, Cancellation.NONE);
+            facade.activate(scope);
+            var saved = new AtomicReference<WorldGlobalScenes.CheckedBorrow>();
+            var closes = new AtomicInteger();
+            var written =
+                    facade.prepareAndWrite(
+                            scope,
+                            Cancellation.NONE,
+                            (borrow, actual) -> {
+                                actual.check();
+                                saved.set(borrow);
+                                assertEquals(3, borrow.vertices());
+                                assertEquals(6, borrow.indices());
+                                assertEquals(255, borrow.imageByte(0, 3));
+                                assertEquals(0xffff_ffffL, borrow.facts().declaration().uniqueId());
+                                assertEquals(1, borrow.facts().groups().size());
+                                return (AutoCloseable) closes::incrementAndGet;
+                            });
+            assertThrows(IllegalStateException.class, () -> saved.get().vertices());
+            org.junit.jupiter.api.Assertions.assertTrue(written.isOpen());
+            assertEquals(3, written.withPayload(WorldGlobalScenes.CheckedBorrow::vertices));
+            written.withWrittenResource(resource -> assertEquals(0, closes.get()));
+            written.closeAsync().get(3, TimeUnit.SECONDS);
+            assertEquals(1, closes.get());
+            assertFalse(written.isOpen());
+            assertThrows(RuntimeException.class, () -> written.withPayload(b -> b.vertices()));
+        }
+    }
+
+    @Test
+    void publicFacadeRejectsForeignScopeBeforeIoAndInvalidatesMetadata() throws Exception {
+        try (var a = new Fixture();
+                var b = new Fixture()) {
+            var first = new WorldGlobalScenes(a.scopes);
+            var second = new WorldGlobalScenes(b.scopes);
+            var scope = first.createScope(MAP, Cancellation.NONE);
+            assertThrows(IllegalArgumentException.class, () -> second.activate(scope));
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            second.prepareAndWrite(
+                                    scope, Cancellation.NONE, (r, t) -> (AutoCloseable) () -> {}));
+            first.invalidate();
+            assertThrows(
+                    RuntimeException.class,
+                    () ->
+                            first.prepareAndWrite(
+                                    scope, Cancellation.NONE, (r, t) -> (AutoCloseable) () -> {}));
+        }
+    }
+
+    @Test
+    void publicFacadeSourceCloseWaitsPinnedMove() throws Exception {
+        try (var f = new Fixture()) {
+            var facade = new WorldGlobalScenes(f.scopes);
+            var scope = facade.createScope(MAP, Cancellation.NONE);
+            var closes = new AtomicInteger();
+            var written =
+                    facade.prepareAndWrite(
+                            scope,
+                            Cancellation.NONE,
+                            (b, t) -> (AutoCloseable) closes::incrementAndGet);
+            var entered = new CompletableFuture<Void>();
+            var release = new CompletableFuture<Void>();
+            var moved =
+                    CompletableFuture.runAsync(
+                            () ->
+                                    written.withWrittenResource(
+                                            r -> {
+                                                entered.complete(null);
+                                                release.join();
+                                            }));
+            try {
+                entered.get(3, TimeUnit.SECONDS);
+                facade.invalidate();
+                var drain = f.scopes.closeAsync();
+                assertFalse(drain.isDone());
+                assertFalse(f.scopes.whenClosed().isDone());
+                assertFalse(written.isOpen());
+                assertEquals(0, closes.get());
+                release.complete(null);
+                moved.get(3, TimeUnit.SECONDS);
+                drain.get(3, TimeUnit.SECONDS);
+                assertEquals(1, closes.get());
+            } finally {
+                release.complete(null);
+            }
+        }
+    }
+
+    @Test
+    void globalWhenClosedRetainsOtherPinsAfterResourceCleanupThrows() throws Exception {
+        try (var f = new Fixture()) {
+            var facade = new WorldGlobalScenes(f.scopes);
+            var scope = facade.createScope(MAP, Cancellation.NONE);
+            facade.prepareAndWrite(
+                    scope,
+                    Cancellation.NONE,
+                    (b, t) ->
+                            (AutoCloseable)
+                                    () -> {
+                                        throw new IllegalStateException("cleanup failed");
+                                    });
+            var second =
+                    facade.prepareAndWrite(
+                            scope, Cancellation.NONE, (b, t) -> (AutoCloseable) () -> {});
+            var entered = new CompletableFuture<Void>();
+            var release = new CompletableFuture<Void>();
+            var borrowed =
+                    CompletableFuture.runAsync(
+                            () ->
+                                    second.withPayload(
+                                            b -> {
+                                                entered.complete(null);
+                                                release.join();
+                                                return null;
+                                            }));
+            try {
+                entered.get(3, TimeUnit.SECONDS);
+                assertThrows(RuntimeException.class, f.scopes::closeAsync);
+                var actual = f.scopes.whenClosed();
+                assertFalse(actual.isDone());
+                release.complete(null);
+                borrowed.get(3, TimeUnit.SECONDS);
+                assertThrows(
+                        java.util.concurrent.ExecutionException.class,
+                        () -> actual.get(3, TimeUnit.SECONDS));
+                assertEquals(0, f.scopes.payloadCredits());
+            } finally {
+                release.complete(null);
+            }
+        }
+    }
+
+    @Test
+    void publicFacadeForwardsActualWriterCancellationWithExternalNone(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path directory) throws Exception {
+        try (var f = new Fixture()) {
+            var facade = new WorldGlobalScenes(f.scopes);
+            var scope = facade.createScope(MAP, Cancellation.NONE);
+            var entered = new CompletableFuture<Void>();
+            var canceled = new CompletableFuture<Void>();
+            var release = new CompletableFuture<Void>();
+            var failed = new CompletableFuture<Throwable>();
+            var file = new AtomicReference<OutputFile>();
+            var worker =
+                    Thread.ofVirtual()
+                            .start(
+                                    () -> {
+                                        try {
+                                            facade.prepareAndWrite(
+                                                    scope,
+                                                    Cancellation.NONE,
+                                                    (borrow, token) -> {
+                                                        var output =
+                                                                new OutputFile(
+                                                                        directory.resolve(
+                                                                                "global.wgs"));
+                                                        file.set(output);
+                                                        try (var registration =
+                                                                token.onCancel(
+                                                                        () ->
+                                                                                canceled.complete(
+                                                                                        null))) {
+                                                            entered.complete(null);
+                                                            release.join();
+                                                            return output;
+                                                        }
+                                                    });
+                                            failed.completeExceptionally(
+                                                    new AssertionError(
+                                                            "Closed Source returned output"));
+                                        } catch (RuntimeException | Error failure) {
+                                            failed.complete(failure);
+                                        }
+                                    });
+            try {
+                entered.get(3, TimeUnit.SECONDS);
+                var sourceDrain = f.scopes.closeAsync();
+                canceled.get(3, TimeUnit.SECONDS);
+                assertFalse(sourceDrain.isDone());
+                assertEquals(0, file.get().closes.get());
+                release.complete(null);
+                org.junit.jupiter.api.Assertions.assertNotNull(failed.get(3, TimeUnit.SECONDS));
+                worker.join();
+                sourceDrain.get(3, TimeUnit.SECONDS);
+                assertEquals(1, file.get().closes.get());
+                assertFalse(java.nio.file.Files.exists(file.get().path));
+                assertEquals(0, f.scopes.payloadCredits());
+            } finally {
+                release.complete(null);
+                worker.join();
+            }
+        }
+    }
 }

@@ -60,6 +60,10 @@ public interface BuildWorld extends AutoCloseable {
     }
 
     /** Optional actual-source streaming capability; custom providers perform no fallback IO. */
+    default java.util.Optional<WorldGlobalScenes> globalScenes() {
+        return java.util.Optional.empty();
+    }
+
     default java.util.Optional<WorldTerrainStreaming> terrainStreaming() {
         return java.util.Optional.empty();
     }

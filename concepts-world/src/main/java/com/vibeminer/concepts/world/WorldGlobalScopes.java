@@ -557,6 +557,14 @@ final class WorldGlobalScopes {
         return WorldSourceRefusals.at(WorldSourceRefusals.Site.GLOBAL_ASSET_BINDING);
     }
 
+    synchronized Facts descriptiveFacts(GlobalScope scope) {
+        return resolve(scope).facts();
+    }
+
+    CompletableFuture<Void> whenClosed() {
+        return drained.copy();
+    }
+
     synchronized boolean isKnown(GlobalScope scope) {
         return cleanupFault == null
                 && !closed
@@ -580,6 +588,16 @@ final class WorldGlobalScopes {
         private PayloadCredit(WorldGlobalScopes source, GlobalScope scope) {
             this.source = source;
             this.scope = scope;
+        }
+
+        boolean isOpen(WorldGlobalAssetFactory.OwnedAsset expected) {
+            synchronized (source) {
+                return source.isKnown(scope)
+                        && !closing
+                        && asset == expected
+                        && source.payloads.contains(this)
+                        && expected.available();
+            }
         }
 
         void pin(WorldGlobalAssetFactory.OwnedAsset expected) {
