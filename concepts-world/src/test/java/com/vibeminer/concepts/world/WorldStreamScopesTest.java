@@ -243,13 +243,44 @@ final class WorldStreamScopesTest {
         }
     }
 
+    @Test
+    void boundedCapabilityRefusalDoesNotFallbackOrTurnIntoMissingTerrain() {
+        for (boolean absent : new boolean[] {true, false}) {
+            var files = new WorldTerrainTextureSourceTest.Files();
+            var tables = new Tables(files);
+            tables.boundedUnsupported = absent;
+            tables.forcedLimit = !absent;
+            var source = new WorldStreamScopes(tables.handle(), files.files());
+            try {
+                assertThrows(
+                        RuntimeException.class, () -> source.create(REQUEST, Cancellation.NONE));
+                assertEquals(0, files.totalOpens());
+                assertEquals(0, source.retainedProofs());
+                tables.boundedUnsupported = false;
+                tables.forcedLimit = false;
+                assertEquals(
+                        1,
+                        source.create(REQUEST, Cancellation.NONE).wdtId(),
+                        "A policy refusal does not poison the native graph or source engine");
+            } finally {
+                source.closeAsync().join();
+                tables.close();
+            }
+        }
+    }
+
     private static final class Tables {
         final WorldTerrainTextureSourceTest.Files files;
         final AtomicInteger pages = new AtomicInteger();
         final CountDownLatch entered = new CountDownLatch(1);
         volatile long mapId = 7;
         volatile String wdt = "1", identity = "owned-map-row";
-        volatile boolean duplicate, qualified = true, unsupported, unknownEvidence;
+        volatile boolean duplicate,
+                qualified = true,
+                unsupported,
+                unknownEvidence,
+                boundedUnsupported,
+                forcedLimit;
         volatile TableTypes.State state = TableTypes.State.READY;
         volatile TableTypes.PageState pageState = TableTypes.PageState.OK;
         volatile CompletableFuture<CapturedRowsTypes.Page> held;
@@ -261,7 +292,9 @@ final class WorldStreamScopesTest {
         }
 
         CapturedRowsTypes.Page page() {
-            var original = last.readOrdinalPage(0, 1, Cancellation.NONE).join();
+            var original =
+                    last.readOrdinalPage(0, 1, WorldStreamScopes.READ_LIMITS, Cancellation.NONE)
+                            .join();
             var row = original.rows().getFirst();
             if (mapId != 7 || !wdt.equals("1")) {
                 row =
@@ -373,6 +406,31 @@ final class WorldStreamScopesTest {
 
                         public CompletableFuture<CapturedRowsTypes.Page> readOrdinalPage(
                                 long first, int count, Cancellation cancel) {
+                            throw new AssertionError("Scope proof may not use unbounded row API");
+                        }
+
+                        public CompletableFuture<CapturedRowsTypes.Page> readOrdinalPage(
+                                long first,
+                                int count,
+                                CapturedRowsTypes.ReadLimits limits,
+                                Cancellation cancel) {
+                            assertEquals(WorldStreamScopes.READ_LIMITS, limits);
+                            if (boundedUnsupported) {
+                                return CompletableFuture.failedFuture(
+                                        new UnsupportedOperationException(
+                                                "No bounded row capability"));
+                            }
+                            if (forcedLimit) {
+                                return CompletableFuture.completedFuture(
+                                        new CapturedRowsTypes.Page(
+                                                delegate.receipt().graphIdentity(),
+                                                first,
+                                                CapturedRowsTypes.ReadState.LIMIT_EXCEEDED,
+                                                List.of(),
+                                                null,
+                                                "CAPTURE_READ_LIMIT",
+                                                "Authored refusal"));
+                            }
                             assertEquals(1, count, "Map proof never requests a wide generic page");
                             pages.incrementAndGet();
                             entered.countDown();

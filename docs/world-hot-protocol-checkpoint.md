@@ -625,15 +625,40 @@ protected/mismatched WDT sources, canceled work, held source IO and nonblocking
 close/drain. Existing source/material tests remain unchanged except sharing their
 authored file fixture; no WorldService/BuildWorld/GUI entry point calls the engine.
 
-**Unresolved lower-reader budget gate:** CapturedRows limits its returned row to
-1MiB, cells64KiB and retained issue channel64KiB, but currently applies this after
-GeneratedTable/RowCodec decodes a raw record. GeneratedTables' default raw record
-ceiling is16MiB. Therefore the1MiB returned-row contract alone does NOT bound new
-raw/decode temporaries, and this checkpoint makes no completed48MiB runtime claim.
-Before enabling the factory or advertising a packet, require a reviewed optional
-lower per-record byte limit checked against indexed payload length before record
-allocation/RowCodec, plus named decode/Map/WDT parser charges. Do not change the
-legacy16MiB default or fall back to the unbounded-width generic Map page. Source
-scope factory/PreparedWorldTile positive ownership and callback-close tests remain
-next work; the component ledger must account actual distinct peak owners before
-integration. Native/renderer/frame/GUI wiring remains absent.
+**Lower-reader correction adopted:** scope scans now use the reviewed optional
+CapturedRows strict profile (compressed256KiB, decoded128KiB, record64KiB,
+128 values/issues, cell64KiB), which rejects before block/record/row allocations.
+Missing bounded capability and LIMIT_EXCEEDED mean unsupported hot scope, never
+missing terrain or terminal height material. There is no generic/legacy fallback.
+Eight scope fixtures now exercise this path, including policy refusal followed by
+successful recovery through the same genuine native graph. Legacy APIs/defaults
+and persisted identities are unchanged.
+
+The corrected helper ledger explicitly adds retained scope metadata and a4MiB
+post-open read transient allowance. WDT read/parse is a separate sequential phase:
+one≤1MiB input owner,≤384KiB MAID parser arrays,16KiB MAIN,≤1MiB immutable tile/list
+metadata and≤256KiB buffer/checksum/control allowance fit a conservative3MiB phase.
+The packed scope tuples are already charged in the two-proof retained allowance.
+A private readMaid helper closes/clears its raw input owner and returns only packed
+metadata before opening the next Map capture. Its parsed world/list never escapes.
+Thus Map4MiB and WDT3MiB do not add simultaneously; one-active source admission
+charges their maximum4MiB. Counts are logical owners, not a JVM/RSS guarantee.
+
+| Named helper term | Bytes |
+| --- | ---: |
+| Existing accepted texture-component total | 43,328,576 |
+| Two scopes + latest metadata descriptor | 267,520 |
+| Maximum additional sequential phase | 4,194,304 |
+| Combined named helper total | **47,790,400** |
+| Margin below48MiB | **2,541,248** |
+
+Opening a capture creates a NEW prepared reader; it does not merely borrow an
+already allocated one. Manifest bodies (existing64MiB ceiling),16MiB metadata JSON,
+parsed schema/graph and certificate owners belong to the separate prepared-table
+subsystem ledger and are not included in the48MiB helper envelope. Exactly one
+capture is held per scope source operation and is closed/drained before the next
+phase. File-store and prepared-table owners must remain named separately before
+integration; this is emphatically **not** a whole-pipeline/process48MiB claim.
+
+Source geometry/PreparedWorldTile positive ownership and callback-close tests
+remain next work. Native/renderer/frame/GUI wiring remains absent.
