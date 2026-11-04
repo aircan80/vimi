@@ -90,6 +90,19 @@ final class WorldGeometryCache {
             return entry.proof.fingerprint();
         }
 
+        synchronized WorldTerrainTextureSource.FileBinding rootBinding() {
+            if (closed || owner.closed) {
+                throw new IllegalStateException("Geometry output closed");
+            }
+            var proof = entry.proof;
+            return new WorldTerrainTextureSource.FileBinding(
+                    proof.id(),
+                    proof.key(),
+                    proof.length(),
+                    proof.declaredLength(),
+                    proof.sourceLimit());
+        }
+
         @Override
         public void close() {
             synchronized (this) {

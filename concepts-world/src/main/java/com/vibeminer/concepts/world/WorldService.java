@@ -129,6 +129,7 @@ public final class WorldService implements BuildWorld {
     private WorldPlacementSource placements;
     private final TerrainAtlasPool atlasPool;
     private WorldTerrainTextureSource terrainTextures;
+    private WorldPreparedTerrain preparedTerrain;
 
     public WorldService(BuildTables tables, BuildFiles files) {
         this(tables, files, null);
@@ -139,6 +140,25 @@ public final class WorldService implements BuildWorld {
         this.tables = java.util.Objects.requireNonNull(tables);
         this.files = files;
         this.minimaps = new WorldMinimaps(files);
+    }
+
+    /** Internal source-worker factory; the public closed packet bridge is a separate checkpoint. */
+    synchronized WorldPreparedTerrain preparedTerrain() {
+        if (closing != null) {
+            throw new IllegalStateException("World workspace closed");
+        }
+        if (atlasPool == null || files == null) {
+            throw new UnsupportedOperationException("Configured terrain material source required");
+        }
+        if (preparedTerrain == null) {
+            if (terrainTextures == null) {
+                terrainTextures = new WorldTerrainTextureSource(files, atlasPool);
+            }
+            preparedTerrain =
+                    new WorldPreparedTerrain(
+                            this, new WorldStreamScopes(tables, files), terrainTextures);
+        }
+        return preparedTerrain;
     }
 
     public CompletableFuture<Catalog> catalog(Cancellation token) {
@@ -576,6 +596,7 @@ public final class WorldService implements BuildWorld {
         WorldAreaNavigation navigation;
         WorldPlacementSource placementSource;
         WorldTerrainTextureSource textureSource;
+        WorldPreparedTerrain preparedSource;
         synchronized (this) {
             if (closing != null) {
                 return closing.copy();
@@ -586,6 +607,10 @@ public final class WorldService implements BuildWorld {
             navigation = areaNavigation;
             placementSource = placements;
             textureSource = terrainTextures;
+            preparedSource = preparedTerrain;
+            if (preparedSource != null) {
+                preparedSource.invalidate();
+            }
         }
         Thread.startVirtualThread(
                 () -> {
@@ -612,6 +637,10 @@ public final class WorldService implements BuildWorld {
                                             textureSource == null
                                                     ? CompletableFuture.completedFuture(null)
                                                     : textureSource.closeAsync(),
+                                    () ->
+                                            preparedSource == null
+                                                    ? CompletableFuture.completedFuture(null)
+                                                    : preparedSource.closeAsync(),
                                     cache::closeAsync);
                     for (var close : closes) {
                         try {
