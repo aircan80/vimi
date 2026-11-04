@@ -116,7 +116,10 @@ final class GlobalWmoControl {
         return value;
     }
 
-    /** Returns null only at a clean line boundary; exact256B including LF is the upper bound. */
+    /**
+     * Returns null only at a clean line boundary; exact256B including LF is the upper bound. Reads
+     * one byte per call, so the caller must pass a buffered stream.
+     */
     static String readLine(InputStream input) throws IOException {
         Objects.requireNonNull(input);
         byte[] bytes = new byte[MAX_LINE_BYTES - 1];

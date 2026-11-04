@@ -3,7 +3,11 @@ package com.vibeminer.rendering.bgfx;
 import java.io.IOException;
 import java.nio.file.FileSystems;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 
@@ -39,7 +43,11 @@ record GlobalWmoLaunch(
         path(frames, "frames.vgpu");
         Objects.requireNonNull(expected);
         Objects.requireNonNull(backend);
-        if (frameNonce == 0 || parentPid < 1 || scene.getParent().equals(frames.getParent())) {
+        // The input-only directory must retire while the mapping lives: no shared or nested dirs.
+        if (frameNonce == 0
+                || parentPid < 1
+                || scene.getParent().startsWith(frames.getParent())
+                || frames.getParent().startsWith(scene.getParent())) {
             throw new IllegalArgumentException("Invalid global launch ownership");
         }
     }
@@ -92,12 +100,40 @@ record GlobalWmoLaunch(
                     default -> throw new IllegalArgumentException("Unknown global backend");
                 };
         return new GlobalWmoLaunch(
-                Path.of(values.get("--global-scene")),
+                canonicalPath(values.get("--global-scene")),
                 new WorldGlobalSceneWriter.InputExpectation(identity, length),
-                Path.of(values.get("--frames")),
+                canonicalPath(values.get("--frames")),
                 mappingNonce,
                 positive(values.get("--parent-pid"), Long.MAX_VALUE),
                 backend);
+    }
+
+    /** The exact argv spelling {@link #parse} accepts; parse(arguments()) equals this record. */
+    List<String> arguments() {
+        var result =
+                new ArrayList<>(
+                        List.of(
+                                "--global-scene",
+                                scene.toString(),
+                                "--global-nonce",
+                                expected.identity().nonce(),
+                                "--global-scope",
+                                expected.identity().scope(),
+                                "--global-sha256",
+                                expected.identity().fileSha256(),
+                                "--global-length",
+                                Integer.toString(expected.length()),
+                                "--frames",
+                                frames.toString(),
+                                "--global-frame-nonce",
+                                HexFormat.of().toHexDigits(frameNonce),
+                                "--parent-pid",
+                                Long.toString(parentPid)));
+        if (backend != Backend.DEFAULT) {
+            result.add("--backend");
+            result.add(backend.name().toLowerCase(Locale.ROOT));
+        }
+        return List.copyOf(result);
     }
 
     void verifyMapping(GpuFrameFile mapping) throws IOException {
@@ -118,6 +154,15 @@ record GlobalWmoLaunch(
             throw new IllegalArgumentException("Global integer bounds");
         }
         return value;
+    }
+
+    /** Path.of silently collapses repeated or trailing separators; require the exact spelling. */
+    private static Path canonicalPath(String text) {
+        Path path = Path.of(text);
+        if (!path.toString().equals(text)) {
+            throw new IllegalArgumentException("Noncanonical global path");
+        }
+        return path;
     }
 
     private static void path(Path path, String filename) {
