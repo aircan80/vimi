@@ -168,14 +168,24 @@ arbiter, Java/classpath matching, close protocol and actualProcessExit/worker/fi
 drain contract. Old model/terrain/hot context must actually drain before global
 native allocations begin. Failed/unknown actual drain quarantines the permit.
 No second global service/context or WMO annex added atop a terrain child.
+Mode changes first drain legacy source/preparation/CPU/texture jobs and actual
+source IO as well as the old native owner. Old visible pixels may become explicitly
+historical, retaining no Source graph. Existing application caches remain bounded
+under their separate component ledgers;16MiB is not a whole-application claim.
+A finalized successor file may wait on disk, but its new frame mapping/native
+resources are created only after the predecessor's actual mapping/context drain.
 
 Choose the existing **immutable v1 frame mapping primitive** for this first cold
 mode, capped800×500 (4,800,256B), with a new fresh private directory/mapping per
 request. Global content is fixed for that child; it cannot accept scene updates.
 The parent associates the mapping with this request's nonce+scope+whole-file SHA,
 not merely a path reused from an old child. It accepts no frames until strict
-`GLOBAL_READY nonce scope fileSHA profile counts...` matches its owned ExpectedFile.
-Add bounded `GLOBAL_INPUT_CONSUMED nonce fileSHA` only after all file reads close;
+`GLOBAL_READY nonce32 scope64 fileSHA64 profile vertices rawTriangles drawnTriangles groups batches images omissions` matches its owned ExpectedFile.
+All integer fields use canonical unsigned decimal; profile is1, omissions is the
+fixed reviewed bit mask, maximum line includingLF is208bytes. Exact enum/error
+codes are fixed in the pure protocol checkpoint; unknown statuses are fatal.
+Add bounded `GLOBAL_INPUT_CONSUMED nonce32 fileSHA64` (120bytes maximum includingLF)
+only after all file reads close;
 that status or actual confirmed process drain allows input deletion. Neither is
 an accepted-pixel claim. ASCII/LF256B maximum, fixed arities and numeric bounds.
 Child stdout writes use a bounded reliable off-native-owner writer with an actual
