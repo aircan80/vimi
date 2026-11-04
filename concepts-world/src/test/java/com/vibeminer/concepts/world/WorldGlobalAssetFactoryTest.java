@@ -1814,4 +1814,39 @@ class WorldGlobalAssetFactoryTest {
             }
         }
     }
+
+    @Test
+    void publicFacadeNeverConvertsStickyCleanupFailureToExpectedRetirement() throws Exception {
+        try (var f = new Fixture()) {
+            var facade = new WorldGlobalScenes(f.scopes);
+            var scope = facade.createScope(MAP, Cancellation.NONE);
+            var written =
+                    facade.prepareAndWrite(
+                            scope,
+                            Cancellation.NONE,
+                            (b, t) ->
+                                    (AutoCloseable)
+                                            () -> {
+                                                throw new IllegalStateException(
+                                                        "actual resource cleanup");
+                                            });
+            assertThrows(RuntimeException.class, written::close);
+            facade.invalidate();
+            java.util.List<org.junit.jupiter.api.function.Executable> calls =
+                    java.util.List.of(
+                            () -> written.withPayload(b -> b.vertices()),
+                            () -> written.withWrittenResource(r -> {}),
+                            () ->
+                                    facade.prepareAndWrite(
+                                            scope,
+                                            Cancellation.NONE,
+                                            (b, t) -> (AutoCloseable) () -> {}),
+                            () -> facade.createScope(MAP, Cancellation.NONE),
+                            () -> facade.activate(scope));
+            for (var call : calls) {
+                var error = assertThrows(RuntimeException.class, call);
+                assertFalse(error instanceof WorldTerrainStreaming.Refusal);
+            }
+        }
+    }
 }

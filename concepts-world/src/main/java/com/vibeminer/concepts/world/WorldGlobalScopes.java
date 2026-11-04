@@ -557,6 +557,10 @@ final class WorldGlobalScopes {
         return WorldSourceRefusals.at(WorldSourceRefusals.Site.GLOBAL_ASSET_BINDING);
     }
 
+    synchronized void requireHealthy() {
+        healthy();
+    }
+
     synchronized Facts descriptiveFacts(GlobalScope scope) {
         return resolve(scope).facts();
     }

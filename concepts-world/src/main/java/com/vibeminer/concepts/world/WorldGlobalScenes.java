@@ -359,12 +359,14 @@ public final class WorldGlobalScenes {
         if (scope == null || scope.owner != this) {
             throw new IllegalArgumentException("Foreign global scope");
         }
+        core.requireHealthy();
         if (!open || !core.isKnown(scope.token)) {
             throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SCOPE_RETIRED);
         }
     }
 
     public Scope createScope(WorldService.MapInfo comparison, Cancellation cancellation) {
+        core.requireHealthy();
         if (!open) {
             throw WorldSourceRefusals.at(WorldSourceRefusals.Site.OWNER_RETIRED);
         }
@@ -412,7 +414,9 @@ public final class WorldGlobalScenes {
                 try {
                     asset.close();
                 } catch (RuntimeException | Error cleanup) {
-                    failure.addSuppressed(cleanup);
+                    if (cleanup != failure) {
+                        failure.addSuppressed(cleanup);
+                    }
                 }
                 throw failure;
             }
