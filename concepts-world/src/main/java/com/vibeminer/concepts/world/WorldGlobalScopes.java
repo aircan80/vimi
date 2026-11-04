@@ -471,16 +471,17 @@ final class WorldGlobalScopes {
                 }
                 throw unavailable();
             }
+            long length = stream.length();
             if (opened.state() != FileTypes.FileReadState.COMPLETE
                     || !stream.holes().isEmpty()
-                    || stream.length() < 12
-                    || stream.length() > limit) {
+                    || length < 12
+                    || length > limit) {
                 throw unavailable();
             }
-            if (before.size() != null && before.size() != stream.length()) {
+            if (before.size() != null && before.size() != length) {
                 throw assetChanged();
             }
-            var data = ByteBuffer.allocate((int) stream.length());
+            var data = ByteBuffer.allocate((int) length);
             while (data.hasRemaining()) {
                 token.check();
                 if (WorldSourceFutures.await(stream.read(data, token)) <= 0) {
@@ -763,16 +764,17 @@ final class WorldGlobalScopes {
                 }
                 throw unavailable();
             }
+            long length = stream.length();
             if (opened.state() != FileTypes.FileReadState.COMPLETE
                     || !stream.holes().isEmpty()
-                    || stream.length() < 12
-                    || stream.length() > INPUT_LIMIT) {
+                    || length < 12
+                    || length > INPUT_LIMIT) {
                 throw unavailable();
             }
-            if (before.size() != null && before.size() != stream.length()) {
+            if (before.size() != null && before.size() != length) {
                 throw changed();
             }
-            var bytes = ByteBuffer.allocate((int) stream.length());
+            var bytes = ByteBuffer.allocate((int) length);
             while (bytes.hasRemaining()) {
                 token.check();
                 if (WorldSourceFutures.await(stream.read(bytes, token)) <= 0) {
