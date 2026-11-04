@@ -30,12 +30,12 @@ def main():
         manifest = compiler.compile_profiles(args.tool_directory, target, profiles, output)
     for name, record in manifest["binaries"].items():
         sidecar = output / (name + ".sha256")
-        value = record["sha256"] + "\n"
+        value = (record["sha256"] + "\n").encode("ascii")
         if args.verify:
-            if sidecar.read_text(encoding="ascii") != value:
+            if sidecar.read_bytes() != value:
                 raise ValueError("Candidate runtime shader digest differs")
         else:
-            sidecar.write_text(value, encoding="ascii")
+            sidecar.write_bytes(value)
 
 
 if __name__ == "__main__":
