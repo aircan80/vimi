@@ -55,6 +55,7 @@ configurations {
 dependencies {
     testFixturesApi platform('org.junit:junit-bom:5.13.4')
     testFixturesApi 'org.junit.jupiter:junit-jupiter-api'
+    testFixturesImplementation testFixtures(project(':generated-store'))
     api project(':files')
     api project(':generated-store')
     implementation 'com.fasterxml.jackson.core:jackson-core:2.20.1'

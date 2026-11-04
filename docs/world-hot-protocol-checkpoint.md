@@ -601,3 +601,39 @@ Invalidation removes registry ownership after active callbacks drain; retaining
 arbitrary old public tokens cannot retain heavy proofs or source handles. Every
 operation resolves its token through the current/replacement registry and rejects
 unknown/stale generations before source access.
+
+## Implementation checkpoint: isolated source scope authority
+
+`WorldStreamScopes` is package-private and unwired. It resolves requested Map ID
+through an actual prepared-local native capture, validates matching source/schema
+and native issue identity, scans one ordinal row at a time, and retains only a
+selected Map digest. There is no generic page fallback. Unsupported/unknown native
+capture cannot create a hot scope. It revalidates Map binding plus fresh numeric
+WDT source, packs fixed MAID tuples into its two-proof registry, and exposes only
+private-constructed small tokens. All eight recorded references are checked before
+source use; changed Map/CK invalidates the registry entry. Source operations use a
+failfast one-active CAS; source IO/capture callbacks run outside lifecycle locks.
+Close invalidates immediately and returns an asynchronous active-operation drain.
+
+Seven scope tests include a genuine native positive Map7→WDT1 fixture:
+Db2Fixture→Db2Reader→GeneratedTableContent.nativeDb2→GeneratedTables→
+ClientBuildTables.capturePreparedLocal. No positive source/certificate constructor
+is faked. Negative wrappers mutate that actual source only to prove rejection.
+Tests cover forged caller WDT, all eight MAID mismatches, unsupported/unknown or
+partial capture, unknown/duplicate Map rows, changed Map/CK, retained stale tokens,
+protected/mismatched WDT sources, canceled work, held source IO and nonblocking
+close/drain. Existing source/material tests remain unchanged except sharing their
+authored file fixture; no WorldService/BuildWorld/GUI entry point calls the engine.
+
+**Unresolved lower-reader budget gate:** CapturedRows limits its returned row to
+1MiB, cells64KiB and retained issue channel64KiB, but currently applies this after
+GeneratedTable/RowCodec decodes a raw record. GeneratedTables' default raw record
+ceiling is16MiB. Therefore the1MiB returned-row contract alone does NOT bound new
+raw/decode temporaries, and this checkpoint makes no completed48MiB runtime claim.
+Before enabling the factory or advertising a packet, require a reviewed optional
+lower per-record byte limit checked against indexed payload length before record
+allocation/RowCodec, plus named decode/Map/WDT parser charges. Do not change the
+legacy16MiB default or fall back to the unbounded-width generic Map page. Source
+scope factory/PreparedWorldTile positive ownership and callback-close tests remain
+next work; the component ledger must account actual distinct peak owners before
+integration. Native/renderer/frame/GUI wiring remains absent.

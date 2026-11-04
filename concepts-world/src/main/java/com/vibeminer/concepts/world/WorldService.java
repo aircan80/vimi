@@ -407,7 +407,7 @@ public final class WorldService implements BuildWorld {
         }
     }
 
-    private static int column(TableTypes.SchemaResult schema, String field, boolean integer) {
+    static int column(TableTypes.SchemaResult schema, String field, boolean integer) {
         if (schema.schema() == null
                 || schema.columns() == null
                 || schema.schema().columns().stream()
@@ -472,7 +472,7 @@ public final class WorldService implements BuildWorld {
         return row.values().get(i);
     }
 
-    private static Long number(TableTypes.SchemaResult schema, Db2Types.Row row, String field) {
+    static Long number(TableTypes.SchemaResult schema, Db2Types.Row row, String field) {
         int i = column(schema, field, true);
         if (i < 0 || i >= row.values().size()) {
             return null;
