@@ -66,3 +66,52 @@ observed atlas and final-image pixel differences. Prove geometry remains coheren
 cache identities differ, switching back restores the first output, invalid overrides
 leave the current model untouched, and stale preparation cannot replace a newer choice.
 No additional race support or inert controls are part of this checkpoint.
+
+## Internal override and executed visible proof
+
+A package-internal requested map is now admitted before preparation. It is limited to
+4096 entries before copying (the existing option-table ceiling), unsigned positive
+32-bit option/choice IDs, exact option membership in the selected model, and the same
+known eligibility and visibility checks as default selection. An unavailable, unknown,
+wrong-option or ineligible requested choice fails preparation rather than substituting
+a default. Unspecified options retain existing deterministic defaults. This remains an
+internal proof seam, not a public arbitrary-map API or selectable catalog.
+
+The authored fixture checks explicit alternate membership, missing requirement,
+nonzero visibility requirement, foreign option, nonexistent choice, immutable/context
+binding, and a 4097-entry hostile map that must be refused without iteration/copy.
+The existing full races check passes with this seam; public default entry points keep
+empty overrides and prior behavior.
+
+The actual selected-build proof initially found that the alternate diffuse bodies were
+not stored locally. That run's image difference was **rejected** because missing-layer
+fallback is not an appearance proof. Only the recorded missing bodies were acquired
+into a new private scratch store. A subsequent proof reopened original, prior acquired,
+and new acquired stores **read-only** and used `CachingObjectSource.localOnly` with no
+network. Every result must have a nonnull appearance and no missing-texture warning.
+
+Actual bodies observed:
+
+| FDID | Decoded source length | Content key |
+| --- | --- | --- |
+| 878515 | 350716 | 26b36649cc0a333321467469ab88f21b |
+| 878516 | 350716 | 58a70c20b4917666271fe457405bb784 |
+| 878296 | 175948 | 9eb2c02a304b117dbad3cad2313af551 |
+| 878297 | 175948 | 0a36746b82261696d998ea15e91f7418 |
+
+The skin choice also selects the related face layer 878296 versus878297; the proof
+retains existing related-choice filtering rather than replacing just the base image.
+Both appearances have108 admitted surfaces. The first composed atlas differs at
+1,041,416 pixels; the actual static model rendered at800×600 differs at14,826 pixels.
+Mesh positions, indices and part descriptors are identical. Sequence524→525→524 has
+different first/second cache keys, equal first/third keys, and byte-identical first/third
+encoded appearances and output pixels. Private screenshots were visually inspected:
+skin changes while beard, clothing and geometry remain stable.
+
+Executable private source and final log:
+`HOME/.cache/vimi-tmp/character-choice-proof/DwarfChoiceVisibleProof.java` and
+`visible-final.log`; images `choice-524-0.png`, `choice-525-1.png`, `choice-524-2.png`.
+The proof uses the current checkout's compiled concepts-races classes before dependency
+JARs. No game bodies, images or generated derivatives are committed. Existing partial
+character-table/neutral-surface warnings remain honest; this does not establish full
+client shader parity, animations, other race admission or a GUI control implementation.

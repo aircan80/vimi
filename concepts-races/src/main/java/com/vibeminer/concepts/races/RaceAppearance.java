@@ -58,6 +58,15 @@ final class RaceAppearance {
     }
 
     Prepared prepare(long raceId, long classId, long modelId, Cancellation token) {
+        return prepare(raceId, classId, modelId, token, java.util.Map.of());
+    }
+
+    Prepared prepare(
+            long raceId,
+            long classId,
+            long modelId,
+            Cancellation token,
+            java.util.Map<Long, Long> requested) {
         var issues = new ArrayList<String>();
         try {
             if (files == null || generated == null) {
@@ -65,11 +74,17 @@ final class RaceAppearance {
                         issues, "Texture preparation is unavailable for this workspace.");
             }
             var selection =
-                    new RaceCustomization(media).select(raceId, classId, modelId, token, issues);
+                    new RaceCustomization(media)
+                            .select(raceId, classId, modelId, token, issues, requested);
             var base = media.preview(raceId, classId, modelId, token, selection);
             base.issues().stream()
                     .filter(issue -> !issue.startsWith("Static native rest positions"))
+                    .filter(issue -> requested.isEmpty() || !issue.startsWith("Sample look uses"))
                     .forEach(issues::add);
+            if (!requested.isEmpty()) {
+                issues.add(
+                        "Requested known eligible choices and recorded defaults are shown; unknown unlock requirements are omitted.");
+            }
             if (base.mesh() == null || base.variant() == null) {
                 return prepareFailure(issues, base.message());
             }
