@@ -91,7 +91,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private TerrainScene textureRequestedScene;
     private java.util.List<WorldFormats.Tile> sceneTiles = java.util.List.of();
     private long textureGeneration;
-    private boolean textureSourceBusy, texturePendingFrame, textureWindowReady;
+    private boolean textureSourceBusy, texturePendingFrame;
+    private boolean currentMaterialsReady;
+    private String currentMaterialIssue;
+    private long loadedRevision, publishedLoadedRevision = -1, presentedTextureGeneration = -1;
+    private final AtomicBoolean materialWakeNeeded = new AtomicBoolean();
+    private boolean retirementWakePending, geometryPreparationWaiting;
+    private int preparingAnchorX, preparingAnchorY;
     private TerrainRenderer.Scene presentedScene;
     private boolean gpuVisible;
     private final Button open = new Button("Open explorer"), back = new Button("Back to map");
@@ -106,7 +112,37 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private long sceneGeneration;
     private boolean scenePreparing, waveActive, waveDirty;
     private PendingPrepared pendingPrepared;
-    private record PendingPrepared(Prepared value, long scene, long request, Runnable ready) {}
+    private static final class PendingPrepared implements AutoCloseable {
+        final Prepared value;
+        final long scene, request, loadedRevision;
+        final int anchorX, anchorY;
+        final Runnable ready;
+        boolean materialsStarted, materialsReady;
+        WorldTextureSnapshot textures;
+        String issue;
+
+        PendingPrepared(Prepared value, long scene, long request, long loadedRevision,
+                int anchorX, int anchorY, Runnable ready) {
+            this.value = value;
+            this.scene = scene;
+            this.request = request;
+            this.loadedRevision = loadedRevision;
+            this.anchorX = anchorX;
+            this.anchorY = anchorY;
+            this.ready = ready;
+        }
+
+        WorldTextureSnapshot takeTextures() {
+            var result = textures;
+            textures = null;
+            return result;
+        }
+
+        @Override public void close() {
+            if (textures != null) textures.close();
+            textures = null;
+        }
+    }
 
     private final Set<KeyCode> keys = new HashSet<>();
     private final LinkedHashMap<String, WorldService.LoadedTile> loaded = new LinkedHashMap<>();
@@ -220,7 +256,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             show(textureActivity, update.busy() || texturePendingFrame);
             textureStatus.setText(update.message());
             retryTextures.setDisable(update.busy() || texturePendingFrame || gpuScene == null);
-        }, this::acceptTextures);
+        }, this::completedTextures, this::advanceMaterials);
         textureStatus.setId("world-texture-status");
         textureStatus.setWrapText(true);
         textureStatus.setTooltip(new javafx.scene.control.Tooltip(
@@ -505,6 +541,11 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         if (gpu != null && !gpuVisible) {
                             gpuVisible = true;
                             requestFrame();
+                            loadNext();
+                        }
+                        if (terrainScene == null) {
+                            lastTick = 0;
+                            return;
                         }
                         double dt = lastTick == 0 ? 0 : Math.min(.1, (now - lastTick) / 1e9);
                         lastTick = now;
@@ -536,6 +577,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                 lastRender = now;
                                 requestFrame();
                             }
+                            abandonUnusableCandidate();
                             if (now - lastNearby > 100_000_000) {
                                 lastNearby = now;
                                 loadNext();
@@ -607,6 +649,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         show(firstFrameActivity, false);
         inventory = null;
         loaded.clear();
+        loadedRevision++;
         attempted.clear();
         explorer = false;
         timer.stop();
@@ -713,6 +756,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         camera = null;
         terrainScene = null;
         loaded.clear();
+        loadedRevision++;
         attempted.clear();
         loadingTile = false;
         busy(null);
@@ -1067,8 +1111,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
         explorer = true;
         origin = selected;
         loaded.clear();
+        loadedRevision++;
         attempted.clear();
         camera = null;
+        terrainScene = null;
+        gpuScene = null;
+        sceneTiles = java.util.List.of();
+        presentedScene = null;
         image.setImage(null);
         content.setCenter(viewport);
         content.setBottom(
@@ -1092,7 +1141,6 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void loadTile(WorldFormats.Tile tile, boolean initial) {
-        textureWindowReady = false;
         loadingTile = true;
         busy(
                 initial && areaEntry != null
@@ -1139,6 +1187,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                         attempted.remove(outgoing.tile().key());
                                                     }
                                                     loaded.put(tile.key(), data);
+                                                    loadedRevision++;
                                                     updateCurrentArea();
                                                     waveDirty = true;
                                                 } else {
@@ -1149,6 +1198,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                 return;
                                             }
                                             loaded.put(tile.key(), data);
+                                            loadedRevision++;
                                             prepareScene(data.terrain(), () -> {
                                                 loadingTile = false;
                                                 busy(null);
@@ -1158,14 +1208,22 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                         }));
     }
 
-    private void cancelPreparation() {
+    private void cancelCandidate() {
         ++sceneGeneration;
+        if (pendingPrepared != null) pendingPrepared.close();
         pendingPrepared = null;
         scenePreparing = false;
-        waveActive = false;
-        waveDirty = false;
         if (sceneTask != null) sceneTask.cancel(false);
         preparation.getQueue().clear();
+        textureLoading.hide();
+        textureSourceBusy = false;
+    }
+
+    private void cancelPreparation() {
+        geometryPreparationWaiting = false;
+        cancelCandidate();
+        waveActive = false;
+        waveDirty = false;
         if (invocation != null) invocation.cancel(false);
         requests.getQueue().clear();
     }
@@ -1215,12 +1273,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void prepareScene(WorldFormats.Terrain initial, Runnable ready) {
-        textureWindowReady = false;
-        long scene = ++sceneGeneration, request = selection;
+        cancelCandidate();
+        long scene = sceneGeneration, request = selection, sourceRevision = loadedRevision;
         scenePreparing = true;
-        pendingPrepared = null;
-        if (sceneTask != null) sceneTask.cancel(false);
-        preparation.getQueue().clear();
+        preparingAnchorX = camera == null ? origin.x() : tileX();
+        preparingAnchorY = camera == null ? origin.y() : tileY();
+        int anchorX = preparingAnchorX, anchorY = preparingAnchorY;
         var snapshot = java.util.List.copyOf(loaded.values());
         var areaPoint = initial != null && areaEntry != null && areaEntry.entryChunk() != null
                 ? areaEntry.entryChunk().entryReference() : null;
@@ -1232,39 +1290,66 @@ final class WorldView extends BorderPane implements AutoCloseable {
             result = CompletableFuture.failedFuture(error);
         }
         sceneTask = result;
-        result.whenComplete(
-                (prepared, error) ->
-                        Platform.runLater(
-                                () -> {
-                                    if (stale(request) || scene != sceneGeneration || !explorer)
-                                        return;
-                                    if (error != null) {
-                                        scenePreparing = false;
-                                        loadingTile = false;
-                                        busy(null);
-                                        show(firstFrameActivity, false);
-                                        status.setText(
-                                                "Terrain preview preparation unavailable; readable"
-                                                        + " terrain retained.");
-                                        return;
-                                    }
-                                    pendingPrepared = new PendingPrepared(prepared, scene, request, ready);
-                                    publishPrepared();
-                                }));
+        result.whenComplete((prepared, error) -> Platform.runLater(() -> {
+            if (stale(request) || scene != sceneGeneration || !explorer) return;
+            if (error != null) {
+                scenePreparing = false;
+                loadingTile = false;
+                busy(null);
+                show(firstFrameActivity, false);
+                status.setText("Terrain preview preparation unavailable; readable terrain retained.");
+                return;
+            }
+            if (initial != null && gpu != null) {
+                // Seed only navigation, then gather the full available first neighborhood. No
+                // height-only child is launched while its material bundle is still incomplete.
+                camera = prepared.camera();
+                originX = prepared.x();
+                originY = prepared.y();
+                scenePreparing = false;
+                loadingTile = false;
+                waveActive = true;
+                waveDirty = true;
+                ready.run();
+                return;
+            }
+            pendingPrepared = new PendingPrepared(prepared, scene, request, sourceRevision, anchorX, anchorY, ready);
+            if (prepared.gpuScene() == null) {
+                pendingPrepared.materialsReady = true;
+            }
+            startCandidateMaterials();
+            publishPrepared();
+        }));
     }
 
     private boolean publishPrepared() {
         var pending = pendingPrepared;
-        if (pending == null) return false;
-        if (stale(pending.request()) || pending.scene() != sceneGeneration || !explorer) return false;
+        if (pending == null || !pending.materialsReady) return false;
+        if (stale(pending.request) || pending.scene != sceneGeneration || !explorer) return false;
+        if (!candidateUseful(pending.anchorX, pending.anchorY)) {
+            cancelCandidate();
+            loadNext();
+            return false;
+        }
         if (gpu != null && gpuEnabled.isSelected() && !gpu.canReplaceScene()) return false;
         pendingPrepared = null;
         scenePreparing = false;
-        var prepared = pending.value();
-        retireTextures();
+        var prepared = pending.value;
+        var preparedTextures = pending.takeTextures();
+        releaseCurrentTextures();
         terrainScene = prepared.scene();
         gpuScene = prepared.gpuScene();
         sceneTiles = prepared.tiles();
+        textureSnapshot = preparedTextures;
+        textureRequestedScene = gpuScene;
+        currentMaterialsReady = true;
+        currentMaterialIssue = pending.issue;
+        publishedLoadedRevision = pending.loadedRevision;
+        texturePendingFrame = gpuScene != null;
+        show(textureActivity, texturePendingFrame);
+        textureStatus.setText(texturePendingFrame ? "Presenting prepared terrain…"
+                : "Terrain texture loading unavailable");
+        retryTextures.setDisable(true);
         if (gpuScene == null && gpu != null) {
             retireGpu();
             gpuStatus.setText("Software terrain · no loaded nearby tiles");
@@ -1274,7 +1359,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
             originX = prepared.x();
             originY = prepared.y();
         }
-        pending.ready().run();
+        pending.close();
+        pending.ready.run();
         return true;
     }
 
@@ -1287,14 +1373,14 @@ final class WorldView extends BorderPane implements AutoCloseable {
     }
 
     private void loadNext() {
-        if (!active || !explorer || loadingTile || scenePreparing || camera == null || inventory == null) return;
+        if (!active || !explorer || loadingTile || camera == null || inventory == null || !viewportActive()) return;
         int x = tileX(), y = tileY();
         attempted.retainAll(inventory.world().tiles().stream()
                 .filter(t -> Math.abs(t.x() - x) <= 1 && Math.abs(t.y() - y) <= 1)
                 .map(WorldFormats.Tile::key).collect(java.util.stream.Collectors.toSet()));
         if (!waveActive) {
             waveActive = true;
-            waveDirty = false;
+            waveDirty = loadedRevision != publishedLoadedRevision;
         }
         var next =
                 inventory.world().tiles().stream()
@@ -1316,16 +1402,17 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     Math.abs(t.tile().x() - x) <= 1 && Math.abs(t.tile().y() - y) <= 1);
             if (!useful && !loaded.isEmpty()) {
                 loaded.clear();
+        loadedRevision++;
                 updateCurrentArea();
                 waveDirty = true;
             }
             if (waveDirty) {
                 waveDirty = false;
-                busy("Preparing nearby terrain…");
-                prepareScene(null, () -> { busy(null); requestFrame(); loadNext(); });
+                busy("Preparing nearby terrain and textures…");
+                geometryPreparationWaiting = true;
+                prepareStableCandidate();
             } else {
                 busy(null);
-                textureWindowReady = true;
                 maybeLoadTextures();
             }
         }
@@ -1336,11 +1423,12 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (previous != null) previous.close();
     }
 
-    private void retireTextures() {
-        textureLoading.hide();
+    private void releaseCurrentTextures() {
         textureRequestedScene = null;
         textureSourceBusy = false;
         texturePendingFrame = false;
+        currentMaterialsReady = false;
+        currentMaterialIssue = null;
         ++textureGeneration;
         if (textureSnapshot != null) textureSnapshot.close();
         textureSnapshot = null;
@@ -1349,63 +1437,155 @@ final class WorldView extends BorderPane implements AutoCloseable {
         retryTextures.setDisable(true);
     }
 
+    private void retireTextures() {
+        cancelCandidate();
+        releaseCurrentTextures();
+    }
+
+    private boolean candidateUseful(int anchorX, int anchorY) {
+        return camera == null || terrainScene == null
+                || Math.abs(tileX() - anchorX) <= 1 && Math.abs(tileY() - anchorY) <= 1;
+    }
+
+    private void abandonUnusableCandidate() {
+        if (!scenePreparing || candidateUseful(preparingAnchorX, preparingAnchorY)) return;
+        cancelCandidate();
+        waveActive = false;
+        loadNext();
+    }
+
+    private boolean materialAdmission() {
+        boolean accepted = presentedScene == terrainScene
+                && presentedTextureGeneration == textureGeneration;
+        if (gpu != null && gpuEnabled.isSelected() && gpu.ready()) {
+            if (accepted) return true;
+        } else if (gpu != null && !gpu.retirement().isDone()) {
+            materialWakeNeeded.set(true);
+            if (!retirementWakePending) {
+                retirementWakePending = true;
+                gpu.retirement().whenComplete((ignored, error) -> {
+                    try {
+                        Platform.runLater(() -> {
+                            retirementWakePending = false;
+                            advanceMaterials();
+                        });
+                    } catch (IllegalStateException stopped) {
+                        // Toolkit teardown: candidate/current ownership has already been retired.
+                    }
+                });
+            }
+            return false;
+        } else if (accepted) {
+            return true;
+        }
+        if (!currentMaterialsReady && textureSnapshot == null && !rendering.get()) return true;
+        materialWakeNeeded.set(true);
+        return false;
+    }
+
+    private void prepareStableCandidate() {
+        if (!geometryPreparationWaiting || scenePreparing || loadingTile || waveActive
+                || closed || !active || !explorer || !viewportActive()) return;
+        if (textureLoading.hasActiveWork() || !materialAdmission()) return;
+        geometryPreparationWaiting = false;
+        prepareScene(null, () -> { busy(null); requestFrame(); loadNext(); });
+    }
+
+    private void advanceMaterials() {
+        if (closed || !active || !explorer || !viewportActive()) return;
+        prepareStableCandidate();
+        startCandidateMaterials();
+        if (!publishPrepared()) maybeLoadTextures();
+    }
+
+    private void startCandidateMaterials() {
+        var pending = pendingPrepared;
+        if (pending == null || pending.materialsReady || pending.materialsStarted) return;
+        if (!materialAdmission()) return;
+        pending.materialsStarted = true;
+        textureLoading.request(handle, inventory.map(), pending.value.tiles(), pending.value.gpuScene());
+    }
+
     private void maybeLoadTextures() {
-        if (closed || !active || !explorer || !textureWindowReady || loadingTile || scenePreparing || waveActive
-                || handle == null || inventory == null || gpuScene == null || !viewportActive()
-                || sceneTiles.isEmpty() || textureRequestedScene == gpuScene) return;
+        if (closed || !active || !explorer || scenePreparing || loadingTile || waveActive
+                || handle == null || inventory == null || !viewportActive()) return;
+        if (gpuScene == null) {
+            currentMaterialsReady = true;
+            return;
+        }
+        if (sceneTiles.isEmpty() || textureRequestedScene == gpuScene) return;
+        if (loadedRevision != publishedLoadedRevision || !materialAdmission()) return;
         textureRequestedScene = gpuScene;
         texturePendingFrame = false;
         textureLoading.request(handle, inventory.map(), sceneTiles, gpuScene);
     }
 
-    private void acceptTextures(WorldTextureSnapshot prepared) {
-        if (closed || !active || !explorer || prepared.scene() != gpuScene || stale(selection)) {
-            prepared.close();
+    private void completedTextures(WorldTextureLoading.Result result) {
+        var prepared = result.snapshot();
+        if (closed || !active || !explorer || stale(selection)) {
+            if (prepared != null) prepared.close();
             return;
         }
         if (!viewportActive()) {
-            prepared.close();
+            if (prepared != null) prepared.close();
             retireTextures();
+            retireGpu();
             return;
         }
-        if (waveActive || scenePreparing || loadingTile) {
-            // A newer neighborhood is assembling. Avoid restarting a child for an outgoing scene.
-            prepared.close();
-            textureLoading.hide();
-            textureRequestedScene = null;
+        var candidate = pendingPrepared;
+        if (candidate != null && candidate.value.gpuScene() == result.scene()) {
             textureSourceBusy = false;
-            texturePendingFrame = false;
-            show(textureActivity, false);
-            textureStatus.setText("Terrain textures waiting for nearby terrain…");
+            candidate.materialsReady = true;
+            candidate.issue = result.issue() == null ? null : "Terrain textures unavailable · height shading";
+            if (prepared != null && prepared.atlasCount() > 0) {
+                candidate.textures = prepared;
+            } else {
+                if (prepared != null) prepared.close();
+                if (candidate.issue == null) candidate.issue = "Terrain textures unavailable · height shading";
+            }
+            publishPrepared();
+            return;
+        }
+        if (result.scene() != gpuScene) {
+            if (prepared != null) prepared.close();
             return;
         }
         textureSourceBusy = false;
+        if (prepared == null && currentMaterialsReady) {
+            // A retry failure does not discard an already qualified current appearance.
+            show(textureActivity, texturePendingFrame);
+            textureStatus.setText(result.issue());
+            retryTextures.setDisable(texturePendingFrame);
+            return;
+        }
         ++textureGeneration;
         if (textureSnapshot != null) textureSnapshot.close();
         textureSnapshot = null;
-        if (prepared.atlasCount() == 0) {
-            prepared.close();
-            texturePendingFrame = false;
-            show(textureActivity, false);
-            textureStatus.setText("Terrain textures unavailable · height shading retained");
-            retryTextures.setDisable(false);
-        } else {
+        currentMaterialsReady = true;
+        currentMaterialIssue = result.issue() == null ? null : "Terrain textures unavailable · height shading";
+        if (prepared != null && prepared.atlasCount() > 0) {
             textureSnapshot = prepared;
-            texturePendingFrame = true;
-            show(textureActivity, true);
-            textureStatus.setText("Presenting terrain textures…");
-            retryTextures.setDisable(true);
+        } else {
+            if (prepared != null) prepared.close();
+            if (currentMaterialIssue == null) currentMaterialIssue = "Terrain textures unavailable · height shading";
         }
+        texturePendingFrame = true;
+        show(textureActivity, true);
+        textureStatus.setText("Presenting prepared terrain…");
+        retryTextures.setDisable(true);
         requestFrame();
     }
 
     private void acceptedGpuStatus(TerrainGpuPreview.Status update) {
+        if (update.ready() && gpu.usesTextures(textureSnapshot)) {
+            presentedTextureGeneration = textureGeneration;
+        }
+        prepareStableCandidate();
+        startCandidateMaterials();
         if (publishPrepared() || !update.ready()) return;
         if (!gpu.usesTextures(textureSnapshot)) {
-            // A source may finish before the first frame. Install or remove its texture snapshot
-            // after that frame actually presents, without camera input or replacing pending geometry.
-            requestFrame();
-        } else if (textureSnapshot != null && update.textures() != null && !textureSourceBusy) {
+            if (currentMaterialsReady) requestFrame();
+        } else if (!scenePreparing && !textureSourceBusy) {
             finishGpuTextures(update.textures());
         }
     }
@@ -1413,18 +1593,21 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private void finishGpuTextures(com.vibeminer.rendering.bgfx.TerrainTextureStatus textures) {
         texturePendingFrame = false;
         show(textureActivity, false);
-        retryTextures.setDisable(false);
-        textureStatus.setText(textures.coveredRects() == 0
-                ? "Terrain textures unavailable on GPU · height shading retained"
-                : "Basic terrain textures · " + textures.coveredRects() + "/"
-                        + textures.totalRects() + " regions");
+        retryTextures.setDisable(gpuScene == null);
+        textureStatus.setText(textures == null
+                ? (currentMaterialIssue == null ? "Height shading" : currentMaterialIssue)
+                : textures.coveredRects() == 0
+                        ? "Terrain textures unavailable on GPU · height shading retained"
+                        : "Basic terrain textures · " + textures.coveredRects() + "/"
+                                + textures.totalRects() + " regions");
     }
 
     private void finishCpuTextures() {
         texturePendingFrame = false;
         show(textureActivity, false);
-        retryTextures.setDisable(false);
-        textureStatus.setText(textureSnapshot == null ? "Height shading"
+        retryTextures.setDisable(gpuScene == null);
+        textureStatus.setText(textureSnapshot == null
+                ? (currentMaterialIssue == null ? "Height shading" : currentMaterialIssue)
                 : "Basic terrain textures · " + textureSnapshot.coveredChunks() + "/"
                         + textureSnapshot.totalChunks() + " regions");
     }
@@ -1446,6 +1629,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
             minimap.hide();
             return;
         }
+        prepareStableCandidate();
+        startCandidateMaterials();
         maybeLoadTextures();
         updateCurrentArea();
         minimap.update(handle, inventory, origin, originX, originY,
@@ -1455,6 +1640,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         double scale = Math.min(1, Math.min(800 / targetWidth, 500 / targetHeight));
         int w = Math.max(1, (int) (targetWidth * scale)),
                 h = Math.max(1, (int) (targetHeight * scale));
+        if (!currentMaterialsReady) return;
         long frame = frameGeneration.incrementAndGet();
         show(firstFrameActivity, image.getImage() == null || presentedScene != terrainScene);
         position.setText(
@@ -1569,13 +1755,16 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                                             frame.width());
                                             image.setImage(bitmap);
                                             presentedScene = current.scene();
+                                            if (current.textureGeneration() == textureGeneration) {
+                                                presentedTextureGeneration = textureGeneration;
+                                            }
                                             if (gpu != null && !gpu.ready()) {
                                                 show(gpuActivity, false);
                                             }
                                             show(firstFrameActivity, false);
-                                            if (current.textures() != null
-                                                    && current.textureGeneration() == textureGeneration
-                                                    && !textureSourceBusy) finishCpuTextures();
+                                            if (current.textureGeneration() == textureGeneration
+                                                    && !textureSourceBusy && !scenePreparing) finishCpuTextures();
+                                            advanceMaterials();
                                             status.setText(
                                                     "Terrain explorer · "
                                                         + (current.textures() == null ? "height shading" : "basic terrain textures")
@@ -1607,6 +1796,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
                     } finally {
                         rendering.set(false);
                         if (latest.get() != null && !closed) kick();
+                        if (materialWakeNeeded.getAndSet(false) && !closed) {
+                            try { Platform.runLater(this::advanceMaterials); }
+                            catch (IllegalStateException stopped) { /* Toolkit already retired. */ }
+                        }
                     }
                 });
     }

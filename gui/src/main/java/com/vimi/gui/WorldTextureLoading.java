@@ -16,8 +16,31 @@ import java.util.function.Consumer;
 /** UI-owned latest scene loading; one active worker, one pending descriptor, no pixel copies. */
 final class WorldTextureLoading implements AutoCloseable {
     record Status(boolean busy, String message) {}
-    private record View(long generation, BuildWorld source, WorldService.MapInfo map,
-            List<WorldFormats.Tile> tiles, TerrainScene scene) {}
+    /** A terminal current request; ownership of a nonnull snapshot transfers to the consumer. */
+    record Result(TerrainScene scene, WorldTextureSnapshot snapshot, String issue) {}
+    private static final class View {
+        final long generation;
+        final BuildWorld source;
+        final WorldService.MapInfo map;
+        final List<WorldFormats.Tile> tiles;
+        final java.lang.ref.WeakReference<TerrainScene> identity;
+        volatile TerrainScene strongScene;
+        View(long generation, BuildWorld source, WorldService.MapInfo map,
+                List<WorldFormats.Tile> tiles, TerrainScene scene) {
+            this.generation = generation;
+            this.source = source;
+            this.map = map;
+            this.tiles = tiles;
+            strongScene = scene;
+            identity = new java.lang.ref.WeakReference<>(scene);
+        }
+        long generation() { return generation; }
+        BuildWorld source() { return source; }
+        WorldService.MapInfo map() { return map; }
+        List<WorldFormats.Tile> tiles() { return tiles; }
+        TerrainScene scene() { return strongScene == null ? identity.get() : strongScene; }
+        void releaseScene() { strongScene = null; }
+    }
 
     private static final class Job {
         final View view;
@@ -35,7 +58,8 @@ final class WorldTextureLoading implements AutoCloseable {
     private final ThreadPoolExecutor cancellation = executor("world-texture-retirement");
     private final Consumer<Runnable> schedule;
     private final Consumer<Status> status;
-    private final Consumer<WorldTextureSnapshot> deliver;
+    private final Consumer<Result> deliver;
+    private final Runnable idle;
     private final ModelPreviewView.LatestDelivery<Runnable> progress;
     private View view;
     private Job active;
@@ -43,7 +67,13 @@ final class WorldTextureLoading implements AutoCloseable {
     private volatile boolean closed;
 
     WorldTextureLoading(Consumer<Runnable> schedule, Consumer<Status> status,
-            Consumer<WorldTextureSnapshot> deliver) {
+            Consumer<Result> deliver) {
+        this(schedule, status, deliver, () -> {});
+    }
+
+    WorldTextureLoading(Consumer<Runnable> schedule, Consumer<Status> status,
+            Consumer<Result> deliver, Runnable idle) {
+        this.idle = Objects.requireNonNull(idle);
         this.schedule = Objects.requireNonNull(schedule);
         this.status = Objects.requireNonNull(status);
         this.deliver = Objects.requireNonNull(deliver);
@@ -83,7 +113,10 @@ final class WorldTextureLoading implements AutoCloseable {
             worker.execute(() -> run(job));
         } catch (RuntimeException rejected) {
             active = null;
-            status.accept(new Status(false, "Terrain textures unavailable · previous preview retained"));
+            String issue = "Terrain textures unavailable · previous preview retained";
+            status.accept(new Status(false, issue));
+            try { deliver.accept(new Result(job.view.scene(), null, issue)); }
+            finally { job.view.releaseScene(); idle.run(); }
         }
     }
 
@@ -104,19 +137,22 @@ final class WorldTextureLoading implements AutoCloseable {
                             }));
                         }
                     })).join();
-            var snapshot = WorldTextureSnapshot.prepare(job.view.scene(), batch,
-                    () -> closed || job.canceled || job.token.isCanceled());
-            job.result.set(snapshot);
+            job.result.set(WorldTextureSnapshot.prepare(job.view.scene(), batch,
+                    () -> closed || job.canceled || job.token.isCanceled()));
             if (closed || job.canceled) job.releaseResult();
         } catch (RuntimeException error) {
             failure = "Terrain textures unavailable · previous preview retained";
         } finally {
-            if (closed || job.canceled) job.releaseResult();
+            if (closed || job.canceled) {
+                job.releaseResult();
+                job.view.releaseScene();
+            }
             final String message = failure;
             try {
                 schedule.accept(() -> completed(job, message));
             } catch (RuntimeException rejected) {
                 job.releaseResult();
+                job.view.releaseScene();
             }
         }
     }
@@ -124,26 +160,36 @@ final class WorldTextureLoading implements AutoCloseable {
     private void completed(Job job, String failure) {
         if (active != job) {
             job.releaseResult();
+            job.view.releaseScene();
             return;
         }
         active = null;
         var result = job.result.getAndSet(null);
-        if (closed || job.canceled || view != job.view) {
-            if (result != null) result.close();
-        } else if (result == null) {
-            status.accept(new Status(false, failure == null
-                    ? "Terrain textures unavailable · previous preview retained" : failure));
-        } else {
-            boolean transferred = false;
-            try {
-                deliver.accept(result);
-                transferred = true;
-            } finally {
-                if (!transferred) result.close();
+        try {
+            if (closed || job.canceled || view != job.view) {
+                if (result != null) result.close();
+            } else {
+                String issue = result == null && failure == null
+                        ? "Terrain textures unavailable · previous preview retained" : failure;
+                if (result == null) status.accept(new Status(false, issue));
+                boolean transferred = false;
+                try {
+                    deliver.accept(new Result(job.view.scene(), result, issue));
+                    transferred = true;
+                } finally {
+                    if (!transferred && result != null) result.close();
+                }
             }
+        } finally {
+            // Remove strong scene aliases before idle can admit another full geometry candidate.
+            result = null;
+            job.view.releaseScene();
+            start();
+            idle.run();
         }
-        start();
     }
+
+    boolean hasActiveWork() { return active != null; }
 
     private void retireActive() {
         progress.clear();
@@ -151,6 +197,7 @@ final class WorldTextureLoading implements AutoCloseable {
         var retiring = active;
         retiring.canceled = true;
         retiring.releaseResult();
+        retiring.view.releaseScene();
         cancellation.execute(retiring.token::cancel);
     }
 

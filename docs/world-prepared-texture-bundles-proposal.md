@@ -52,7 +52,8 @@ Current and pending candidates each own at most nine atlas entries from the same
 pending descriptor. There is no 27-slot assumption and no increased cache,
 geometry, atlas, input or native memory limit.
 
-Before starting a pending candidate's material source, require an accepted frame
+Before constructing the next full geometry candidate or starting its material
+source, require an accepted frame
 for the current scene AND current texture generation. For GPU presentation this
 also requires `canReplaceScene`; the serial native service has then retired the
 previous child before starting the accepted current one. For CPU presentation,
@@ -65,8 +66,16 @@ Proposed narrow controller API addition: `TerrainGpuPreview.retirement()` return
 a copy of the last owner-retirement future. `hide` and failure record the existing
 `service.closeOwner` future; no waiting runs on FX. This lets the source admission
 barrier cover CPU/GPU transitions without polling pool internals or relying on
-GC. Initial no-current-scene preparation can reserve one pending set alongside
-one retiring old owner; subsequent candidates wait for current-frame admission.
+GC. Initial no-current-scene preparation also waits for any prior GPU owner and
+CPU worker to retire before allocating its full candidate. Raw tile prefetch can
+continue using the existing twelve-entry source cache while this barrier waits.
+
+The loader exposes active-work/idle metadata. A canceled loader job drops strong
+scene references before its idle callback admits the next full candidate; its
+completed identity is weak and completed futures retain only source metadata.
+A worker may finish qualification before retirement, but no newer full candidate
+is constructed until that worker has closed its result and posted completion.
+The application never depends on GC to retire logical scene or atlas ownership.
 
 Geometry/current-source arrays retain the existing current+pending bounded
 lifetimes; source service still caches twelve raw tiles. No additional full-window

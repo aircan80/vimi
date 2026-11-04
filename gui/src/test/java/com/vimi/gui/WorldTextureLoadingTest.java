@@ -26,7 +26,7 @@ public final class WorldTextureLoadingTest {
     public static void main(String[] args) throws Exception {
         var ui = new ConcurrentLinkedQueue<Runnable>();
         var calls = new ConcurrentLinkedQueue<Call>();
-        var delivered = new ArrayList<WorldTextureSnapshot>();
+        var delivered = new ArrayList<WorldTextureLoading.Result>();
         var status = new ArrayList<WorldTextureLoading.Status>();
         Thread owner = Thread.currentThread();
         BuildWorld source = (BuildWorld) Proxy.newProxyInstance(BuildWorld.class.getClassLoader(),
@@ -58,9 +58,9 @@ public final class WorldTextureLoadingTest {
             calls.stream().skip(1).findFirst().orElseThrow().result()
                     .complete(WorldTerrainTextureSource.BatchResult.unsupported(TILES));
             await(ui, () -> delivered.size() == 1, "latest snapshot delivery");
-            require(delivered.getFirst().scene() == latest, "Snapshot belongs to exact current scene");
-            require(delivered.getFirst().atlasCount() == 0, "Unsupported provider retains honest height fallback");
-            delivered.removeFirst().close();
+            require(delivered.getFirst().snapshot().scene() == latest, "Snapshot belongs to exact current scene");
+            require(delivered.getFirst().snapshot().atlasCount() == 0, "Unsupported provider retains honest height fallback");
+            delivered.removeFirst().snapshot().close();
             require(status.stream().anyMatch(WorldTextureLoading.Status::busy), "Loading is visible");
             loader.request(source, map(4), TILES, scene());
             await(ui, () -> calls.size() == 3, "last pending read");
@@ -73,7 +73,7 @@ public final class WorldTextureLoadingTest {
         } finally {
             loader.close();
             for (var call : calls) call.result().complete(WorldTerrainTextureSource.BatchResult.unsupported(TILES));
-            for (var snapshot : delivered) snapshot.close();
+            for (var outcome : delivered) { if (outcome.snapshot() != null) outcome.snapshot().close(); }
         }
         System.out.println("WorldTextureLoadingTest PASS: off-owner reads, latest-only work, activity, rejection and late close");
     }

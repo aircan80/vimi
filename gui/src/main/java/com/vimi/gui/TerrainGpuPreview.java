@@ -36,6 +36,8 @@ final class TerrainGpuPreview implements AutoCloseable {
     private WorldTextureSnapshot textures, failedTextures;
     private TerrainTextureStatus textureStatus;
     private Pending awaitingAck;
+    private java.util.concurrent.CompletableFuture<Void> retirement =
+            java.util.concurrent.CompletableFuture.completedFuture(null);
     private long generation, revision, barrier, presentedRevision, sequence;
     private int width, height;
     private boolean running, firstFrame, closed;
@@ -214,7 +216,7 @@ final class TerrainGpuPreview implements AutoCloseable {
         frames.clear();
         running = false;
         ++generation;
-        service.closeOwner(owner);
+        retirement = service.closeOwner(owner);
         status.accept(new Status(false, false, message, textureStatus));
         fallback.run();
     }
@@ -235,6 +237,10 @@ final class TerrainGpuPreview implements AutoCloseable {
                             + " regions)";
             case UNAVAILABLE -> message + " · Height shading; terrain textures unavailable";
         };
+    }
+
+    java.util.concurrent.CompletableFuture<Void> retirement() {
+        return retirement.copy();
     }
 
     boolean usesTextures(WorldTextureSnapshot snapshot) {
@@ -264,7 +270,7 @@ final class TerrainGpuPreview implements AutoCloseable {
         textureStatus = null;
         ++generation;
         running = false;
-        service.closeOwner(owner);
+        retirement = service.closeOwner(owner);
     }
 
     @Override
