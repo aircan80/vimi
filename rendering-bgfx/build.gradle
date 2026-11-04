@@ -309,3 +309,14 @@ tasks.register('nativeGpuWorldStreamOwnerProof', JavaExec) {
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     args layout.buildDirectory.dir('native-world-stream-owner').get().asFile.absolutePath
 }
+
+tasks.register('nativeGpuWorldStreamSessionProof', JavaExec) {
+    group = 'verification'
+    description = 'Exercises the isolated authored World v2 actor and typed child protocol.'
+    dependsOn testClasses, tasks.named('verifyWorldStreamShaders'), tasks.named('verifyShaders')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vibeminer.rendering.bgfx.WorldStreamSessionProof'
+    timeout = java.time.Duration.ofMinutes(3)
+    jvmArgs '--enable-native-access=ALL-UNNAMED'
+    args layout.buildDirectory.dir('native-world-stream-owner').get().asFile.absolutePath
+}

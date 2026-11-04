@@ -61,7 +61,7 @@ public final class WorldStreamNativeProof {
                 id, String.format("%032x", id), 128, 128L, 1 << 20, 0, 0, 0, null, 0, 0);
     }
 
-    private static WorldStreamPackedTile prepare(
+    static WorldStreamPackedTile prepare(
             Path directory,
             long tx,
             WorldStreamState.Lease lease,
