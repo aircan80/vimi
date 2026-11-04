@@ -183,6 +183,15 @@ final class WorldStreamProducerCancellation {
         }
     }
 
+    /** Only an exact clean JDK cancellation can normalize a stopping producer's failure. */
+    static boolean cleanCancellation(Throwable error, boolean stopping) {
+        return stopping
+                && error != null
+                && error.getClass() == java.util.concurrent.CancellationException.class
+                && error.getCause() == null
+                && error.getSuppressed().length == 0;
+    }
+
     private void schedule(Slot slot) {
         if ((stopping || slot.stopping) && slot.registered && !slot.sealed && !slot.scheduled) {
             slot.scheduled = true;

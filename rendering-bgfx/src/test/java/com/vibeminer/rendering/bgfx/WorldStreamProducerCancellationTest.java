@@ -26,6 +26,36 @@ class WorldStreamProducerCancellationTest {
     @TempDir Path directory;
 
     @Test
+    void onlyExactCleanJdkCancellationNormalizesStoppingProducerFailure() {
+        var clean = new java.util.concurrent.CancellationException("normal stop");
+        assertTrue(WorldStreamProducerCancellation.cleanCancellation(clean, true));
+        assertFalse(WorldStreamProducerCancellation.cleanCancellation(clean, false));
+        var cause = new java.util.concurrent.CancellationException("cleanup failed");
+        cause.initCause(new java.io.IOException("real cleanup failure"));
+        assertFalse(WorldStreamProducerCancellation.cleanCancellation(cause, true));
+        var suppressed = new java.util.concurrent.CancellationException("cleanup failed");
+        suppressed.addSuppressed(new java.io.IOException("real cleanup failure"));
+        assertFalse(WorldStreamProducerCancellation.cleanCancellation(suppressed, true));
+        var touched = new AtomicInteger();
+        var subclass =
+                new java.util.concurrent.CancellationException() {
+                    @Override
+                    public synchronized Throwable getCause() {
+                        touched.incrementAndGet();
+                        throw new AssertionError("cause trap");
+                    }
+
+                    @Override
+                    public String getMessage() {
+                        touched.incrementAndGet();
+                        throw new AssertionError("message trap");
+                    }
+                };
+        assertFalse(WorldStreamProducerCancellation.cleanCancellation(subclass, true));
+        assertEquals(0, touched.get());
+    }
+
+    @Test
     void callbackMessageTrapCannotRetireAsSuccessOrPermitAnotherProducer() throws Exception {
         var lane = new WorldStreamProducerCancellation();
         var producer = lane.begin();
