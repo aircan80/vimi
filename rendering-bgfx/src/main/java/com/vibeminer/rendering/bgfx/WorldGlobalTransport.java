@@ -400,6 +400,7 @@ public final class WorldGlobalTransport {
             for (; ; ) {
                 GlobalWmoFrameRequest next;
                 boolean close;
+                boolean failing;
                 synchronized (lock) {
                     while (pending == null && !closeRequested && !failed && process.isAlive()) {
                         lock.wait(50);
@@ -410,12 +411,19 @@ public final class WorldGlobalTransport {
                     next = pending;
                     pending = null;
                     close = closeRequested || failed;
+                    failing = failed;
                 }
                 if (close) {
                     synchronized (lock) {
                         closeSent = closeRequested;
                     }
                     try {
+                        if (next != null && !failing) {
+                            // An accepted camera revision precedes Close when both arrive together.
+                            output.write(
+                                    GlobalWmoControl.encode(
+                                            new GlobalWmoControl.Camera(nonce, next)));
+                        }
                         output.write(GlobalWmoControl.encode(new GlobalWmoControl.Close(nonce)));
                         output.flush();
                         output.close();
