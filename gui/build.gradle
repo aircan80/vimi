@@ -592,4 +592,12 @@ tasks.register('clientHotfixStoreTest', JavaExec) {
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.vimi.gui.ClientHotfixStoreTest'
 }
+
+tasks.register('clientHotfixDetailsTest', JavaExec) {
+    group = 'verification'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.ClientHotfixDetailsTest'
+}
+tasks.named('check') { dependsOn tasks.named('clientHotfixDetailsTest') }
 check.dependsOn clientHotfixStoreTest

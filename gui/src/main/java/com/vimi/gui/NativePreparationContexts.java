@@ -105,6 +105,10 @@ final class NativePreparationContexts implements BuildPreparation.Factory {
     }
 
     private DataSourcesService sourcePolicies;
+    private ClientHotfixStore hotfixImports;
+    NativePreparationContexts withHotfixImports(ClientHotfixStore value) {
+        hotfixImports = java.util.Objects.requireNonNull(value); return this;
+    }
     NativePreparationContexts withSources(DataSourcesService sources) { sourcePolicies = sources; return this; }
     CommunityFileNames communityNames() { return names; }
 
@@ -157,6 +161,7 @@ final class NativePreparationContexts implements BuildPreparation.Factory {
             if (localOnly) {
                 work.withSourcePolicy(false, definitions).withPinnedCommunityKeys(pinnedKeys);
             } else {
+                if (hotfixImports != null) work.withHotfixImports(hotfixImports);
                 work.withSourcePolicies(sourcePolicies).withHistory(history).withAccounting(accounting)
                         .withAssessment(ignored -> statusChanged.accept(info));
             }
