@@ -40,6 +40,39 @@ final class GlobalWmoFrameOwner implements AutoCloseable {
     private static final long MAX_SEQUENCE = Long.MAX_VALUE >>> 1;
     private final Thread thread = Thread.currentThread();
     private final GpuFrameFile frames;
+    private final Driver driver;
+    private Throwable terminalFailure, closeFailure, freeFailure;
+    private long unknownDirectBytes;
+
+    /** Trusted native operations; deterministic lifecycle tests substitute only this boundary. */
+    interface Driver {
+        int frame();
+
+        int read(short texture, ByteBuffer pixels);
+
+        long nanoTime();
+
+        void free(ByteBuffer pixels);
+    }
+
+    private static final Driver NATIVE =
+            new Driver() {
+                public int frame() {
+                    return bgfx_frame(BGFX_FRAME_NONE);
+                }
+
+                public int read(short texture, ByteBuffer pixels) {
+                    return bgfx_read_texture(texture, pixels, 0, 0);
+                }
+
+                public long nanoTime() {
+                    return System.nanoTime();
+                }
+
+                public void free(ByteBuffer pixels) {
+                    MemoryUtil.memFree(pixels);
+                }
+            };
     private final Slot[] slots = {new Slot(), new Slot(), new Slot()};
     private short color = INVALID, depth = INVALID, target = INVALID;
     private BgfxGlobalWmoRenderer scene;
@@ -53,11 +86,13 @@ final class GlobalWmoFrameOwner implements AutoCloseable {
         ByteBuffer pixels;
         GlobalWmoFrameRequest request;
         int ready;
+        boolean fenceKnown;
     }
 
     record Stats(long directBytes, long framePayloadBytes, int pending, long sequence) {}
 
-    private GlobalWmoFrameOwner(GpuFrameFile frames) {
+    private GlobalWmoFrameOwner(GpuFrameFile frames, Driver driver) {
+        this.driver = Objects.requireNonNull(driver);
         this.frames = Objects.requireNonNull(frames);
         if (frames.maxWidth() != WIDTH || frames.maxHeight() != HEIGHT) {
             throw new IllegalArgumentException("Global requires exact800x500 mapping");
@@ -66,10 +101,14 @@ final class GlobalWmoFrameOwner implements AutoCloseable {
 
     /** No direct/native allocation: register this shell before initialize. Mapping is borrowed. */
     static GlobalWmoFrameOwner allocate(GpuFrameFile frames) {
-        return new GlobalWmoFrameOwner(frames);
+        return new GlobalWmoFrameOwner(frames, NATIVE);
     }
 
-    /** Adopts Decoded on entry. Caller must close/shutdown/afterContextShutdown even on failure. */
+    static GlobalWmoFrameOwner allocate(GpuFrameFile frames, Driver driver) {
+        return new GlobalWmoFrameOwner(frames, driver);
+    }
+
+    /** First accepted call adopts Decoded. Foreign/repeated/closed calls reject before adoption. */
     void initialize(GpuGlobalWmoSceneFile.Decoded decoded, BooleanSupplier canceled)
             throws IOException {
         requireThread();
@@ -118,6 +157,15 @@ final class GlobalWmoFrameOwner implements AutoCloseable {
 
     boolean submit(GlobalWmoFrameRequest request) {
         requireOpen();
+        try {
+            return submitActual(request);
+        } catch (RuntimeException | Error failure) {
+            terminalFailure = failure;
+            throw failure;
+        }
+    }
+
+    private boolean submitActual(GlobalWmoFrameRequest request) {
         Objects.requireNonNull(request);
         if (request.revision() <= issued) {
             throw new IllegalArgumentException("Global camera revision is not increasing");
@@ -143,7 +191,9 @@ final class GlobalWmoFrameOwner implements AutoCloseable {
         // Full physical surface; smaller rectangles still have an800-pixel row stride.
         bgfx_blit(1, available.texture, 0, 0, 0, 0, color, 0, 0, 0, 0, WIDTH, HEIGHT, 1);
         available.request = request;
-        available.ready = bgfx_read_texture(available.texture, available.pixels, 0, 0);
+        available.fenceKnown = false;
+        available.ready = driver.read(available.texture, available.pixels);
+        available.fenceKnown = true;
         issued = request.revision();
         submitted = true;
         return true;
@@ -151,11 +201,21 @@ final class GlobalWmoFrameOwner implements AutoCloseable {
 
     boolean advance() throws IOException {
         requireOpen();
-        current = bgfx_frame(BGFX_FRAME_NONE);
+        try {
+            return advanceActual();
+        } catch (IOException | RuntimeException | Error failure) {
+            terminalFailure = failure;
+            throw failure;
+        }
+    }
+
+    private boolean advanceActual() throws IOException {
+        current = driver.frame();
         submitted = false;
         Slot newest = null;
         for (var slot : slots) {
             if (slot.request != null
+                    && slot.fenceKnown
                     && ready(current, slot.ready)
                     && slot.request.revision() > published
                     && (newest == null || slot.request.revision() > newest.request.revision())) {
@@ -179,7 +239,7 @@ final class GlobalWmoFrameOwner implements AutoCloseable {
             wrote = true;
         }
         for (var slot : slots) {
-            if (slot.request != null && ready(current, slot.ready)) {
+            if (slot.request != null && slot.fenceKnown && ready(current, slot.ready)) {
                 slot.request = null;
             }
         }
@@ -200,10 +260,12 @@ final class GlobalWmoFrameOwner implements AutoCloseable {
             throw new IllegalArgumentException("Global fixed stride bounds");
         }
         target.clear();
+        var rowView = source.duplicate();
         for (int y = 0; y < height; y++) {
             int row = flip ? HEIGHT - 1 - y : y;
             int start = row * WIDTH * 4;
-            target.put(source.duplicate().position(start).limit(start + width * 4));
+            rowView.clear().position(start).limit(start + width * 4);
+            target.put(rowView);
         }
         target.flip();
     }
@@ -221,7 +283,7 @@ final class GlobalWmoFrameOwner implements AutoCloseable {
     Stats stats() {
         requireThread();
         int count = 0;
-        long bytes = packed == null ? 0 : BYTES;
+        long bytes = unknownDirectBytes + (packed == null ? 0 : BYTES);
         for (var slot : slots) {
             if (slot.request != null) {
                 count++;
@@ -240,25 +302,35 @@ final class GlobalWmoFrameOwner implements AutoCloseable {
     public void close() {
         requireThread();
         if (closed) {
+            rethrow(closeFailure);
             return;
         }
         closed = true;
-        Throwable failure = null;
+        Throwable failure = terminalFailure;
         try {
-            long deadline = System.nanoTime() + 5_000_000_000L;
+            long deadline = driver.nanoTime() + 5_000_000_000L;
             while (pending()) {
-                current = bgfx_frame(BGFX_FRAME_NONE);
                 for (var slot : slots) {
-                    if (slot.request != null && ready(current, slot.ready)) {
+                    if (slot.request != null && !slot.fenceKnown) {
+                        throw new IllegalStateException("Global readback fence unknown");
+                    }
+                }
+                current = driver.frame();
+                for (var slot : slots) {
+                    if (slot.request != null && slot.fenceKnown && ready(current, slot.ready)) {
                         slot.request = null;
                     }
                 }
-                if (pending() && System.nanoTime() - deadline >= 0) {
+                if (pending() && driver.nanoTime() - deadline >= 0) {
                     throw new IllegalStateException("Global readback drain timed out");
                 }
             }
         } catch (RuntimeException | Error error) {
-            failure = error;
+            if (failure == null) {
+                failure = error;
+            } else if (failure != error) {
+                failure.addSuppressed(error);
+            }
         }
         var renderer = scene;
         scene = null;
@@ -310,12 +382,8 @@ final class GlobalWmoFrameOwner implements AutoCloseable {
                                 bgfx_destroy_texture(d);
                             }
                         });
-        if (failure instanceof Error error) {
-            throw error;
-        }
-        if (failure instanceof RuntimeException runtime) {
-            throw runtime;
-        }
+        closeFailure = failure;
+        rethrow(failure);
     }
 
     /** Trusted enclosing owner calls ONLY after actual bgfx_shutdown returned successfully. */
@@ -325,19 +393,47 @@ final class GlobalWmoFrameOwner implements AutoCloseable {
             throw new IllegalStateException("Global owner not closed");
         }
         if (freed) {
+            rethrow(freeFailure);
             return;
         }
         freed = true;
         for (var slot : slots) {
-            if (slot.pixels != null) {
-                MemoryUtil.memFree(slot.pixels);
-                slot.pixels = null;
-            }
+            var pixels = slot.pixels;
+            slot.pixels = null;
+            free(pixels);
             slot.request = null;
         }
-        if (packed != null) {
-            MemoryUtil.memFree(packed);
-            packed = null;
+        var pixels = packed;
+        packed = null;
+        free(pixels);
+        rethrow(freeFailure);
+    }
+
+    private void free(ByteBuffer pixels) {
+        if (pixels == null) {
+            return;
+        }
+        try {
+            driver.free(pixels);
+        } catch (RuntimeException | Error failure) {
+            unknownDirectBytes += BYTES;
+            if (freeFailure == null) {
+                freeFailure = failure;
+            } else if (freeFailure != failure) {
+                freeFailure.addSuppressed(failure);
+            }
+        }
+    }
+
+    private static void rethrow(Throwable failure) {
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        if (failure instanceof RuntimeException runtime) {
+            throw runtime;
+        }
+        if (failure != null) {
+            throw new IllegalStateException("Global owner terminal failure", failure);
         }
     }
 
@@ -349,6 +445,7 @@ final class GlobalWmoFrameOwner implements AutoCloseable {
 
     private void requireOpen() {
         requireThread();
+        rethrow(terminalFailure);
         if (!initialized || closed) {
             throw new IllegalStateException("Global owner not initialized/open");
         }
