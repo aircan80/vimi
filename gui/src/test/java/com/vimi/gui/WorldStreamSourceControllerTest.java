@@ -30,6 +30,8 @@ public final class WorldStreamSourceControllerTest {
     public static void main(String[] args) throws Exception {
         failedFxWakeStillCancelsHeldInitialSourceQualification();
         explicitUnsupportedSourceHasCleanNoOwnerDrain();
+        backDemandDoesNotTreatPresentedOnlySourceAsLiveGpuResident();
+        uncoveredCameraFrameKeepsOldPixelsWhileNearestTileLoads();
         cameraPublicationSerializesInitialAndFxForwarding();
         initialSeedHeldReplacementCameraAndPresentationDrain();
         supersededHeldSourceCancelsBeforeStalePredicateAndKeepsSession();
@@ -110,6 +112,59 @@ public final class WorldStreamSourceControllerTest {
                     for (var path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) Files.deleteIfExists(path);
                 }
             }
+        }
+    }
+
+    private static void uncoveredCameraFrameKeepsOldPixelsWhileNearestTileLoads() throws Exception {
+        var entered=new CompletableFuture<Void>();
+        var release=new CompletableFuture<Void>();
+        var fixture=new Fixture(new AuthoredTerrainSource.Files() {
+            @Override FileTypes.FileStat stat(long id,Cancellation token) {
+                if(id==1002) { entered.complete(null); release.join(); token.check(); }
+                return super.stat(id,token);
+            }
+        },2);
+        try {
+            fixture.start();
+            fixture.until(()->fixture.controller.snapshot().seed()!=null);
+            fixture.camera(1);
+            fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
+            fixture.controller.neighborhood(List.of(fixture.tiles.get(1)));
+            fixture.until(entered::isDone);
+            fixture.controller.camera(new WorldStreamTransport.Camera(2,1,80,50,
+                    new TerrainCamera(-266,-800,110,Math.PI,-.8)));
+            var incomplete=fixture.nextFrame();
+            try {
+                check(incomplete.cameraRevision()==2,"Camera/frame pipeline keeps running during held source");
+                check(!fixture.controller.mayPresent(incomplete),
+                        "Receipt without nearest camera tile cannot overwrite last readable terrain with sky");
+            } finally { fixture.controller.discard(incomplete); }
+            release.complete(null);
+            fixture.untilPresented(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY);
+            check(fixture.files.opens(1002)>0,"Actual nearest tile readiness unblocks presentation");
+        } finally { release.complete(null); fixture.close(); }
+    }
+
+    private static void backDemandDoesNotTreatPresentedOnlySourceAsLiveGpuResident() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), 10);
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 9));
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase() == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == 9);
+            fixture.controller.neighborhood(fixture.tiles.subList(1, 10));
+            fixture.until(() -> fixture.commitLines().size() == 10
+                    && fixture.controller.snapshot().phase() == WorldStreamSourceController.Phase.PRESENTING);
+            // No replacement pixels have been acknowledged: outgoing tile0 is source-pinned
+            // only for the last visible image. Its native resident was retired by COMMIT10.
+            fixture.controller.neighborhood(fixture.tiles.subList(0, 9));
+            fixture.until(() -> fixture.commitLines().size() == 11);
+            check(fixture.pool.stats().leaseClaims() <= 12,
+                    "Returning demand creates a separately charged live resident without dropping old pixels");
+        } finally {
+            fixture.close();
         }
     }
 

@@ -218,3 +218,12 @@ real WDT-proof fixture injects a throwing FX wake and proves the actual child-to
 close stays pending through source drain, and the original failure remains fatal. An explicit
 Optional.empty custom streaming capability is separately UNAVAILABLE with successful no-owner
 retirement and no source IO, never fabricated as a typed refusal or child receipt.
+
+Useful-presentation/residency follow-up gates pixel upload on the nearest ordered requested tile
+being in the actual current GPU receipt. A valid current receipt/new camera can otherwise draw
+only sky while the nearest incoming tile is still preparing. Camera/native frame and source work
+continue; useful old-current camera frames remain accepted when the nearest tile is resident.
+Presented-only source pins do not count as live GPU membership or prepared demand. Returning to
+such a tile requalifies/reuploads a separately charged actual source owner rather than attempting
+to recommit its retired opaque Resident. Causal authored cases cover the previously RED returning
+9-tile demand and held nearest-tile motion with rejected uncovered pixels before any upload.

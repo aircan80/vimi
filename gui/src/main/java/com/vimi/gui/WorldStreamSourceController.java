@@ -319,6 +319,9 @@ final class WorldStreamSourceController {
                 || camera.width() != value.width()
                 || camera.height() != value.height()
                 || currentReceipt != value.frame.content()) return false;
+        // A valid receipt can still draw only sky after motion beyond its resident neighborhood.
+        // Keep the last readable pixels until the nearest requested recorded tile is GPU-current.
+        if(!desired.isEmpty() && current.stream().noneMatch(entry->same(desired.getFirst(),entry.resident()))) return false;
         for (var entry : current) if (!entry.source().isOpen()) return false;
         return true;
     }
@@ -587,7 +590,7 @@ final class WorldStreamSourceController {
         for (var tile : wanted) {
             if (unavailable.containsKey(key(tile))) continue;
             boolean found = false;
-            for (var entry : entries.values())
+            for (var entry : current)
                 if (same(tile, entry.resident())) {
                     found = true;
                     break;
@@ -781,7 +784,7 @@ final class WorldStreamSourceController {
         synchronized (lock) {
             int available=0;
             for(var tile:desired) {
-                for(var entry:entries.values()) {
+                for(var entry:current) {
                     if(same(tile,entry.resident())) { available++; break; }
                 }
             }
