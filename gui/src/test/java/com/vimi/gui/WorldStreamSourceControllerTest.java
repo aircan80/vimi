@@ -28,6 +28,8 @@ public final class WorldStreamSourceControllerTest {
     private WorldStreamSourceControllerTest() {}
 
     public static void main(String[] args) throws Exception {
+        failedFxWakeStillCancelsHeldInitialSourceQualification();
+        explicitUnsupportedSourceHasCleanNoOwnerDrain();
         cameraPublicationSerializesInitialAndFxForwarding();
         initialSeedHeldReplacementCameraAndPresentationDrain();
         supersededHeldSourceCancelsBeforeStalePredicateAndKeepsSession();
@@ -36,6 +38,79 @@ public final class WorldStreamSourceControllerTest {
         poolReleaseRetriesWithoutDemandOrParentCapacityChange();
         queuedGpuOwnerLateCloseIsPartOfControllerDrain();
         closeDuringActualInitialWdtQualificationIsCleanAndWaitsSourceDrain();
+    }
+
+    private static void explicitUnsupportedSourceHasCleanNoOwnerDrain() throws Exception {
+        var fixture=new Fixture(new AuthoredTerrainSource.Files(),1);
+        var starts=new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            var custom=(com.vibeminer.concepts.world.BuildWorld)java.lang.reflect.Proxy.newProxyInstance(
+                    com.vibeminer.concepts.world.BuildWorld.class.getClassLoader(),
+                    new Class<?>[]{com.vibeminer.concepts.world.BuildWorld.class},
+                    (proxy,method,args)-> {
+                        if(method.getName().equals("terrainStreaming")) return java.util.Optional.empty();
+                        throw new AssertionError("Unsupported custom source must perform no IO/close");
+                    });
+            var map=new WorldService.MapInfo(7,"Authored",null,0,1L);
+            var inventory=fixture.world.inventory(map,Cancellation.NONE).join();
+            int reads=fixture.files.totalOpens();
+            fixture.controller=new WorldStreamSourceController(new WorldStreamSourceController.Request(
+                    1,custom,map,inventory,fixture.tiles.getFirst(),null,WorldCurrentArea.Index.of(List.of())),
+                    scope->{ starts.incrementAndGet(); return fixture.gpu.start(scope); },()->{},fixture.fx::add);
+            fixture.until(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.UNAVAILABLE);
+            fixture.controller.closeAsync().get(5,TimeUnit.SECONDS);
+            check(starts.get()==0 && fixture.files.totalOpens()==reads,
+                    "Explicit absent optional capability has no source IO or fake GPU owner");
+        } finally { fixture.close(); }
+    }
+
+    private static void failedFxWakeStillCancelsHeldInitialSourceQualification() throws Exception {
+        var armed = new java.util.concurrent.atomic.AtomicBoolean();
+        var entered = new CompletableFuture<Void>();
+        var canceled = new CompletableFuture<Void>();
+        var release = new CompletableFuture<Void>();
+        var fixture = new Fixture(new AuthoredTerrainSource.Files() {
+            @Override @SuppressWarnings("try")
+            FileTypes.FileStat stat(long id, Cancellation token) {
+                if (armed.get() && id == 1) {
+                    try (var registration = token.onCancel(() -> canceled.complete(null))) {
+                        entered.complete(null);release.join();token.check();
+                    }
+                }
+                return super.stat(id, token);
+            }
+        }, 1);
+        try {
+            fixture.start(fixture.gpu::start, () -> armed.set(true));
+            entered.get(5, TimeUnit.SECONDS);
+            var lock = WorldStreamSourceController.class.getDeclaredField("lock");lock.setAccessible(true);
+            var events = WorldStreamSourceController.class.getDeclaredField("events");events.setAccessible(true);
+            synchronized (lock.get(fixture.controller)) {
+                events.set(fixture.controller, (WorldStreamSourceController.Events) () -> {
+                    throw new IllegalStateException("Authored failing FX wake");
+                });
+            }
+            var changed = WorldStreamSourceController.class.getDeclaredMethod("changed");changed.setAccessible(true);
+            changed.invoke(fixture.controller);
+            fixture.pump();
+            var closing = fixture.controller.closeAsync();
+            canceled.get(2, TimeUnit.SECONDS);
+            check(!closing.isDone(), "Actual held qualification still owns close after cancellation request");
+            release.complete(null);
+            try { closing.get(5, TimeUnit.SECONDS); throw new AssertionError("FX failure must remain fatal"); }
+            catch (java.util.concurrent.ExecutionException expected) { }
+        } finally {
+            release.complete(null);
+            try { fixture.close(); }
+            catch (java.util.concurrent.ExecutionException expected) {
+                fixture.world.closeAsync().get(5, TimeUnit.SECONDS);
+                fixture.pool.closeAsync().get(5, TimeUnit.SECONDS);
+                fixture.tables.close();
+                try (var paths = Files.walk(fixture.directory)) {
+                    for (var path : paths.sorted(java.util.Comparator.reverseOrder()).toList()) Files.deleteIfExists(path);
+                }
+            }
+        }
     }
 
     private static void cameraPublicationSerializesInitialAndFxForwarding() throws Exception {
