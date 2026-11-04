@@ -1,5 +1,7 @@
 # Opaque terrain source and closed packet bridge
 
+Material identity terminology is amended by [the explicit draft amendment](world-stream-material-identity-amendment.md); a source composition cache key remains genuinely nullable.
+
 Design/API checkpoint atop the internal combined factory de2f7f6. This proposal
 adds no GUI route or renderer wiring. It connects that actual source factory to the
 planned WorldStreamTransport facade and its separately reviewed structural tile

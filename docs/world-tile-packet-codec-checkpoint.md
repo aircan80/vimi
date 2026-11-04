@@ -1,5 +1,7 @@
 # World v2 tile packet codec: exact API and numeric mapping
 
+Material identity terminology is amended by [the explicit draft amendment](world-stream-material-identity-amendment.md); a source composition cache key remains genuinely nullable.
+
 Structural implementation checkpoint; source factories and runtime remain unwired. Package-private structural codec only, no positive source factory or runtime integration. The4096-byte VIMIWST2 header/offsets, maximum2,284,544bytes and geometry-domain fingerprint are unchanged from world-hot-protocol-checkpoint.md. Root and source-author approved these mappings before implementation; enum.ordinal is never a wire code.
 
 ## Proposed fixed mappings
