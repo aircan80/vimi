@@ -184,6 +184,62 @@ final class WorldStreamTileFileTest {
     }
 
     @Test
+    void partialCoverageKeepsOpaqueMaterialIdentityWithoutClaimingCompleteCache() throws Exception {
+        var tile = full(false);
+        var base = header(tile, true);
+        String identity = "ef".repeat(32);
+        var partial =
+                new WorldStreamTileFile.Header(
+                        base.nonce(),
+                        base.scope(),
+                        base.transaction(),
+                        base.lease(),
+                        base.x(),
+                        base.y(),
+                        base.chunks(),
+                        base.vertices(),
+                        base.indices(),
+                        base.geometrySha256(),
+                        identity,
+                        base.outcome(),
+                        base.reason(),
+                        new long[] {1, 0, 0, 0},
+                        base.maxX(),
+                        base.maxY(),
+                        base.uvError(),
+                        base.wdt(),
+                        base.root(),
+                        base.tex0(),
+                        base.diffuse());
+        byte[] rgba = new byte[WorldStreamTileFile.ATLAS_BYTES];
+        for (int y = 0; y < 32; y++) {
+            for (int x = 0; x < 32; x++) {
+                int pixel = (y * 512 + x) * 4;
+                rgba[pixel] = 17;
+                rgba[pixel + 1] = 34;
+                rgba[pixel + 2] = 51;
+                rgba[pixel + 3] = (byte) 255;
+            }
+        }
+        var expected =
+                WorldStreamTileFile.write(
+                        directory,
+                        partial,
+                        tile,
+                        ByteBuffer.wrap(rgba).asReadOnlyBuffer(),
+                        () -> false);
+        var decoded = WorldStreamTileFile.read(path(), expected, () -> false);
+        assertEquals(identity, decoded.header().materialDigest());
+        assertEquals(1, Long.bitCount(decoded.header().coverage()[0]));
+        assertEquals(0, decoded.header().coverage()[1]);
+        assertEquals(255, Byte.toUnsignedInt(decoded.atlas().get(3)));
+        assertEquals(0, decoded.atlas().get(32 * 4 + 3));
+        // The wire carries no composition-cache completeness or persistence claim.
+        var bytes = Files.readAllBytes(path());
+        assertEquals(identity, HexFormat.of().formatHex(bytes, 160, 192));
+    }
+
+    @Test
     void resigningHostileHeadersNeverBypassesSchemaOrReservedChecks() throws Exception {
         var tile = triangle();
         WorldStreamTileFile.write(directory, header(tile, false), tile, null, () -> false);

@@ -99,7 +99,7 @@ public final class WorldStreamTileWriter {
 ```
 
 Data is explicitly descriptive, bounded, forgeable structural data: expected scope
-SHA, map/tile facts, terminal outcome/reason, source tuples/diffuse encoding/cache digest and recipe.
+SHA, map/tile facts, terminal outcome/reason, source tuples/diffuse encoding/material digest and recipe.
 It has no verified/source-positive flag. Bound all fixed/count/string fields before
 copying, use the existing exact numeric mapping and validate against the same codec.
 The adapter takes nonce/scope/transaction/slot/generation and exact private path
