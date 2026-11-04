@@ -17,3 +17,16 @@ The authored same-store test seeds a real legacy generated graph, retains an UNK
 ```
 
 This first checkpoint requires independent review before consumer promotion. Authored hardening fixtures additionally reject a CK changed during final open and same-identity reopened graphs with wrong source or missing certificate; cover callback failure/cancellation with subsequent recovery, held-validation close/drain, and an ordinary compatibility check/capture during the active legacy-to-native operation. These backend fixtures do not approve GUI orchestration or application source-access policy.
+
+## Final metadata and actual overlay evidence
+
+Reopening now also compares rowCount, completion, header, sections, keysUsed and holeKeys. A fake same-identity/certificate graph with changed completion is rejected. Removing only completion equality causally returns READY instead of SOURCE_CHANGED; the restored focused test passes. Full formats-tables checks pass after the metadata change.
+
+A private selected wowf1.60.1.70755 enUS proof used original library ObjectStore.openReadOnly plus CachingObjectSource.localOnly, and a generated-store overlay reading original artifacts while writing exclusively to a fresh private scratch store. No network client or writable original-library handle existed. It retained each original UNKNOWN capture across explicit native preparation, checked its old row result and numeric values, compared every original saved artifact SHA-256 before/after and opened a fresh VERIFIED_NATIVE capture in the SAME overlay:
+
+| Table | Original legacy graph | New native graph | Rows | Original artifacts unchanged |
+| --- | --- | --- | ---: | ---: |
+| UiMap | db65904c68944458c5c022b448cb72e6 | 70e9a9970319d3958e417b8f2e093770 |60|4|
+| UiMapAssignment | 3f2c881612fda45d9bfbc8cab594d429 | f47c0e27541456d5cdc885b9002dc3af |61|4|
+
+The original Map graph was already VERIFIED_NATIVE and was explicitly recorded as not needing an upgrade; no claim that it was UNKNOWN is made. Private proof source/logs remain under `/tmp/vimi-native-evidence-proof/`, with the successful frozen-classpath run in proof-final.log. Preparation observations were106/61ms respectively in this run; these are local diagnostics, not application latency/FPS promises. No game payload or artwork is committed. Definition/key mutation races are checked by production final source/graph comparisons but do not yet have dedicated direct mutation fixtures; no implicit consumer/GUI orchestration is approved here.
