@@ -63,7 +63,10 @@ Reading an unrelated caller-specified numeric ID does not qualify a renderable.
   Positive receipt construction remains private; terminal material fallback still
   requires genuine checked geometry and an actual terminal source outcome.
 - BASIC_WMO first reads the admitted obj0 reference, parses its actual bytes,
-  and selects only a caller ordinal from those recorded MODF entries. Its private
+  and selects a caller ordinal plus expected unsigned uniqueID from those recorded
+  MODF entries. Actual parsing verifies ordinal/UID agreement and rejects duplicate
+  or conflicting UIDs; reordering yields STALE_SELECTION. Neither selector supplies
+  a positive root ID or transform. Its private
   CheckedPlacement binds that obj0 receipt/parser revision/ordinal, exact recorded
   reference, native transform/bounds/flags/doodad/name sets. Unknown name-reference
   profiles reject; no hardcoded positive FileDataIDs or imported global transform.
@@ -74,7 +77,20 @@ UseProfile pins different budgets: TERRAIN_BASIC admits the existing≤67 consum
 WDT/root/tex0/diffuse bindings; BASIC_WMO admits≤11 total bindings (WDT, root ADT,
 obj0, WMO root, one group and six images). BASIC_WMO's reviewed initial derived
 limits are root1KiB/group32KiB/image64KiB, with obj0≤8MiB and root-ADT construction
-separately named. A profile cannot borrow another's binding/input allowance.
+separately named. Both profiles enforce maxOpenInputs=1 and maxLiveInputBytes=8,388,608.
+A raw-input reservation is acquired BEFORE opening a source or allocating its byte
+storage, checked against the smaller per-asset limit, and held until the owner
+closes and clears its byte/stream references. Another read while that owner is live
+fails with backpressure; close racing a read retains the reservation until actual
+read/callback drain. Tracked detached binding metadata consumes no input credit.
+WMO reads are therefore serial, including root ADT then obj0 then derived assets.
+Terrain's separately owned material helper must run after facade input drain and
+uses its separately reviewed source/atlas allowance; it cannot overlap a live
+facade input. The 8MiB raw phase is charged once within the reviewed 16MiB terrain
+construction or WMO source phase, not once per binding. Decoded geometry/images
+and parser scratch remain explicit charges in their factory ledgers. No claim
+that a binding-count cap alone bounds live bytes is permitted.
+A profile cannot borrow another's binding/input allowance.
 Overflow/missing profile is unsupported/backpressure, never a fabricated positive
 or height fallback. Exact child format/material profiles remain owned by the WMO
 agent's separately reviewed parser/source proposal.
@@ -120,10 +136,17 @@ missing tiles or generalize terrain packets/factories for global scenes.
 
 ## Final checks, expiry and close
 
-The callback returns an engine-owned, nonnull AutoCloseable result. It may not
+The callback owns every locally constructed output and scratch resource until
+it successfully returns a nonnull AutoCloseable result. It MUST use try/finally to
+close unreturned outputs, including an output constructed immediately before an
+exception: the engine cannot discover a result which was never returned. A local
+handoff flag may relinquish this duty only on successful return. The engine then
+owns the returned result through final validation and transfer. It may not
 advertise a packet, publish a native child or transfer source ownership externally
-before withRecordedTile succeeds. On every thrown/canceled/stale path, close that
-result plus all outstanding input/lease owners exactly once outside locks.
+before withRecordedTile succeeds. On every canceled/stale/final-validation failure
+after return, the engine closes that returned result. Callback finally closes
+unreturned results; the engine closes all outstanding input/lease owners on every
+exit, exactly once outside locks.
 
 Before transfer, while still one-active:
 
@@ -162,7 +185,11 @@ Use genuine native Map capture and actual authored WDT/root/obj0/WMO/BLP reads.
 Prove wrong/expired/foreign scope and all-eight tuple mismatch reject before child
 reads; public DTOs cannot create admissions/frames/placements. Hold the callback,
 reject a second admission, then cancel/close and confirm the guard/claims persist
-until real source work drains. An escaped admission cannot access IO after expiry.
+until real source work drains. Attempt a second read with the first input held:
+reject before source open/allocation; release it and prove the credit is reusable.
+Allocate a real owned output/scratch file then throw BEFORE returning it: callback
+finally must remove it and release all claims; the next admission succeeds.
+An escaped admission cannot access IO after expiry.
 
 Hold after successful material/group/image batch delivery and mutate each consumed
 binding before transfer: SOURCE_CHANGED, no stale positive or height fallback.
