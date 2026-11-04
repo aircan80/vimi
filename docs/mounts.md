@@ -51,8 +51,10 @@ absent coordinate lookup uses the combiner's implicit UV0 convention; a present
 lookup must agree. Texture type 0 uses an exact TXID, while types 11–13 use the
 selected display's first three texture variations. No guessed filename joins.
 
-Animation, particles, runtime equipment/customization, full game lighting and
-other shaders are not evaluated. Unsupported bindings retain neutral surfaces.
+Particles, runtime equipment/customization, full game lighting and other shaders
+are not evaluated. A qualified Stand sequence can loop as an optional idle
+animation; see `model-idle-animation-checkpoint.md`. Other animations are not
+evaluated. Unsupported bindings retain neutral surfaces.
 Nontrivial geoset visibility remains explicitly unresolved; player-race
 default-selection rules are not applied to creatures. The default mount view
 shows only section ordinals with qualified material/texture bindings, independently

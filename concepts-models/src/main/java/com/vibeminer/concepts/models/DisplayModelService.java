@@ -4,6 +4,7 @@ import com.vibeminer.access.Cancellation;
 import com.vibeminer.files.BuildFiles;
 import com.vibeminer.files.FileTypes;
 import com.vibeminer.formats.AssetSources;
+import com.vibeminer.formats.AssetTasks;
 import com.vibeminer.formats.db2.Db2Types;
 import com.vibeminer.formats.images.Blp2Decoder;
 import com.vibeminer.formats.images.Blp2Types;
@@ -13,10 +14,12 @@ import com.vibeminer.formats.models.BuildModels;
 import com.vibeminer.formats.models.M2Appearance;
 import com.vibeminer.formats.models.M2BindPoseFacts;
 import com.vibeminer.formats.models.M2Combiners;
+import com.vibeminer.formats.models.M2IdleAnimation;
 import com.vibeminer.formats.models.M2ModelReader;
 import com.vibeminer.formats.models.M2RestDrawSkinReader;
 import com.vibeminer.formats.models.M2RestSkinReader;
 import com.vibeminer.formats.models.M2Types;
+import com.vibeminer.formats.models.ModelFormatException;
 import com.vibeminer.formats.tables.BuildTables;
 import com.vibeminer.generated.GeneratedKey;
 import com.vibeminer.generated.GeneratedStore;
@@ -67,10 +70,25 @@ public final class DisplayModelService implements BuildDisplayModels {
     @Override
     public CompletableFuture<DisplayModelTypes.Preview> preview(
             long displayId, Cancellation token) {
+        checkDisplay(displayId);
+        return submit(token, request -> load(displayId, request));
+    }
+
+    @Override
+    public CompletableFuture<DisplayModelTypes.Idle> idle(long displayId, Cancellation token) {
+        checkDisplay(displayId);
+        return submit(token, request -> loadIdle(displayId, request));
+    }
+
+    private static void checkDisplay(long displayId) {
         if (displayId <= 0 || displayId > 0xffffffffL) {
             throw new IllegalArgumentException("Invalid display ID");
         }
-        var result = new CompletableFuture<DisplayModelTypes.Preview>();
+    }
+
+    private <T> CompletableFuture<T> submit(
+            Cancellation token, java.util.function.Function<Cancellation, T> work) {
+        var result = new CompletableFuture<T>();
         synchronized (this) {
             if (closing != null) {
                 return CompletableFuture.failedFuture(
@@ -83,7 +101,7 @@ public final class DisplayModelService implements BuildDisplayModels {
                             try (var caller = token.onCancel(request::cancel);
                                     var owner = lifetime.onCancel(request::cancel)) {
                                 request.check();
-                                result.complete(load(displayId, request));
+                                result.complete(work.apply(request));
                             } catch (Throwable failure) {
                                 result.completeExceptionally(failure);
                             }
@@ -93,7 +111,7 @@ public final class DisplayModelService implements BuildDisplayModels {
                         new IllegalStateException("Display previews busy", full));
             }
         }
-        var published = new CompletableFuture<DisplayModelTypes.Preview>();
+        var published = new CompletableFuture<T>();
         result.whenComplete(
                 (value, failure) ->
                         Thread.startVirtualThread(
@@ -105,6 +123,136 @@ public final class DisplayModelService implements BuildDisplayModels {
                                     }
                                 }));
         return published;
+    }
+
+    private DisplayModelTypes.Idle loadIdle(long displayId, Cancellation token) {
+        var issues = new ArrayList<String>();
+        DisplayModelTypes.Reference reference = null;
+        try {
+            reference = resolve(displayId, token, issues);
+            if (reference == null) {
+                return DisplayModelTypes.Idle.unavailable(
+                        "Display-to-model relationship is unavailable.");
+            }
+            var models = new BuildModels(files);
+            var read =
+                    models.readModel(FileTypes.FileRef.id(reference.modelFileDataId()), token)
+                            .join();
+            if (read.state() != BuildModelTypes.ReadState.READ || read.model() == null) {
+                return idleFailed(reference, "Model read is " + read.state());
+            }
+            var skin = models.readRestDrawSkin(read, 0, token).join();
+            if (skin.state() != BuildModelTypes.ReadState.READ || skin.skin() == null) {
+                return idleFailed(reference, "Model surface is " + skin.state());
+            }
+            var m = read.model();
+            var geometry = skin.skin().surface();
+            var surface = restSurface(m, geometry, token);
+            var opened =
+                    files.openRead(FileTypes.FileRef.id(reference.modelFileDataId()), token).join();
+            if (opened.stream() == null) {
+                return idleFailed(reference, "Model source is unavailable");
+            }
+            M2IdleAnimation.Idle idle;
+            try (var stream = opened.stream()) {
+                if (opened.state() != FileTypes.FileReadState.COMPLETE
+                        || !stream.holes().isEmpty()) {
+                    return idleFailed(reference, "Model source is incomplete");
+                }
+                try {
+                    idle = M2IdleAnimation.read(AssetSources.file(stream), m, token).join();
+                } catch (RuntimeException failure) {
+                    token.check();
+                    var cause = AssetTasks.unwrap(failure);
+                    if (cause instanceof ModelFormatException format
+                            && format.code().equals("MODEL_UNSUPPORTED")) {
+                        return new DisplayModelTypes.Idle(
+                                DisplayModelTypes.IdleState.UNSUPPORTED,
+                                reference,
+                                null,
+                                format.getMessage());
+                    }
+                    return idleFailed(
+                            reference,
+                            "Idle sequence could not be read"
+                                    + message(cause == null ? null : cause.getMessage()));
+                }
+            }
+            try {
+                var animation =
+                        DisplayIdleAnimations.admit(
+                                m,
+                                geometry.vertexLookup(),
+                                idle,
+                                surface.mesh(),
+                                surface.normals(),
+                                token);
+                return new DisplayModelTypes.Idle(
+                        DisplayModelTypes.IdleState.AVAILABLE,
+                        reference,
+                        animation,
+                        "Stand idle · "
+                                + animation.durationMillis()
+                                + " ms loop · "
+                                + animation.boneCount()
+                                + " bones evaluated in software.");
+            } catch (DisplayIdleAnimations.Unsupported unsupported) {
+                return new DisplayModelTypes.Idle(
+                        DisplayModelTypes.IdleState.UNSUPPORTED,
+                        reference,
+                        null,
+                        unsupported.getMessage());
+            }
+        } catch (java.util.concurrent.CancellationException canceled) {
+            throw canceled;
+        } catch (IllegalArgumentException unavailable) {
+            token.check();
+            return idleFailed(reference, unavailable.getMessage());
+        }
+    }
+
+    private static DisplayModelTypes.Idle idleFailed(
+            DisplayModelTypes.Reference reference, String message) {
+        return new DisplayModelTypes.Idle(
+                DisplayModelTypes.IdleState.UNAVAILABLE,
+                reference,
+                null,
+                message == null ? "Idle animation is unavailable." : message);
+    }
+
+    record RestSurface(PreviewMesh mesh, float[] normals, float[] uv) {}
+
+    static RestSurface restSurface(M2Types.Model m, M2Types.RestSkin geometry, Cancellation token) {
+        float[] points = new float[geometry.vertexLookup().size() * 3],
+                normals = new float[points.length],
+                uv = new float[geometry.vertexLookup().size() * 2];
+        for (int i = 0; i < geometry.vertexLookup().size(); i++) {
+            if ((i & 2047) == 0) {
+                token.check();
+            }
+            var v = m.vertices().get(geometry.vertexLookup().get(i));
+            points[i * 3] = v.position().x();
+            points[i * 3 + 1] = v.position().y();
+            points[i * 3 + 2] = v.position().z();
+            normals[i * 3] = v.normal().x();
+            normals[i * 3 + 1] = v.normal().y();
+            normals[i * 3 + 2] = v.normal().z();
+            uv[i * 2] = v.uv0().x();
+            uv[i * 2 + 1] = v.uv0().y();
+        }
+        var mesh =
+                new PreviewMesh(
+                        points,
+                        geometry.triangleLookup().stream().mapToInt(Integer::intValue).toArray(),
+                        geometry.sections().stream()
+                                .map(
+                                        part ->
+                                                new PreviewMesh.Part(
+                                                        part.id(),
+                                                        (int) part.triangleStart(),
+                                                        part.triangleCount()))
+                                .toList());
+        return new RestSurface(mesh, normals, uv);
     }
 
     private DisplayModelTypes.Preview load(long displayId, Cancellation token) {
@@ -184,37 +332,9 @@ public final class DisplayModelService implements BuildDisplayModels {
             }
             var geometry = skin.skin().surface();
             var m = read.model();
-            float[] points = new float[geometry.vertexLookup().size() * 3],
-                    normals = new float[points.length],
-                    uv = new float[geometry.vertexLookup().size() * 2];
-            for (int i = 0; i < geometry.vertexLookup().size(); i++) {
-                if ((i & 2047) == 0) {
-                    token.check();
-                }
-                var v = m.vertices().get(geometry.vertexLookup().get(i));
-                points[i * 3] = v.position().x();
-                points[i * 3 + 1] = v.position().y();
-                points[i * 3 + 2] = v.position().z();
-                normals[i * 3] = v.normal().x();
-                normals[i * 3 + 1] = v.normal().y();
-                normals[i * 3 + 2] = v.normal().z();
-                uv[i * 2] = v.uv0().x();
-                uv[i * 2 + 1] = v.uv0().y();
-            }
-            var mesh =
-                    new PreviewMesh(
-                            points,
-                            geometry.triangleLookup().stream()
-                                    .mapToInt(Integer::intValue)
-                                    .toArray(),
-                            geometry.sections().stream()
-                                    .map(
-                                            part ->
-                                                    new PreviewMesh.Part(
-                                                            part.id(),
-                                                            (int) part.triangleStart(),
-                                                            part.triangleCount()))
-                                    .toList());
+            var surface = restSurface(m, geometry, token);
+            var mesh = surface.mesh();
+            float[] normals = surface.normals(), uv = surface.uv();
             var receipts = new HashMap<Long, String>();
             receipts.put(reference.modelFileDataId(), content);
             receipts.put(skin.fileDataId(), skin.file().contentKey());
