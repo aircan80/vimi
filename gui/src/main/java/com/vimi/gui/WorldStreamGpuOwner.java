@@ -17,7 +17,7 @@ final class WorldStreamGpuOwner {
     WorldStreamGpuOwner(GpuPreviewService service, String scopeSha256) {
         this.service = Objects.requireNonNull(service);
         lifetime = service.openStreaming(owner,
-                new WorldStreamTransport.Spec(scopeSha256, 1, WorldStreamTransport.Backend.DEFAULT),
+                new WorldStreamTransport.Spec(scopeSha256, 1, configuredBackend()),
                 opened::complete,
                 status -> {
                     if (status.state() == GpuPreviewService.State.FAILED) {
@@ -33,6 +33,27 @@ final class WorldStreamGpuOwner {
                         opened.completeExceptionally(new CancellationException("GPU World owner closed"));
                     }
                 });
+    }
+
+    /**
+     * Diagnostic override for comparing renderers on one machine, from the {@code
+     * vimi.gpu.backend} system property or the {@code VIMI_GPU_BACKEND} environment variable.
+     */
+    static WorldStreamTransport.Backend configuredBackend() {
+        String requested = System.getProperty("vimi.gpu.backend");
+        return backend(requested != null ? requested : System.getenv("VIMI_GPU_BACKEND"));
+    }
+
+    static WorldStreamTransport.Backend backend(String requested) {
+        if (requested == null || requested.isBlank()) return WorldStreamTransport.Backend.DEFAULT;
+        return switch (requested.strip().toLowerCase(java.util.Locale.ROOT)) {
+            case "default" -> WorldStreamTransport.Backend.DEFAULT;
+            case "vulkan" -> WorldStreamTransport.Backend.VULKAN;
+            case "metal" -> WorldStreamTransport.Backend.METAL;
+            case "d3d11", "direct3d11", "dx11" -> WorldStreamTransport.Backend.D3D11;
+            default -> throw new IllegalArgumentException(
+                    "vimi.gpu.backend must be default, vulkan, metal or d3d11");
+        };
     }
 
     CompletableFuture<WorldStreamTransport.Session> session() {
