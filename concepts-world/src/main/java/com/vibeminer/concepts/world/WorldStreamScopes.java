@@ -1144,28 +1144,43 @@ final class WorldStreamScopes {
             throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_INPUT);
         }
         try (var stream = opened.stream()) {
-            if (before.size() != null && before.size() != stream.length()) {
+            final long observedLength = stream.length();
+            if (before.size() != null && before.size() != observedLength) {
                 throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_BINDING);
             }
             if (opened.state() != FileTypes.FileReadState.COMPLETE
                     || !stream.holes().isEmpty()
-                    || stream.length() < 12
-                    || stream.length() > limit) {
+                    || observedLength < 12
+                    || observedLength > limit) {
                 throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_INPUT);
             }
-            var bytes = ByteBuffer.allocate((int) stream.length());
+            var bytes = ByteBuffer.allocate(Math.toIntExact(observedLength));
             while (bytes.hasRemaining()) {
                 token.check();
-                if (WorldSourceFutures.await(stream.read(bytes, token)) <= 0) {
+                int position = bytes.position();
+                int read = WorldSourceFutures.await(stream.read(bytes, token));
+                if (read <= 0) {
                     throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_INPUT);
+                }
+                if (read != bytes.position() - position) {
+                    throw new IllegalStateException("Source stream progress differs");
                 }
             }
             token.check();
+            var eof = ByteBuffer.allocate(1);
+            int extra = WorldSourceFutures.await(stream.read(eof, token));
+            token.check();
+            if (extra > 0 || eof.position() != 0) {
+                throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_BINDING);
+            }
+            if (extra < -1) {
+                throw new IllegalStateException("Source EOF result differs");
+            }
             var after = stat(id, token, WorldSourceRefusals.Site.SOURCE_BINDING);
             // Download/local metadata enrichment is allowed; only consumed source identity binds.
             if (before.fileDataId() != after.fileDataId()
                     || !before.contentKey().equals(after.contentKey())
-                    || after.size() != null && after.size() != bytes.capacity()) {
+                    || after.size() != null && after.size() != observedLength) {
                 throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_BINDING);
             }
             return new Source(before.contentKey(), bytes.array(), before.size(), limit);

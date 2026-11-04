@@ -85,3 +85,13 @@ identity, zero material claims and fresh same-scope textured recovery. It was ca
 this correction. Dirty cause and foreign-cancellation getter traps remain fatal; helper tests also
 pin existing dirty completion-wrapper identity. Full concepts-world check:143 tests pass, with
 formatter and both Checkstyle gates. No WorldGlobalScopes changes or source/memory cap changes.
+
+Hot raw source reads now capture one immutable observed stream length, check it against the same
+existing profile before allocation, and reuse it for allocation/final identity consistency. A
+one-byte trusted-await EOF probe rejects underreported length instead of silently certifying a
+prefix. Provider read counts must agree with actual buffer progress; contradictory progress remains
+fatal. Existing active/serial-input reservation and stream try/finally ownership are unchanged.
+The probe adds only one bounded byte buffer, not a new raw input owner/profile increase.
+Negative raw-input tests use limit64 and a later length65 to trap any oversized target before read
+(no OOM), plus an actual33-byte stream advertising32. Both were causally RED before the guards and
+now pass with stream retirement; these tests create no source-positive renderable capability.
