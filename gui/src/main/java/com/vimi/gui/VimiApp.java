@@ -956,6 +956,7 @@ public final class VimiApp extends Application {
         }, service.downloads(), service.dataSources(),
                 service.hotfixImports() == null ? null : () -> changeClientHotfix(job, false),
                 service.hotfixImports() == null ? null : () -> changeClientHotfix(job, true));
+        preparationPane.worldBookmarks(service.worldBookmarks());
         viewedPreparation = job;
         root.setTop(preparedOverviewHeader(job)); root.setCenter(preparationPane);
         status.setText("Prepared data is scoped to this build and locale. Unknown and protected data remain explicit.");
