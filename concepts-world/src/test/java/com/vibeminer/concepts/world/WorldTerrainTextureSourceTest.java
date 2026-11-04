@@ -327,6 +327,138 @@ class WorldTerrainTextureSourceTest {
     }
 
     @Test
+    void observationFailureAfterOpenClosesActualInputBeforeOwnedDrain() throws Exception {
+        var files =
+                new Files() {
+                    @Override
+                    FileReadStream open(long id, Cancellation token) {
+                        if (id == 3) {
+                            sources.put(3L, new byte[16]);
+                        }
+                        return super.open(id, token);
+                    }
+                };
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        try {
+            var operation = source.readOwned(MAP, List.of(TILE), Cancellation.NONE, p -> {});
+            assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> operation.result().get(5, TimeUnit.SECONDS));
+            operation.awaitDrained();
+            assertEquals(files.totalOpens(), files.closed.get());
+            assertEquals(0, pool.stats().entries());
+        } finally {
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void ownedObservationKeepsUnknownDeclaredLengthAndAllowsConsistentMetadataEnrichment()
+            throws Exception {
+        var known = new java.util.concurrent.atomic.AtomicBoolean();
+        var files =
+                new Files() {
+                    @Override
+                    FileTypes.FileStat stat(long id, Cancellation token) {
+                        var result = super.stat(id, token);
+                        if (id != 3 || known.get()) {
+                            return result;
+                        }
+                        var f = result.file();
+                        return new FileTypes.FileStat(
+                                result.state(),
+                                new FileTypes.BuildFile(
+                                        f.fileDataId(),
+                                        f.path(),
+                                        f.pathSource(),
+                                        null,
+                                        f.contentKey(),
+                                        f.format(),
+                                        f.formatSource(),
+                                        f.storage(),
+                                        f.encrypted()));
+                    }
+                };
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        try {
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> source.readOwned(MAP, List.of(TILE, TILE), Cancellation.NONE, p -> {}));
+            var operation = source.readOwned(MAP, List.of(TILE), Cancellation.NONE, p -> {});
+            try (var result = operation.result().get(5, TimeUnit.SECONDS)) {
+                assertEquals(
+                        WorldTerrainTextureSource.State.READY, result.tiles().getFirst().state());
+            }
+            operation.awaitDrained();
+            var tex =
+                    operation.observations().stream()
+                            .filter(o -> o.fileId() == 3)
+                            .findFirst()
+                            .orElseThrow();
+            assertNull(tex.initialDeclaredLength());
+            assertEquals((long) files.sources.get(3L).length, tex.streamLength());
+            known.set(true);
+            assertTrue(tex.matches(files.stat(3, Cancellation.NONE)));
+            files.sources.put(3L, new byte[16]);
+            assertFalse(tex.matches(files.stat(3, Cancellation.NONE)));
+        } finally {
+            source.closeAsync().get(5, TimeUnit.SECONDS);
+            pool.closeAsync().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void ownedObservationRetainsActualFailureAndNegativeFactsWithoutPositiveBindings()
+            throws Exception {
+        for (int mode = 0; mode < 3; mode++) {
+            var files = new Files();
+            if (mode == 0) {
+                files.sources.remove(3L);
+            } else if (mode == 1) {
+                files.wrongId = 3;
+            } else {
+                files.sources.put(3L, new byte[16]);
+            }
+            var pool = new TerrainAtlasPool();
+            var source = new WorldTerrainTextureSource(files.files(), pool);
+            try {
+                var operation = source.readOwned(MAP, List.of(TILE), Cancellation.NONE, p -> {});
+                try (var result = operation.result().get(5, TimeUnit.SECONDS)) {
+                    assertEquals(
+                            WorldTerrainTextureSource.State.UNAVAILABLE,
+                            result.tiles().getFirst().state());
+                }
+                operation.awaitDrained();
+                var trace = operation.observations();
+                var tex = trace.stream().filter(o -> o.fileId() == 3).findFirst().orElseThrow();
+                assertEquals(
+                        mode == 0
+                                ? WorldTerrainTextureSource.ObservationKind.NOT_FOUND
+                                : mode == 1
+                                        ? WorldTerrainTextureSource.ObservationKind.UNBOUND
+                                        : WorldTerrainTextureSource.ObservationKind.FOUND,
+                        tex.kind());
+                assertTrue(tex.matches(files.stat(3, Cancellation.NONE)));
+                if (mode == 2) {
+                    assertEquals(16L, tex.streamLength());
+                    assertEquals(FileTypes.FileReadState.COMPLETE, tex.readState());
+                    assertEquals(Boolean.FALSE, tex.hasHoles());
+                } else {
+                    assertNull(tex.streamLength());
+                    assertNull(tex.readState());
+                }
+                assertThrows(UnsupportedOperationException.class, trace::clear);
+            } finally {
+                source.closeAsync().get(5, TimeUnit.SECONDS);
+                pool.closeAsync().get(5, TimeUnit.SECONDS);
+            }
+        }
+    }
+
+    @Test
     void ownedPendingSupersededAlreadyCanceledAndClosedRequestsDrainWithoutNewIo()
             throws Exception {
         var entered = new CompletableFuture<Void>();
@@ -348,6 +480,7 @@ class WorldTerrainTextureSourceTest {
         try {
             var active = source.readOwned(MAP, List.of(TILE), Cancellation.NONE, p -> {});
             entered.get(5, TimeUnit.SECONDS);
+            assertThrows(IllegalStateException.class, active::observations);
             var already = new Cancellation();
             already.cancel();
             var rejectedCanceled = source.readOwned(MAP, List.of(TILE), already, p -> {});
@@ -362,6 +495,7 @@ class WorldTerrainTextureSourceTest {
                     java.util.concurrent.CancellationException.class,
                     () -> pending.result().join());
             pending.awaitDrained();
+            assertTrue(pending.observations().isEmpty());
             var close = source.closeAsync();
             assertFalse(close.isDone());
             assertThrows(

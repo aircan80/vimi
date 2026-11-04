@@ -106,3 +106,38 @@ must be cleaned by callback finally. Compare writer output with structural readb
 under its actual session/lease/geometry/atlas metadata. Finally prove one actual Map0
 source-qualified textured tile and owned cleanup using only private scratch assets;
 no renderer/native promotion is implied by these source/writer tests.
+
+
+## Material observation implementation checkpoint
+
+The owned helper records at most 67 distinct numeric lookups for exactly one tile.
+Its private-constructed immutable observation is not a positive FileBinding or a
+source receipt. It retains lookup state, reported numeric ID, normalized valid CK
+when present, initial nullable declared length, consistent observed length, actual
+open state/length, and whether actual opened bytes reported holes. A NOT_FOUND or
+UNBOUND observation retains the attempted numeric ID and typed absence/unbound
+category without inventing a CK. Malformed inputs that were actually consumed
+remain in the trace even though no positive material receipt was produced.
+
+Observations become accessible only after actual owned worker/lower cancellation
+retirement; exceptional retirement remains exceptional. Pending/rejected jobs have
+an empty immutable trace. The admission copies only bounded immutable observation
+references, never the operation, batch, or helper. The union of admitted positive
+bindings and observation IDs must stay at most 67. After unadvertised writing,
+final validation freshly stats every observed numeric ID, including absence and
+unbound outcomes. Newly available input, changed CK/ID, contradictory known size,
+or changed negative lookup identity rejects the transfer. Consistent unknown-to-
+known length and display/storage metadata enrichment remain allowed. This trace
+asserts observations only; the combined factory still must use the service's exact
+configured helper and actual qualified receipt/pixel checks to mint its private
+positive tile capability.
+
+Packet-file retirement and resident payload retirement are separate. The returned
+R owns only its unadvertised packet file/channel and may close idempotently at
+INPUT_CONSUMED. WrittenTile owns the singular base geometry/atlas owners through
+STAGED/current/presented residency and closes both base owners and R at final
+retirement. A transport packet cannot retain WrittenTile or source handles. A
+later closed GUI bridge will own one WrittenTile holder per opaque resident and
+share metadata aliases across pending/current/presented tables; it cannot create
+additional base retains. That bridge's late-cancellation handoff remains a
+separate implementation/review checkpoint.

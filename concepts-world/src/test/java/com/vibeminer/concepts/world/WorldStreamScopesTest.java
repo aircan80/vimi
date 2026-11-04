@@ -35,6 +35,72 @@ final class WorldStreamScopesTest {
             new WorldFormats.Tile(7, 19, 2, 0, 0, 0, 0, 3, 0, 0);
 
     @Test
+    void finalMaterialObservationsRejectChangedFailedInputsAndNewlyAvailableNegativeLookups()
+            throws Exception {
+        for (int mode = 0; mode < 4; mode++) {
+            var files = new WorldTerrainTextureSourceTest.Files();
+            if (mode == 0) {
+                files.sources.put(3L, new byte[16]);
+            } else if (mode == 1) {
+                files.sources.put(10L, new byte[16]);
+            } else if (mode == 2) {
+                files.sources.remove(3L);
+            } else {
+                files.wrongId = 3;
+            }
+            var tables = new Tables(files);
+            var scopes = new WorldStreamScopes(tables.handle(), files.files());
+            var pool = new TerrainAtlasPool();
+            var helper = new WorldTerrainTextureSource(files.files(), pool);
+            int selected = mode;
+            var retired = new AtomicInteger();
+            try {
+                var scope = scopes.create(REQUEST, Cancellation.NONE);
+                assertThrows(
+                        IllegalStateException.class,
+                        () ->
+                                scopes.withRecordedTile(
+                                        scope,
+                                        TILE,
+                                        WorldStreamScopes.UseProfile.TERRAIN_BASIC,
+                                        Cancellation.NONE,
+                                        admission -> {
+                                            var operation =
+                                                    helper.readOwned(
+                                                            new WorldService.MapInfo(
+                                                                    7, "Authored", null, 0, 1L),
+                                                            List.of(TILE),
+                                                            admission.cancellation(),
+                                                            p -> {});
+                                            try (var result = operation.result().join()) {
+                                                assertEquals(
+                                                        WorldTerrainTextureSource.State.UNAVAILABLE,
+                                                        result.tiles().getFirst().state());
+                                            } finally {
+                                                operation.awaitDrained();
+                                            }
+                                            admission.observeMaterial(operation);
+                                            if (selected < 2) {
+                                                files.changedId = selected == 0 ? 3 : 10;
+                                                files.changeAfterRead = true;
+                                            } else if (selected == 2) {
+                                                files.sources.put(3L, new byte[16]);
+                                            } else {
+                                                files.wrongId = 0;
+                                            }
+                                            return retired::incrementAndGet;
+                                        }));
+                assertEquals(1, retired.get(), "Returned unadvertised output retired");
+            } finally {
+                scopes.closeAsync().get(5, TimeUnit.SECONDS);
+                helper.closeAsync().get(5, TimeUnit.SECONDS);
+                pool.closeAsync().get(5, TimeUnit.SECONDS);
+                tables.close();
+            }
+        }
+    }
+
+    @Test
     void ownedMaterialDrainKeepsAdmissionBusyAfterResultFailsAndBeforeLowerCallbacksRetire()
             throws Exception {
         var entered = new CountDownLatch(1);

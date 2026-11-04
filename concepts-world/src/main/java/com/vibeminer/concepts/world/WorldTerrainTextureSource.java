@@ -320,6 +320,203 @@ public final class WorldTerrainTextureSource {
         }
     }
 
+    enum ObservationKind {
+        FOUND,
+        NOT_FOUND,
+        UNBOUND
+    }
+
+    enum UnboundKind {
+        NONE,
+        MISSING_FILE,
+        WRONG_ID,
+        MISSING_KEY,
+        INVALID_KEY
+    }
+
+    /** Actual lookup/read observations only: never a positive file/ancestry/material receipt. */
+    static final class Observation {
+        private final long fileId, reportedId;
+        private final int sourceLimit;
+        private final FileTypes.FileLookupState lookup;
+        private final ObservationKind kind;
+        private final UnboundKind unbound;
+        private final String key;
+        private final Long initialDeclaredLength, knownLength, streamLength;
+        private final FileTypes.FileReadState readState;
+        private final Boolean holes;
+
+        private Observation(
+                long fileId,
+                long reportedId,
+                int sourceLimit,
+                FileTypes.FileLookupState lookup,
+                ObservationKind kind,
+                UnboundKind unbound,
+                String key,
+                Long initialDeclaredLength,
+                Long knownLength,
+                FileTypes.FileReadState readState,
+                Long streamLength,
+                Boolean holes) {
+            this.fileId = fileId;
+            this.reportedId = reportedId;
+            this.sourceLimit = sourceLimit;
+            this.lookup = lookup;
+            this.kind = kind;
+            this.unbound = unbound;
+            this.key = key;
+            this.initialDeclaredLength = initialDeclaredLength;
+            this.knownLength = knownLength;
+            this.readState = readState;
+            this.streamLength = streamLength;
+            this.holes = holes;
+        }
+
+        private static Observation lookup(long id, int limit, FileTypes.FileStat result) {
+            var state = Objects.requireNonNull(result.state());
+            var file = result.file();
+            ObservationKind kind;
+            UnboundKind unbound = UnboundKind.NONE;
+            String key = null;
+            long reported = 0;
+            Long declared = null;
+            if (state != FileTypes.FileLookupState.FOUND) {
+                kind = ObservationKind.NOT_FOUND;
+            } else if (file == null) {
+                kind = ObservationKind.UNBOUND;
+                unbound = UnboundKind.MISSING_FILE;
+            } else {
+                reported = file.fileDataId();
+                declared = file.size();
+                String observed = file.contentKey();
+                if (observed != null
+                        && observed.length() == 32
+                        && observed.matches("[0-9a-fA-F]{32}")) {
+                    key = observed.toLowerCase(Locale.ROOT);
+                }
+                if (reported != id) {
+                    unbound = UnboundKind.WRONG_ID;
+                } else if (observed == null) {
+                    unbound = UnboundKind.MISSING_KEY;
+                } else if (key == null) {
+                    unbound = UnboundKind.INVALID_KEY;
+                }
+                kind =
+                        unbound == UnboundKind.NONE
+                                ? ObservationKind.FOUND
+                                : ObservationKind.UNBOUND;
+            }
+            return new Observation(
+                    id, reported, limit, state, kind, unbound, key, declared, declared, null, null,
+                    null);
+        }
+
+        private boolean sameLookupIdentity(Observation other) {
+            return lookup == other.lookup
+                    && kind == other.kind
+                    && unbound == other.unbound
+                    && reportedId == other.reportedId
+                    && Objects.equals(key, other.key);
+        }
+
+        private Observation mergeLookup(Observation other) {
+            if (!sameLookupIdentity(other)
+                    || knownLength != null
+                            && other.knownLength != null
+                            && !knownLength.equals(other.knownLength)) {
+                throw new SourceFailure(Reason.CHANGED);
+            }
+            return new Observation(
+                    fileId,
+                    reportedId,
+                    Math.min(sourceLimit, other.sourceLimit),
+                    lookup,
+                    kind,
+                    unbound,
+                    key,
+                    initialDeclaredLength,
+                    knownLength == null ? other.knownLength : knownLength,
+                    readState,
+                    streamLength,
+                    holes);
+        }
+
+        private Observation opened(FileTypes.FileOpen opened) {
+            var stream = opened.stream();
+            Long length = stream == null ? null : stream.length();
+            Boolean protectedBytes = stream == null ? null : !stream.holes().isEmpty();
+            if (readState != null
+                            && (readState != opened.state()
+                                    || !Objects.equals(streamLength, length)
+                                    || !Objects.equals(holes, protectedBytes))
+                    || knownLength != null && length != null && !knownLength.equals(length)) {
+                throw new SourceFailure(Reason.CHANGED);
+            }
+            return new Observation(
+                    fileId,
+                    reportedId,
+                    sourceLimit,
+                    lookup,
+                    kind,
+                    unbound,
+                    key,
+                    initialDeclaredLength,
+                    knownLength == null ? length : knownLength,
+                    Objects.requireNonNull(opened.state()),
+                    length,
+                    protectedBytes);
+        }
+
+        boolean matches(FileTypes.FileStat fresh) {
+            var other = lookup(fileId, sourceLimit, fresh);
+            return sameLookupIdentity(other)
+                    && (knownLength == null
+                            || other.knownLength == null
+                            || knownLength.equals(other.knownLength));
+        }
+
+        long fileId() {
+            return fileId;
+        }
+
+        ObservationKind kind() {
+            return kind;
+        }
+
+        FileTypes.FileLookupState lookupState() {
+            return lookup;
+        }
+
+        String contentKey() {
+            return key;
+        }
+
+        Long initialDeclaredLength() {
+            return initialDeclaredLength;
+        }
+
+        Long observedLength() {
+            return knownLength;
+        }
+
+        Long streamLength() {
+            return streamLength;
+        }
+
+        FileTypes.FileReadState readState() {
+            return readState;
+        }
+
+        Boolean hasHoles() {
+            return holes;
+        }
+
+        int sourceLimit() {
+            return sourceLimit;
+        }
+    }
+
     static final class Request {
         final WorldTerrainTextureSource source;
         final WorldService.MapInfo map;
@@ -328,6 +525,8 @@ public final class WorldTerrainTextureSource {
         final Consumer<Progress> progress;
         final CompletableFuture<BatchResult> future = new CompletableFuture<>();
         final CompletableFuture<Void> drained = new CompletableFuture<>();
+        final CompletableFuture<List<Observation>> observations = new CompletableFuture<>();
+        private final ArrayList<Observation> observing;
         final boolean strictFailures;
         Cancellation.Registration registration;
         volatile boolean canceled;
@@ -347,6 +546,44 @@ public final class WorldTerrainTextureSource {
             this.caller = caller;
             this.progress = progress;
             this.strictFailures = strictFailures;
+            observing = strictFailures ? new ArrayList<>() : null;
+        }
+
+        void observeLookup(long id, int limit, FileTypes.FileStat result) {
+            if (!strictFailures) {
+                return;
+            }
+            var value = Observation.lookup(id, limit, result);
+            for (int i = 0; i < observing.size(); i++) {
+                if (observing.get(i).fileId == id) {
+                    observing.set(i, observing.get(i).mergeLookup(value));
+                    return;
+                }
+            }
+            if (observing.size() >= 67) {
+                throw new IllegalStateException("Owned source observation overflow");
+            }
+            observing.add(value);
+        }
+
+        void observeOpen(long id, FileTypes.FileOpen opened) {
+            if (!strictFailures) {
+                return;
+            }
+            for (int i = 0; i < observing.size(); i++) {
+                if (observing.get(i).fileId == id) {
+                    observing.set(i, observing.get(i).opened(opened));
+                    return;
+                }
+            }
+            throw new IllegalStateException("Owned read lacks lookup observation");
+        }
+
+        void completeObservations() {
+            observations.complete(observing == null ? List.of() : List.copyOf(observing));
+            if (observing != null) {
+                observing.clear();
+            }
         }
 
         void check() {
@@ -409,10 +646,20 @@ public final class WorldTerrainTextureSource {
     static final class Operation {
         private final CompletableFuture<BatchResult> result;
         private final CompletableFuture<Void> drained;
+        private final CompletableFuture<List<Observation>> observations;
 
         private Operation(Request request) {
             result = request.future;
             drained = request.drained;
+            observations = request.observations;
+        }
+
+        List<Observation> observations() {
+            if (!drained.isDone()) {
+                throw new IllegalStateException("Owned source observations not drained");
+            }
+            drained.join();
+            return observations.join();
         }
 
         CompletableFuture<BatchResult> result() {
@@ -433,6 +680,10 @@ public final class WorldTerrainTextureSource {
             List<WorldFormats.Tile> tiles,
             Cancellation token,
             Consumer<Progress> progress) {
+        Objects.requireNonNull(tiles);
+        if (tiles.size() != 1) {
+            throw new IllegalArgumentException("Owned material operation requires one tile");
+        }
         return beginRead(map, tiles, token, progress, true);
     }
 
@@ -730,10 +981,11 @@ public final class WorldTerrainTextureSource {
 
     private Decoded decode(FileBinding before, Request request) {
         var opened = files.openRead(FileTypes.FileRef.id(before.fileId()), request.token).join();
-        if (opened.stream() == null) {
-            throw new SourceFailure(Reason.ABSENT);
-        }
         try (var stream = opened.stream()) {
+            request.observeOpen(before.fileId(), opened);
+            if (stream == null) {
+                throw new SourceFailure(Reason.ABSENT);
+            }
             validateStream(opened, stream.length(), before, 1 << 20, !stream.holes().isEmpty());
             var image =
                     Blp2Decoder.decodeLargestWithin(
@@ -783,10 +1035,11 @@ public final class WorldTerrainTextureSource {
     private ReadSource readBytes(long id, int limit, Request request) {
         var before = stat(id, limit, request);
         var opened = files.openRead(FileTypes.FileRef.id(id), request.token).join();
-        if (opened.stream() == null) {
-            throw new SourceFailure(Reason.ABSENT);
-        }
         try (var stream = opened.stream()) {
+            request.observeOpen(id, opened);
+            if (stream == null) {
+                throw new SourceFailure(Reason.ABSENT);
+            }
             validateStream(opened, stream.length(), before, limit, !stream.holes().isEmpty());
             var target = ByteBuffer.allocate((int) stream.length());
             while (target.hasRemaining()) {
@@ -831,6 +1084,7 @@ public final class WorldTerrainTextureSource {
         }
         var result = files.stat(FileTypes.FileRef.id(id), request.token).join();
         request.check();
+        request.observeLookup(id, limit, result);
         if (result.state() != FileTypes.FileLookupState.FOUND || result.file() == null) {
             throw new SourceFailure(Reason.ABSENT);
         }
