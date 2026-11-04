@@ -554,7 +554,54 @@ final class CapturedRowsTest {
                             java.util.concurrent.CompletionException.class,
                             () -> custom.readOrdinalPage(0, 1, strict(), Cancellation.NONE).join());
             assertTrue(error.getCause() instanceof UnsupportedOperationException);
+            assertTrue(
+                    error.getCause() instanceof CapturedRowsTypes.BoundedReadUnsupportedException);
+            assertNull(error.getCause().getCause());
+            assertEquals(0, error.getCause().getSuppressed().length);
+            for (var constructor :
+                    CapturedRowsTypes.BoundedReadUnsupportedException.class
+                            .getDeclaredConstructors()) {
+                assertTrue(java.lang.reflect.Modifier.isPrivate(constructor.getModifiers()));
+            }
             assertEquals(0, calls.get());
+        }
+    }
+
+    @Test
+    void arbitraryProviderUnsupportedFailureDoesNotBecomeDefaultCapabilityMarker() {
+        var failure = new UnsupportedOperationException("Authored unexpected provider failure");
+        CapturedRows custom =
+                new CapturedRows() {
+                    public CapturedRowsTypes.Receipt receipt() {
+                        throw new AssertionError("No receipt access");
+                    }
+
+                    public CompletableFuture<CapturedRowsTypes.Page> readOrdinalPage(
+                            long first, int count, Cancellation token) {
+                        throw new AssertionError("No fallback");
+                    }
+
+                    @Override
+                    public CompletableFuture<CapturedRowsTypes.Page> readOrdinalPage(
+                            long first,
+                            int count,
+                            CapturedRowsTypes.ReadLimits limits,
+                            Cancellation token) {
+                        return CompletableFuture.failedFuture(failure);
+                    }
+
+                    public CompletableFuture<Void> closeAsync() {
+                        return CompletableFuture.completedFuture(null);
+                    }
+                };
+        try (custom) {
+            var error =
+                    assertThrows(
+                            java.util.concurrent.CompletionException.class,
+                            () -> custom.readOrdinalPage(0, 1, strict(), Cancellation.NONE).join());
+            assertTrue(error.getCause() == failure);
+            assertFalse(
+                    error.getCause() instanceof CapturedRowsTypes.BoundedReadUnsupportedException);
         }
     }
 

@@ -10,6 +10,23 @@ import java.util.Objects;
 public final class CapturedRowsTypes {
     private CapturedRowsTypes() {}
 
+    /**
+     * Negative capability marker created by the default bounded-read operation. It conveys no
+     * source facts and remains compatible with callers catching UnsupportedOperationException.
+     */
+    public static final class BoundedReadUnsupportedException
+            extends UnsupportedOperationException {
+        private static final long serialVersionUID = 1L;
+
+        private BoundedReadUnsupportedException() {
+            super("Bounded captured row reads unavailable", null);
+        }
+    }
+
+    static BoundedReadUnsupportedException unsupportedBoundedRead() {
+        return new BoundedReadUnsupportedException();
+    }
+
     /** Optional post-open row-read ceilings; prepared graph metadata is a separate owner. */
     public record ReadLimits(
             int maxCompressedBlockBytes,
