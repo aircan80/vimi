@@ -868,7 +868,9 @@ final class WorldStreamScopes {
             for (var observed : admission.materialObservations) {
                 try {
                     token.check();
-                    var fresh = files.stat(FileTypes.FileRef.id(observed.fileId()), token).join();
+                    var fresh =
+                            WorldSourceFutures.await(
+                                    files.stat(FileTypes.FileRef.id(observed.fileId()), token));
                     token.check();
                     if (!observed.matches(fresh)) {
                         throw WorldSourceRefusals.at(WorldSourceRefusals.Site.MATERIAL_BINDING);
@@ -982,7 +984,8 @@ final class WorldStreamScopes {
 
     private void validateBinding(Binding binding, Cancellation token) {
         token.check();
-        var lookup = files.stat(FileTypes.FileRef.id(binding.id()), token).join();
+        var lookup =
+                WorldSourceFutures.await(files.stat(FileTypes.FileRef.id(binding.id()), token));
         token.check();
         var fresh = lookup.file();
         if (lookup.state() != FileTypes.FileLookupState.FOUND
@@ -1116,7 +1119,7 @@ final class WorldStreamScopes {
     private FileTypes.BuildFile stat(
             long id, Cancellation token, WorldSourceRefusals.Site unbound) {
         token.check();
-        var result = files.stat(FileTypes.FileRef.id(id), token).join();
+        var result = WorldSourceFutures.await(files.stat(FileTypes.FileRef.id(id), token));
         token.check();
         if (result.state() != FileTypes.FileLookupState.FOUND
                 || result.file() == null
@@ -1133,7 +1136,7 @@ final class WorldStreamScopes {
         if (before.size() != null && before.size() > limit) {
             throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_INPUT);
         }
-        var opened = files.openRead(FileTypes.FileRef.id(id), token).join();
+        var opened = WorldSourceFutures.await(files.openRead(FileTypes.FileRef.id(id), token));
         if (opened.stream() == null) {
             if (opened.state() == FileTypes.FileReadState.COMPLETE) {
                 throw new IllegalStateException("Complete source has no stream");
@@ -1153,7 +1156,7 @@ final class WorldStreamScopes {
             var bytes = ByteBuffer.allocate((int) stream.length());
             while (bytes.hasRemaining()) {
                 token.check();
-                if (stream.read(bytes, token).join() <= 0) {
+                if (WorldSourceFutures.await(stream.read(bytes, token)) <= 0) {
                     throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_INPUT);
                 }
             }

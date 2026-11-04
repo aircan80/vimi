@@ -675,22 +675,7 @@ public final class WorldTerrainTextureSource {
         }
 
         BatchResult awaitResult() {
-            // JDK join may create a CancellationException whose cause is the original stop.
-            // Preserve this owned future's actual failure in a standard completion wrapper;
-            // do not relax the source boundary's rejection of dirty/foreign cancellation.
-            return result.handle(
-                            (value, failure) -> {
-                                if (failure
-                                        instanceof
-                                        java.util.concurrent.CompletionException wrapped) {
-                                    throw wrapped;
-                                }
-                                if (failure != null) {
-                                    throw new java.util.concurrent.CompletionException(failure);
-                                }
-                                return value;
-                            })
-                    .join();
+            return WorldSourceFutures.await(result);
         }
 
         boolean isDrained() {

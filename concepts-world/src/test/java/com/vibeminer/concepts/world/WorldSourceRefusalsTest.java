@@ -28,6 +28,142 @@ import org.junit.jupiter.api.Timeout;
 @SuppressWarnings("try")
 class WorldSourceRefusalsTest {
     @Test
+    void canceledActualRootReadFuturePreservesOriginalStopAfterStreamRetires() throws Exception {
+        actualRootReadOutcome(new CancellationException("Authored actual root stop"), true);
+    }
+
+    @Test
+    void dirtyActualRootReadCancellationRemainsFatalAndRetiresStream() throws Exception {
+        var dirty = new CancellationException("Authored dirty root stop");
+        dirty.initCause(new IllegalStateException("Authored auxiliary failure"));
+        actualRootReadOutcome(dirty, false);
+    }
+
+    @Test
+    void foreignActualRootReadCancellationAccessorsAreNeverInspected() throws Exception {
+        var calls = new AtomicInteger();
+        var foreign =
+                new CancellationException() {
+                    @Override
+                    public synchronized Throwable getCause() {
+                        calls.incrementAndGet();
+                        throw new AssertionError();
+                    }
+
+                    @Override
+                    public String getMessage() {
+                        calls.incrementAndGet();
+                        throw new AssertionError();
+                    }
+                };
+        actualRootReadOutcome(foreign, false);
+        assertEquals(0, calls.get());
+    }
+
+    private static void actualRootReadOutcome(CancellationException original, boolean clean)
+            throws Exception {
+        var entered = new CompletableFuture<Void>();
+        var canceled = new CompletableFuture<Void>();
+        var read = new CompletableFuture<Integer>();
+        var once = new AtomicBoolean();
+        var closes = new AtomicInteger();
+        var files =
+                new WorldTerrainTextureSourceTest.Files() {
+                    @Override
+                    com.vibeminer.files.FileReadStream open(long id, Cancellation token) {
+                        var base = super.open(id, token);
+                        if (id != 2) {
+                            return base;
+                        }
+                        return new com.vibeminer.files.FileReadStream() {
+                            Cancellation.Registration registration;
+
+                            public long length() {
+                                return base.length();
+                            }
+
+                            public long position() {
+                                return base.position();
+                            }
+
+                            public void seek(long position) {
+                                base.seek(position);
+                            }
+
+                            public java.util.List<FileTypes.FileHole> holes() {
+                                return base.holes();
+                            }
+
+                            public CompletableFuture<Integer> read(
+                                    java.nio.ByteBuffer target, Cancellation stop) {
+                                if (once.compareAndSet(false, true)) {
+                                    registration = stop.onCancel(() -> canceled.complete(null));
+                                    entered.complete(null);
+                                    return read;
+                                }
+                                return base.read(target, stop);
+                            }
+
+                            public void close() {
+                                if (registration != null) {
+                                    registration.close();
+                                }
+                                closes.incrementAndGet();
+                                base.close();
+                            }
+                        };
+                    }
+                };
+        try (var fixture = new Fixture(files)) {
+            var stop = new Cancellation();
+            var preparing =
+                    CompletableFuture.supplyAsync(
+                            () ->
+                                    fixture.source.prepareAndWrite(
+                                            fixture.scope,
+                                            TILE,
+                                            stop,
+                                            (borrow, cancel) -> (AutoCloseable) () -> {}));
+            try {
+                entered.get(5, TimeUnit.SECONDS);
+                stop.cancel();
+                canceled.get(5, TimeUnit.SECONDS);
+                assertFalse(
+                        preparing.isDone(),
+                        "Actual root input owner stays active while async read has not retired");
+                read.completeExceptionally(original);
+                var failure =
+                        assertThrows(
+                                ExecutionException.class, () -> preparing.get(5, TimeUnit.SECONDS));
+                if (clean) {
+                    assertTrue(
+                            failure.getCause() == original,
+                            "Trusted future preserves ORIGINAL clean stop identity");
+                    assertEquals(null, failure.getCause().getCause());
+                } else {
+                    assertTrue(
+                            failure.getCause() instanceof IllegalStateException,
+                            "Dirty/foreign cancellation stays fatal");
+                    assertFalse(failure.getCause() instanceof WorldTerrainStreaming.Refusal);
+                }
+                assertEquals(
+                        1,
+                        closes.get(),
+                        "Actual root stream retires before output failure escapes");
+                assertEquals(0, fixture.pool.stats().leaseClaims());
+                if (clean) {
+                    try (var fresh = fixture.prepare()) {
+                        assertEquals(
+                                WorldTerrainStreaming.Outcome.TEXTURED, fresh.facts().outcome());
+                    }
+                }
+            } finally {
+                read.completeExceptionally(new CancellationException());
+            }
+        }
+    }
+
+    @Test
     void canceledOwnedMaterialPreservesOriginalStopAfterActualDrainAndScopeRemainsUsable()
             throws Exception {
         var entered = new CompletableFuture<Void>();

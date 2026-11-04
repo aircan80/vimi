@@ -122,7 +122,9 @@ final class WorldMapProofs {
 
     private CapturedRows openMap(Cancellation token) {
         token.check();
-        var capture = tables.capturePreparedLocal(TableTypes.Ref.forName("Map"), token).join();
+        var capture =
+                WorldSourceFutures.await(
+                        tables.capturePreparedLocal(TableTypes.Ref.forName("Map"), token));
         if (capture.state() == CapturedRowsTypes.CaptureState.CANCELED) {
             throw new java.util.concurrent.CancellationException();
         }
@@ -195,7 +197,7 @@ final class WorldMapProofs {
             CapturedRows rows, long first, Cancellation token) {
         CapturedRowsTypes.Page page;
         try {
-            page = rows.readOrdinalPage(first, 1, READ_LIMITS, token).join();
+            page = WorldSourceFutures.await(rows.readOrdinalPage(first, 1, READ_LIMITS, token));
         } catch (RuntimeException failure) {
             if (WorldSourceRefusals.defaultStrictUnsupported(failure)) {
                 throw WorldSourceRefusals.at(WorldSourceRefusals.Site.STRICT_ROWS);
@@ -328,11 +330,11 @@ final class WorldMapProofs {
             }
             if (receipt.table().state() == TableTypes.State.PARTIAL) {
                 var inspected =
-                        rows.inspectNativeIdDomain(
+                        WorldSourceFutures.await(
+                                rows.inspectNativeIdDomain(
                                         requestedId,
                                         NativeIdDomainTypes.SourceAccess.CONFIGURED_SOURCE,
-                                        token)
-                                .join();
+                                        token));
                 token.check();
                 if (inspected.state() == NativeIdDomainTypes.State.BUSY) {
                     throw WorldSourceRefusals.at(WorldSourceRefusals.Site.ID_INSPECTION);
@@ -813,7 +815,8 @@ final class WorldMapProofs {
 
     private void validateBinding(FileBinding binding, Cancellation token) {
         token.check();
-        var lookup = files.stat(FileTypes.FileRef.id(binding.id()), token).join();
+        var lookup =
+                WorldSourceFutures.await(files.stat(FileTypes.FileRef.id(binding.id()), token));
         token.check();
         var fresh = lookup.file();
         if (lookup.state() != FileTypes.FileLookupState.FOUND

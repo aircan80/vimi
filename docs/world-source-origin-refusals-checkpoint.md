@@ -67,3 +67,21 @@ overridable cause/message accessors. Three causal fixtures cover foreign activat
 a subclass containing a cleanup cause, and hostile subclass accessors. The first
 two fail against the frozen original checkpoint. Full concept checks pass with the
 followup. This does not change source profiles, source bindings, or native admission.
+
+Trusted asynchronous source awaits now preserve the provider future's ORIGINAL failure before
+JDK25 join can synthesize CancellationException(cause=original). Package-private WorldSourceFutures
+encapsulates that stored failure in a fixed-message standard CompletionException, preserving an
+existing CompletionException unchanged. It never unwraps dirty/foreign cancellation or invokes
+foreign cause/message accessors; error meaning stays with the existing strict source boundary.
+Exact Scope stat/open/read and Map capture/strict-page/native-inspection/stat awaits use it, and
+owned material Operation.awaitResult delegates to the same helper. Public legacy read and cleanup
+CancelLane.done joins are unchanged. This helper promises neither provider cancellation nor IO
+retirement: existing try/finally stream closure, active guard and actual cancellation/material drain
+still determine lifetime.
+
+A genuine public Source fixture holds an actual ROOT stream future, observes own cancellation,
+completes the future with the original clean stop, and proves stream retirement, original exception
+identity, zero material claims and fresh same-scope textured recovery. It was causally RED before
+this correction. Dirty cause and foreign-cancellation getter traps remain fatal; helper tests also
+pin existing dirty completion-wrapper identity. Full concepts-world check:143 tests pass, with
+formatter and both Checkstyle gates. No WorldGlobalScopes changes or source/memory cap changes.
