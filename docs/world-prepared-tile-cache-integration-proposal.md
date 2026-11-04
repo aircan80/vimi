@@ -136,7 +136,9 @@ completion; no source handles are closed while accepted IO is still active.
 At most twelve factory output owner credits (including retained aliases) can live;
 claim pressure refuses another output before allocation. Current display up to9
 and prepared speculation up to3 fit that bound. Callback pins are separate, at
-most one active callback per output owner. Stayed entries in old/displayed/latest-committed draw tables reference the same
+most one active callback per output owner.
+
+Stayed entries in old/displayed/latest-committed draw tables reference the same
 explicit parent resident holder; copying an ordered metadata table must not create
 nine new prepared owners or geometry pins. The holder's reference accounting
 controls the single base resource owner for that tile/version. Offer consumes and
@@ -145,8 +147,7 @@ callback pins cover the write. If separate display retention needs a resource
 transfer, implement an explicit move under metadata locks, clearing the outgoing
 owner before installing the next one. An unrestricted retain-per-table scheme is
 not compatible with the twelve-owner bound and is not part of this proposal.
- A cache pin identifies a static private
-entry/credit ledger with no outer WorldService/BuildFiles/executor reference.
+A cache pin identifies a static private entry/credit ledger with no outer WorldService/BuildFiles/executor reference.
 
 WorldPreparedTile.withPayload synchronously captures its geometry pin/reference
 and an independent retained atlas claim before calling consumer code. Consume
