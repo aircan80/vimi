@@ -81,19 +81,37 @@ agent's separately reviewed parser/source proposal.
 
 ## Scene-qualified composition
 
-Cold same-child terrain+WMO annex requires a private WorldSourceFrame owner/token
-created INSIDE this same operation from actual root ADT read/cache evidence. It
-binds scope owner/generation+digest, current admitted tuple, root ID/CKey/consumed
-length and native geometry fingerprint, and owns/pins that actual TerrainScene.
-Public caller TerrainScene or detached metadata cannot mint a positive frame.
+Cold same-child terrain+WMO annex must preserve the existing3×3/nine-tile scene.
+Inside the same admission, read/check the selected root ADT (or later reuse an
+approved private cache proof), compute its exact native geometry fingerprint,
+and create PRIVATE CheckedRootFrame metadata: scope owner/generation+digest,
+current admitted tuple, root ID/CKey/actual consumed length and geometry SHA.
+Then retire the temporary parse/extra TerrainScene buffers before WMO group/image
+preparation. The token retains fixed metadata only; it is not an owned full-nine-
+tile frame or a reason to shrink the viewer to one tile.
 
-One callback may construct this qualified frame plus its actual obj0 placement,
-WMO/groups/images and return one composite owned output. The WMO factory's private
-constructor must require that exact frame identity; it cannot combine an old
-terrain frame with a new obj0/root receipt. Cache reuse is a separate approval;
-initial bounded actual read/parse may create the frame without a second geometry
-cache. Output retains only its own geometry/material owners and small source
-stamps, never the live admission or heavy scope proof.
+The WMO asset qualifies independently through its actual obj0→MODF→root/group/image
+chain. Its private constructor requires the checked placement/root-frame evidence.
+An adapter may then compare this ALREADY-qualified asset with exactly one matching
+filename/fingerprint tile of the existing public≤9-tile TerrainScene. Comparison
+cannot mint asset positivity from that public scene. The other eight tiles retain
+their existing terrain contract; the source factory makes no new provenance claim
+about them. Wrong/missing/duplicate selected match rejects binding.
+
+The annex binds actual serialized whole-scene file SHA plus selected tile ordinal/
+fingerprint and private map scope; the codec checks that file identity against the
+actual bytes/scene used to write it. Public caller TerrainScene, caller file hash or
+metadata alone cannot mint CheckedRootFrame or a positive WMO asset. The source-
+qualified asset may be composed/written to UNADVERTISED scratch within the guarded
+callback, allowing the engine's final all-binding checks to follow any composition
+or write delay. Only after successful admission transfer may the parent advertise
+the annex/open a native child. On failure the owned result removes scratch and
+closes geometry/image owners.
+
+No retained full scene is added behind the source token, no second geometry cache
+is introduced and no view-distance reduction is part of this contract. Cache
+reuse remains separately reviewed. Output retains only its own asset owners and
+small checked root/scope stamps, never live admission/heavy scope proof.
 
 ADT MODF placement and global WDT placement are distinct typed origins. Global
 WMO needs a FUTURE withGlobalDeclaration operation from a checked WDT scene-facts
