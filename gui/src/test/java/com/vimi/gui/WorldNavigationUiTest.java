@@ -220,6 +220,11 @@ public final class WorldNavigationUiTest {
         // Prevent unrelated rendering/discovery while exercising the actual timer's movement branch.
         set(view,"lastRender",Long.MAX_VALUE);
         set(view,"lastNearby",Long.MAX_VALUE);
+        var smooth=(javafx.scene.control.CheckBox)view.lookup("#world-smooth-motion");
+        require(smooth.isSelected(),"Smoothed motion is the default");
+        // The exact oracles below pin the established unsmoothed free-flight displacement.
+        smooth.fire();
+        require(!smooth.isSelected(),"Smoothing can be disabled");
         for(var keys:List.of(List.of(KeyCode.SPACE),List.of(KeyCode.E),List.of(KeyCode.SPACE,KeyCode.E),List.of(KeyCode.Q),List.of(KeyCode.X),List.of(KeyCode.Q,KeyCode.X),List.of(KeyCode.SPACE,KeyCode.Q),List.of(KeyCode.SPACE,KeyCode.X),List.of(KeyCode.E,KeyCode.X),List.of(KeyCode.SPACE,KeyCode.E,KeyCode.Q,KeyCode.X))) {
             set(view,"camera",new TerrainRenderer.Camera(10000-SIZE/2,20000-SIZE/2,500,0,0));
             set(view,"lastTick",0L);
@@ -288,8 +293,74 @@ public final class WorldNavigationUiTest {
         scroll(viewport,Double.MAX_VALUE,false);
         var bounded=(TerrainRenderer.Camera)get(view,"camera");
         require(bounded.x()<=1_000_000&&bounded.y()<=1_000_000&&bounded.z()<=1_000_000,"Wheel remains within camera coordinate bounds");
+        walk(view,timer,viewport);
         set(view,"camera",before);
         set(view,"speed",originalSpeed);
+    }
+
+    /** Walk mode over an authored qualified ADT18 surface and over the unqualified fixture mesh. */
+    private static void walk(WorldView view,AnimationTimer timer,Node viewport) {
+        var walk=(javafx.scene.control.CheckBox)view.lookup("#world-walk-mode");
+        var status=(javafx.scene.control.Label)view.lookup("#world-motion-status");
+        require(!walk.isSelected(),"Free flight is the default");
+        key(viewport,KeyCode.F,true);
+        key(viewport,KeyCode.F,true);
+        key(viewport,KeyCode.F,false);
+        require(walk.isSelected(),"F toggles walking once per press, ignoring key repeat");
+        // The navigation fixture's single-triangle tiles are not the admitted ADT18 layout.
+        var held=new TerrainRenderer.Camera(10000-SIZE/2,20000-SIZE/2,500,0,0);
+        set(view,"camera",held);
+        set(view,"lastTick",0L);
+        key(viewport,KeyCode.SPACE,true);
+        key(viewport,KeyCode.W,true);
+        timer.handle(3_000_000_000L);
+        timer.handle(3_100_000_000L);
+        key(viewport,KeyCode.SPACE,false);
+        key(viewport,KeyCode.W,false);
+        var unqualified=(TerrainRenderer.Camera)get(view,"camera");
+        require(unqualified.z()==500,"Walking without qualified ground holds altitude and ignores Space");
+        require(Math.abs(unqualified.x()-held.x()-.7)<1e-9,"Walking uses the walk speed, not flight speed");
+        require(status.getText().contains("altitude held"),"Unavailable ground is reported: "+status.getText());
+        var surface=com.vibeminer.rendering.world.TerrainGround.of(List.of(
+                com.vibeminer.rendering.world.TerrainGround.Tile.of(new com.vibeminer.rendering.world.TerrainScene.Tile(X,Y,
+                        WorldFormats.adt(authoredRoot(10000,20000),() -> false)))));
+        set(view,"ground",surface);
+        set(view,"lastTick",0L);
+        timer.handle(4_000_000_000L);
+        timer.handle(4_100_000_000L);
+        var grounded=(TerrainRenderer.Camera)get(view,"camera");
+        double eye=surface.heightAt(grounded.x(),grounded.y())+com.vibeminer.rendering.world.ExplorerMotion.EYE_HEIGHT;
+        require(Double.isFinite(eye) && Math.abs(grounded.z()-eye)<1e-9,"Walking follows the rendered surface: "+grounded.z()+" vs "+eye);
+        require(status.getText().startsWith("Walking · eye"),"Following ground is reported: "+status.getText());
+        walk.fire();
+        require(!walk.isSelected(),"Walking can be turned off");
+        require(status.getText().startsWith("Free flight"),"Free flight is reported");
+        smoothDefault(view);
+    }
+
+    private static void smoothDefault(WorldView view) {
+        var smooth=(javafx.scene.control.CheckBox)view.lookup("#world-smooth-motion");
+        smooth.fire();
+        require(smooth.isSelected(),"Smoothing restored");
+    }
+
+    /** Authored split-root ADT18 bytes whose chunk grid covers one tile below the given maxima. */
+    private static byte[] authoredRoot(float maxX,float maxY) {
+        int chunkBytes=8+128+8+580;
+        var bytes=java.nio.ByteBuffer.allocate(12+256*chunkBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        bytes.putInt(0x4d564552).putInt(4).putInt(18);
+        for(int i=0;i<256;i++) {
+            bytes.putInt(0x4d434e4b).putInt(chunkBytes-8);
+            int start=bytes.position(),x=i%16,y=i/16;
+            bytes.putInt(start+4,x).putInt(start+8,y);
+            bytes.putFloat(start+104,(float)(maxX-y*SIZE/16));
+            bytes.putFloat(start+108,(float)(maxY-x*SIZE/16));
+            bytes.putFloat(start+112,40);
+            bytes.position(start+128);
+            bytes.putInt(0x4d435654).putInt(580);
+            for(int sample=0;sample<145;sample++) bytes.putFloat(sample%9);
+        }
+        return bytes.array();
     }
 
     private static void mouse(Node node,javafx.event.EventType<javafx.scene.input.MouseEvent> type,double x,double y) {
