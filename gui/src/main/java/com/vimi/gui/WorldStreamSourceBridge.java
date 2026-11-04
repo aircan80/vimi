@@ -60,6 +60,18 @@ final class WorldStreamSourceBridge {
         }
     }
 
+    /** Finite source-origin facts only; descriptive policy metadata, never source authority. */
+    static final class RefusalMetadata {
+        private final WorldTerrainStreaming.Refusal.Reason reason;
+        private final String site;
+        private RefusalMetadata(WorldTerrainStreaming.Refusal refused) {
+            reason = refused.reason();
+            site = refused.site();
+        }
+        WorldTerrainStreaming.Refusal.Reason reason() { return reason; }
+        String site() { return site; }
+    }
+
     /** Single-use producer. Close retires an untaken base; take only after transport success. */
     static final class Producer implements WorldStreamTransport.PacketProducer, AutoCloseable {
         private final WorldTerrainStreaming source;
@@ -68,6 +80,7 @@ final class WorldStreamSourceBridge {
         private final BooleanSupplier latest;
         private boolean started, closed;
         private Prepared prepared;
+        private volatile RefusalMetadata sourceRefusal;
 
         Producer(WorldTerrainStreaming source, WorldTerrainStreaming.Scope scope,
                 WorldFormats.Tile tile, BooleanSupplier latest) {
@@ -128,6 +141,7 @@ final class WorldStreamSourceBridge {
                     failure = refused;
                     throw refused;
                 }
+                sourceRefusal = new RefusalMetadata(refused);
                 var mapped = destination.refusal(
                         WorldStreamTransport.Refusal.valueOf(refused.reason().name()), refused.site());
                 failure = mapped;
@@ -162,6 +176,8 @@ final class WorldStreamSourceBridge {
                 throw new CancellationException();
             }
         }
+
+        RefusalMetadata sourceRefusal() { return sourceRefusal; }
 
         synchronized Prepared takePrepared() {
             if (prepared == null || closed) {
