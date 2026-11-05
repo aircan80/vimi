@@ -546,6 +546,13 @@ public final class WorldStreamTransport {
         private Frame latestFrame;
         private ObjectsOperation objectsOperation;
 
+        /**
+         * Test probe only: runs on the objects worker, under the session lock, after the stop check
+         * and just before the OBJECTS command is enqueued. It must never block or take another
+         * lock.
+         */
+        volatile java.util.function.Consumer<WorldStreamLaunchOwner.Handle> beforeObjectsEnqueue;
+
         /** The one late objects delivery in flight: file write, OBJECTS, reply, file delete. */
         private static final class ObjectsOperation {
             final Resident resident;
@@ -819,12 +826,15 @@ public final class WorldStreamTransport {
          * credits, so terrain never waits for it. At most one delivery is in flight (a second one
          * is refused RETRY_LATER). The child attaches the objects only while that exact slot
          * generation is still active; otherwise the outcome is DROPPED. A resident that is already
-         * retired is DROPPED at once, before any file is written. Misuse (a foreign resident, one
-         * with inline objects, or one already requested) fails only the returned future with an
-         * IllegalArgumentException; it never ends the session. Failures of the objects themselves
-         * stay isolated to them. A clean close completes the future with a CancellationException
-         * after the file has been retired; if the session fails, the future fails at once and the
-         * file is retired by the objects worker as the session drains.
+         * retired is DROPPED at once, before any file is written. Each resident is admitted once: a
+         * later request, whatever the first outcome (including a FAILED objects file write), is
+         * misuse. Misuse (a foreign resident, one with inline objects, or one already requested)
+         * fails only the returned future with an IllegalArgumentException; it never ends the
+         * session. Failures of the objects themselves stay isolated to them, and a FAILED outcome
+         * is recorded on the resident before the future completes. A clean close completes the
+         * future with a CancellationException after the file has been retired; if the session
+         * fails, the future fails at once and the file is retired by the objects worker as the
+         * session drains.
          */
         public CompletableFuture<ObjectsOutcome> attachObjects(
                 Resident resident, WorldStreamTileWriter.Exterior exterior) {
@@ -904,9 +914,14 @@ public final class WorldStreamTransport {
                                         stop);
                         written = true;
                     } catch (IOException | RuntimeException failed) {
-                        // The writer removes its own partial file. Only these objects fail.
-                        if (!stop.getAsBoolean()) {
-                            outcome = ObjectsOutcome.FAILED;
+                        // The writer removes its own partial file. Only these objects fail, and
+                        // the resident records it like a child FAILED, or DROPPED once retired.
+                        synchronized (lock) {
+                            if (!stop.getAsBoolean()) {
+                                outcome =
+                                        ObjectsOutcome.valueOf(
+                                                state.lateObjectsFailed(metadata).name());
+                            }
                         }
                     }
                 }
@@ -920,8 +935,18 @@ public final class WorldStreamTransport {
                             if (command == null) {
                                 outcome = ObjectsOutcome.DROPPED;
                             } else {
-                                enqueueCommand(command);
-                                operation.advertised = true;
+                                var probe = beforeObjectsEnqueue;
+                                if (probe != null) {
+                                    probe.accept(handle);
+                                }
+                                // The owner may begin stopping outside this lock after the check
+                                // above. A refused command was never sent: withdraw it, so the
+                                // file is deleted at once and the stop cancels the future, the
+                                // same as a stop seen before publishing.
+                                operation.advertised = enqueueCommand(command);
+                                if (!operation.advertised) {
+                                    state.lateObjectsUnsent(metadata);
+                                }
                             }
                         }
                     }
@@ -1129,10 +1154,11 @@ public final class WorldStreamTransport {
             }
         }
 
-        private void enqueueCommand(WorldStreamControl.Command command) {
+        /** Returns false, sending nothing, once the session is closing or its owner stopping. */
+        private boolean enqueueCommand(WorldStreamControl.Command command) {
             synchronized (lock) {
                 if (closing || owner.stopping()) {
-                    return;
+                    return false;
                 }
                 if (outstandingReliable == 4) {
                     throw new IllegalStateException("World reliable command capacity");
@@ -1158,6 +1184,7 @@ public final class WorldStreamTransport {
                 outstandingReliable++;
                 reliableCommands.addLast(command);
                 lock.notifyAll();
+                return true;
             }
         }
 

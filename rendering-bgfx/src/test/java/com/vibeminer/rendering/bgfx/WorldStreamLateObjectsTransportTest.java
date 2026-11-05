@@ -152,6 +152,71 @@ class WorldStreamLateObjectsTransportTest {
         }
     }
 
+    @Test
+    void parentWriteFailureIsRecordedAndASecondAttemptIsRefused() throws Exception {
+        try (var fixture = new Fixture(directory)) {
+            var first = fixture.stage(7, 19);
+            fixture.commit(first);
+            // A stale file at the target name makes the CREATE_NEW publication fail in the parent.
+            Files.writeString(fixture.objectsFile(first), "stale");
+            assertSame(
+                    WorldStreamTransport.ObjectsOutcome.FAILED,
+                    fixture.session
+                            .attachObjects(first, WorldStreamObjectsFileTest.small())
+                            .get(5, TimeUnit.SECONDS));
+            assertSame(WorldStreamTransport.ExteriorObjects.FAILED, first.exteriorObjects());
+            assertFalse(fixture.commands().contains("OBJECTS"));
+            // The parent never owned the stale file; remove it so the session sweep stays clean.
+            assertTrue(Files.readString(fixture.objectsFile(first)).equals("stale"));
+            Files.delete(fixture.objectsFile(first));
+            // The failure spent the resident's one request, like any other outcome.
+            var misuse =
+                    assertThrows(
+                            ExecutionException.class,
+                            () ->
+                                    fixture.session
+                                            .attachObjects(
+                                                    first, WorldStreamObjectsFileTest.small())
+                                            .get(2, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalArgumentException.class, misuse.getCause());
+            assertSame(WorldStreamTransport.ExteriorObjects.FAILED, first.exteriorObjects());
+            // Terrain and the objects lane both carry on.
+            var second = fixture.stage(7, 20);
+            fixture.commit(first, second);
+            assertSame(
+                    WorldStreamTransport.ObjectsOutcome.ATTACHED,
+                    fixture.session
+                            .attachObjects(second, WorldStreamObjectsFileTest.small())
+                            .get(5, TimeUnit.SECONDS));
+            assertFalse(fixture.session.completion().isDone());
+        }
+    }
+
+    @Test
+    void stopBetweenTheCheckAndTheEnqueueSendsNothingAndWithdrawsTheTarget() throws Exception {
+        try (var fixture = new Fixture(directory)) {
+            var first = fixture.stage(7, 19);
+            fixture.commit(first);
+            var probed = new java.util.concurrent.atomic.AtomicBoolean();
+            // The owner begins stopping after the worker's stop check, before its enqueue.
+            fixture.session.beforeObjectsEnqueue =
+                    handle -> {
+                        probed.set(true);
+                        handle.closeAsync();
+                    };
+            var attaching =
+                    fixture.session.attachObjects(first, WorldStreamObjectsFileTest.small());
+            assertCanceled(attaching);
+            assertTrue(probed.get());
+            assertFalse(fixture.commands().contains("OBJECTS"));
+            assertFalse(Files.exists(fixture.objectsFile(first)));
+            assertFalse(fixture.state().lateObjectsPending(), "Refused command is withdrawn");
+            assertSame(WorldStreamTransport.ExteriorObjects.NONE, first.exteriorObjects());
+            assertCanceled(
+                    fixture.session.attachObjects(first, WorldStreamObjectsFileTest.small()));
+        }
+    }
+
     /** A clean CancellationException outcome, reported directly or as the cause. */
     private static void assertCanceled(java.util.concurrent.Future<?> future) {
         try {
@@ -218,6 +283,16 @@ class WorldStreamLateObjectsTransportTest {
                 field.setAccessible(true);
                 var metadata = (WorldStreamParentState.Resident) field.get(resident);
                 return scratch.resolve(WorldStreamObjectsFile.basename(metadata.transaction));
+            } catch (ReflectiveOperationException error) {
+                throw new AssertionError(error);
+            }
+        }
+
+        WorldStreamParentState state() {
+            try {
+                var field = WorldStreamTransport.Session.class.getDeclaredField("state");
+                field.setAccessible(true);
+                return (WorldStreamParentState) field.get(session);
             } catch (ReflectiveOperationException error) {
                 throw new AssertionError(error);
             }

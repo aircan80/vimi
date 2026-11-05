@@ -85,6 +85,7 @@ class WorldStreamLateObjectsParentTest {
     void activeResidentGetsOneCommandAndExactOutcome() {
         var state = ready(true);
         var resident = resident(state, 7, 19, List.of(), new WorldStreamState.Lease(1, 1, 2));
+        assertTrue(state.admitLateObjects(resident));
         var command = state.lateObjects(resident, 4096, SHA);
         assertNotNull(command);
         assertEquals(resident.transaction, command.transaction());
@@ -117,6 +118,8 @@ class WorldStreamLateObjectsParentTest {
         var state = ready(true);
         var first = resident(state, 7, 19, List.of(), new WorldStreamState.Lease(1, 1, 2));
         var second = resident(state, 7, 20, List.of(first), new WorldStreamState.Lease(2, 1, 3));
+        assertTrue(state.admitLateObjects(first));
+        assertTrue(state.admitLateObjects(second));
         assertNotNull(state.lateObjects(first, 4096, SHA));
         assertThrows(IllegalStateException.class, () -> state.lateObjects(second, 4096, SHA));
         state.status(done(first, WorldStreamStatus.LateOutcome.FAILED));
@@ -134,12 +137,16 @@ class WorldStreamLateObjectsParentTest {
         var state = ready(true);
         var first = resident(state, 7, 19, List.of(), new WorldStreamState.Lease(1, 1, 2));
         var second = resident(state, 7, 20, List.of(first), new WorldStreamState.Lease(2, 1, 3));
+        // Admitted while active, then retired before the command is published.
+        assertTrue(state.admitLateObjects(first));
         commit(state, List.of(second));
         assertNull(state.lateObjects(first, 4096, SHA));
         assertFalse(state.lateObjectsPending());
-        assertNull(first.late);
+        assertSame(WorldStreamStatus.LateOutcome.DROPPED, first.late);
         // The refusal still consumed the resident's one request.
         assertThrows(IllegalStateException.class, () -> state.lateObjects(first, 4096, SHA));
+        assertThrows(IllegalArgumentException.class, () -> state.admitLateObjects(first));
+        assertTrue(state.admitLateObjects(second));
         assertNotNull(state.lateObjects(second, 4096, SHA));
     }
 
@@ -155,11 +162,63 @@ class WorldStreamLateObjectsParentTest {
         assertThrows(IllegalArgumentException.class, () -> state.admitLateObjects(other));
         commit(state, List.of(second));
         assertFalse(state.admitLateObjects(first));
+        assertSame(WorldStreamStatus.LateOutcome.DROPPED, first.late);
         // The retired resident's one request is consumed; asking again is misuse.
         assertThrows(IllegalArgumentException.class, () -> state.admitLateObjects(first));
         assertNotNull(state.lateObjects(second, 4096, SHA));
         state.status(done(second, WorldStreamStatus.LateOutcome.DROPPED));
         assertThrows(IllegalArgumentException.class, () -> state.admitLateObjects(second));
+    }
+
+    @Test
+    void unadmittedResidentIsNeverPublished() {
+        var state = ready(true);
+        var resident = resident(state, 7, 19, List.of(), new WorldStreamState.Lease(1, 1, 2));
+        assertThrows(IllegalStateException.class, () -> state.lateObjects(resident, 4096, SHA));
+        assertThrows(IllegalStateException.class, () -> state.lateObjectsFailed(resident));
+        assertFalse(state.lateObjectsPending());
+    }
+
+    @Test
+    void parentWriteFailureIsRecordedAndSpendsTheOneRequest() {
+        var state = ready(true);
+        var resident = resident(state, 7, 19, List.of(), new WorldStreamState.Lease(1, 1, 2));
+        assertTrue(state.admitLateObjects(resident));
+        assertSame(WorldStreamStatus.LateOutcome.FAILED, state.lateObjectsFailed(resident));
+        assertSame(WorldStreamStatus.LateOutcome.FAILED, resident.late);
+        assertFalse(state.lateObjectsPending());
+        assertThrows(IllegalArgumentException.class, () -> state.admitLateObjects(resident));
+        assertThrows(IllegalStateException.class, () -> state.lateObjects(resident, 4096, SHA));
+        assertThrows(IllegalStateException.class, () -> state.lateObjectsFailed(resident));
+    }
+
+    @Test
+    void writeFailureAfterRetirementIsDropped() {
+        var state = ready(true);
+        var first = resident(state, 7, 19, List.of(), new WorldStreamState.Lease(1, 1, 2));
+        var second = resident(state, 7, 20, List.of(first), new WorldStreamState.Lease(2, 1, 3));
+        assertTrue(state.admitLateObjects(first));
+        commit(state, List.of(second));
+        assertSame(WorldStreamStatus.LateOutcome.DROPPED, state.lateObjectsFailed(first));
+        assertSame(WorldStreamStatus.LateOutcome.DROPPED, first.late);
+        assertThrows(IllegalArgumentException.class, () -> state.admitLateObjects(first));
+    }
+
+    @Test
+    void unsentCommandReturnsTheCreditWithoutAnOutcome() {
+        var state = ready(true);
+        var resident = resident(state, 7, 19, List.of(), new WorldStreamState.Lease(1, 1, 2));
+        assertTrue(state.admitLateObjects(resident));
+        assertNotNull(state.lateObjects(resident, 4096, SHA));
+        state.lateObjectsUnsent(resident);
+        assertFalse(state.lateObjectsPending());
+        assertNull(resident.late);
+        // No reply can match the withdrawn command, and its one request stays spent.
+        assertThrows(
+                IllegalStateException.class,
+                () -> state.status(done(resident, WorldStreamStatus.LateOutcome.ATTACHED)));
+        assertThrows(IllegalStateException.class, () -> state.lateObjectsUnsent(resident));
+        assertThrows(IllegalArgumentException.class, () -> state.admitLateObjects(resident));
     }
 
     @Test
