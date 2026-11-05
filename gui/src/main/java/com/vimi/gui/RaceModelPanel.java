@@ -294,13 +294,16 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                                 evidence.getChildren().add(note);
                                             }
                                             activity.setVisible(true);
-                                            viewer.setMesh(result.mesh(), result.visibleParts());
-                                            requestIdle(model, request);
+                                            viewer.setMesh(
+                                                    result.mesh(),
+                                                    result.visibleParts(),
+                                                    "Preparing textures and starting clothing…");
                                             shownModel = model.chrModelId();
                                             shownClass = classId;
-                                            viewer.appearanceLoading(
-                                                    "Preparing textures and starting clothing…");
+                                            // Textures first: the race worker answers in order,
+                                            // and idle can be slow on a first visit.
                                             loadAppearance(model, classId, request);
+                                            requestIdle(model, request);
                                         }));
     }
 
