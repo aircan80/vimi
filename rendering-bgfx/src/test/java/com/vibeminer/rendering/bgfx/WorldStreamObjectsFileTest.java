@@ -608,4 +608,52 @@ final class WorldStreamObjectsFileTest {
                     assertThrows(IllegalArgumentException.class, bad::build).getMessage());
         }
     }
+
+    @Test
+    void aFrameOfMaximumPlacementsAllocatesNothingPerPlacementOnTheStack() {
+        // Every slot at the placement cap, drawn twice (opaque/cutout and the blended pass).
+        int placements = BgfxWorldStreamRenderer.SLOT_COUNT * WorldStreamObjectsFile.MAX_PLACEMENTS;
+        assertTrue(placements > 5_760 - 1);
+        double c = Math.cos(0.3), s = Math.sin(0.3);
+        double[] table = new double[placements * WorldStreamObjectsFile.PLACEMENT_DOUBLES];
+        for (int p = 0; p < placements; p++) {
+            System.arraycopy(
+                    new double[] {p, -p, 3, 1, -c, s, 0, -s, -c, 0, 0, 0, 1},
+                    0,
+                    table,
+                    p * WorldStreamObjectsFile.PLACEMENT_DOUBLES,
+                    WorldStreamObjectsFile.PLACEMENT_DOUBLES);
+        }
+        var origin = new TerrainScene.Origin(0, 0, 0);
+        try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
+            var frame = BgfxWorldStreamRenderer.ObjectFrame.on(stack);
+            long pointer = stack.getPointer();
+            for (int pass = 0; pass < 2; pass++) {
+                for (int p = 0; p < placements; p++) {
+                    frame.placement(table, p, origin);
+                    frame.material(p % 3);
+                    assertEquals(pointer, stack.getPointer(), "placement " + p);
+                }
+            }
+            assertEquals((float) p(table, placements - 1), frame.model.get(12));
+            assertEquals(0.5f, frame.material(WorldStreamObjectsFile.CUTOUT).get(0));
+            assertEquals(1f, frame.material(WorldStreamObjectsFile.BLENDED).get(1));
+        }
+        // Negative control: three vec4s per placement, the old pattern, exhaust the default stack.
+        assertThrows(
+                OutOfMemoryError.class,
+                () -> {
+                    try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
+                        for (int p = 0; p < placements; p++) {
+                            stack.floats(0, 0, 0, 0);
+                            stack.floats(0.5f, 0, 0, 0);
+                            stack.floats(0, 1, 0, 0);
+                        }
+                    }
+                });
+    }
+
+    private static double p(double[] table, int p) {
+        return table[p * WorldStreamObjectsFile.PLACEMENT_DOUBLES];
+    }
 }

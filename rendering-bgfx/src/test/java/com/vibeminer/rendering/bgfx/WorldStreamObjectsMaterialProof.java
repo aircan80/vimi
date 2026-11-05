@@ -15,7 +15,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * Opt-in actual native proof of the hot child's exterior material classes: one authored terrain
  * tile, then late objects with three camera-facing quads side by side, a cutout quad whose texels
  * are all transparent (discarded: terrain stays), an opaque quad (exact texel colour at full light)
- * and an alpha-blended quad (source-alpha over the terrain pixel). Authored data only.
+ * and an alpha-blended quad (source-alpha over the terrain pixel). The tile is filled to the
+ * placement cap behind the camera, so each frame draws the maximum per-tile placements in both
+ * passes. Authored data only.
  */
 public final class WorldStreamObjectsMaterialProof {
     private static final int WIDTH = 800, HEIGHT = 500;
@@ -100,7 +102,9 @@ public final class WorldStreamObjectsMaterialProof {
                 throw new AssertionError("Actual native process drain disagrees");
             }
             System.out.println(
-                    "WORLD_OBJECT_MATERIALS_PASS cutout="
+                    "WORLD_OBJECT_MATERIALS_PASS placements="
+                            + WorldStreamObjectsFile.MAX_PLACEMENTS
+                            + " cutout="
                             + Integer.toHexString(left)
                             + " opaque="
                             + Integer.toHexString(middle)
@@ -153,6 +157,18 @@ public final class WorldStreamObjectsMaterialProof {
                 });
         builder.placement(
                 0, VIEW.x(), VIEW.y(), VIEW.z(), 1, new double[] {1, 0, 0, 0, 1, 0, 0, 0, 1});
+        // Fill the tile to the placement cap behind the camera (looking along +x), so every frame
+        // draws all of them in the opaque/cutout pass and again in the sorted blended pass.
+        while (builder.placementRoom() > 0) {
+            int i = builder.placementCount();
+            builder.placement(
+                    0,
+                    VIEW.x() - 60 - i % 24,
+                    VIEW.y() + i / 24,
+                    VIEW.z(),
+                    1,
+                    new double[] {1, 0, 0, 0, 1, 0, 0, 0, 1});
+        }
         return builder.build();
     }
 

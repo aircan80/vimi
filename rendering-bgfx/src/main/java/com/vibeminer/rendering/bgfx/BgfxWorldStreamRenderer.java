@@ -77,6 +77,12 @@ import org.lwjgl.system.MemoryUtil;
 
 /** Fixed-resource context-owned persistent terrain. All bgfx methods run on its native owner. */
 final class BgfxWorldStreamRenderer implements AutoCloseable {
+    /**
+     * Ten slots (nine active, one staged). Exterior objects add at most one validated objects file
+     * per slot: up to {@link WorldStreamObjectsFile#MAX_BYTES} of GPU vertices, indices and RGBA8
+     * textures (the version 2 maximum profile is about 14.9 MB), so the object GPU budget is about
+     * 150 MB in the worst case, charged in Stats.objectBytes; real tiles stay far below it.
+     */
     static final int SLOT_COUNT = 10, INSTANCE_BYTES = 48;
 
     /** Terrain 65536 plus optional static water 16384 instances in one per-slot buffer. */
@@ -327,6 +333,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     }
 
     private final Thread owner = Thread.currentThread();
+    // Reused by the blended pass every frame.
+    private final java.util.ArrayList<Long> blendOrder = new java.util.ArrayList<>();
+    private final java.util.ArrayList<Double> blendDistances = new java.util.ArrayList<>();
     private final WorldStreamEnvelope.Session session;
     private final Slot[] slots = new Slot[SLOT_COUNT];
     private final AtomicReference<Upload> uploading = new AtomicReference<>();
@@ -961,11 +970,14 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                         0);
                 bgfx_submit(0, program, 0, BGFX_DISCARD_ALL);
             }
+            // One fixed set of object uniform buffers per frame: per-placement work allocates
+            // nothing on the frame's MemoryStack, whatever the number of placements.
+            var frame = wmoProgram == INVALID ? null : ObjectFrame.on(stack);
             if (wmoProgram != INVALID) {
                 for (var lease : active) {
                     var objects = slots[lease.slot()].objects;
                     if (objects != null) {
-                        drawObjects(stack, objects, origin, matrix, project);
+                        drawObjects(frame, objects, origin, matrix, project);
                     }
                 }
             }
@@ -998,7 +1010,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             }
             // Alpha-blended object ranges last, after water, farthest placement first.
             if (!blended.isEmpty()) {
-                drawBlended(stack, blended, origin, matrix, project);
+                drawBlended(frame, blended, origin, matrix, project);
             }
         }
         return new Ticket(cameraRevision, content, policy, width, height);
@@ -1036,13 +1048,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      * their placement origin to the camera origin (per placement, not per triangle).
      */
     private void drawBlended(
-            MemoryStack stack,
+            ObjectFrame frame,
             List<SlotObjects> blended,
             TerrainScene.Origin origin,
             java.nio.FloatBuffer eyeMatrix,
             java.nio.FloatBuffer projectionMatrix) {
-        var order = new java.util.ArrayList<long[]>();
-        var distances = new java.util.ArrayList<Double>();
+        blendOrder.clear();
+        blendDistances.clear();
         for (int s = 0; s < blended.size(); s++) {
             var objects = blended.get(s);
             for (int p = 0; p < objects.placementModels.length; p++) {
@@ -1053,23 +1065,25 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 double dx = objects.placements[at] - origin.x();
                 double dy = objects.placements[at + 1] - origin.y();
                 double dz = objects.placements[at + 2] - origin.z();
-                order.add(new long[] {s, p, distances.size()});
-                distances.add(dx * dx + dy * dy + dz * dz);
+                blendOrder.add(((long) s << 32) | p);
+                blendDistances.add(dx * dx + dy * dy + dz * dz);
             }
         }
-        order.sort((a, b) -> Double.compare(distances.get((int) b[2]), distances.get((int) a[2])));
-        var model = stack.mallocFloat(16);
-        var normal = stack.mallocFloat(16);
-        for (var entry : order) {
+        var indices = new Integer[blendOrder.size()];
+        for (int i = 0; i < indices.length; i++) {
+            indices[i] = i;
+        }
+        java.util.Arrays.sort(
+                indices, (a, b) -> Double.compare(blendDistances.get(b), blendDistances.get(a)));
+        for (int i : indices) {
+            long entry = blendOrder.get(i);
             drawPlacement(
-                    stack,
-                    blended.get((int) entry[0]),
-                    (int) entry[1],
+                    frame,
+                    blended.get((int) (entry >>> 32)),
+                    (int) entry,
                     origin,
                     eyeMatrix,
                     projectionMatrix,
-                    model,
-                    normal,
                     true);
         }
     }
@@ -1080,39 +1094,63 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      * position minus that origin, cast to float once.
      */
     private void drawObjects(
-            MemoryStack stack,
+            ObjectFrame frame,
             SlotObjects objects,
             TerrainScene.Origin origin,
             java.nio.FloatBuffer eyeMatrix,
             java.nio.FloatBuffer projectionMatrix) {
-        var model = stack.mallocFloat(16);
-        var normal = stack.mallocFloat(16);
         for (int p = 0; p < objects.placementModels.length; p++) {
-            drawPlacement(
-                    stack, objects, p, origin, eyeMatrix, projectionMatrix, model, normal, false);
+            drawPlacement(frame, objects, p, origin, eyeMatrix, projectionMatrix, false);
+        }
+    }
+
+    /**
+     * The object uniform buffers of one frame, allocated once from the frame's MemoryStack. Every
+     * placement rewrites them in place, so drawing allocates nothing per placement.
+     */
+    static final class ObjectFrame {
+        final java.nio.FloatBuffer model, normal, opaque, cutout, blend;
+
+        private ObjectFrame(MemoryStack stack) {
+            model = stack.mallocFloat(16);
+            normal = stack.mallocFloat(16);
+            opaque = stack.floats(0, 0, 0, 0);
+            cutout = stack.floats(CUTOUT_REFERENCE, 0, 0, 0);
+            blend = stack.floats(0, 1, 0, 0);
+        }
+
+        static ObjectFrame on(MemoryStack stack) {
+            return new ObjectFrame(stack);
+        }
+
+        /** Writes placement p's matrices into this frame's buffers. */
+        void placement(double[] placements, int p, TerrainScene.Origin origin) {
+            objectMatrices(placements, p, origin, model, normal);
+        }
+
+        /** The u_wmoMaterial value of one range class. */
+        java.nio.FloatBuffer material(int kind) {
+            return kind == WorldStreamObjectsFile.OPAQUE
+                    ? opaque
+                    : kind == WorldStreamObjectsFile.CUTOUT ? cutout : blend;
         }
     }
 
     /** One placement's ranges of one pass: opaque and cutout, or blended only. */
     private void drawPlacement(
-            MemoryStack stack,
+            ObjectFrame frame,
             SlotObjects objects,
             int p,
             TerrainScene.Origin origin,
             java.nio.FloatBuffer eyeMatrix,
             java.nio.FloatBuffer projectionMatrix,
-            java.nio.FloatBuffer model,
-            java.nio.FloatBuffer normal,
             boolean blendedPass) {
-        objectMatrices(objects.placements, p, origin, model, normal);
+        frame.placement(objects.placements, p, origin);
         // bgfx uniforms persist across submits, so they change once per placement.
         bgfx_set_uniform(wmoEye, eyeMatrix, 1);
         bgfx_set_uniform(wmoProjection, projectionMatrix, 1);
-        bgfx_set_uniform(wmoModel, model, 1);
-        bgfx_set_uniform(wmoNormal, normal, 1);
-        var opaque = stack.floats(0, 0, 0, 0);
-        var cutout = stack.floats(CUTOUT_REFERENCE, 0, 0, 0);
-        var blend = stack.floats(0, 1, 0, 0);
+        bgfx_set_uniform(wmoModel, frame.model, 1);
+        bgfx_set_uniform(wmoNormal, frame.normal, 1);
         int stride = WorldStreamObjectsFile.RANGE_INTS;
         int m = objects.placementModels[p];
         for (int mesh = objects.models[m * 2];
@@ -1126,12 +1164,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 if ((kind == WorldStreamObjectsFile.BLENDED) != blendedPass) {
                     continue;
                 }
-                bgfx_set_uniform(
-                        wmoMaterial,
-                        kind == WorldStreamObjectsFile.OPAQUE
-                                ? opaque
-                                : kind == WorldStreamObjectsFile.CUTOUT ? cutout : blend,
-                        1);
+                bgfx_set_uniform(wmoMaterial, frame.material(kind), 1);
                 bgfx_set_dynamic_vertex_buffer(
                         0, objects.vertices, objects.meshes[at], objects.meshes[at + 1]);
                 bgfx_set_dynamic_index_buffer(
