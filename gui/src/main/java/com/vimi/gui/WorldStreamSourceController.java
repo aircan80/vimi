@@ -246,6 +246,9 @@ final class WorldStreamSourceController {
     private long commitRetryAt, commitRetryCapacity, commitIssuedCapacity;
     // Test seam: runs on the worker after a RETRY_LATER commit refusal, before it is recorded.
     volatile Runnable refusalSeam;
+    // Test seam: runs on the worker after a RETRY_LATER tile-preparation refusal, before it is
+    // recorded.
+    volatile Runnable tileRefusalSeam;
 
     WorldStreamSourceController(
             Request request, GpuStarter starter, Events events, Consumer<Runnable> fxPost) {
@@ -641,6 +644,8 @@ final class WorldStreamSourceController {
                             || refusal.getSuppressed().length != 0) throw failure;
                     var origin = pending.producer.sourceRefusal();
                     int failedTile = key(pending.tile);
+                    // Read while the refused reservation is still at hand (#283).
+                    long refusedCapacity = pending.reservation.capacityBaseline();
                     if(creditTarget!=null && same(creditTarget,pending.tile)
                             && refusal.reason()!=WorldStreamTransport.Refusal.RETRY_LATER) creditTarget=null;
                     pending.producer.close();
@@ -673,8 +678,17 @@ final class WorldStreamSourceController {
                     // This refusal's own unused-credit ACK is not a source-pool wakeup.
                     blockedOnMaterialPool = origin != null && origin.site().equals("MATERIAL_POOL");
                     blockedSourceRetirement = sourceRetirementRevision;
+                    var seam = tileRefusalSeam;
+                    if (seam != null) seam.run();
                     blockedAt = clock.getAsLong();
-                    blockedCapacity = session.capacityRevision();
+                    // The revision the refused reservation itself accounts for, not the current
+                    // one: a retirement or credit that landed after it was issued (even between
+                    // the refusal and this step) must still wake the retry (#283). The
+                    // reservation's own drain and retirement are excluded; its unused-credit
+                    // CREDIT arrives as an ordinary capacity change and deliberately wakes one
+                    // retry per refusal, as before (polling while the geometry lane is busy is
+                    // pre-existing and tracked separately).
+                    blockedCapacity = refusedCapacity;
                     synchronized (lock) {
                         blockedPresentation = presentationRevision;
                         blockedDemand = demandRevision;
