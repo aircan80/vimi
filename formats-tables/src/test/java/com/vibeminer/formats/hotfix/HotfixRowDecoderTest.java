@@ -3,6 +3,7 @@ package com.vibeminer.formats.hotfix;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.formats.db2.Db2ByteSource;
@@ -132,6 +133,128 @@ class HotfixRowDecoderTest {
             nonfinite.putFloat(bad).putFloat(0).putFloat(0).putFloat(0).putFloat(0).flip();
             refused(HotfixRowDecoder.Reason.FLOAT, layout, 9, nonfinite);
         }
+    }
+
+    private static HotfixRowDecoder.Layout raw(
+            HotfixRowDecoder.Layout layout, String warning, java.util.Set<Integer> fitted) {
+        var columns = new ArrayList<>(layout.header().columns());
+        for (int i = 1; i < columns.size(); i++) {
+            var plain = columns.get(i);
+            var field = layout.schema().columns().get(i);
+            columns.set(
+                    i,
+                    new Db2Types.Column(
+                            plain.name(),
+                            plain.kind(),
+                            plain.isId(),
+                            new Db2Types.Interpretation(
+                                    Db2Types.RAW_PHYSICAL_POLICY,
+                                    32,
+                                    false,
+                                    field.bits(),
+                                    Boolean.TRUE.equals(field.unsigned()),
+                                    warning),
+                            null));
+        }
+        var h = layout.header();
+        return new HotfixRowDecoder.Layout(
+                layout.schema(),
+                new Db2Types.Header(
+                        h.schemaVersion(),
+                        h.tableHash(),
+                        h.layoutHash(),
+                        h.declaredRecords(),
+                        h.declaredCopyRecords(),
+                        h.recordSize(),
+                        columns,
+                        h.format()),
+                layout.nativeFlags(),
+                layout.nativeIdFieldIndex(),
+                fitted);
+    }
+
+    @Test
+    void fittedRawColumnsDecodeAtTheirDeclaredWidth() {
+        var plain = layout("int ID\nint A\nint B", "$id,noninline$ID<u32>\nA<u8>\nB<8>");
+        var fitted = raw(plain, Db2Types.UNVERIFIED_RAW_WARNING, java.util.Set.of(1, 2));
+        assertEquals(
+                List.of("9", "0", "127"),
+                decode(fitted, 9, ByteBuffer.allocate(2).put((byte) 0).put((byte) 127).flip())
+                        .row()
+                        .values());
+        assertEquals(
+                List.of("9", "255", "5"),
+                decode(fitted, 9, ByteBuffer.allocate(2).put((byte) 255).put((byte) 5).flip())
+                        .row()
+                        .values());
+        // A negative declared value has no single physical spelling in the base row.
+        refused(
+                HotfixRowDecoder.Reason.RAW_INTEGER,
+                fitted,
+                9,
+                ByteBuffer.allocate(2).put((byte) 1).put((byte) -1).flip());
+        // Not shown to fit the base values: refused as before.
+        refused(
+                HotfixRowDecoder.Reason.COLUMNS,
+                raw(plain, Db2Types.UNVERIFIED_RAW_WARNING, java.util.Set.of(1)),
+                9,
+                ByteBuffer.allocate(2).put((byte) 1).put((byte) 1).flip());
+        // Raw for another reason (explicit evidence or low-bit collisions): always refused.
+        refused(
+                HotfixRowDecoder.Reason.COLUMNS,
+                raw(
+                        plain,
+                        "Candidate integer width is narrower than the physical value width.",
+                        java.util.Set.of(1, 2)),
+                9,
+                ByteBuffer.allocate(2).put((byte) 1).put((byte) 1).flip());
+    }
+
+    @Test
+    void baseTextFitsTheDeclaredWidthOnlyWhenItIsANonNegativeInRangeValue() {
+        var u8 =
+                new Db2Types.Interpretation(
+                        Db2Types.RAW_PHYSICAL_POLICY,
+                        32,
+                        false,
+                        8,
+                        true,
+                        Db2Types.UNVERIFIED_RAW_WARNING);
+        var s8 =
+                new Db2Types.Interpretation(
+                        Db2Types.RAW_PHYSICAL_POLICY,
+                        32,
+                        false,
+                        8,
+                        false,
+                        Db2Types.UNVERIFIED_RAW_WARNING);
+        assertTrue(HotfixRowDecoder.fitsDeclared("0", u8));
+        assertTrue(HotfixRowDecoder.fitsDeclared("255", u8));
+        assertFalse(HotfixRowDecoder.fitsDeclared("256", u8));
+        assertFalse(HotfixRowDecoder.fitsDeclared("4294967295", u8));
+        assertFalse(HotfixRowDecoder.fitsDeclared("-1", u8));
+        assertFalse(HotfixRowDecoder.fitsDeclared("x", u8));
+        assertTrue(HotfixRowDecoder.fitsDeclared("127", s8));
+        assertFalse(HotfixRowDecoder.fitsDeclared("128", s8));
+    }
+
+    @Test
+    void relationColumnsNeverQualifyAsFittedRaw() {
+        var layout = layout("int ID\nint Parent", "$id$ID<u32>\n$relation,noninline$Parent<u16>");
+        var column =
+                new Db2Types.Column(
+                        "Parent",
+                        "integer",
+                        false,
+                        new Db2Types.Interpretation(
+                                Db2Types.RAW_PHYSICAL_POLICY,
+                                32,
+                                false,
+                                16,
+                                true,
+                                Db2Types.UNVERIFIED_RAW_WARNING),
+                        null);
+        assertFalse(HotfixRowDecoder.rawCandidate(column, layout.schema().columns().get(1)));
     }
 
     @Test
