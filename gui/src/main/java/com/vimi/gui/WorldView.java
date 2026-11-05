@@ -104,6 +104,10 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final WorldStreamSourceController.Events streamingEvents = this::streamChanged;
     private boolean streamingMode;
     private boolean streamingPaused, streamingStartWaiting, renderingTransitionPending;
+    static final String STALL_HINT = "Renderer not responding; Retry";
+    // Detection only: logs and hints once per stall episode, never kills or restarts.
+    private final WorldStallWatchdog stallWatchdog = new WorldStallWatchdog(
+            WorldStallWatchdog.configured(System.getProperty("vimi.world.stallMillis")));
     private final WorldStreamImagePresentation streamingImages = new WorldStreamImagePresentation(image);
     private TerrainRenderer.Camera resumeCamera;
     private long streamingControl, streamingPolicy = 1;
@@ -803,6 +807,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                                 else switchStreamingRendering();
                             }
                             if (streaming != null) streaming.pulse();
+                            pollStall(now);
                         }
                         if (camera == null) return;
                         if (gpu != null && !viewportActive()) {
@@ -2279,6 +2284,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 : (source, scope, tile, cancellation) -> WorldStreamSourceBridge.prepareExterior(
                         source, scope, tile, cancellation,
                         (builder, owned, token) -> creatureSource.append(builder, creatureMap, owned, token));
+        stallWatchdog.reset();
         streaming = new WorldStreamSourceController(request, scope -> {
             var owner = new WorldStreamGpuOwner(gpuService, scope);
             return new WorldStreamSourceController.GpuOwner() {
@@ -2307,6 +2313,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private void retireStreaming() {
         var previous = streaming;
         streaming = null;
+        stallWatchdog.reset();
         if (previous != null) streamingRetirement = previous.closeAsync();
     }
 
@@ -2335,9 +2342,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
         show(gpuActivity, busy);
         show(textureActivity, busy);
         show(firstFrameActivity, busy && image.getImage() == null);
-        gpuStatus.setText(snapshot.detail());
+        gpuStatus.setText(stallWatchdog.alerted() ? STALL_HINT : snapshot.detail());
         textureStatus.setText(snapshot.detail());
-        retryGpu.setDisable(busy);
+        retryGpu.setDisable(busy && !stallWatchdog.alerted());
         retryTextures.setDisable(true);
         if (snapshot.area() != null) {
             currentArea.setText(snapshot.area().label());
@@ -2357,6 +2364,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
             if (!streamingImages.present(frame.width(), frame.height(), frame.pixels(),
                     () -> !stale(selection) && viewportActive() && controller == streaming,
                     () -> controller.presented(frame))) return;
+            stallWatchdog.presented(frame.cameraRevision(), frame.sequence(), System.nanoTime());
             show(firstFrameActivity, false);
             status.setText("Terrain explorer · persistent GPU terrain · static diagnostic water where qualified · buildings and collision are not rendered");
         } catch (RuntimeException failedUpload) {
@@ -2385,8 +2393,26 @@ final class WorldView extends BorderPane implements AutoCloseable {
         streamingHeight = height;
         streaming.camera(new com.vibeminer.rendering.bgfx.WorldStreamTransport.Camera(
                 ++streamingControl, streamingPolicy, width, height, TerrainCamera.from(camera)));
+        stallWatchdog.requested(streamingControl, System.nanoTime());
         minimap.update(handle, inventory, origin, originX, originY,
                 camera.x(), camera.y(), camera.yaw());
+    }
+
+    /**
+     * Frames are owed only while the stream is READY in a visible, current explorer. A stall logs
+     * one bounded, redacted record and shows a non-blocking hint; Retry restarts the stream.
+     */
+    private void pollStall(long now) {
+        var controller = streaming;
+        boolean eligible = controller != null && !streamingStartWaiting && !stale(selection)
+                && viewportActive()
+                && controller.snapshot().phase() == WorldStreamSourceController.Phase.READY;
+        var stall = stallWatchdog.poll(now, eligible);
+        if (stall == null) return;
+        WorldDiagnostics.stalled(WorldStallWatchdog.describe(stall) + "; "
+                + controller.stallSummary());
+        gpuStatus.setText(STALL_HINT);
+        retryGpu.setDisable(false);
     }
 
     private void streamNeighborhood() {

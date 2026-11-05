@@ -649,6 +649,14 @@ tasks.register('worldDiagnosticsTest', JavaExec) {
 }
 check.dependsOn worldDiagnosticsTest
 
+// Stalled-frame detection for the visible World explorer, with an injected clock.
+tasks.register('worldStallWatchdogTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldStallWatchdogTest'
+}
+check.dependsOn worldStallWatchdogTest
+
 // Off-FX display feedback and actual legacy-work retirement, without live data or a GPU.
 tasks.register('worldStreamBackgroundTest', JavaExec) {
     dependsOn testClasses

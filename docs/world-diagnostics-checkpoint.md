@@ -56,6 +56,15 @@ rendering.
   first failure and every 64th after, per session. Clean refusals
   (`Source unavailable`, `water refused`) are expected outcomes and are not
   logged.
+- **Stalled frames.** While the streamed explorer is visible, the window is
+  shown and not minimized, and the stream is READY, a camera revision with no
+  newer frame for 5 s (`-Dvimi.world.stallMillis`, 1000 to 600000) is a stall.
+  An idle camera owes no frame. A hidden view, a phase other than READY, a
+  retirement or a stopped explorer pulse restarts the clock. Each episode logs one
+  WARNING with the frame numbers, controller phase, prepared tiles, pending
+  presentation, the transport's pending upload, commit, late objects and command
+  state, and the redacted helper stderr tail. The status shows "Renderer not
+  responding; Retry" until a frame arrives.
 - **Original cause survives.** `WorldStreamGpuOwner` keeps the cause instead of
   replacing it. A queued request that is blocked because the previous World
   resources did not retire now fails with `RetirementBlocked`, which carries the
@@ -121,9 +130,8 @@ path and not this machine's identity is not recognised.
 - Protocol stdout still rejects unrelated lines, such as JFR startup output.
   Fixing that needs a dedicated channel or an explicitly framed protocol, plus
   tests that tell bounded unrelated output apart from malformed real records.
-- No stalled-frame watchdog yet. It needs rate limits, lifecycle awareness
-  (hidden or idle camera must not alarm) and parent/child thread evidence, with
-  no perpetual dump loop and no waits on the UI thread.
+- The stalled-frame watchdog only detects and diagnoses. It never kills or
+  restarts the helper, and it collects no thread dumps.
 - If the helper exits before the parent attaches its stream workers, stderr is
   not read. The record then says "helper stderr not captured" instead of claiming
   that stderr was empty.

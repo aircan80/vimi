@@ -262,6 +262,21 @@ final class WorldDiagnostics {
         record(TERMINAL, context, failure, detail);
     }
 
+    /**
+     * A stalled visible explorer: one record per stall episode on the terminal budget. The record is
+     * already bounded; its controller and helper parts are already redacted. Never throws.
+     */
+    static void stalled(String record) {
+        try {
+            long dropped = TERMINAL.admit(clock.getAsLong());
+            if (dropped < 0) return;
+            LOG.log(System.Logger.Level.WARNING, record
+                    + (dropped == 0 ? "" : " (" + dropped + " earlier similar World records rate-limited)"));
+        } catch (Throwable ignored) {
+            // Diagnostics cannot interrupt the explorer pulse.
+        }
+    }
+
     private static void record(Budget budget, String context, Throwable failure, String detail) {
         try {
             long dropped = budget.admit(clock.getAsLong());

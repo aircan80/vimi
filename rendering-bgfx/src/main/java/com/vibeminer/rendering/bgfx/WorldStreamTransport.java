@@ -1830,6 +1830,40 @@ public final class WorldStreamTransport {
             return objectsDiagnostic.copy();
         }
 
+        /**
+         * Bounded, redacted evidence for a stalled-frame report, without waiting on the helper:
+         * pending upload, commit and late objects work, queued reliable commands, whether a frame
+         * awaits the viewer, and the helper stderr tail. Never ends or changes the session.
+         */
+        public String stallSummary() {
+            boolean upload, commit, objects, frame;
+            int commands, reliable;
+            synchronized (lock) {
+                upload = tile != null;
+                commit = commitOperation != null;
+                objects = objectsOperation != null;
+                frame = latestFrame != null;
+                commands = reliableCommands.size();
+                reliable = outstandingReliable;
+            }
+            long pid = childPid;
+            return (pid == 0 ? "no child process" : "pid " + pid)
+                    + (closing ? "; closing" : "")
+                    + "; tile upload "
+                    + (upload ? "pending" : "idle")
+                    + "; commit "
+                    + (commit ? "pending" : "idle")
+                    + "; late objects "
+                    + (objects ? "pending" : "idle")
+                    + "; queued commands "
+                    + commands
+                    + "; outstanding reliable "
+                    + reliable
+                    + "; frame awaiting viewer "
+                    + (frame ? "yes" : "no")
+                    + stderrSuffix();
+        }
+
         private String stderrSuffix() {
             return !stderrAttached
                     ? "; helper stderr not captured"

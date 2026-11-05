@@ -128,6 +128,65 @@ class WorldStreamTransportDiagnosticsTest {
     }
 
     @Test
+    void stallSummaryReportsPendingWorkAndARedactedStderrTail() throws Exception {
+        var child = new WorldStreamLaunchOwnerTest.Child();
+        var release = new java.util.concurrent.CountDownLatch(1);
+        // The child stays alive: after its first record, stdout blocks until the test ends.
+        var held =
+                new java.io.InputStream() {
+                    @Override
+                    public int read() throws java.io.IOException {
+                        try {
+                            release.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new java.io.InterruptedIOException();
+                        }
+                        return -1;
+                    }
+                };
+        child.error =
+                new ByteArrayInputStream(
+                        "Cannot open /home/tester/Games/data.000\n"
+                                .getBytes(StandardCharsets.US_ASCII));
+        var session =
+                WorldStreamTransport.prepare(directory, spec)
+                        .launch(
+                                arguments -> {
+                                    var first =
+                                            new ByteArrayInputStream(
+                                                    (prefix(arguments)
+                                                                    + "SESSION TERRAIN_BASIC_V1\n")
+                                                            .getBytes(StandardCharsets.US_ASCII));
+                                    child.input = new java.io.SequenceInputStream(first, held);
+                                    return child;
+                                });
+        try {
+            session.initialized().get(5, TimeUnit.SECONDS);
+            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            String summary = session.stallSummary();
+            while (!summary.contains("Cannot open") && System.nanoTime() < until) {
+                Thread.sleep(2);
+                summary = session.stallSummary();
+            }
+            assertTrue(
+                    summary.startsWith(
+                            "pid 919; tile upload idle; commit idle; late objects idle; queued"
+                                    + " commands 0; outstanding reliable 0; frame awaiting viewer"
+                                    + " no; helper stderr tail:\n"),
+                    summary);
+            assertTrue(summary.contains("Cannot open <path>"), summary);
+            assertFalse(summary.contains("tester"), summary);
+            // Observation only: the session is still running.
+            assertFalse(session.completion().isDone());
+        } finally {
+            release.countDown();
+            session.closeAsync();
+            session.terminatedAndDrained().get(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
     void noChildStartFailureStillReportsWithoutPid() throws Exception {
         var session =
                 WorldStreamTransport.prepare(directory, spec)
