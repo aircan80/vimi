@@ -17,7 +17,7 @@ import java.util.Objects;
  * select cache entries, authenticate sources, apply overlays or mint native capture evidence.
  */
 public final class HotfixRowDecoder {
-    public static final String REVISION = "hotfix-flat-dbd-v5";
+    public static final String REVISION = "hotfix-flat-dbd-v6";
 
     public enum Reason {
         LIMIT,
@@ -35,13 +35,7 @@ public final class HotfixRowDecoder {
         /**
          * Negative value in a raw-physical column, whose base rows print unsigned physical values.
          */
-        RAW_INTEGER,
-        /**
-         * The row is followed by an optional-data block for the TactKey table (its table hash, an
-         * 8-byte key name and a 16-byte key), as the server attaches to encrypted text. The key is
-         * not applied, so the row is not shown; the block is never decoded or exposed.
-         */
-        OPTIONAL_KEY_DATA
+        RAW_INTEGER
     }
 
     /** Table hash of TactKey, which opens a server's optional key data block. */
@@ -182,10 +176,19 @@ public final class HotfixRowDecoder {
         return value >= 0 && value < limit;
     }
 
-    /** Values may include key material; toString deliberately does not render any cells. */
-    public record Decoded(Db2Types.Row row, int consumedBytes) {
+    /**
+     * Values may include key material; toString deliberately does not render any cells. {@code
+     * optionalKeyData} is true when the body was followed by a server optional-data block for the
+     * TactKey table (table hash, 8-byte key name, 16-byte key). The row is fully described without
+     * it; the block is stripped and never part of the row.
+     */
+    public record Decoded(Db2Types.Row row, int consumedBytes, boolean optionalKeyData) {
         public Decoded {
             Objects.requireNonNull(row);
+        }
+
+        public Decoded(Db2Types.Row row, int consumedBytes) {
+            this(row, consumedBytes, false);
         }
 
         @Override
@@ -277,18 +280,22 @@ public final class HotfixRowDecoder {
             }
         }
         token.check();
+        boolean optionalKeyData = false;
         if (input.hasRemaining()) {
             int rest = input.remaining();
             if (rest == OPTIONAL_KEY_BYTES && input.getInt(input.position()) == TACT_KEY_HASH) {
-                // Recognized, but its key is not applied: refuse rather than show the row
-                // without the key it was sent with. The block itself is never decoded.
-                throw invalid(Reason.OPTIONAL_KEY_DATA);
+                // A recognized optional key block after a fully described row: the row reads
+                // the same without it, so it is stripped. Its bytes never reach the row.
+                optionalKeyData = true;
+            } else {
+                // Zero padding included: extra bytes mean the layout may not describe this row.
+                throw new Invalid(Reason.TRAILING_BYTES, rest);
             }
-            // Zero padding included: extra bytes mean the layout may not describe this row.
-            throw new Invalid(Reason.TRAILING_BYTES, rest);
         }
         return new Decoded(
-                new Db2Types.Row(recordId, false, null, values, List.of()), input.position());
+                new Db2Types.Row(recordId, false, null, values, List.of()),
+                input.position(),
+                optionalKeyData);
     }
 
     private static void validate(Layout layout, long tableHash, Limits limits, Cancellation token) {

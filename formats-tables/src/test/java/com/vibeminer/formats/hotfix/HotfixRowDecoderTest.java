@@ -258,7 +258,7 @@ class HotfixRowDecoderTest {
     }
 
     @Test
-    void trailingBytesAreRefusedWithTheirCountAndOptionalKeyDataIsNamed() {
+    void optionalKeyDataIsStrippedAndOtherTrailingBytesAreRefusedWithTheirCount() {
         var layout = layout("int ID\nint Value", "$id,noninline$ID<u32>\nValue<u8>");
         // A recognized optional key data block: TactKey table hash, then 24 authored bytes.
         var keyed = ByteBuffer.allocate(1 + 28).order(ByteOrder.LITTLE_ENDIAN);
@@ -266,10 +266,12 @@ class HotfixRowDecoderTest {
         for (int i = 0; i < 24; i++) {
             keyed.put((byte) (i * 7));
         }
-        assertEquals(
-                HotfixRowDecoder.Reason.OPTIONAL_KEY_DATA,
-                assertThrows(HotfixRowDecoder.Invalid.class, () -> decode(layout, 9, keyed.flip()))
-                        .reason());
+        var stripped = decode(layout, 9, keyed.flip());
+        assertEquals(List.of("9", "5"), stripped.row().values(), "the row reads without the block");
+        assertTrue(stripped.optionalKeyData());
+        assertEquals(1, stripped.consumedBytes(), "the block is not part of the row");
+        assertFalse(
+                decode(layout, 9, ByteBuffer.allocate(1).put((byte) 5).flip()).optionalKeyData());
         // Zero padding is not assumed harmless: the layout may simply not describe this row.
         var padded = ByteBuffer.allocate(1 + 3).put((byte) 5).rewind();
         var padding = assertThrows(HotfixRowDecoder.Invalid.class, () -> decode(layout, 9, padded));

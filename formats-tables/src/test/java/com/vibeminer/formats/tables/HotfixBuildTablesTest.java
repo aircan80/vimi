@@ -1111,7 +1111,7 @@ class HotfixBuildTablesTest {
     }
 
     @Test
-    void undecodableRowsReportTheirReasonThroughHotfixInfo() {
+    void keyBlockRowsAreShownAndTrailingBytesStayRefusedWithTheirReason() {
         var keyed = ByteBuffer.allocate(4 + 28).order(ByteOrder.LITTLE_ENDIAN);
         keyed.putInt(42).putInt(0xDF2F53CF);
         keyed.put(new byte[24]);
@@ -1121,19 +1121,18 @@ class HotfixBuildTablesTest {
                         0x11223344L,
                         entry(0x11223344L, 1, 20, 1, keyed.array()),
                         entry(0x11223344L, 1, 21, 1, padded.array()))) {
-            for (long id : new long[] {20, 21}) {
-                assertEquals(
-                        TableTypes.RowOutcome.UNKNOWN,
-                        tables.get(TableTypes.Ref.id(100), id, P, Cancellation.NONE)
-                                .join()
-                                .outcome());
-            }
+            var shown = tables.get(TableTypes.Ref.id(100), 20, P, Cancellation.NONE).join();
+            assertEquals(TableTypes.RowOutcome.FOUND, shown.outcome());
+            assertEquals(List.of("20", "42"), shown.row().row().values(), "block stripped");
+            assertEquals(
+                    TableTypes.RowOutcome.UNKNOWN,
+                    tables.get(TableTypes.Ref.id(100), 21, P, Cancellation.NONE).join().outcome());
             var keyRow =
                     tables.hotfixInfo(TableTypes.Ref.id(100), 20L, P, Cancellation.NONE)
                             .join()
                             .orElseThrow()
                             .row();
-            assertEquals(HotfixViewInfo.Origin.UNRESOLVED, keyRow.origin());
+            assertEquals(HotfixViewInfo.Origin.HOTFIX, keyRow.origin());
             assertEquals("OPTIONAL_KEY_DATA", keyRow.reason());
             assertEquals(
                     "TRAILING_BYTES:3",

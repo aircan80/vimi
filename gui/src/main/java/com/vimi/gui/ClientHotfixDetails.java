@@ -180,7 +180,9 @@ final class ClientHotfixDetails {
             case BASE -> info.get().unavailable() == null
                     ? "base DB2 source"
                     : "base DB2 source; " + unavailable(info.get().unavailable());
-            case HOTFIX -> "local hotfix cache, build " + version;
+            case HOTFIX -> "OPTIONAL_KEY_DATA".equals(source.reason())
+                    ? "local hotfix cache, build " + version + " (carried a key, not needed to read this row)"
+                    : "local hotfix cache, build " + version;
             case DELETED -> "removed by local hotfix cache, build " + version;
             case NOT_PUBLIC -> "hidden by local hotfix cache, build " + version;
             // The client hides records its cache marks INVALID; say so rather than "unknown".
@@ -193,9 +195,6 @@ final class ClientHotfixDetails {
 
     /** Fixed text for a cache record that could not be shown; never includes payload bytes. */
     static String undecoded(String reason) {
-        if ("OPTIONAL_KEY_DATA".equals(reason))
-            return "local hotfix cache row carries a key that is not applied; not shown, no stale base"
-                    + " substitution";
         if (reason != null && reason.matches("TRAILING_BYTES:[0-9]{1,6}"))
             return "local hotfix cache row has " + reason.substring("TRAILING_BYTES:".length())
                     + " bytes its layout does not describe; not shown, no stale base substitution";

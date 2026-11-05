@@ -683,16 +683,20 @@ public final class HotfixBuildTables implements BuildTables {
                                         entry.ordinal(),
                                         64 << 10,
                                         token);
-                        row =
+                        var decoded =
                                 HotfixRowDecoder.decode(
-                                                layout,
-                                                hash,
-                                                entry.recordId(),
-                                                ByteBuffer.wrap(payload),
-                                                new HotfixRowDecoder.Limits(),
-                                                token)
-                                        .row();
+                                        layout,
+                                        hash,
+                                        entry.recordId(),
+                                        ByteBuffer.wrap(payload),
+                                        new HotfixRowDecoder.Limits(),
+                                        token);
+                        row = decoded.row();
                         kind = Kind.ADD;
+                        if (decoded.optionalKeyData()) {
+                            // Shown as a hotfix row; hotfixInfo notes the stripped key block.
+                            undecoded = "OPTIONAL_KEY_DATA";
+                        }
                     }
                 } catch (com.vibeminer.formats.hotfix.HotfixRowDecoder.Invalid invalid) {
                     kind = Kind.UNKNOWN;
