@@ -24,8 +24,13 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
-@Timeout(15)
+// Opening, writing, reading and closing a store are disk work that a loaded CI runner can stall
+// for seconds (all five cases once timed out at a 5 s open). Those waits use DISK_SECONDS; the
+// admission signals this test is about keep tight bounds. Waits are interruptible gets, so the
+// class timeout still fails a hung case with its stack.
+@Timeout(60)
 final class WriterAdmissionTest {
+    private static final long DISK_SECONDS = 30;
     @TempDir Path folder;
     private ObjectStore store;
     private final CountDownLatch release = new CountDownLatch(1);
@@ -34,13 +39,13 @@ final class WriterAdmissionTest {
     void close() throws Exception {
         release.countDown();
         if (store != null) {
-            store.closeAsync().get(5, TimeUnit.SECONDS);
+            store.closeAsync().get(DISK_SECONDS, TimeUnit.SECONDS);
         }
     }
 
     private void blockWriter() throws Exception {
         if (store == null) {
-            store = ObjectStore.open(folder).get(5, TimeUnit.SECONDS);
+            store = ObjectStore.open(folder).get(DISK_SECONDS, TimeUnit.SECONDS);
         }
         CountDownLatch entered = new CountDownLatch(1);
         store.write(
@@ -75,12 +80,14 @@ final class WriterAdmissionTest {
         assertTrue(writes.stream().noneMatch(CompletableFuture::isDone));
         release.countDown();
         for (var write : writes) {
-            assertEquals(PutOutcome.STORED, write.get(5, TimeUnit.SECONDS).getFirst().outcome());
+            assertEquals(
+                    PutOutcome.STORED,
+                    write.get(DISK_SECONDS, TimeUnit.SECONDS).getFirst().outcome());
         }
         for (int i = 0; i < writes.size(); i++) {
             assertEquals(
                     ReadState.PRESENT,
-                    store.read(object(i).key()).get(5, TimeUnit.SECONDS).state());
+                    store.read(object(i).key()).get(DISK_SECONDS, TimeUnit.SECONDS).state());
         }
     }
 
@@ -96,9 +103,12 @@ final class WriterAdmissionTest {
         assertEquals(0, store.writer.state().retainedBytes());
         var successor = store.put(List.of(object(2)));
         release.countDown();
-        assertEquals(PutOutcome.STORED, successor.get(5, TimeUnit.SECONDS).getFirst().outcome());
         assertEquals(
-                ReadState.ABSENT, store.read(object(1).key()).get(5, TimeUnit.SECONDS).state());
+                PutOutcome.STORED,
+                successor.get(DISK_SECONDS, TimeUnit.SECONDS).getFirst().outcome());
+        assertEquals(
+                ReadState.ABSENT,
+                store.read(object(1).key()).get(DISK_SECONDS, TimeUnit.SECONDS).state());
     }
 
     @Test
@@ -114,20 +124,24 @@ final class WriterAdmissionTest {
         failure(store.put(List.of(object(101))), "OBJECT_STORE_CLOSED");
         assertFalse(closed.isDone());
         release.countDown();
-        closed.get(5, TimeUnit.SECONDS);
+        closed.get(DISK_SECONDS, TimeUnit.SECONDS);
         for (var write : accepted) {
-            assertEquals(PutOutcome.STORED, write.get(5, TimeUnit.SECONDS).getFirst().outcome());
+            assertEquals(
+                    PutOutcome.STORED,
+                    write.get(DISK_SECONDS, TimeUnit.SECONDS).getFirst().outcome());
         }
-        store = ObjectStore.open(folder).get(5, TimeUnit.SECONDS);
+        store = ObjectStore.open(folder).get(DISK_SECONDS, TimeUnit.SECONDS);
         assertEquals(
-                ReadState.PRESENT, store.read(object(63).key()).get(5, TimeUnit.SECONDS).state());
+                ReadState.PRESENT,
+                store.read(object(63).key()).get(DISK_SECONDS, TimeUnit.SECONDS).state());
         assertEquals(
-                ReadState.ABSENT, store.read(object(100).key()).get(5, TimeUnit.SECONDS).state());
+                ReadState.ABSENT,
+                store.read(object(100).key()).get(DISK_SECONDS, TimeUnit.SECONDS).state());
     }
 
     @Test
     void waitingStagedAppendOwnsItsInput() throws Exception {
-        store = ObjectStore.open(folder).get(5, TimeUnit.SECONDS);
+        store = ObjectStore.open(folder).get(DISK_SECONDS, TimeUnit.SECONDS);
         EncodedFixture fixture = EncodedFixture.sample();
         ObjectStaging staged =
                 store.stage(
@@ -135,7 +149,7 @@ final class WriterAdmissionTest {
                                 fixture.bytes().length,
                                 StoreTypes.Origin.CDN,
                                 Cancellation.NONE)
-                        .join();
+                        .get(DISK_SECONDS, TimeUnit.SECONDS);
         blockWriter();
         fillReadyQueue();
         byte[] submitted = fixture.bytes().clone();
@@ -144,14 +158,18 @@ final class WriterAdmissionTest {
         assertEquals(1, store.writer.state().waiting());
         assertEquals(fixture.bytes().length, store.writer.state().retainedBytes());
         release.countDown();
-        appended.get(5, TimeUnit.SECONDS);
-        assertEquals(PutOutcome.STORED, staged.commit(Cancellation.NONE).join().outcome());
-        assertArrayEquals(fixture.bytes(), store.read(fixture.key()).join().bytes());
+        appended.get(DISK_SECONDS, TimeUnit.SECONDS);
+        assertEquals(
+                PutOutcome.STORED,
+                staged.commit(Cancellation.NONE).get(DISK_SECONDS, TimeUnit.SECONDS).outcome());
+        assertArrayEquals(
+                fixture.bytes(),
+                store.read(fixture.key()).get(DISK_SECONDS, TimeUnit.SECONDS).bytes());
     }
 
     @Test
     void cancelingUnacceptedStagedCommitKeepsHandleUsable() throws Exception {
-        store = ObjectStore.open(folder).get(5, TimeUnit.SECONDS);
+        store = ObjectStore.open(folder).get(DISK_SECONDS, TimeUnit.SECONDS);
         EncodedFixture fixture = EncodedFixture.sample();
         ObjectStaging staged =
                 store.stage(
@@ -159,8 +177,8 @@ final class WriterAdmissionTest {
                                 fixture.bytes().length,
                                 StoreTypes.Origin.CDN,
                                 Cancellation.NONE)
-                        .join();
-        staged.append(fixture.bytes(), Cancellation.NONE).join();
+                        .get(DISK_SECONDS, TimeUnit.SECONDS);
+        staged.append(fixture.bytes(), Cancellation.NONE).get(DISK_SECONDS, TimeUnit.SECONDS);
         blockWriter();
         fillReadyQueue();
         Cancellation token = new Cancellation();
@@ -170,6 +188,6 @@ final class WriterAdmissionTest {
         release.countDown();
         assertEquals(
                 PutOutcome.STORED,
-                staged.commit(Cancellation.NONE).get(5, TimeUnit.SECONDS).outcome());
+                staged.commit(Cancellation.NONE).get(DISK_SECONDS, TimeUnit.SECONDS).outcome());
     }
 }

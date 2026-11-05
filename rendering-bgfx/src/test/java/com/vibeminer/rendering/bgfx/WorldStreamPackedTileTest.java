@@ -3,6 +3,7 @@ package com.vibeminer.rendering.bgfx;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.vibeminer.rendering.world.TerrainScene;
 import java.nio.file.Path;
@@ -49,16 +50,34 @@ final class WorldStreamPackedTileTest {
     }
 
     @Test
-    void maximumPackedOwnershipIsFourMiBAndOneShotTransferSurvivesWrapperClose() throws Exception {
+    void maximumPackedOwnershipIsGeometryPlusMipChainAndOneShotTransferSurvivesWrapperClose()
+            throws Exception {
         var input = read(WorldStreamTileFileTest.full(true), true);
         var packed = WorldStreamPackedTile.prepare(input, () -> false);
         try (var source = packed.take()) {
             packed.close();
             assertThrows(IllegalStateException.class, input::tile);
-            assertEquals(4L << 20, source.payloadBytes());
+            assertEquals(WorldStreamNativeProof.TERRAIN_FIXTURE_BYTES, source.payloadBytes());
+            assertEquals(4_543_828, WorldStreamNativeProof.TERRAIN_FIXTURE_BYTES);
+            assertEquals(5_330_260, WorldStreamPackedTile.MAX_PAYLOAD_BYTES);
+            assertTrue(source.payloadBytes() <= WorldStreamPackedTile.MAX_PAYLOAD_BYTES);
             assertEquals(3 << 20, source.geometry.capacity());
-            assertEquals(1 << 20, source.atlas.capacity());
+            assertEquals(WorldStreamAtlasMips.CHAIN_BYTES, source.atlas.capacity());
+            assertEquals(0, source.atlas.position());
+            assertEquals(WorldStreamAtlasMips.CHAIN_BYTES, source.atlas.limit());
             assertEquals(17, source.atlas.get(0));
+            // A fully covered level 0 is the qualified atlas byte for byte; the chain follows it.
+            var atlas = WorldStreamTileFileTest.atlas();
+            for (int at = 0; at < WorldStreamTileFile.ATLAS_BYTES; at++) {
+                if (atlas.get(at) != source.atlas.get(at)) {
+                    throw new AssertionError("Level 0 differs at " + at);
+                }
+            }
+            int last = WorldStreamAtlasMips.offset(WorldStreamAtlasMips.LEVELS - 1);
+            assertEquals(WorldStreamAtlasMips.CHAIN_BYTES - 4, last);
+            assertEquals(17, source.atlas.get(last));
+            assertEquals(51, source.atlas.get(last + 2));
+            assertEquals(-1, source.atlas.get(last + 3));
         }
     }
 

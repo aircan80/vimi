@@ -13,6 +13,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -141,8 +142,15 @@ class WorldExteriorObjectsTest {
         return root(gfid.length, gfid, List.of(new Material(0, IMAGE, 0)));
     }
 
-    /** One batch: first index, index count, MOBA flags byte, material byte. */
-    record Batch(int first, int count, int flags, int material) {}
+    /**
+     * One batch: first index, index count, MOBA flags byte, material byte and the sixth bounds
+     * word, which holds the material index under MOBA flag 0x2.
+     */
+    record Batch(int first, int count, int flags, int material, int large) {
+        Batch(int first, int count, int flags, int material) {
+            this(first, count, flags, material, 0);
+        }
+    }
 
     private static byte[] group(int flags, int vertexCount, int triangles, List<Batch> batches) {
         var h = buffer(68);
@@ -164,7 +172,8 @@ class WorldExteriorObjectsTest {
         var moba = buffer(24 * batches.size());
         for (int i = 0; i < batches.size(); i++) {
             var b = batches.get(i);
-            moba.putInt(i * 24 + 12, b.first())
+            moba.putShort(i * 24 + 10, (short) b.large())
+                    .putInt(i * 24 + 12, b.first())
                     .putShort(i * 24 + 16, (short) b.count())
                     .putShort(i * 24 + 18, (short) 0)
                     .putShort(i * 24 + 20, (short) 2)
@@ -561,9 +570,12 @@ class WorldExteriorObjectsTest {
             for (int material = 0; material < 7; material++) {
                 batches.add(new Batch(material * 3, 3, 0, material));
             }
-            batches.add(new Batch(21, 3, 2, 0)); // MOBA flags 2: large material index form
+            // MOBA flags 2: the material index is the sixth bounds word, not the byte.
+            batches.add(new Batch(21, 3, 2, 0, 1));
             batches.add(new Batch(24, 3, 0, 9)); // material out of range
-            f.files.sources.put(GROUP, group(EXT, 3, 9, batches));
+            batches.add(new Batch(27, 3, 2, 0, 9)); // large material index out of range
+            batches.add(new Batch(30, 3, 3, 0, 0)); // any other flag combination
+            f.files.sources.put(GROUP, group(EXT, 3, 11, batches));
             f.files.sources.put(401L, join(new byte[] {'B', 'L', 'P', '1'}, new byte[200]));
             f.files.sources.put(402L, blp(4, 4, 1, 0));
             f.files.protectedId = 402;
@@ -573,9 +585,9 @@ class WorldExteriorObjectsTest {
                                 WorldExteriorObjects.Count.PLACEMENT_DRAWN, 1,
                                 WorldExteriorObjects.Count.ROOT_DRAWN, 1,
                                 WorldExteriorObjects.Count.GROUP_DRAWN, 1,
-                                WorldExteriorObjects.Count.BATCH_DRAWN, 2,
-                                WorldExteriorObjects.Count.BATCH_BLENDED, 1,
-                                WorldExteriorObjects.Count.BATCH_UNSUPPORTED, 4,
+                                WorldExteriorObjects.Count.BATCH_DRAWN, 3,
+                                WorldExteriorObjects.Count.BATCH_BLENDED, 2,
+                                WorldExteriorObjects.Count.BATCH_UNSUPPORTED, 5,
                                 WorldExteriorObjects.Count.BATCH_MISSING_IMAGE, 3,
                                 WorldExteriorObjects.Count.IMAGE_DECODED, 2,
                                 WorldExteriorObjects.Count.IMAGE_UNAVAILABLE, 2,
@@ -586,7 +598,78 @@ class WorldExteriorObjectsTest {
                                 new WorldExteriorObjects.DrawRange(
                                         0, 3, 0, 0, WorldExteriorObjects.OPAQUE),
                                 new WorldExteriorObjects.DrawRange(
-                                        3, 3, 1, 1, WorldExteriorObjects.BLENDED)),
+                                        3, 3, 1, 1, WorldExteriorObjects.BLENDED),
+                                new WorldExteriorObjects.DrawRange(
+                                        6, 3, 1, 1, WorldExteriorObjects.BLENDED)),
+                        set.models().getFirst().meshes().getFirst().ranges());
+            }
+        }
+    }
+
+    /**
+     * A newer exterior group, as in recent world maps: MPY2 triangle records instead of MOPY, a
+     * second MOTV and MOCV declared by MOGP flags 0x2000000 and 0x1000000, and one batch per
+     * material using the large MOBA material index (flag 0x2).
+     */
+    private static byte[] modernGroup(int materials) {
+        var classic = group(EXT, 3, materials, List.of());
+        int body = indexOf(classic, "MOGP") + 8;
+        var h = buffer(68);
+        h.put(classic, body, 68);
+        h.putInt(8, EXT | 0x4 | 0x1000000 | 0x2000000);
+        h.putShort(44, (short) materials);
+        var moba = buffer(24 * materials);
+        for (int i = 0; i < materials; i++) {
+            moba.putShort(i * 24 + 10, (short) i)
+                    .putInt(i * 24 + 12, i * 3)
+                    .putShort(i * 24 + 16, (short) 3)
+                    .putShort(i * 24 + 20, (short) 2)
+                    .put(i * 24 + 22, (byte) 2);
+        }
+        var uv = floats(0, 0, 1, 0, 0, 1);
+        var colors = new byte[12];
+        int movt = indexOf(classic, "MOVT"), mopy = indexOf(classic, "MOPY");
+        return join(
+                version(17),
+                chunk(
+                        "MOGP",
+                        join(
+                                h.array(),
+                                chunk("MOGX", new byte[4]),
+                                chunk("MPY2", new byte[materials * 4]),
+                                // MOVT, MONR, MOTV and MOVI exactly as the classic group has them.
+                                Arrays.copyOfRange(classic, movt, mopy),
+                                chunk("MOBA", moba.array()),
+                                chunk("MOCV", colors),
+                                chunk("MOTV", uv),
+                                chunk("MOCV", colors))));
+    }
+
+    @Test
+    void newerGroupsWithMpy2ExtraSetsAndLargeMaterialIndicesAreDrawn() {
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            1,
+                            new long[] {GROUP, 0, 0, 0},
+                            List.of(new Material(0, IMAGE, 0), new Material(0, IMAGE2, 0))));
+            f.files.sources.put(GROUP, modernGroup(2));
+            try (var set = f.run()) {
+                assertEquals(
+                        Map.of(
+                                WorldExteriorObjects.Count.PLACEMENT_DRAWN, 1,
+                                WorldExteriorObjects.Count.ROOT_DRAWN, 1,
+                                WorldExteriorObjects.Count.GROUP_DRAWN, 1,
+                                WorldExteriorObjects.Count.BATCH_DRAWN, 2,
+                                WorldExteriorObjects.Count.IMAGE_DECODED, 2),
+                        counts(set));
+                assertEquals(
+                        List.of(
+                                new WorldExteriorObjects.DrawRange(
+                                        0, 3, 0, 0, WorldExteriorObjects.OPAQUE),
+                                new WorldExteriorObjects.DrawRange(
+                                        3, 3, 1, 1, WorldExteriorObjects.OPAQUE)),
                         set.models().getFirst().meshes().getFirst().ranges());
             }
         }

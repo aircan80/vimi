@@ -98,6 +98,64 @@ class WmoGroupSpansTest {
                 chunk("MOGP", join(header(1), join(mesh), join(extra))));
     }
 
+    /** A group whose MOGP header declares the given flags instead of the default 0x2a05. */
+    private static byte[] flagged(int flags, byte[][] mesh, byte[]... extra) {
+        var h = header(1);
+        ByteBuffer.wrap(h).order(ByteOrder.LITTLE_ENDIAN).putInt(8, flags);
+        return join(
+                chunk("MVER", buffer(4).putInt(17).array()),
+                chunk("MOGP", join(h, join(mesh), join(extra))));
+    }
+
+    private static final int COLORS2 = 0x1000000, UV2 = 0x2000000, UV3 = 0x40000000;
+
+    @Test
+    void declaredExtraUvAndColorSetsAreAdmittedAndTheFirstSetIsExposed() {
+        byte[] uv2 = chunk("MOTV", floats(7, 7, 8, 8, 9, 9));
+        byte[] colors = chunk("MOCV", new byte[] {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12});
+        byte[] colors2 = chunk("MOCV", new byte[12]);
+        WmoGroupSpans.withGroup(
+                flagged(0x2a05 | UV2 | UV3 | COLORS2, mesh(), colors, uv2, colors2, uv2),
+                () -> false,
+                b -> {
+                    assertEquals(.25f, b.uv().get(0));
+                    assertEquals(6, b.uv().size());
+                    assertEquals(1, b.colors().get(0));
+                    assertEquals(2, b.triangleBytes());
+                });
+        // Extra sets beyond what MOGP declares stay duplicates.
+        reject(flagged(0x2a05 | UV2, mesh(), uv2, uv2));
+        reject(flagged(0x2a05 | UV3, mesh(), uv2, uv2));
+        reject(flagged(0x2a05 | COLORS2, mesh(), colors, colors2, colors2));
+        reject(flagged(0x2a05 | UV2, mesh(), colors, colors2));
+        // A declared extra set must still match the vertex count and hold finite values.
+        reject(flagged(0x2a05 | UV2, mesh(), chunk("MOTV", floats(1, 1, 2, 2))));
+        reject(flagged(0x2a05 | UV2, mesh(), chunk("MOTV", floats(1, 1, 2, 2, 3, Float.NaN))));
+        reject(flagged(0x2a05 | COLORS2, mesh(), colors, chunk("MOCV", new byte[8])));
+    }
+
+    @Test
+    void mpy2TriangleRecordsReplaceMopyButNeverJoinIt() {
+        var m = mesh();
+        m[4] = chunk("MPY2", new byte[] {1, 0, (byte) 200, 1});
+        WmoGroupSpans.withGroup(
+                group(m),
+                () -> false,
+                b -> {
+                    assertEquals(4, b.triangleBytes());
+                    assertEquals(4, b.triangles().size());
+                    assertEquals(200, b.triangles().get(2));
+                });
+        reject(group(m, chunk("MOPY", new byte[2])));
+        reject(group(mesh(), chunk("MPY2", new byte[4])));
+        var short2 = mesh();
+        short2[4] = chunk("MPY2", new byte[2]);
+        reject(group(short2));
+        var twoTriangles = mesh();
+        twoTriangles[4] = chunk("MPY2", new byte[8]);
+        reject(group(twoTriangles));
+    }
+
     @Test
     void rawAsymmetricOperandsMatchOwnedFactsWithoutAxisOrAppearancePolicy() {
         byte[] raw =

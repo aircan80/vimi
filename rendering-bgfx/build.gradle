@@ -73,6 +73,8 @@ dependencies {
 // Fast unit and in-memory contract tests are the normal development command.
 tasks.withType(Test).configureEach {
     useJUnitPlatform()
+    // SymbolicLinks fails instead of skipping under CI, so a cached local result must not be reused.
+    inputs.property('ci', providers.environmentVariable('CI').orElse(''))
     jvmArgs '--enable-native-access=ALL-UNNAMED'
     maxParallelForks = 1
     def sqliteLibrary = providers.gradleProperty('sqliteLibrary')
@@ -383,7 +385,7 @@ tasks.register('nativeGpuWorldStreamObjectsProof', JavaExec) {
 
 // Isolated candidate recipe: eight test-resource blobs, hardware proof remains separate.
 tasks.register('verifyGlobalCandidateShaders', Exec) {
-    commandLine 'python3', rootProject.file('scripts/rendering/compile_bgfx_world_global_candidate.py'), '--include-dx11', '--verify'
+    commandLine pythonExecutable.get(), rootProject.file('scripts/rendering/compile_bgfx_world_global_candidate.py').absolutePath, '--include-dx11', '--verify'
     inputs.dir('src/main/shaders/world-global')
     inputs.dir('src/test/resources/com/vibeminer/rendering/bgfx/shaders/global-candidate')
 }
