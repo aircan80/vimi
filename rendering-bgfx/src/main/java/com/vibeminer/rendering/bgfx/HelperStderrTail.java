@@ -16,11 +16,11 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Bounded, sanitized tail of native helper stderr. Only the last lines are retained for an
- * abnormal-exit log record; nothing is retained in the UI, persisted or parsed as protocol. Lines
- * are decoded as UTF-8 and redacted before anything outside printable ASCII becomes '?', so a
- * non-ASCII account name is still recognised, and a binary or control-sequence flood cannot forge
- * log lines.
+ * Bounded, sanitized tail of native helper stderr. Only the last lines are retained for diagnostic
+ * log records (an abnormal exit, or a renderer objects failure); nothing is retained in the UI,
+ * persisted or parsed as protocol. Lines are decoded as UTF-8 and redacted before anything outside
+ * printable ASCII becomes '?', so a non-ASCII account name is still recognised, and a binary or
+ * control-sequence flood cannot forge log lines.
  */
 public final class HelperStderrTail {
     public static final int MAX_LINES = 40;
