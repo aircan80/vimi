@@ -19,7 +19,9 @@ public record HotfixViewInfo(
      * Fixed reason when this table's overlay could not be built within its resource bounds. The
      * table then reads base rows only; counts describe the base table and no hotfix applies.
      */
-    public static final String TABLE_BUDGET = "TABLE_BUDGET", RETAINED_BUDGET = "RETAINED_BUDGET";
+    public static final String TABLE_BUDGET = "TABLE_BUDGET",
+            RETAINED_BUDGET = "RETAINED_BUDGET",
+            OPERATION_TABLES = "OPERATION_TABLES";
 
     public HotfixViewInfo(
             String inputFingerprint,
