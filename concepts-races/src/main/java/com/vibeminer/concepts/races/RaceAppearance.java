@@ -34,6 +34,26 @@ final class RaceAppearance {
     private final GeneratedStore generated;
     private final RaceAppearancePlan plans;
 
+    static final int MAX_REMEMBERED = 6;
+    static final long MAX_REMEMBERED_BYTES = 160L << 20;
+
+    /** A complete result and the content keys of the model and layer files it was composed from. */
+    private record Remembered(
+            RaceAppearanceTypes.Result result, java.util.Map<Long, String> sources) {}
+
+    /**
+     * Complete composed appearances by request, most recently used last. Only results whose every
+     * layer was read (or that were restored from such a derivative) are kept. Their other inputs
+     * are this handle's build-scoped tables, and a hit is used only while the model and every layer
+     * file still have the content keys that named its derivative; incomplete or failed results are
+     * prepared again on the next request. Guarded by itself: prepare runs on the query worker and
+     * render on the appearance worker.
+     */
+    private final java.util.LinkedHashMap<String, Remembered> remembered =
+            new java.util.LinkedHashMap<>(16, 0.75f, true);
+
+    private long rememberedBytes;
+
     RaceAppearance(
             RacesService owner,
             RaceMedia media,
@@ -55,10 +75,93 @@ final class RaceAppearance {
             RaceAppearancePlan.Plan plan,
             GeneratedKey key,
             List<String> issues,
-            RaceAppearanceTypes.Result failure) {
+            RaceAppearanceTypes.Result finished,
+            String request,
+            java.util.Map<Long, String> sources) {
         Prepared {
             issues = List.copyOf(issues);
+            sources = sources == null ? java.util.Map.of() : java.util.Map.copyOf(sources);
         }
+    }
+
+    /** The remembered-result key of one selection; picks are ordered by option ID. */
+    static String request(
+            long raceId, long classId, long modelId, java.util.Map<Long, Long> picks) {
+        return raceId + ":" + classId + ":" + modelId + ":" + new java.util.TreeMap<>(picks);
+    }
+
+    /** A remembered result whose source files are unchanged, or null. */
+    private RaceAppearanceTypes.Result remembered(String request, Cancellation token) {
+        Remembered entry;
+        synchronized (remembered) {
+            entry = remembered.get(request);
+        }
+        if (entry == null) {
+            return null;
+        }
+        for (var source : entry.sources().entrySet()) {
+            var stat = files.stat(FileTypes.FileRef.id(source.getKey()), token).join();
+            if (stat.state() != FileTypes.FileLookupState.FOUND
+                    || stat.file() == null
+                    || !source.getValue().equals(stat.file().contentKey())) {
+                forget(request, entry);
+                return null;
+            }
+        }
+        return entry.result();
+    }
+
+    private void forget(String request, Remembered entry) {
+        synchronized (remembered) {
+            if (remembered.remove(request, entry)) {
+                rememberedBytes -= bytes(entry.result().appearance());
+            }
+        }
+    }
+
+    void remember(Prepared prepared, RaceAppearanceTypes.Result result) {
+        long bytes = bytes(result.appearance());
+        if (prepared.request() == null
+                || prepared.sources().isEmpty()
+                || bytes > MAX_REMEMBERED_BYTES) {
+            return;
+        }
+        var entry = new Remembered(result, prepared.sources());
+        synchronized (remembered) {
+            var replaced = remembered.put(prepared.request(), entry);
+            if (replaced != null) {
+                rememberedBytes -= bytes(replaced.result().appearance());
+            }
+            rememberedBytes += bytes;
+            var eldest = remembered.entrySet().iterator();
+            while ((remembered.size() > MAX_REMEMBERED || rememberedBytes > MAX_REMEMBERED_BYTES)
+                    && eldest.hasNext()) {
+                var next = eldest.next();
+                if (next.getValue() == entry) {
+                    continue;
+                }
+                rememberedBytes -= bytes(next.getValue().result().appearance());
+                eldest.remove();
+            }
+        }
+    }
+
+    /** Remembered results, for tests. */
+    int rememberedCount() {
+        synchronized (remembered) {
+            return remembered.size();
+        }
+    }
+
+    /** Approximate retained heap of one composed appearance: texels and vertex arrays. */
+    static long bytes(MeshAppearance appearance) {
+        long total = 0;
+        for (var texture : appearance.textures()) {
+            total += 4L * texture.width() * texture.height();
+        }
+        var mesh = appearance.mesh();
+        // Positions, normals, UVs, and indices.
+        return total + 32L * mesh.vertexCount() + 12L * mesh.triangleCount();
     }
 
     /** The LOD0 draw SKIN and, when it was read, the textured sample's rest surface. */
@@ -90,10 +193,15 @@ final class RaceAppearance {
             Cancellation token,
             java.util.Map<Long, Long> requested) {
         var issues = new ArrayList<String>();
+        String request = request(raceId, classId, modelId, requested);
         try {
             if (files == null || generated == null) {
                 return prepareFailure(
                         issues, "Texture preparation is unavailable for this workspace.");
+            }
+            var known = remembered(request, token);
+            if (known != null) {
+                return new Prepared(null, null, null, issues, known, request, null);
             }
             var selection =
                     new RaceCustomization(media)
@@ -127,6 +235,8 @@ final class RaceAppearance {
             if (stat.state() != FileTypes.FileLookupState.FOUND || stat.file() == null) {
                 return prepareFailure(issues, "The model root entry is unavailable.");
             }
+            var sources = new java.util.TreeMap<Long, String>();
+            sources.put(base.variant().modelFileDataId(), stat.file().contentKey());
             StringBuilder identity =
                     new StringBuilder("race-static-appearance-v1\n")
                             .append(MeshAppearanceCodec.REVISION)
@@ -156,6 +266,9 @@ final class RaceAppearance {
                             .toList()) {
                 token.check();
                 var source = files.stat(FileTypes.FileRef.id(fid), token).join();
+                if (source.state() == FileTypes.FileLookupState.FOUND && source.file() != null) {
+                    sources.put(fid, source.file().contentKey());
+                }
                 identity.append('\n')
                         .append(fid)
                         .append(':')
@@ -164,19 +277,19 @@ final class RaceAppearance {
                         .append(source.file() == null ? "" : source.file().contentKey());
             }
             var key = GeneratedKey.hash(identity.toString().getBytes(StandardCharsets.UTF_8));
-            return new Prepared(base, plan, key, issues, null);
+            return new Prepared(base, plan, key, issues, null, request, sources);
         } catch (RacesService.Projection unavailable) {
             return prepareFailure(issues, unavailable.getMessage());
         }
     }
 
     private static Prepared prepareFailure(List<String> issues, String message) {
-        return new Prepared(null, null, null, issues, failed(issues, message));
+        return new Prepared(null, null, null, issues, failed(issues, message), null, null);
     }
 
     RaceAppearanceTypes.Result render(Prepared prepared, Cancellation token) {
-        if (prepared.failure() != null) {
-            return prepared.failure();
+        if (prepared.finished() != null) {
+            return prepared.finished();
         }
         var issues = new ArrayList<>(prepared.issues());
         var base = prepared.base();
@@ -185,7 +298,10 @@ final class RaceAppearance {
         try {
             var restored = restore(key, base.variant().modelFileDataId(), token);
             if (restored != null) {
-                return result(restored, base.visibleParts(), plan, issues, true);
+                var result = result(restored, base.visibleParts(), plan, issues, true);
+                token.check();
+                remember(prepared, result);
+                return result;
             }
             var images = new BlpImages(generated);
             var decoded = new HashMap<Long, MeshAppearance.Texture>();
@@ -365,7 +481,12 @@ final class RaceAppearance {
                         token,
                         issues);
             }
-            return result(appearance, base.visibleParts(), plan, issues, false);
+            var result = result(appearance, base.visibleParts(), plan, issues, false);
+            if (complete) {
+                token.check();
+                remember(prepared, result);
+            }
+            return result;
         } catch (RacesService.Projection unavailable) {
             return failed(issues, unavailable.getMessage());
         }

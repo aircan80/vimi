@@ -24,7 +24,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/** Runs on the race component worker; queries only exact build-local foreign-key relationships. */
+/**
+ * Runs on the race component worker; queries only exact build-local foreign-key relationships. Only
+ * {@link #data} is also used by the voice worker.
+ */
 @SuppressWarnings("try")
 final class RaceMedia {
     private final RacesService owner;
@@ -36,6 +39,35 @@ final class RaceMedia {
 
     private final Map<String, TableCopy> cached = new HashMap<>();
 
+    static final int MAX_CACHED_VARIANTS = 64, MAX_CACHED_PREVIEWS = 8;
+
+    /** Fully resolved variant lists; they derive only from this handle's build-scoped tables. */
+    private final Map<Long, RaceMediaTypes.Variants> variantLists = lru(MAX_CACHED_VARIANTS);
+
+    /** A sample preview and the content key of the model file its surface was derived from. */
+    private record KnownPreview(RaceMediaTypes.Preview preview, String content) {}
+
+    /**
+     * Sample previews that carry a surface, keyed by race, class and model. The visible parts
+     * derive from this handle's build-scoped tables; a hit is used only while the model file keeps
+     * the content key its surface was derived from. A preview without a surface is never kept.
+     */
+    private final Map<String, KnownPreview> previews = lru(MAX_CACHED_PREVIEWS);
+
+    /** Whether a row lookup of the current variant assessment had an UNKNOWN outcome. */
+    private boolean unknownRows;
+
+    static <K, V> Map<K, V> lru(int bound) {
+        return new java.util.LinkedHashMap<>(16, 0.75f, true) {
+            @java.io.Serial private static final long serialVersionUID = 1L;
+
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {
+                return size() > bound;
+            }
+        };
+    }
+
     RaceMedia(RacesService owner, BuildTables tables, BuildFiles files, GeneratedStore generated) {
         this.owner = owner;
         this.tables = tables;
@@ -44,6 +76,23 @@ final class RaceMedia {
     }
 
     RaceMediaTypes.Variants variants(long raceId, Cancellation token) {
+        var hit = variantLists.get(raceId);
+        if (hit != null) {
+            return hit;
+        }
+        unknownRows = false;
+        var assessed = assessVariants(raceId, token);
+        token.check();
+        // Partial tables are a fact of this build; an UNKNOWN row lookup is asked again.
+        if ((assessed.state() == RaceTypes.State.READY
+                        || assessed.state() == RaceTypes.State.PARTIAL)
+                && !unknownRows) {
+            variantLists.put(raceId, assessed);
+        }
+        return assessed;
+    }
+
+    private RaceMediaTypes.Variants assessVariants(long raceId, Cancellation token) {
         var result = new ArrayList<RaceMediaTypes.Variant>();
         var issues = new ArrayList<String>();
         try {
@@ -125,10 +174,38 @@ final class RaceMedia {
     }
 
     RaceMediaTypes.Preview preview(long raceId, long classId, long chrModelId, Cancellation token) {
-        return preview(raceId, classId, chrModelId, token, null);
+        String key = raceId + ":" + classId + ":" + chrModelId;
+        var hit = previews.remove(key);
+        if (hit != null && files != null) {
+            long model = hit.preview().variant().modelFileDataId();
+            var stat = files.stat(FileTypes.FileRef.id(model), token).join();
+            if (stat.state() == FileTypes.FileLookupState.FOUND
+                    && stat.file() != null
+                    && hit.content().equals(stat.file().contentKey())) {
+                previews.put(key, hit);
+                return hit.preview();
+            }
+        }
+        var derived = derive(raceId, classId, chrModelId, token, null);
+        token.check();
+        var result = derived.preview();
+        if (result.mesh() != null && result.variant() != null && derived.content() != null) {
+            previews.put(key, derived);
+        }
+        return result;
     }
 
     RaceMediaTypes.Preview preview(
+            long raceId,
+            long classId,
+            long chrModelId,
+            Cancellation token,
+            RaceCustomization.Selection selection) {
+        return derive(raceId, classId, chrModelId, token, selection).preview();
+    }
+
+    /** The preview and, once its surface exists, the model content key it was derived from. */
+    private KnownPreview derive(
             long raceId,
             long classId,
             long chrModelId,
@@ -145,14 +222,17 @@ final class RaceMedia {
                         .orElse(null);
         var issues = new ArrayList<>(variants.issues());
         if (variant == null) {
-            return failed(null, issues, "The selected race model is unavailable.");
+            return new KnownPreview(
+                    failed(null, issues, "The selected race model is unavailable."), null);
         }
         if (files == null) {
-            return failed(variant, issues, "Build files are unavailable for this workspace.");
+            return new KnownPreview(
+                    failed(variant, issues, "Build files are unavailable for this workspace."),
+                    null);
         }
         var stat = files.stat(FileTypes.FileRef.id(variant.modelFileDataId()), token).join();
         if (stat.state() != FileTypes.FileLookupState.FOUND || stat.file() == null) {
-            return failed(variant, issues, "Model file is " + stat.state());
+            return new KnownPreview(failed(variant, issues, "Model file is " + stat.state()), null);
         }
         String content = stat.file().contentKey();
         GeneratedKey key =
@@ -173,19 +253,25 @@ final class RaceMedia {
             var read =
                     models.readModel(FileTypes.FileRef.id(variant.modelFileDataId()), token).join();
             if (read.state() != BuildModelTypes.ReadState.READ || read.model() == null) {
-                return failed(
-                        variant,
-                        issues,
-                        read.message() == null ? "Model is " + read.state() : read.message());
+                return new KnownPreview(
+                        failed(
+                                variant,
+                                issues,
+                                read.message() == null
+                                        ? "Model is " + read.state()
+                                        : read.message()),
+                        null);
             }
             var skin = models.readRestSkin(read, 0, token).join();
             if (skin.state() != BuildModelTypes.ReadState.READ || skin.skin() == null) {
-                return failed(
-                        variant,
-                        issues,
-                        skin.message() == null
-                                ? "Model surface is " + skin.state()
-                                : skin.message());
+                return new KnownPreview(
+                        failed(
+                                variant,
+                                issues,
+                                skin.message() == null
+                                        ? "Model surface is " + skin.state()
+                                        : skin.message()),
+                        null);
             }
             mesh = RaceRestSurface.of(read.model(), skin.skin(), token).mesh();
             save(
@@ -202,8 +288,10 @@ final class RaceMedia {
         issue(
                 issues,
                 "Static native rest positions are shown. Animation, texture compositing and starting equipment are not evaluated.");
-        return new RaceMediaTypes.Preview(
-                RaceTypes.State.PARTIAL, variant, mesh, parts, issues, restored, null);
+        return new KnownPreview(
+                new RaceMediaTypes.Preview(
+                        RaceTypes.State.PARTIAL, variant, mesh, parts, issues, restored, null),
+                content);
     }
 
     private Set<Integer> visibleParts(
@@ -329,7 +417,9 @@ final class RaceMedia {
         };
     }
 
-    RacesService.Data data(String name, int bound, Cancellation token, List<String> issues) {
+    /** Shared by the projection and voice workers; the first read of a table holds the lock. */
+    synchronized RacesService.Data data(
+            String name, int bound, Cancellation token, List<String> issues) {
         var found = cached.get(name);
         if (found != null) {
             found.issues().forEach(note -> issue(issues, note));
@@ -353,6 +443,9 @@ final class RaceMedia {
                                 token)
                         .join();
         if (result.outcome() != TableTypes.RowOutcome.FOUND || result.row() == null) {
+            unknownRows |=
+                    result.outcome() != TableTypes.RowOutcome.ABSENT
+                            && result.outcome() != TableTypes.RowOutcome.PROTECTED;
             issue(issues, schema.name + " #" + id + " is " + result.outcome());
             return null;
         }

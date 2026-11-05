@@ -17,7 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
 
-/** Serialized by the Races worker; media never owns the borrowed build/locale handles. */
+/** Serialized by the Races voice worker; media never owns the borrowed build/locale handles. */
 @SuppressWarnings("try")
 final class RaceVoices {
     private static final Map<String, String> ACTIONS =
@@ -31,11 +31,28 @@ final class RaceVoices {
                     "HEALME",
                     "I need healing");
     static final int MAX_REFUSALS = 32;
+    static final int MAX_CACHED_CATALOGS = 64;
     private final RacesService owner;
     private final RaceMedia media;
     private final BuildTables tables;
     private final BuildFiles files;
     private final GeneratedStore generated;
+
+    /**
+     * Catalogs whose every SoundKitEntry page was read. They derive only from this handle's
+     * build-scoped tables, so they stay valid for the handle's lifetime; a workspace change makes a
+     * new handle. A catalog with an unreadable page is reassessed on the next request.
+     */
+    private final Map<String, RaceVoiceTypes.Catalog> catalogs =
+            new LinkedHashMap<>(16, 0.75f, true) {
+                @java.io.Serial private static final long serialVersionUID = 1L;
+
+                @Override
+                protected boolean removeEldestEntry(
+                        Map.Entry<String, RaceVoiceTypes.Catalog> eldest) {
+                    return size() > MAX_CACHED_CATALOGS;
+                }
+            };
 
     RaceVoices(
             RacesService owner,
@@ -51,6 +68,22 @@ final class RaceVoices {
     }
 
     RaceVoiceTypes.Catalog catalog(long raceId, long classId, int sex, Cancellation token) {
+        String key = raceId + ":" + classId + ":" + sex;
+        var hit = catalogs.get(key);
+        if (hit != null) {
+            return hit;
+        }
+        boolean[] complete = {true};
+        var result = assemble(raceId, classId, sex, token, complete);
+        token.check();
+        if (complete[0]) {
+            catalogs.put(key, result);
+        }
+        return result;
+    }
+
+    private RaceVoiceTypes.Catalog assemble(
+            long raceId, long classId, int sex, Cancellation token, boolean[] complete) {
         var clips = new ArrayList<RaceVoiceTypes.Clip>();
         var refusals = new ArrayList<RaceVoiceTypes.Refusal>();
         var issues = new ArrayList<String>();
@@ -184,6 +217,7 @@ final class RaceVoices {
                                         token)
                                 .join();
                 if (page.state() != TableTypes.PageState.OK) {
+                    complete[0] = false;
                     note(issues, "Some voice entry rows are unavailable: " + page.state());
                     continue;
                 }
@@ -245,6 +279,7 @@ final class RaceVoices {
                             ? "No reviewed voice clips are readable for this race and voice."
                             : null);
         } catch (RacesService.Projection unavailable) {
+            complete[0] = false;
             return new RaceVoiceTypes.Catalog(
                     unavailable.state,
                     tables.locale(),

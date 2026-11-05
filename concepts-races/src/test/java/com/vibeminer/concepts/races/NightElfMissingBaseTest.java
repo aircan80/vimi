@@ -79,6 +79,8 @@ final class NightElfMissingBaseTest {
                             GeneratedKey.hash(
                                     "missing-night-elf-base".getBytes(StandardCharsets.UTF_8)),
                             List.of(),
+                            null,
+                            null,
                             null);
             var result =
                     new RaceAppearance(
