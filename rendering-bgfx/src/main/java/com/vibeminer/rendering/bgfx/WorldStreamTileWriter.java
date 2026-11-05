@@ -205,6 +205,23 @@ public final class WorldStreamTileWriter {
             return data;
         }
 
+        /**
+         * Pick geometry compiled from exactly the validated tables this set uploads: placement
+         * transforms, drawn ranges and the alpha of cutout and blended images.
+         */
+        public com.vibeminer.rendering.world.WorldObjectPicking.Tile pickTile() {
+            return com.vibeminer.rendering.world.WorldObjectPicking.Tile.of(
+                    data.models,
+                    data.meshes,
+                    data.ranges,
+                    data.placementModels,
+                    data.placements,
+                    data.images,
+                    data.vertices,
+                    data.indices,
+                    data.pixels);
+        }
+
         /** Bounded accumulation; every add is checked against the per-tile file profile. */
         public static final class Builder {
             private final java.util.ArrayList<int[]> models = new java.util.ArrayList<>();

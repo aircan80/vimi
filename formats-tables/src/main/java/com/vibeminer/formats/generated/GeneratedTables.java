@@ -3,6 +3,7 @@ package com.vibeminer.formats.generated;
 import com.vibeminer.access.Cancellation;
 import com.vibeminer.formats.db2.Db2Types;
 import com.vibeminer.formats.internal.Json;
+import com.vibeminer.generated.GeneratedCommitGroup;
 import com.vibeminer.generated.GeneratedKey;
 import com.vibeminer.generated.GeneratedStore;
 import com.vibeminer.generated.GeneratedStoreException;
@@ -122,8 +123,46 @@ public final class GeneratedTables implements GeneratedTableStore {
     }
 
     public GeneratedTables(GeneratedStore store, RecordFileOptions options) {
+        this(
+                store,
+                options,
+                GeneratedCommitGroup.MAX_BYTES,
+                GeneratedCommitGroup.MAX_OBJECTS,
+                COLLECTED_BYTES);
+    }
+
+    /**
+     * Bytes all of this instance's stores may hold collected, uncommitted, at once: four concurrent
+     * deep prepares at one full group each. Past it, a store commits its collected prefix early.
+     */
+    public static final long COLLECTED_BYTES = 4 * GeneratedCommitGroup.MAX_BYTES;
+
+    /**
+     * {@code groupBytes} and {@code groupObjects} bound one table's commit group, and {@code
+     * collectedBytes} bounds all groups of this instance together. Tests use small values to force
+     * split commits.
+     */
+    public GeneratedTables(
+            GeneratedStore store,
+            RecordFileOptions options,
+            long groupBytes,
+            int groupObjects,
+            long collectedBytes) {
         this.store = java.util.Objects.requireNonNull(store);
         this.options = java.util.Objects.requireNonNull(options);
+        this.groupBytes = groupBytes;
+        this.groupObjects = groupObjects;
+        this.collected = new GeneratedCommitGroup.Budget(collectedBytes);
+        new GeneratedCommitGroup(store, groupBytes, groupObjects).close();
+    }
+
+    private final long groupBytes;
+    private final int groupObjects;
+    private final GeneratedCommitGroup.Budget collected;
+
+    /** Bytes currently collected by this instance's commit groups. */
+    public long collectedBytes() {
+        return collected.used();
     }
 
     private record Lookup(
@@ -387,8 +426,23 @@ public final class GeneratedTables implements GeneratedTableStore {
             List<String> keys,
             com.vibeminer.generated.Cancellation token,
             boolean repair) {
+        return openFile(store, lookup, node, keys, token, repair);
+    }
+
+    /**
+     * Opens the graph from {@code from}: the store itself, or a commit group whose collected
+     * objects are not yet committed. Repairs delete from {@code from}; the returned table's discard
+     * deletes from the store.
+     */
+    private GeneratedTable openFile(
+            GeneratedStore from,
+            Lookup lookup,
+            GeneratedKey node,
+            List<String> keys,
+            com.vibeminer.generated.Cancellation token,
+            boolean repair) {
         var manifest = manifest(node);
-        var open = RecordFile.open(store, manifest, token).join();
+        var open = RecordFile.open(from, manifest, token).join();
         if (open.state() == GeneratedTypes.ReadState.ABSENT) {
             if (!repair) {
                 throw corruptCapture("Saved graph manifest missing");
@@ -399,7 +453,7 @@ public final class GeneratedTables implements GeneratedTableStore {
             if (!repair) {
                 throw corruptCapture("Saved graph manifest corrupt");
             }
-            store.delete(List.of(node, manifest), token).join();
+            from.delete(List.of(node, manifest), token).join();
             return null;
         }
         var file = open.file();
@@ -410,11 +464,11 @@ public final class GeneratedTables implements GeneratedTableStore {
             if (!repair) {
                 throw corruptCapture("Invalid saved graph metadata");
             }
-            store.delete(List.of(node, manifest), token).join();
+            from.delete(List.of(node, manifest), token).join();
             return null;
         }
         for (var segment : file.keys().subList(1, file.keys().size())) {
-            if (store.readRange(segment, 0, 1, token).join().state()
+            if (from.readRange(segment, 0, 1, token).join().state()
                     != GeneratedTypes.ReadState.PRESENT) {
                 if (!repair) {
                     throw corruptCapture("Saved graph segment unavailable");
@@ -557,6 +611,20 @@ public final class GeneratedTables implements GeneratedTableStore {
             Cancellation token,
             com.vibeminer.generated.Cancellation lower,
             Runnable release) {
+        // Abandoned on any failure; closing drops whatever is still collected.
+        try (var group = new GeneratedCommitGroup(store, groupBytes, groupObjects, collected)) {
+            return storeCore(source, keys, content, token, lower, release, group);
+        }
+    }
+
+    private GeneratedTable storeCore(
+            GeneratedTableSource source,
+            KeyStatus keys,
+            GeneratedTableContent content,
+            Cancellation token,
+            com.vibeminer.generated.Cancellation lower,
+            Runnable release,
+            GeneratedCommitGroup group) {
         content.validateSource(source);
         var used = used(content.keysUsed());
         var holes = used(content.holeKeys());
@@ -595,7 +663,10 @@ public final class GeneratedTables implements GeneratedTableStore {
                         content.completion(),
                         used,
                         holes);
-        try (var writer = new RecordFileWriter(store, options)) {
+        // Segments, manifest, layout, alias and node reach the store as one put, so normally as
+        // one durable commit. The store keeps at most an ordered prefix of a put, and the node
+        // that publishes the graph comes after the objects it references.
+        try (var writer = new RecordFileWriter(group, options)) {
             long first = 0;
             long evidenceBytes = 0;
             while (true) {
@@ -656,18 +727,23 @@ public final class GeneratedTables implements GeneratedTableStore {
                                 : new Node(NODE, lookup.echo(), used));
         GeneratedTable verified = null;
         if (lookup.nativePolicy()) {
-            verified = openFile(lookup, node, used, lower);
+            // Read back the exact objects about to commit; ones the store already holds are read
+            // from the store.
+            verified = openFile(group, lookup, node, used, lower, true);
             if (verified == null) {
                 throw new GeneratedStoreException(
                         GeneratedTypes.CORRUPT,
                         "Stored native table failed readback before publication");
             }
+            // The owner (source and work slot) must close before the node is published, so it
+            // closes before the commit. The scheduler then no longer bounds collected groups;
+            // the instance's collected-bytes budget does.
             release.run();
         } else {
-            store.put(List.of(new GeneratedTypes.Put(node, nodeBytes)), lower).join();
+            group.put(List.of(new GeneratedTypes.Put(node, nodeBytes)), lower).join();
         }
         if (content.header().layoutHash().matches("[0-9a-fA-F]{8}")) {
-            store.put(
+            group.put(
                             List.of(
                                     new GeneratedTypes.Put(
                                             layoutKey(source.contentKey()),
@@ -693,12 +769,13 @@ public final class GeneratedTables implements GeneratedTableStore {
             if (entry != null) {
                 store.delete(List.of(key), lower).join();
             }
-            store.put(List.of(new GeneratedTypes.Put(key, nodeBytes)), lower).join();
+            group.put(List.of(new GeneratedTypes.Put(key, nodeBytes)), lower).join();
             break;
         }
         if (lookup.nativePolicy()) {
             try {
-                store.put(List.of(new GeneratedTypes.Put(node, nodeBytes)), lower).join();
+                group.put(List.of(new GeneratedTypes.Put(node, nodeBytes)), lower).join();
+                group.commit(lower).join();
             } catch (RuntimeException failure) {
                 // A lower store may commit and then lose its acknowledgement. Reconcile only
                 // this exact graph, without cancellation, mutation or removal of another writer.
@@ -724,6 +801,7 @@ public final class GeneratedTables implements GeneratedTableStore {
             }
             return verified;
         }
+        group.commit(lower).join();
         var result = openFile(lookup, node, used, lower);
         if (result == null) {
             throw new GeneratedStoreException(

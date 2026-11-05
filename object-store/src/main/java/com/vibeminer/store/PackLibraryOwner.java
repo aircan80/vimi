@@ -64,6 +64,12 @@ public final class PackLibraryOwner implements ObjectReader, ObjectWriter, Histo
         return publish(library.putOwned(owner, batch, commitNow, token));
     }
 
+    /** {@link ObjectStore#putUnlessRefused}, owned by this view. */
+    public CompletableFuture<List<StoreTypes.PutResult>> putUnlessRefused(
+            List<StoreTypes.PutObject> batch, boolean commitNow, Cancellation token) {
+        return publish(library.putOwned(owner, batch, commitNow, token, true));
+    }
+
     @Override
     public CompletableFuture<List<StoreTypes.DeleteResult>> delete(
             List<ObjectKey> keys, Cancellation token) {

@@ -88,6 +88,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     java.util.function.BiConsumer<ReadPoint, ObjectKey> readProbe;
     java.util.function.Consumer<ObjectKey> wholeShaProbe;
     java.util.function.Consumer<Boolean> verificationProbe;
+    // Refusal code for a key, or null; replaces verification's outcome for that object.
+    java.util.function.Function<ObjectKey, String> refusalProbe;
 
     private record Committed<T>(T result, CompletableFuture<Void> durable) {}
 
@@ -1059,7 +1061,23 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                     new StoreException(
                             "OBJECT_STORE_OWNER_REQUIRED", "Use an owner-bound library view"));
         }
-        return putOwned(null, batch, commitNow, cancellation);
+        return putOwned(null, batch, commitNow, cancellation, false);
+    }
+
+    /**
+     * Like {@link #put}, but if verification refuses any object, none is stored: the refused
+     * objects report their own code and the rest report {@code OBJECT_BATCH_REFUSED}. A caller
+     * whose later objects reference earlier ones can then rely on a put keeping only an ordered
+     * prefix.
+     */
+    public CompletableFuture<List<PutResult>> putUnlessRefused(
+            List<PutObject> batch, boolean commitNow, Cancellation cancellation) {
+        if (kind() == Kind.LIBRARY) {
+            return CompletableFuture.failedFuture(
+                    new StoreException(
+                            "OBJECT_STORE_OWNER_REQUIRED", "Use an owner-bound library view"));
+        }
+        return putOwned(null, batch, commitNow, cancellation, true);
     }
 
     CompletableFuture<List<PutResult>> putOwned(
@@ -1067,6 +1085,15 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             List<PutObject> batch,
             boolean commitNow,
             Cancellation cancellation) {
+        return putOwned(owner, batch, commitNow, cancellation, false);
+    }
+
+    CompletableFuture<List<PutResult>> putOwned(
+            LibraryOwnership.Claim owner,
+            List<PutObject> batch,
+            boolean commitNow,
+            Cancellation cancellation,
+            boolean unlessRefused) {
         List<PutObject> owned = List.copyOf(batch);
         long bytes = 0;
         for (PutObject p : owned) {
@@ -1077,7 +1104,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                     new StoreException(
                             "OBJECT_STORE_LIMIT", "Put batch exceeds 4096 objects or 256 MiB"));
         }
-        return enqueuePut(bytes, () -> owned, commitNow, cancellation, owner);
+        return enqueuePut(bytes, () -> owned, commitNow, cancellation, owner, unlessRefused);
     }
 
     private CompletableFuture<List<PutResult>> enqueuePut(
@@ -1085,7 +1112,7 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             java.util.function.Supplier<List<PutObject>> inputs,
             boolean commitNow,
             Cancellation cancellation) {
-        return enqueuePut(bytes, inputs, commitNow, cancellation, null);
+        return enqueuePut(bytes, inputs, commitNow, cancellation, null, false);
     }
 
     private CompletableFuture<List<PutResult>> enqueuePut(
@@ -1093,7 +1120,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             java.util.function.Supplier<List<PutObject>> inputs,
             boolean commitNow,
             Cancellation cancellation,
-            LibraryOwnership.Claim owner) {
+            LibraryOwnership.Claim owner,
+            boolean unlessRefused) {
         CompletableFuture<List<PreparedPut>> prepared = new CompletableFuture<>();
         Runnable preparation =
                 () ->
@@ -1118,10 +1146,25 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                                                                     + " MiB");
                                                 }
                                                 List<PreparedPut> result = new ArrayList<>();
+                                                var refuse = refusalProbe;
                                                 for (PutObject item : owned) {
+                                                    String code =
+                                                            refuse == null
+                                                                    ? null
+                                                                    : refuse.apply(item.key());
                                                     result.add(
-                                                            PreparedPut.prepare(
-                                                                    verifier, item, cancellation));
+                                                            code == null
+                                                                    ? PreparedPut.prepare(
+                                                                            verifier,
+                                                                            item,
+                                                                            cancellation)
+                                                                    : new PreparedPut(
+                                                                            item,
+                                                                            Verification.refusal(
+                                                                                    code),
+                                                                            null,
+                                                                            null,
+                                                                            null));
                                                 }
                                                 return List.copyOf(result);
                                             } finally {
@@ -1147,7 +1190,24 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                         () -> {
                             List<CompletableFuture<Void>> commits = new ArrayList<>();
                             List<PutResult> results = new ArrayList<>();
-                            for (PreparedPut proof : prepared.join()) {
+                            List<PreparedPut> proofs = prepared.join();
+                            if (unlessRefused
+                                    && proofs.stream().anyMatch(proof -> proof.refusal() != null)) {
+                                // Nothing is appended, so no later object commits without it.
+                                for (PreparedPut proof : proofs) {
+                                    results.add(
+                                            new PutResult(
+                                                    proof.input().key(),
+                                                    PutOutcome.REFUSED,
+                                                    proof.refusal() != null
+                                                            ? proof.refusal().code()
+                                                            : "OBJECT_BATCH_REFUSED"));
+                                }
+                                return new Committed<>(
+                                        List.copyOf(results),
+                                        CompletableFuture.completedFuture(null));
+                            }
+                            for (PreparedPut proof : proofs) {
                                 PutObject p = proof.input();
                                 Refusal refusal = proof.refusal();
                                 if (refusal != null) {

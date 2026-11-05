@@ -73,8 +73,61 @@ retained resident area metadata answers the lookup, so a pick never borrows a
 payload. Unresolved areas report the reason and the recorded area ID. Holes, sky
 and unloaded tiles report that nothing was picked. Picks run on one worker, the
 latest click wins, and results from a closed or changed selection are dropped.
-Buildings, doodads, water and live creatures are not picked, and no identity is
-inferred.
+Water and live creatures are not picked, and no identity is inferred.
+
+### Drawn objects
+
+In GPU streaming mode the same ray is also tested against the BASIC exterior
+objects the hot child draws: buildings, MDDF doodads, WMO set doodads and the
+opt-in static creature models (`-Dvimi.world.creatures=true`). The nearer of
+the terrain hit and the object hit wins, as under the depth test.
+
+- **Exact geometry.** When a tile's late objects attach, the GUI compiles
+  `WorldObjectPicking.Tile` from the same validated tables it uploaded:
+  - each placement's recorded position, scale and row-major rotation;
+  - the drawn index ranges of its model;
+  - the alpha of cutout and blended images.
+
+  The ray is moved into each placement's model space. A model's drawn local
+  bounds only reject rays early; a hit is always a drawn triangle, and both faces
+  count because the pass does not cull. Cutout surfaces count where the bilinear,
+  repeat-wrapped alpha of their uploaded image is at least the shader's 0.5
+  reference, and blended surfaces where it is above zero. Eye depths beyond the
+  shader's 2,200-yard discard do not count. When terrain misses, only that
+  per-hit eye depth clips, never the ray distance, so off-axis objects near the
+  frame corners stay pickable.
+- **Source records.** Each file placement has the source record it was built
+  from, recorded in file order, so the bridge's own draw-budget drops stay
+  aligned:
+  - a building shows its WMO FileDataID, the clicked group's ordinal and
+    FileDataID, MODF record, unique ID, doodad set, name set and flags;
+  - a doodad shows its M2 and SKIN FileDataIDs, MDDF record, unique ID and flags;
+  - a set doodad shows its MODD entry, the doodad set it came from and its
+    building's WMO and unique ID;
+  - a creature shows its NPC record, display ID, CreatureModelData, model
+    FileDataID and spawn record.
+
+  Listfile paths come from file metadata only. A missing path reads "(name
+  unknown)". Each source carries its placement's uploaded key: the file model
+  index, position and scale. If the count or any key disagrees with the uploaded
+  placements, for example after a reorder, every placement of that tile is
+  reported as "source record unknown".
+- **Highlight.** The selected placement's drawn local bounds, through its
+  transform, are drawn as a wireframe box on an FX overlay. No GPU pass or
+  shader is involved, and the box is not occluded by terrain. Clicking terrain,
+  sky or a spawn marker clears the selection. When the tile stops being
+  resident, the selection is retired.
+- **Cost and lifetime.** Picks run on the existing pick worker, never on the FX
+  thread or the frame loop, and never borrow a payload. Pick geometry is one
+  bounded array copy on the exterior worker, after the objects copy, and it
+  lives only as long as its resident: the controller republishes the drawn
+  residents' tiles. A tile keeps positions, UVs and indices (20 bytes per vertex
+  and 2 per index) plus one alpha byte per pixel of its cutout and blended
+  images. For the version 2 maximum profile that is at most about 6.9 MB per
+  tile (5.1 MB of geometry and 1.8 MB of alpha). With the hot child's 10 slots
+  plus transient presented and committing entries, the worst case is about 70
+  to 90 MB of heap. The measured real tiles (3,478 to 18,582 vertices) stay
+  under 0.5 MB each.
 
 ## First-stage scope
 
@@ -155,6 +208,14 @@ No source/game assets were copied into the repository.
 `:gui:worldPickTest` (part of `:gui:check`) covers ray inversion of the terrain
 projection, surface hits against authored planar heights, holes, sky and
 underground cameras, marker hit order and the disclosure text.
+`:rendering-world:test --tests '*WorldObjectPickingTest'` and `:gui:worldObjectPicksTest`
+cover exact object hits against authored quads (recorded transforms, triangles
+not bounds, nearest placement, depth discard, cutout and blended alpha), source
+records, unknown names and the highlight projection.
+`WorldStreamObjectsPickTest` pins the pick transform to the renderer's own model
+matrices. `nativeGpuWorldStreamObjectsProof` checks on the real child that the
+CPU pick agrees with the drawn pixels. A transparent cutout and a gap inside a
+model's bounds pick nothing; the opaque and blended quads pick their ranges.
 
 The authored UI fixture exercises selection, stale requests across map and
 explorer sessions, background cancellation, rendering and borrowed lifetimes.
