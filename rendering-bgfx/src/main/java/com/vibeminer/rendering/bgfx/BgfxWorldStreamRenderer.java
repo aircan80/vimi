@@ -119,24 +119,37 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         private int geometryAt, atlasRow, tickets;
         private boolean canceled, finished, successful;
         private volatile String failure;
-        private SlotObjects building;
-        private int objectVertexAt, objectIndexAt, objectImage, objectsState;
+        // Inline objects named by the tile header; the build owns their packed input.
+        private final ObjectsBuild objects;
+        private final int initialObjectsState;
 
         private Upload(long tag, WorldStreamPackedTile.Source source) {
             this.tag = tag;
             this.source = source;
             lease = source.header.lease();
             atlasRow = source.atlas == null ? 512 : 0;
-            objectsState = source.objectsState;
+            initialObjectsState = source.objectsState;
+            objects =
+                    source.objectsState == 1 && source.objects != null
+                            ? new ObjectsBuild(source.objects)
+                            : null;
+            source.objects = null;
         }
 
         /** -1 outside the exterior profile; else 0 none, 1 drawn, 2 failed (terrain kept). */
         int objectsState() {
-            return objectsState;
+            return objects != null && objects.failed ? 2 : initialObjectsState;
         }
 
         private boolean objectsPending() {
-            return objectsState == 1 && source.objects != null;
+            return objects != null && objects.pending();
+        }
+
+        private void closeInputs() {
+            source.close();
+            if (objects != null) {
+                objects.closeSource();
+            }
         }
 
         boolean finished() {
@@ -160,7 +173,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
 
         long retainedInputBytes() {
-            return source.payloadBytes();
+            return source.payloadBytes() + (objects == null ? 0 : objects.inputBytes());
         }
 
         WorldStreamState.Lease lease() {
@@ -175,6 +188,88 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         float anchorX, anchorY;
         boolean textured, ready;
         SlotObjects objects;
+    }
+
+    /**
+     * Bounded building of one tile's objects: resource creation, then vertex, index and image
+     * slices of at most OBJECT_CHUNK bytes, each a bgfx_copy. Owns its packed input until the last
+     * slice is issued; any failure destroys only this build.
+     */
+    private static final class ObjectsBuild {
+        private WorldStreamPackedObjects source;
+        private SlotObjects building;
+        private int vertexAt, indexAt, image;
+        private boolean failed;
+
+        ObjectsBuild(WorldStreamPackedObjects source) {
+            this.source = java.util.Objects.requireNonNull(source);
+        }
+
+        boolean pending() {
+            return source != null;
+        }
+
+        long inputBytes() {
+            return source == null ? 0 : source.payloadBytes();
+        }
+
+        long builtBytes() {
+            return building == null ? 0 : building.bytes;
+        }
+
+        void closeSource() {
+            if (source != null) {
+                source.close();
+                source = null;
+            }
+        }
+
+        /** Drops everything without attaching; idempotent. */
+        void abandon() {
+            if (building != null) {
+                building.destroy();
+                building = null;
+            }
+            closeSource();
+        }
+
+        void fail() {
+            abandon();
+            failed = true;
+        }
+
+        SlotObjects take() {
+            if (pending() || failed || building == null) {
+                throw new IllegalStateException("Objects build not complete");
+            }
+            var result = building;
+            building = null;
+            return result;
+        }
+    }
+
+    /**
+     * Late objects for an already staged or active slot generation, delivered after its terrain.
+     * They attach only if that exact generation is still active when the last slice is issued.
+     */
+    static final class LateUpload {
+        private final WorldStreamState.Lease lease;
+        private final ObjectsBuild build;
+        private boolean dropped;
+
+        private LateUpload(WorldStreamState.Lease lease, ObjectsBuild build) {
+            this.lease = lease;
+            this.build = build;
+        }
+
+        WorldStreamState.Lease lease() {
+            return lease;
+        }
+
+        /** True once no further slice is needed: built, failed or dropped. */
+        boolean ready() {
+            return !build.pending();
+        }
     }
 
     /** One tile's uploaded exterior objects; dropped with its slot generation. */
@@ -231,7 +326,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private short wmoModel = INVALID, wmoNormal = INVALID, wmoSampler = INVALID;
     private List<WorldStreamState.Lease> active = List.of();
     private WorldStreamState.Lease staged;
-    private long content, nextTag, liveBytes, peakBytes, maximumStepNanos;
+    private LateUpload late;
+    private long content, nextTag, liveBytes, peakBytes, maximumStepNanos, objectsRevision;
     private int peakStepBytes;
     private boolean closed, callbackFreed;
 
@@ -340,20 +436,22 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             if (nextTag == (Long.MAX_VALUE >>> 8)) {
                 throw new IllegalStateException("Callback tags exhausted");
             }
+            long payload = source.payloadBytes();
             var upload = new Upload(++nextTag, source);
             var slot = slots[lease.slot()];
             slot.ready = false;
             slot.lease = lease;
-            // A new slot generation drops the previous generation's objects.
+            // A new slot generation drops the previous generation's objects, late ones included.
             if (slot.objects != null) {
                 slot.objects.destroy();
                 slot.objects = null;
             }
+            dropLate(lease.slot());
             if (upload.objectsPending() && wmoProgram == INVALID) {
-                failObjects(upload);
+                upload.objects.fail();
             }
             uploading.set(upload);
-            liveBytes = source.payloadBytes();
+            liveBytes = payload;
             peakBytes = Math.max(peakBytes, liveBytes);
             return upload;
         } catch (RuntimeException | Error failure) {
@@ -419,7 +517,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             }
         }
         if (!upload.canceled && bytes == 0 && terrainSubmitted(upload) && upload.objectsPending()) {
-            bytes = stepObjects(upload);
+            bytes = stepObjects(upload.objects);
         }
         maximumStepNanos = Math.max(maximumStepNanos, System.nanoTime() - started);
         peakStepBytes = Math.max(peakStepBytes, bytes);
@@ -438,14 +536,14 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     /**
      * One bounded object slice: resource creation, then vertex, index and image copies of at most
-     * OBJECT_CHUNK bytes. Any failure drops only this tile's objects.
+     * OBJECT_CHUNK bytes. Any failure drops only this build's objects.
      */
-    private int stepObjects(Upload upload) {
-        var source = upload.source.objects;
+    private int stepObjects(ObjectsBuild build) {
+        var source = build.source;
         try {
-            if (upload.building == null) {
+            if (build.building == null) {
                 var built = new SlotObjects(source);
-                upload.building = built;
+                build.building = built;
                 try (var layout = objectLayout()) {
                     built.vertices =
                             valid(
@@ -462,29 +560,27 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 built.bytes = source.vertices.capacity() + (long) source.indices.capacity();
                 return 0;
             }
-            var built = upload.building;
-            if (upload.objectVertexAt < source.vertices.capacity()) {
-                int count =
-                        Math.min(OBJECT_CHUNK, source.vertices.capacity() - upload.objectVertexAt);
+            var built = build.building;
+            if (build.vertexAt < source.vertices.capacity()) {
+                int count = Math.min(OBJECT_CHUNK, source.vertices.capacity() - build.vertexAt);
                 bgfx_update_dynamic_vertex_buffer(
                         built.vertices,
-                        upload.objectVertexAt / WorldStreamObjectsFile.VERTEX_BYTES,
-                        bgfx_copy(source.vertices.slice(upload.objectVertexAt, count)));
-                upload.objectVertexAt += count;
+                        build.vertexAt / WorldStreamObjectsFile.VERTEX_BYTES,
+                        bgfx_copy(source.vertices.slice(build.vertexAt, count)));
+                build.vertexAt += count;
                 return count;
             }
-            if (upload.objectIndexAt < source.indices.capacity()) {
-                int count =
-                        Math.min(OBJECT_CHUNK, source.indices.capacity() - upload.objectIndexAt);
+            if (build.indexAt < source.indices.capacity()) {
+                int count = Math.min(OBJECT_CHUNK, source.indices.capacity() - build.indexAt);
                 bgfx_update_dynamic_index_buffer(
                         built.indices,
-                        upload.objectIndexAt / 2,
-                        bgfx_copy(source.indices.slice(upload.objectIndexAt, count)));
-                upload.objectIndexAt += count;
+                        build.indexAt / 2,
+                        bgfx_copy(source.indices.slice(build.indexAt, count)));
+                build.indexAt += count;
                 return count;
             }
-            if (upload.objectImage < source.imageCount()) {
-                int image = upload.objectImage;
+            if (build.image < source.imageCount()) {
+                int image = build.image;
                 int width = source.images[image * 2], height = source.images[image * 2 + 1];
                 int count = width * height * 4;
                 built.textures[image] =
@@ -501,29 +597,121 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                                                         source.imageOffset(image), count)),
                                         0));
                 built.bytes += count;
-                upload.objectImage++;
+                build.image++;
                 return count;
             }
             // Every slice is a bgfx-owned copy; the packed native input can retire now.
-            source.close();
-            upload.source.objects = null;
+            build.closeSource();
             return 0;
         } catch (IOException | RuntimeException failed) {
-            failObjects(upload);
+            build.fail();
             return 0;
         }
     }
 
-    private static void failObjects(Upload upload) {
-        if (upload.building != null) {
-            upload.building.destroy();
-            upload.building = null;
+    /**
+     * Takes ownership of one late objects set for {@code lease}. If this renderer's slot does not
+     * hold that generation, or the objects pass is unavailable, the upload is born dropped or
+     * failed and issues nothing.
+     */
+    LateUpload beginLate(WorldStreamState.Lease lease, WorldStreamPackedObjects packed) {
+        java.util.Objects.requireNonNull(packed);
+        try {
+            requireOwner();
+            requireOpen();
+            java.util.Objects.requireNonNull(lease);
+            if (late != null) {
+                throw new IllegalStateException("One late objects upload already held");
+            }
+        } catch (RuntimeException | Error refused) {
+            packed.close();
+            throw refused;
         }
-        if (upload.source.objects != null) {
-            upload.source.objects.close();
-            upload.source.objects = null;
+        var upload = new LateUpload(lease, new ObjectsBuild(packed));
+        if (!lateTarget(lease)) {
+            upload.dropped = true;
+            upload.build.abandon();
+        } else if (wmoProgram == INVALID) {
+            upload.build.fail();
         }
-        upload.objectsState = 2;
+        late = upload;
+        return upload;
+    }
+
+    /** One bounded late slice; the caller gives terrain uploads priority. */
+    int stepLate(LateUpload upload) {
+        requireOwner();
+        requireOpen();
+        requireLate(upload);
+        if (upload.ready()) {
+            return 0;
+        }
+        long started = System.nanoTime();
+        int bytes = stepObjects(upload.build);
+        maximumStepNanos = Math.max(maximumStepNanos, System.nanoTime() - started);
+        peakStepBytes = Math.max(peakStepBytes, bytes);
+        if (bytes > OBJECT_CHUNK) {
+            throw new IllegalStateException("Object slice escaped bound");
+        }
+        return bytes;
+    }
+
+    /**
+     * Retires a ready late upload. It attaches only when {@code live} (the child state still admits
+     * that generation) and this renderer's slot still holds that exact active generation without
+     * objects. Otherwise the built resources are destroyed and the result is DROPPED.
+     */
+    WorldStreamStatus.LateOutcome finishLate(LateUpload upload, boolean live) {
+        requireOwner();
+        requireOpen();
+        requireLate(upload);
+        if (!upload.ready()) {
+            throw new IllegalStateException("Late objects upload still building");
+        }
+        late = null;
+        if (upload.dropped || !live || !lateTarget(upload.lease)) {
+            upload.build.abandon();
+            return WorldStreamStatus.LateOutcome.DROPPED;
+        }
+        if (upload.build.failed) {
+            return WorldStreamStatus.LateOutcome.FAILED;
+        }
+        slots[upload.lease.slot()].objects = upload.build.take();
+        objectsRevision++;
+        return WorldStreamStatus.LateOutcome.ATTACHED;
+    }
+
+    /** Changes whenever late objects become drawable, so an unchanged camera redraws once. */
+    long objectsRevision() {
+        return objectsRevision;
+    }
+
+    private boolean lateTarget(WorldStreamState.Lease lease) {
+        var slot = slots[lease.slot()];
+        return lateTarget(lease, slot.ready, slot.lease, slot.objects != null, active);
+    }
+
+    /** The exact active generation in its ready slot, still without objects. */
+    static boolean lateTarget(
+            WorldStreamState.Lease lease,
+            boolean ready,
+            WorldStreamState.Lease slotLease,
+            boolean hasObjects,
+            List<WorldStreamState.Lease> active) {
+        return ready && lease.equals(slotLease) && !hasObjects && active.contains(lease);
+    }
+
+    private void dropLate(int slot) {
+        if (late != null && late.lease.slot() == slot && !late.dropped) {
+            late.dropped = true;
+            late.build.abandon();
+        }
+    }
+
+    private void requireLate(LateUpload upload) {
+        if (upload == null || upload != late) {
+            throw new IllegalStateException("Foreign or finished late objects upload");
+        }
     }
 
     private static BGFXVertexLayout objectLayout() throws IOException {
@@ -552,6 +740,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 slot.objects.destroy();
                 slot.objects = null;
             }
+            dropLate(upload.lease.slot());
             staged = null;
             upload.canceled = true;
             upload.successful = false;
@@ -594,17 +783,15 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             slot.anchorX = upload.source.header.maxX();
             slot.anchorY = upload.source.header.maxY();
             slot.textured = upload.source.header.outcome() == WorldStreamTileFile.Outcome.TEXTURED;
-            if (upload.objectsState == 1) {
-                slot.objects = upload.building;
-                upload.building = null;
+            if (upload.objects != null && !upload.objects.failed) {
+                slot.objects = upload.objects.take();
             }
             slot.ready = true;
             upload.successful = true;
-        } else if (upload.building != null) {
-            upload.building.destroy();
-            upload.building = null;
+        } else if (upload.objects != null) {
+            upload.objects.abandon();
         }
-        upload.source.close();
+        upload.closeInputs();
         liveBytes = 0;
         upload.finished = true;
         uploading.set(null);
@@ -901,7 +1088,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     }
 
     private long objectBytes(Upload upload) {
-        long total = upload == null || upload.building == null ? 0 : upload.building.bytes;
+        long total = upload == null || upload.objects == null ? 0 : upload.objects.builtBytes();
+        if (late != null) {
+            total += late.build.builtBytes();
+        }
         for (var slot : slots) {
             if (slot != null && slot.objects != null) {
                 total += slot.objects.bytes;
@@ -938,10 +1128,14 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         var pending = uploading.get();
         if (pending != null) {
             pending.canceled = true;
-            if (pending.building != null) {
-                pending.building.destroy();
-                pending.building = null;
+            if (pending.objects != null) {
+                pending.objects.abandon();
             }
+        }
+        if (late != null) {
+            late.dropped = true;
+            late.build.abandon();
+            late = null;
         }
         for (var slot : slots) {
             if (slot != null && slot.objects != null) {
@@ -985,7 +1179,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
         var pending = uploading.getAndSet(null);
         if (pending != null) {
-            pending.source.close();
+            pending.closeInputs();
             pending.finished = true;
         }
         liveBytes = 0;

@@ -25,6 +25,8 @@ final class WorldStreamSession {
             WorldStreamEnvelope.Commit commit,
             Throwable error) {}
 
+    private record LateDecoded(WorldStreamPackedObjects objects, Throwable error) {}
+
     private static final long DRAW_INTERVAL = TimeUnit.SECONDS.toNanos(1) / 30;
     private final WorldStreamEnvelope.Session session;
     private final Path directory;
@@ -38,6 +40,14 @@ final class WorldStreamSession {
     private final java.util.concurrent.ExecutorService decoder =
             Executors.newSingleThreadExecutor(
                     Thread.ofVirtual().name("world-v2-packet-decoder").factory());
+    // Late objects: their own decoder and upload, never ahead of a terrain tile's.
+    private final AtomicBoolean objectsCanceled = new AtomicBoolean();
+    private final java.util.concurrent.ExecutorService objectsDecoder =
+            Executors.newSingleThreadExecutor(
+                    Thread.ofVirtual().name("world-v2-objects-decoder").factory());
+    private CompletableFuture<LateDecoded> objectsDecoding;
+    private WorldStreamControl.LateObjects objectsCommand;
+    private BgfxWorldStreamRenderer.LateUpload lateUpload;
     private volatile boolean failed;
     private volatile long closeStarted;
     private CompletableFuture<Decoded> decoding;
@@ -111,6 +121,7 @@ final class WorldStreamSession {
                     }
                     reconcile();
                     completeDecode(owner);
+                    completeObjectsDecode(owner);
                     var update = mailbox.takeCamera();
                     if (update != null) {
                         camera = update;
@@ -127,10 +138,14 @@ final class WorldStreamSession {
                     if (command != null && !mailbox.closing()) {
                         execute(owner, command);
                     }
+                    takeObjects();
                     reconcile();
                     if (upload != null && !upload.finished()) {
                         owner.step(upload);
                         reconcile();
+                    } else if (lateUpload != null && !lateUpload.ready()) {
+                        // Terrain keeps priority: late object slices use only idle iterations.
+                        owner.stepLate(lateUpload);
                     }
                     // GPU mutations must precede draw submission in the same bgfx frame.
                     long now = System.nanoTime();
@@ -141,15 +156,18 @@ final class WorldStreamSession {
                     owner.advance();
                     reconcile();
                     finishUpload();
+                    finishLate(owner);
                     advertiseCredit();
                     LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
                 }
                 requestClose();
                 decoderCanceled.set(true);
+                objectsCanceled.set(true);
                 // Keep the owner advancing while the actual input/packing worker relinquishes
                 // ownership.
-                while (decoding != null) {
+                while (decoding != null || objectsDecoding != null) {
                     completeDecode(owner);
+                    completeObjectsDecode(owner);
                     owner.advance();
                     LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
                 }
@@ -170,9 +188,12 @@ final class WorldStreamSession {
         } finally {
             requestClose();
             decoderCanceled.set(true);
+            objectsCanceled.set(true);
             decoder.shutdown();
+            objectsDecoder.shutdown();
             // This is a child-only drain. The independent watchdog remains armed throughout it.
-            while (!decoder.awaitTermination(100, TimeUnit.MILLISECONDS)) {
+            while (!decoder.awaitTermination(100, TimeUnit.MILLISECONDS)
+                    || !objectsDecoder.awaitTermination(100, TimeUnit.MILLISECONDS)) {
                 // Do not close a stream under another thread's IO monitor.
             }
             if (decoding != null) {
@@ -181,6 +202,13 @@ final class WorldStreamSession {
                     result.tile().close();
                 }
                 decoding = null;
+            }
+            if (objectsDecoding != null) {
+                var result = objectsDecoding.join();
+                if (result.objects() != null) {
+                    result.objects().close();
+                }
+                objectsDecoding = null;
             }
             // Native close has now completed its callback drain; mirror those final releases
             // before claiming a successful session drain to the parent.
@@ -384,6 +412,139 @@ final class WorldStreamSession {
             }
         }
         return WorldStreamPackedTile.prepare(payload, objects, state, canceled);
+    }
+
+    /**
+     * Admits one late objects command. A generation that is no longer active here (or already holds
+     * objects) is answered DROPPED at once without opening the file.
+     */
+    private void takeObjects() {
+        if (objectsCommand != null || closing.get() || mailbox.closing()) {
+            return;
+        }
+        var command = mailbox.takeObjects();
+        if (command == null) {
+            return;
+        }
+        if (!session.exteriorObjects()) {
+            throw new IllegalStateException("Late objects outside the session profile");
+        }
+        var admitted = state.objectsOffer(command.nonce(), command.transaction(), command.lease());
+        if (admitted == WorldStreamState.Result.CLOSED) {
+            return;
+        }
+        if (admitted == WorldStreamState.Result.BUSY) {
+            throw new IllegalStateException("Second late objects command in flight");
+        }
+        if (admitted != WorldStreamState.Result.OK) {
+            sendObjects(command, WorldStreamStatus.LateOutcome.DROPPED);
+            return;
+        }
+        int coordinate = state.coordinate(command.lease());
+        objectsCommand = command;
+        objectsCanceled.set(false);
+        objectsDecoding =
+                CompletableFuture.supplyAsync(
+                        () -> {
+                            try {
+                                return new LateDecoded(
+                                        decodeLateObjects(
+                                                session,
+                                                directory,
+                                                command,
+                                                coordinate % 64,
+                                                coordinate / 64,
+                                                objectsCanceled::get),
+                                        null);
+                            } catch (Throwable error) {
+                                return new LateDecoded(null, error);
+                            }
+                        },
+                        objectsDecoder);
+    }
+
+    /**
+     * Objects-decoder read of one late objects file bound to the resident tile's identity. Any
+     * failure is isolated to these objects: the tile's terrain is already staged and untouched.
+     */
+    static WorldStreamPackedObjects decodeLateObjects(
+            WorldStreamEnvelope.Session session,
+            Path directory,
+            WorldStreamControl.LateObjects command,
+            int tileX,
+            int tileY,
+            java.util.function.BooleanSupplier canceled)
+            throws IOException {
+        if (!session.exteriorObjects()) {
+            throw new IOException("Late objects outside the session profile");
+        }
+        var data =
+                WorldStreamObjectsFile.read(
+                        directory.resolve(WorldStreamObjectsFile.basename(command.transaction())),
+                        new WorldStreamObjectsFile.Identity(
+                                session.nonce(),
+                                session.scope(),
+                                command.transaction(),
+                                command.lease(),
+                                tileX,
+                                tileY),
+                        new WorldStreamObjectsFile.Reference(command.length(), command.sha256()),
+                        canceled);
+        return WorldStreamPackedObjects.pack(data, canceled);
+    }
+
+    private void completeObjectsDecode(WorldStreamNativeOwner owner) {
+        if (objectsDecoding == null || !objectsDecoding.isDone()) {
+            return;
+        }
+        var result = objectsDecoding.join();
+        var command = objectsCommand;
+        objectsDecoding = null;
+        if (closing.get() || result.error() != null) {
+            if (result.objects() != null) {
+                result.objects().close();
+            }
+            boolean live = state.objectsLive(command.lease());
+            retireObjects(command, false);
+            if (!closing.get()) {
+                sendObjects(
+                        command,
+                        live
+                                ? WorldStreamStatus.LateOutcome.FAILED
+                                : WorldStreamStatus.LateOutcome.DROPPED);
+            }
+            return;
+        }
+        // The renderer takes the packed input; a generation it no longer holds is born dropped.
+        lateUpload = owner.beginLate(command.lease(), result.objects());
+    }
+
+    private void finishLate(WorldStreamNativeOwner owner) {
+        if (lateUpload == null || !lateUpload.ready()) {
+            return;
+        }
+        var command = objectsCommand;
+        var outcome = owner.finishLate(lateUpload, state.objectsLive(command.lease()));
+        lateUpload = null;
+        retireObjects(command, outcome == WorldStreamStatus.LateOutcome.ATTACHED);
+        sendObjects(command, outcome);
+    }
+
+    private void retireObjects(WorldStreamControl.LateObjects command, boolean attached) {
+        if (state.objectsDone(command.lease(), attached) != WorldStreamState.Result.OK) {
+            throw new IllegalStateException("Late objects retired outside their generation");
+        }
+        objectsCommand = null;
+    }
+
+    private void sendObjects(
+            WorldStreamControl.LateObjects command, WorldStreamStatus.LateOutcome outcome) {
+        send(
+                "OBJECTS_DONE "
+                        + command.transaction()
+                        + leaseText(command.lease())
+                        + " "
+                        + outcome.name());
     }
 
     private Decoded decodeCommit(WorldStreamControl.Commit command) {

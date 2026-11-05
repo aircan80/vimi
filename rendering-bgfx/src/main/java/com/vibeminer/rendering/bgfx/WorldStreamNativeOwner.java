@@ -72,6 +72,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
     private ByteBuffer cropped;
     private WorldStreamControl.Camera lastCamera;
     private long cameraRevision, policy, submittedCamera, submittedContent = -1, submittedPolicy;
+    private long submittedObjects;
     private long publishedCamera, publishedContent, sequence, order;
     private int width, height, currentFrame, contextBuffers, contextTextures;
     private long contextGpuHeap;
@@ -201,6 +202,29 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         renderer.cancel(upload);
     }
 
+    BgfxWorldStreamRenderer.LateUpload beginLate(
+            WorldStreamState.Lease lease, WorldStreamPackedObjects objects) {
+        try {
+            requireOpen();
+        } catch (RuntimeException closed) {
+            objects.close();
+            throw closed;
+        }
+        return renderer.beginLate(lease, objects);
+    }
+
+    /** Same frame rule as terrain: no GPU mutation after this frame's draw submission. */
+    int stepLate(BgfxWorldStreamRenderer.LateUpload upload) {
+        requireOpen();
+        return renderedThisFrame ? 0 : renderer.stepLate(upload);
+    }
+
+    WorldStreamStatus.LateOutcome finishLate(
+            BgfxWorldStreamRenderer.LateUpload upload, boolean live) {
+        requireOpen();
+        return renderer.finishLate(upload, live);
+    }
+
     void commit(long expected, long next, List<WorldStreamState.Lease> table) {
         requireOpen();
         renderer.commit(expected, next, table);
@@ -229,6 +253,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         height = command.height();
         if (submittedCamera == cameraRevision
                 && submittedContent == renderer.contentRevision()
+                && submittedObjects == renderer.objectsRevision()
                 && submittedPolicy == policy) {
             return false;
         }
@@ -257,6 +282,7 @@ final class WorldStreamNativeOwner implements AutoCloseable {
         renderedThisFrame = true;
         submittedCamera = cameraRevision;
         submittedContent = ticket.content();
+        submittedObjects = renderer.objectsRevision();
         submittedPolicy = policy;
         return true;
     }
