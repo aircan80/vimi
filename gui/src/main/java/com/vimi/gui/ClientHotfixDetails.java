@@ -52,7 +52,7 @@ final class ClientHotfixDetails {
         if (missing > 0) parts.add(missing + " not found; existing import kept");
         if (failed > 0) parts.add(failed + " could not be verified; existing import kept");
         if (superseded > 0) parts.add(superseded + " leftover check" + (superseded == 1 ? "" : "s")
-                + " removed (the file now belongs to another build; imports kept)");
+                + " removed (moved to another build earlier; imports kept)");
         return String.join(" · ", parts);
     }
 

@@ -47,9 +47,10 @@ public final class ClientHotfixStoreTest {
         followRewatchesTheFollowedFileAndReportsCancellationTruthfully();
         failedWatchRemovesABindingTheNewBuildDidNotHaveBefore();
         sameBuildWatchesAreKeptAndDowngradeLeftoversGo();
+        onlyTheMarkedWatchOfAPartialMoveIsRemoved();
         followPromptsAreOfferedOncePerMoveAndSession();
         System.out.println(
-                "CLIENT_HOTFIX_STORE_PASS authoredScenarios=16 noNetwork=true noGameAssets=true");
+                "CLIENT_HOTFIX_STORE_PASS authoredScenarios=17 noNetwork=true noGameAssets=true");
     }
 
     private static byte[] cache(int build, int value) {
@@ -806,14 +807,14 @@ public final class ClientHotfixStoreTest {
             var partial = store.follow(SCOPE, NEXT, Cancellation.NONE).get(3, TimeUnit.SECONDS);
             check(!partial.oldWatchCleared() && watched(store, SCOPE) && watched(store, NEXT),
                     "the old build's watch was left behind");
-            // The leftover cannot be removed yet: it is reported, kept out of the check, retried.
+            // The leftover cannot be removed yet: reported as a failure (never as removed), kept
+            // out of the check so it cannot prompt, and retried.
             var results = refresh(store);
             check(outcomes(results).equals(java.util.Map.of(
-                            SCOPE, ClientHotfixStore.RefreshOutcome.SUPERSEDED,
+                            SCOPE, ClientHotfixStore.RefreshOutcome.FAILED,
                             NEXT, ClientHotfixStore.RefreshOutcome.UNCHANGED))
-                            && results.stream().anyMatch(r -> r.outcome()
-                                    == ClientHotfixStore.RefreshOutcome.SUPERSEDED && r.failure() != null),
-                    "a failed leftover removal is reported: " + results);
+                            && ClientHotfixDetails.refreshFailed(results),
+                    "a failed leftover removal is a failure: " + results);
             check(watched(store, SCOPE), "the leftover watch is still there");
             unwatch.set(false);
             // The same file is watched twice: the build it declares keeps it, the leftover goes,
@@ -923,6 +924,84 @@ public final class ClientHotfixStoreTest {
                             SCOPE, ClientHotfixStore.RefreshOutcome.UNCHANGED)),
                     "the watch the user moved to is kept, the higher leftover goes: " + results);
             check(watched(store, SCOPE) && !watched(store, NEXT), "the downgrade target stays checked");
+        } finally {
+            remove(root);
+        }
+    }
+
+    private static void onlyTheMarkedWatchOfAPartialMoveIsRemoved() throws Exception {
+        // EU 70707 and US 70707 watch one file; the user moves only EU to 70800.
+        var eu = new ClientHotfixStore.Scope(new BuildRef("wow", "05".repeat(16), "06".repeat(16), "eu"),
+                "enUS", "1.60.1.70707");
+        var euNext = new ClientHotfixStore.Scope(new BuildRef("wow", "07".repeat(16), "08".repeat(16), "eu"),
+                "enUS", "1.60.1.70800");
+        for (boolean removable : new boolean[] {true, false}) {
+            Path root = Files.createTempDirectory("client-hotfix-follow-partial-").toRealPath();
+            Path original = root.resolve("DBCache.bin");
+            var unwatch = new AtomicBoolean();
+            rewrite(original, cache(70707, 1), 1);
+            try (var store = failing(root.resolve("store"), new AtomicBoolean(), unwatch, new AtomicBoolean())) {
+                store.importCache(SCOPE, original, true, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+                store.importCache(eu, original, true, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+                rewrite(original, cache(70800, 2), 2);
+                unwatch.set(!removable);
+                var moved = store.follow(eu, euNext, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+                check(moved.oldWatchCleared() == removable, "old EU watch removed: " + removable);
+                unwatch.set(false);
+                var expected = new java.util.HashMap<ClientHotfixStore.Scope, ClientHotfixStore.RefreshOutcome>();
+                expected.put(SCOPE, ClientHotfixStore.RefreshOutcome.CLIENT_BUILD_CHANGED);
+                expected.put(euNext, ClientHotfixStore.RefreshOutcome.UNCHANGED);
+                if (!removable) expected.put(eu, ClientHotfixStore.RefreshOutcome.SUPERSEDED);
+                var results = refresh(store);
+                check(outcomes(results).equals(expected),
+                        "the unmoved US watch is never touched: " + results);
+                check(watched(store, SCOPE) && watched(store, euNext) && !watched(store, eu),
+                        "US keeps its watch; only the marked EU leftover is gone");
+                results = refresh(store);
+                check(outcomes(results).get(SCOPE) == ClientHotfixStore.RefreshOutcome.CLIENT_BUILD_CHANGED
+                                && watched(store, SCOPE),
+                        "US is still reported and watched on later refreshes");
+            } finally {
+                remove(root);
+            }
+        }
+        // A marker whose target watch is gone no longer applies; an unreadable leftover binding
+        // only affects that one report.
+        Path root = Files.createTempDirectory("client-hotfix-follow-stale-").toRealPath();
+        Path original = root.resolve("DBCache.bin");
+        var unwatch = new AtomicBoolean(true);
+        rewrite(original, cache(70707, 1), 1);
+        try (var store = failing(root.resolve("store"), new AtomicBoolean(), unwatch, new AtomicBoolean())) {
+            store.importCache(SCOPE, original, true, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            rewrite(original, cache(70800, 2), 2);
+            store.follow(SCOPE, NEXT, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            unwatch.set(false);
+            store.unwatch(NEXT, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            var results = refresh(store);
+            check(outcomes(results).equals(java.util.Map.of(
+                            SCOPE, ClientHotfixStore.RefreshOutcome.CLIENT_BUILD_CHANGED)),
+                    "with its target unwatched, the old watch is an ordinary watch again: " + results);
+            check(watched(store, SCOPE), "the old watch is kept");
+        } finally {
+            remove(root);
+        }
+        root = Files.createTempDirectory("client-hotfix-follow-manifest-").toRealPath();
+        original = root.resolve("DBCache.bin");
+        unwatch = new AtomicBoolean(true);
+        rewrite(original, cache(70707, 1), 1);
+        Path storage = root.resolve("store");
+        try (var store = failing(storage, new AtomicBoolean(), unwatch, new AtomicBoolean())) {
+            store.importCache(SCOPE, original, true, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            rewrite(original, cache(70800, 2), 2);
+            store.follow(SCOPE, NEXT, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            unwatch.set(false);
+            Files.write(storage.resolve("bindings").resolve(SCOPE.key() + ".binding"),
+                    "authored broken binding".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            var results = refresh(store);
+            check(outcomes(results).equals(java.util.Map.of(
+                            SCOPE, ClientHotfixStore.RefreshOutcome.SUPERSEDED,
+                            NEXT, ClientHotfixStore.RefreshOutcome.UNCHANGED)),
+                    "a broken leftover binding affects only its own report: " + results);
         } finally {
             remove(root);
         }
