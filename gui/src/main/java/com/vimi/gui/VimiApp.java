@@ -952,6 +952,8 @@ public final class VimiApp extends Application {
             var file = chooser.showOpenDialog(root.getScene().getWindow());
             if (file == null) return;
             selected = file.toPath();
+            // A hotfix cache sits inside the game install; never let that path reach a log.
+            com.vibeminer.rendering.bgfx.HelperStderrTail.addSensitiveRoot(selected.getParent());
         }
         showDrainActivity(useBase ? "Selecting base data…" : "Importing and verifying client hotfix cache…");
         var cancellation = new com.vibeminer.access.Cancellation();

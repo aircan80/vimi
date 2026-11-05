@@ -61,6 +61,8 @@ public final class BuildApplication {
             com.vibeminer.network.TactKeyClient keyClient, TransferObserver observer) {
         java.util.Objects.requireNonNull(directory);
         java.util.Objects.requireNonNull(observer);
+        // The data/library root names the account; World diagnostics redact it literally.
+        com.vibeminer.rendering.bgfx.HelperStderrTail.addSensitiveRoot(directory);
         var result = new CompletableFuture<BackendBuildService>();
         var token = new Cancellation();
         result.whenComplete(

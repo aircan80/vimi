@@ -544,6 +544,18 @@ public final class WorldStreamTransport {
         private CommitOperation commitOperation;
         private CommitReceipt currentReceipt;
         private Frame latestFrame;
+        // Diagnostics only: bounded helper stderr, logged once on abnormal end; never protocol.
+        private final HelperStderrTail stderrTail = new HelperStderrTail();
+        private final java.util.concurrent.atomic.AtomicBoolean endReported =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        private final java.util.concurrent.atomic.AtomicBoolean drainReported =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        private final CompletableFuture<String> diagnosticReport = new CompletableFuture<>();
+        private volatile long childPid;
+        private volatile boolean stderrAttached;
+        private final java.util.concurrent.atomic.AtomicLong objectsWriteFailures =
+                new java.util.concurrent.atomic.AtomicLong();
+
         private ObjectsOperation objectsOperation;
 
         /**
@@ -600,6 +612,15 @@ public final class WorldStreamTransport {
                             (drain, error) -> {
                                 if (error != null) {
                                     fail(handle.failure() == null ? error : handle.failure());
+                                    if (!handle.terminatedAndDrained().isDone()
+                                            && drainReported.compareAndSet(false, true)) {
+                                        report(
+                                                "World helper did not drain before the close"
+                                                        + " deadline",
+                                                null,
+                                                failure == null ? error : failure,
+                                                false);
+                                    }
                                 }
                             });
             handle.terminatedAndDrained()
@@ -625,15 +646,31 @@ public final class WorldStreamTransport {
                                         || drain.exitCode().getAsInt() != 0) {
                                     fail(
                                             new IOException(
-                                                    "World child exited without successful CLOSED"));
+                                                    "World child exited without successful CLOSED"
+                                                            + exitSuffix(drain)));
                                 } else {
                                     completion.complete(null);
+                                }
+                                if (completion.isCompletedExceptionally()
+                                        && endReported.compareAndSet(false, true)) {
+                                    report(
+                                            "World helper ended abnormally",
+                                            drain,
+                                            failure == null ? error : failure,
+                                            true);
+                                } else {
+                                    diagnosticReport.complete("");
                                 }
                             });
         }
 
         private void attach(Process process, WorldStreamLaunchOwner.Handle handle) {
             owner = handle;
+            try {
+                childPid = process.pid();
+            } catch (UnsupportedOperationException unavailable) {
+                childPid = 0;
+            }
             handle.runWorker("commands", () -> writeCommands(process, handle));
             handle.runWorker(
                     "statuses",
@@ -645,6 +682,7 @@ public final class WorldStreamTransport {
                         }
                     });
             handle.runWorker("stderr", () -> drainErrors(process));
+            stderrAttached = true;
             handle.runWorker("producer-files", () -> files(handle));
             handle.runWorker("frames", () -> pollFrames(handle));
             handle.runWorker("objects", () -> objects(handle));
@@ -916,6 +954,9 @@ public final class WorldStreamTransport {
                     } catch (IOException | RuntimeException failed) {
                         // The writer removes its own partial file. Only these objects fail, and
                         // the resident records it like a child FAILED, or DROPPED once retired.
+                        if (!stop.getAsBoolean()) {
+                            objectsWriteFailed(failed);
+                        }
                         synchronized (lock) {
                             if (!stop.getAsBoolean()) {
                                 outcome =
@@ -1695,10 +1736,96 @@ public final class WorldStreamTransport {
             }
         }
 
-        private static void drainErrors(Process process) throws IOException {
-            // Drain without retaining arbitrary diagnostics or user data.
+        private void drainErrors(Process process) throws IOException {
+            // Keep draining so the helper never blocks on a full pipe; retain only a bounded,
+            // sanitized tail for an abnormal-exit log record.
             byte[] scratch = new byte[4096];
-            while (process.getErrorStream().read(scratch) != -1) {}
+            var errors = process.getErrorStream();
+            int read;
+            while ((read = errors.read(scratch)) != -1) {
+                stderrTail.accept(scratch, 0, read);
+            }
+        }
+
+        /**
+         * The first late objects write failure of a session, and then every 64th with a count, is
+         * logged: terrain continues, so a failing writer would otherwise leave no evidence.
+         */
+        private void objectsWriteFailed(Throwable failed) {
+            long count = objectsWriteFailures.incrementAndGet();
+            if (!objectsWriteLogged(count)) {
+                return;
+            }
+            try {
+                System.getLogger(WorldStreamTransport.class.getName())
+                        .log(
+                                System.Logger.Level.WARNING,
+                                "World exterior objects file could not be written ("
+                                        + count
+                                        + (count == 1 ? " failure" : " failures")
+                                        + " this session); tile kept as terrain only: "
+                                        + HelperStderrTail.redact(
+                                                WorldStreamLaunchOwner.Handle.detached(failed)
+                                                        .getMessage()));
+            } catch (RuntimeException | Error ignored) {
+                // Diagnostic delivery cannot interrupt objects delivery.
+            }
+        }
+
+        /** The first objects write failure of a session is logged, then every 64th. */
+        static boolean objectsWriteLogged(long count) {
+            return count == 1 || count % 64 == 0;
+        }
+
+        private static String exitSuffix(WorldStreamLaunchOwner.Drain drain) {
+            return drain.exitCode().isEmpty() ? "" : " (exit " + drain.exitCode().getAsInt() + ")";
+        }
+
+        /** Test observation of the single abnormal-end record; empty after a clean end. */
+        CompletableFuture<String> diagnosticReport() {
+            return diagnosticReport.copy();
+        }
+
+        private void report(
+                String summary,
+                WorldStreamLaunchOwner.Drain drain,
+                Throwable cause,
+                boolean terminal) {
+            var text = new StringBuilder(summary);
+            long pid = childPid;
+            if (drain != null && drain.childPid().isPresent()) {
+                pid = drain.childPid().getAsLong();
+            }
+            text.append(pid == 0 ? "; no child process" : "; pid " + pid);
+            if (drain != null && drain.exitCode().isPresent()) {
+                text.append("; exit ").append(drain.exitCode().getAsInt());
+            }
+            text.append("; closed status ").append(closedStatus ? "received" : "not received");
+            if (cause != null) {
+                // Only the already detached, bounded transport message; never a nested chain.
+                text.append("; failure: ")
+                        .append(
+                                HelperStderrTail.redact(
+                                        WorldStreamLaunchOwner.Handle.detached(cause)
+                                                .getMessage()));
+            }
+            text.append(
+                    !stderrAttached
+                            ? "; helper stderr not captured"
+                            : stderrTail.isEmpty()
+                                    ? "; helper stderr empty"
+                                    : "; helper stderr tail:\n" + stderrTail.snapshot());
+            String record = text.toString();
+            try {
+                System.getLogger(WorldStreamTransport.class.getName())
+                        .log(System.Logger.Level.WARNING, record);
+            } catch (RuntimeException | Error ignored) {
+                // Diagnostic delivery cannot interrupt lifetime ownership.
+            } finally {
+                if (terminal) {
+                    diagnosticReport.complete(record);
+                }
+            }
         }
 
         private IOException problem(String message) {

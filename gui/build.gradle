@@ -623,6 +623,14 @@ tasks.register('worldStreamSourceControllerTest', JavaExec) {
 }
 check.dependsOn worldStreamSourceControllerTest
 
+// Bounded, redacted World failure log/UI summaries (#166), without live data or a GPU.
+tasks.register('worldDiagnosticsTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldDiagnosticsTest'
+}
+check.dependsOn worldDiagnosticsTest
+
 // Off-FX display feedback and actual legacy-work retirement, without live data or a GPU.
 tasks.register('worldStreamBackgroundTest', JavaExec) {
     dependsOn testClasses

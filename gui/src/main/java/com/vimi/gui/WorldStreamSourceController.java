@@ -441,12 +441,15 @@ final class WorldStreamSourceController {
                         && refusal.getSuppressed().length == 0
                         && refusal.reason() != WorldTerrainStreaming.Refusal.Reason.RETRY_LATER) {
                     unavailableDetail = "Source unavailable: " + refusal.site();
-                } else terminal = failure;
+                } else {
+                    terminal = failure;
+                    WorldDiagnostics.warn("World streaming failed", failure);
+                }
                 closing = true;
                 publish(
                         unavailableDetail == null ? Phase.FAILED : Phase.UNAVAILABLE,
                         unavailableDetail == null
-                                ? "World streaming failed: " + failure.getClass().getSimpleName()
+                                ? "World streaming failed: " + WorldDiagnostics.brief(failure)
                                 : unavailableDetail);
             }
             wake.set(true);
@@ -457,6 +460,7 @@ final class WorldStreamSourceController {
     }
 
     private void failLater(Throwable failure) {
+        WorldDiagnostics.warn("World streaming failed", failure);
         synchronized (lock) {
             if (terminal == null) terminal = failure;
             else if(terminal!=failure) terminal.addSuppressed(failure);
@@ -464,6 +468,7 @@ final class WorldStreamSourceController {
         }
         try { qualificationCancellation.cancel(); }
         catch(RuntimeException|Error cancelFailure) {
+            WorldDiagnostics.warn("World qualification cancellation failed", cancelFailure);
             synchronized(lock) {
                 if(terminal==null) terminal=cancelFailure;
                 else if(terminal!=cancelFailure) terminal.addSuppressed(cancelFailure);
@@ -492,7 +497,13 @@ final class WorldStreamSourceController {
                 if(water!=null) {
                     waterTablesStarted=clock.getAsLong();
                     waterTables=request.world().prepareWaterTables(qualificationCancellation);
-                    waterTables.whenComplete((ignored, failure) -> kick());
+                    waterTables.whenComplete((ignored, failure) -> {
+                        // Closing cancels the qualification token: only that is routine.
+                        if (failure != null)
+                            WorldDiagnostics.degradedUnlessClean("water tables",
+                                    "World water tables unavailable; terrain continues without water", failure);
+                        kick();
+                    });
                 }
             }
             try {
@@ -839,6 +850,8 @@ final class WorldStreamSourceController {
                 exterior = null;
                 // Preempted by terrain (or retired): untried, so it restarts when terrain idles.
                 if (!work.cancellation.isCanceled() && live(work.entry)) {
+                    WorldDiagnostics.degraded("exterior objects",
+                            "World exterior objects preparation failed; tile kept as terrain only", failed);
                     exteriorTried.add(work.entry);
                     work.entry.source().exteriorFailedLate();
                 }
@@ -875,12 +888,20 @@ final class WorldStreamSourceController {
                     work.entry.source().creatures(work.creatures);
                     if (work.buildingsFailed) work.entry.source().exteriorFailedLate();
                 }
-                case FAILED -> work.entry.source().exteriorFailedLate();
+                case FAILED -> {
+                    // Write, read or upload failed; the helper reports no detail of its own.
+                    WorldDiagnostics.degraded("exterior objects",
+                            "World exterior objects delivery failed; tile kept as terrain only", null);
+                    work.entry.source().exteriorFailedLate();
+                }
                 case DROPPED -> {}
             }
         } catch (RuntimeException failed) {
             // A stopping session cancels delivery; anything else fails only these objects.
             if (!closing && !CleanCancellation.is(failed)) work.entry.source().exteriorFailedLate();
+            // Same rule as the guard above: a clean cancellation is routine, anything else is logged.
+            if (!closing) WorldDiagnostics.degradedUnlessClean("exterior objects",
+                    "World exterior objects delivery failed; tile kept as terrain only", failed);
         }
         changed();
     }
@@ -1234,9 +1255,11 @@ final class WorldStreamSourceController {
         // The canceled object preparation still holds the source lane until it drains.
         if (exterior != null && exterior.prepared != null && !exterior.prepared.isDone()) return;
         Throwable failure = terminal;
+        boolean retirementProblem = false;
         try {
             physical.join();
         } catch (RuntimeException problem) {
+            retirementProblem = true;
             if (failure == null) failure = problem;
             else failure.addSuppressed(problem);
         }
@@ -1251,6 +1274,7 @@ final class WorldStreamSourceController {
             try {
                 entry.source().close();
             } catch (RuntimeException | Error problem) {
+                retirementProblem = true;
                 if (failure == null) failure = problem;
                 else failure.addSuppressed(problem);
             }
@@ -1270,12 +1294,16 @@ final class WorldStreamSourceController {
             pending.producer.close();
             pending = null;
         }
+        // The original terminal failure was logged when it occurred; log again only for new
+        // retirement problems so a hung physical close cannot hide the first cause.
+        if (failure != null && retirementProblem)
+            WorldDiagnostics.warn("World viewer retired after failure", failure);
         publish(
                 failure != null
                         ? Phase.FAILED
                         : unavailableDetail != null ? Phase.UNAVAILABLE : Phase.CLOSED,
                 failure != null
-                        ? "World viewer failed"
+                        ? "World viewer failed: " + WorldDiagnostics.brief(failure)
                         : unavailableDetail != null ? unavailableDetail : "World viewer closed");
         synchronized (lock) {
             events = null;

@@ -272,6 +272,7 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
             rerun = false;
             loading = null;
             show(false);
+            if (failure != null) WorldDiagnostics.warn("World NPC spawn source could not be read", failure);
             index = failure == null ? result : WorldSpawns.unavailable(LocationTypes.State.UNKNOWN,
                     "Spawn source could not be read: " + rootMessage(failure));
             drawn = null;
