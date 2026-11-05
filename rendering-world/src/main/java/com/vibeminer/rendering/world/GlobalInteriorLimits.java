@@ -36,8 +36,11 @@ public final class GlobalInteriorLimits {
     public static final int TRIANGLES = VERTICES;
     public static final int INDICES = TRIANGLES * 3;
 
-    /** Per-group bounds; the same as the WMO group span reader's own ceilings. */
-    public static final int GROUP_VERTICES = 16384, GROUP_TRIANGLES = 16384, GROUP_BATCHES = 64;
+    /**
+     * Per-group bounds: the 16-bit MOVI index domain. Real dungeon groups reach about 17,300
+     * vertices and 22,200 triangles; the group span reader applies its own ceilings first.
+     */
+    public static final int GROUP_VERTICES = 65536, GROUP_TRIANGLES = 65536, GROUP_BATCHES = 64;
 
     public static final int GROUP_INDICES = GROUP_TRIANGLES * 3;
 
@@ -49,7 +52,7 @@ public final class GlobalInteriorLimits {
     public static final float POSITION = 4096, UV = 4096;
 
     /** Raw source sizes read for the root, each group and each image. */
-    public static final int ROOT_BYTES = 1 << 20, GROUP_BYTES = 1 << 20, IMAGE_BYTES = 1 << 20;
+    public static final int ROOT_BYTES = 1 << 20, GROUP_BYTES = 8 << 20, IMAGE_BYTES = 1 << 20;
 
     /** WDT, root, every group and every image. */
     public static final int SOURCES = 2 + GROUPS + IMAGES;

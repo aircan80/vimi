@@ -141,7 +141,7 @@ class WorldGlobalPureCodecTest {
                 () -> new WorldGlobalLayout.Counts(Integer.MAX_VALUE, 1, 1, 1, 3, 6, 1, 1));
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new WorldGlobalLayout.Counts(1, 1, 1, 1, 32769, 6, 1, 1));
+                () -> new WorldGlobalLayout.Counts(1, 9, 9, 1, 524289, 27, 9, 1));
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new WorldGlobalLayout.Counts(1, 1, 1, 1, 3, 7, 1, 1));
@@ -159,10 +159,10 @@ class WorldGlobalPureCodecTest {
                 () -> new WorldGlobalLayout.Counts(1, 1, 4097, 1, 3, 6, 4097, 1));
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new WorldGlobalLayout.Counts(1, 1, 1, 1, 16385, 6, 1, 1));
+                () -> new WorldGlobalLayout.Counts(1, 1, 1, 1, 65537, 6, 1, 1));
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new WorldGlobalLayout.Counts(1, 1, 1, 1, 3, 49155, 1, 1));
+                () -> new WorldGlobalLayout.Counts(1, 1, 1, 1, 3, 196611, 1, 1));
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new WorldGlobalLayout.Counts(1, 1, 1, 1, 3, 6, 1, 65537));
@@ -423,7 +423,7 @@ class WorldGlobalPureCodecTest {
                         COUNTS));
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new WorldGlobalStatus.Ready(id, 1, 32769, 1, 1, 1, 1));
+                () -> new WorldGlobalStatus.Ready(id, 1, 65537, 1, 1, 1, 1));
     }
 
     @Test

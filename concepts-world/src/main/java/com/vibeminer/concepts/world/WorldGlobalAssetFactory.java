@@ -339,9 +339,10 @@ final class WorldGlobalAssetFactory {
         }
 
         private void allocateMesh() {
-            // Grown by doubling up to the profile bounds; most interiors stay far below them.
-            mesh = new float[GlobalInteriorLimits.GROUP_VERTICES * 5];
-            indices = new int[GlobalInteriorLimits.GROUP_INDICES];
+            // Starts at 16Ki vertices and grows by doubling up to the profile bounds; most
+            // interiors stay far below them.
+            mesh = new float[16384 * 5];
+            indices = new int[16384 * 3];
         }
 
         private void appendGroup(
