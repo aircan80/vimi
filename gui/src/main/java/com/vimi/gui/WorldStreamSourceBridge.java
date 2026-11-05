@@ -371,13 +371,28 @@ final class WorldStreamSourceBridge {
             Cancellation cancellation,
             CreatureAppender creatures,
             WorldExteriorObjects.ImageDetail detail) {
+        return prepareExterior(source, scope, tile, cancellation, creatures, detail, false);
+    }
+
+    /**
+     * As above; {@code interiors} also draws interior WMO groups, for dungeon and raid maps
+     * (#280).
+     */
+    static ExteriorCopy prepareExterior(
+            WorldTerrainStreaming source,
+            WorldTerrainStreaming.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation cancellation,
+            CreatureAppender creatures,
+            WorldExteriorObjects.ImageDetail detail,
+            boolean interiors) {
         WorldExteriorObjects.TileObjects set = null;
         try {
             boolean failed = false;
             String note;
             var summary = ExteriorSummary.NONE;
             try {
-                set = source.prepareExteriorObjects(scope, tile, cancellation, detail);
+                set = source.prepareExteriorObjects(scope, tile, cancellation, detail, interiors);
                 logModelFailure(set);
                 summary = ExteriorSummary.of(set);
                 note = note(summary);

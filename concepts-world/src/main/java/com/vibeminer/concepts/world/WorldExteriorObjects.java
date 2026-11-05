@@ -247,7 +247,13 @@ public final class WorldExteriorObjects {
         ROOT_CAPPED,
         ROOT_EMPTY,
         GROUP_DRAWN,
+        /** An interior group, not drawn: the map is not a dungeon or raid (#280). */
         GROUP_INTERIOR,
+        /**
+         * An instance interior group that did not fit the tile budgets left after the building's
+         * exterior groups; only that group is omitted (#280).
+         */
+        GROUP_INTERIOR_CAPPED,
         GROUP_UNSUPPORTED,
         GROUP_UNAVAILABLE,
         GROUP_EMPTY,
@@ -753,7 +759,24 @@ public final class WorldExteriorObjects {
             Cancellation token,
             ModelReader modelReader,
             ImageDetail detail) {
-        return prepare(engine, scope, tile, token, modelReader, detail, RETAINED_SOURCE_BYTES);
+        return prepare(
+                engine, scope, tile, token, modelReader, detail, RETAINED_SOURCE_BYTES, false);
+    }
+
+    /**
+     * As above; with {@code interiors} (dungeon and raid maps, #280) interior WMO groups are drawn
+     * too, after every building's exterior groups and only within the budgets they leave.
+     */
+    static TileObjects prepare(
+            WorldStreamScopes engine,
+            WorldStreamScopes.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation token,
+            ModelReader modelReader,
+            ImageDetail detail,
+            boolean interiors) {
+        return prepare(
+                engine, scope, tile, token, modelReader, detail, RETAINED_SOURCE_BYTES, interiors);
     }
 
     /** As above, with the retained image source bound; tests pass 0 to force every re-read. */
@@ -765,6 +788,18 @@ public final class WorldExteriorObjects {
             ModelReader modelReader,
             ImageDetail detail,
             long retainLimit) {
+        return prepare(engine, scope, tile, token, modelReader, detail, retainLimit, false);
+    }
+
+    static TileObjects prepare(
+            WorldStreamScopes engine,
+            WorldStreamScopes.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation token,
+            ModelReader modelReader,
+            ImageDetail detail,
+            long retainLimit,
+            boolean interiors) {
         if (retainLimit < 0) {
             throw new IllegalArgumentException("Retained source bound");
         }
@@ -779,7 +814,9 @@ public final class WorldExteriorObjects {
                 tile,
                 WorldStreamScopes.UseProfile.BASIC_EXTERIOR,
                 token,
-                admission -> new Builder(admission, modelReader, detail, retainLimit).build());
+                admission ->
+                        new Builder(admission, modelReader, detail, retainLimit, interiors)
+                                .build());
     }
 
     private enum RootState {
@@ -862,11 +899,21 @@ public final class WorldExteriorObjects {
 
         private final ImageDetail detail;
 
+        /** Draw interior WMO groups too (dungeon and raid maps, #280). */
+        private final boolean interiors;
+
+        /** Interior meshes of drawn roots, held for {@link #placeInteriors}; bounded copies. */
+        private final Map<Long, List<PendingMesh>> heldInteriors = new LinkedHashMap<>();
+
+        private long heldVertices, heldIndices;
+
         Builder(
                 WorldStreamScopes.TileAdmission admission,
                 ModelReader modelReader,
                 ImageDetail detail,
-                long retainLimit) {
+                long retainLimit,
+                boolean interiors) {
+            this.interiors = interiors;
             this.detail = detail;
             this.retainLimit = retainLimit;
             this.admission = admission;
@@ -884,6 +931,7 @@ public final class WorldExteriorObjects {
                 setRanges = metadata.setRanges();
                 setIds = metadata.setIds();
                 place(metadata.worldObjects());
+                placeInteriors();
                 fitMaterialDraws();
                 // Admission ran largest first; the set keeps obj0 source order.
                 placements.sort(java.util.Comparator.comparingInt(Placement::ordinal));
@@ -1497,6 +1545,197 @@ public final class WorldExteriorObjects {
             return RootState.DRAWN;
         }
 
+        private enum Admission {
+            ADMITTED,
+            /** A material-only mesh resolve would cap entirely; counted, its copy not kept. */
+            DROPPED,
+            /** Over a per-tile budget: the root is capped, or an interior group is skipped. */
+            OVER
+        }
+
+        /**
+         * One root's tentative charges against the tile budgets. Caps are decided by opaque
+         * candidates alone, exactly as the opaque-only profile did; cutout and blended candidates
+         * draw from their own budget later. Pending copies (every candidate vertex and index of
+         * every kept group) never exceed what both budgets together could draw.
+         */
+        private final class RootBudget {
+            long vertices, indices, ranges, pendingVertices, pendingIndices, materialVertices;
+
+            long[] mark() {
+                return new long[] {
+                    vertices, indices, ranges, pendingVertices, pendingIndices, materialVertices
+                };
+            }
+
+            void reset(long[] m) {
+                vertices = m[0];
+                indices = m[1];
+                ranges = m[2];
+                pendingVertices = m[3];
+                pendingIndices = m[4];
+                materialVertices = m[5];
+            }
+
+            /** Whether the mesh alone fits the tile's empty budgets; otherwise never hold it. */
+            boolean couldEverFit(PendingMesh mesh) {
+                return mesh.vertices().length / VERTEX_FLOATS
+                                <= MAX_VERTICES + MAX_MATERIAL_VERTICES
+                        && mesh.indices().length <= MAX_INDICES + MAX_MATERIAL_INDICES;
+            }
+
+            Admission admit(PendingMesh mesh, int[] local) {
+                int meshVertices = mesh.vertices().length / VERTEX_FLOATS;
+                boolean materialOnly = mesh.ranges().stream().noneMatch(r -> r.blend() == OPAQUE);
+                if (materialOnly
+                        && !mesh.ranges().isEmpty()
+                        && meshVertices
+                                > MAX_MATERIAL_VERTICES
+                                        - Builder.this.materialVertices
+                                        - materialVertices) {
+                    // resolveBuilding would cap every range of this cutout- or blend-only mesh on
+                    // its vertices (BATCH_CAPPED, then GROUP_EMPTY) before reading any image; do it
+                    // now so its copy is never held. Material vertices still pending are charged
+                    // as if kept, a conservative bound.
+                    local[Count.BATCH_CAPPED.ordinal()] += mesh.ranges().size();
+                    local[Count.GROUP_EMPTY.ordinal()]++;
+                    return Admission.DROPPED;
+                }
+                if (materialOnly) {
+                    materialVertices += meshVertices;
+                }
+                pendingVertices += meshVertices;
+                pendingIndices += mesh.indices().length;
+                if (pendingVertices > MAX_VERTICES + MAX_MATERIAL_VERTICES
+                        || pendingIndices > MAX_INDICES + MAX_MATERIAL_INDICES) {
+                    return Admission.OVER;
+                }
+                int opaqueIndices = 0, opaqueRanges = 0;
+                for (var range : mesh.ranges()) {
+                    if (range.blend() == OPAQUE) {
+                        opaqueIndices += range.indexCount();
+                        opaqueRanges++;
+                    }
+                }
+                if (opaqueRanges > 0) {
+                    vertices += meshVertices;
+                }
+                indices += opaqueIndices;
+                ranges += opaqueRanges;
+                if (vertices > MAX_VERTICES - Builder.this.vertices
+                        || indices > MAX_INDICES - Builder.this.indices
+                        || ranges > MAX_RANGES - Builder.this.ranges) {
+                    return Admission.OVER;
+                }
+                return Admission.ADMITTED;
+            }
+        }
+
+        /**
+         * Keeps a root's interior meshes for the interior pass while the tile could still draw
+         * them; past both budgets together a mesh is counted GROUP_INTERIOR_CAPPED and dropped, so
+         * held copies stay bounded.
+         */
+        private List<PendingMesh> holdInteriors(List<PendingMesh> interiors) {
+            var held = new ArrayList<PendingMesh>();
+            for (var mesh : interiors) {
+                long meshVertices = mesh.vertices().length / VERTEX_FLOATS;
+                if (heldVertices + meshVertices > MAX_VERTICES + MAX_MATERIAL_VERTICES
+                        || heldIndices + mesh.indices().length
+                                > MAX_INDICES + MAX_MATERIAL_INDICES) {
+                    count(Count.GROUP_INTERIOR_CAPPED);
+                    continue;
+                }
+                heldVertices += meshVertices;
+                heldIndices += mesh.indices().length;
+                held.add(mesh);
+            }
+            return held;
+        }
+
+        /**
+         * Instance interiors (#280), after every building's exterior: drawn buildings in admission
+         * order (largest first), each held interior group only if it still fits the tile budgets,
+         * the mesh count and the draw budget for every placement of its building. A group that does
+         * not fit is GROUP_INTERIOR_CAPPED; it never caps or displaces an exterior. A building left
+         * with no meshes (an interior-only root none of whose groups fit) is removed, its root and
+         * placements counted EMPTY.
+         */
+        private void placeInteriors() {
+            if (heldInteriors.isEmpty()) {
+                return;
+            }
+            int[] uses = new int[models.size()];
+            for (var placement : placements) {
+                uses[placement.model()]++;
+            }
+            int meshes = 0;
+            for (var model : models) {
+                meshes += model.meshes().size();
+            }
+            int[] local = new int[counts.length];
+            boolean[] removed = new boolean[models.size()];
+            for (int m = 0; m < models.size(); m++) {
+                var model = models.get(m);
+                var held = heldInteriors.remove(model.rootId());
+                if (held == null) {
+                    continue;
+                }
+                var kept = new ArrayList<>(model.meshes());
+                for (var mesh : held) {
+                    token.check();
+                    int candidateRanges = mesh.ranges().size();
+                    if (meshes >= MAX_MESHES
+                            || (long) uses[m] * candidateRanges > MAX_DRAWS - draws) {
+                        local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
+                        continue;
+                    }
+                    var admission = new RootBudget().admit(mesh, local);
+                    if (admission == Admission.DROPPED) {
+                        continue; // counted by admit: BATCH_CAPPED, GROUP_EMPTY
+                    }
+                    if (admission == Admission.OVER) {
+                        local[Count.GROUP_INTERIOR_CAPPED.ordinal()]++;
+                        continue;
+                    }
+                    var mapped = resolveBuilding(mesh, local);
+                    if (mapped == null) {
+                        local[Count.GROUP_EMPTY.ordinal()]++;
+                        continue;
+                    }
+                    int opaque = 0;
+                    for (var range : mapped.ranges()) {
+                        if (range.blend() == CUTOUT) {
+                            local[Count.BATCH_CUTOUT.ordinal()]++;
+                        } else if (range.blend() == BLENDED) {
+                            local[Count.BATCH_BLENDED.ordinal()]++;
+                        } else {
+                            opaque++;
+                        }
+                    }
+                    draws += uses[m] * opaque;
+                    local[Count.GROUP_DRAWN.ordinal()]++;
+                    kept.add(mapped);
+                    meshes++;
+                }
+                if (kept.isEmpty()) {
+                    removed[m] = true;
+                    counts[Count.PLACEMENT_DRAWN.ordinal()] -= uses[m];
+                    counts[Count.PLACEMENT_EMPTY.ordinal()] += uses[m];
+                    counts[Count.ROOT_DRAWN.ordinal()]--;
+                    count(Count.ROOT_EMPTY);
+                    rootStates.put(model.rootId(), RootState.EMPTY);
+                    rootDoodads.remove(model.rootId());
+                    continue;
+                }
+                models.set(m, new Model(model.rootId(), false, kept));
+            }
+            for (int i = 0; i < counts.length; i++) {
+                counts[i] += local[i];
+            }
+            removeModels(removed);
+        }
+
         private RootState readRoot(long rootId) {
             rootsRead++;
             WmoFormats.Root root;
@@ -1533,9 +1772,10 @@ public final class WorldExteriorObjects {
             // Tentative per-root counts merge only if the root is not capped: caps never split.
             int[] local = new int[counts.length];
             var pending = new ArrayList<PendingMesh>();
-            int tentativeVertices = 0, tentativeIndices = 0, tentativeRanges = 0;
-            // Heap held by pending copies: every candidate vertex and index of every kept group.
-            long pendingVertices = 0, pendingIndices = 0, tentativeMaterialVertices = 0;
+            var budget = new RootBudget();
+            // Instance interiors (#280) are held for the tile-level pass after every building's
+            // exterior, so they never cap or displace an exterior.
+            var interiors = new ArrayList<PendingMesh>();
             for (int g = 0; g < lod0; g++) {
                 token.check();
                 long groupId = root.gfid(g);
@@ -1548,54 +1788,17 @@ public final class WorldExteriorObjects {
                 if (mesh == null) {
                     continue;
                 }
-                int meshVertices = mesh.vertices().length / VERTEX_FLOATS;
-                boolean materialOnly = mesh.ranges().stream().noneMatch(r -> r.blend() == OPAQUE);
-                if (materialOnly
-                        && !mesh.ranges().isEmpty()
-                        && meshVertices
-                                > MAX_MATERIAL_VERTICES
-                                        - materialVertices
-                                        - tentativeMaterialVertices) {
-                    // resolveBuilding would cap every range of this cutout- or blend-only mesh on
-                    // its vertices (BATCH_CAPPED, then GROUP_EMPTY) before reading any image; do it
-                    // now so its copy is never held. Material vertices still pending are charged
-                    // as if kept, a conservative bound.
-                    local[Count.BATCH_CAPPED.ordinal()] += mesh.ranges().size();
-                    local[Count.GROUP_EMPTY.ordinal()]++;
+                if ((mesh.flags() & INTERIOR) != 0) {
+                    interiors.add(mesh);
                     continue;
                 }
-                if (materialOnly) {
-                    tentativeMaterialVertices += meshVertices;
-                }
-                pendingVertices += meshVertices;
-                pendingIndices += mesh.indices().length;
-                if (pendingVertices > MAX_VERTICES + MAX_MATERIAL_VERTICES
-                        || pendingIndices > MAX_INDICES + MAX_MATERIAL_INDICES) {
-                    // More candidate geometry than both budgets could ever draw: never hold it.
-                    count(Count.ROOT_CAPPED);
-                    return RootState.CAPPED;
-                }
-                pending.add(mesh);
-                // Caps are decided by opaque candidates alone, exactly as the opaque-only profile
-                // did; cutout and blended candidates draw from their own budget later. Meshes
-                // cannot exceed MAX_MESHES: one per group read.
-                int opaqueIndices = 0, opaqueRanges = 0;
-                for (var range : mesh.ranges()) {
-                    if (range.blend() == OPAQUE) {
-                        opaqueIndices += range.indexCount();
-                        opaqueRanges++;
+                switch (budget.admit(mesh, local)) {
+                    case ADMITTED -> pending.add(mesh);
+                    case DROPPED -> {}
+                    case OVER -> {
+                        count(Count.ROOT_CAPPED);
+                        return RootState.CAPPED;
                     }
-                }
-                if (opaqueRanges > 0) {
-                    tentativeVertices += mesh.vertices().length / VERTEX_FLOATS;
-                }
-                tentativeIndices += opaqueIndices;
-                tentativeRanges += opaqueRanges;
-                if (tentativeVertices > MAX_VERTICES - vertices
-                        || tentativeIndices > MAX_INDICES - indices
-                        || tentativeRanges > MAX_RANGES - ranges) {
-                    count(Count.ROOT_CAPPED);
-                    return RootState.CAPPED;
                 }
             }
             var built = new ArrayList<Mesh>(pending.size());
@@ -1619,9 +1822,15 @@ public final class WorldExteriorObjects {
             for (int i = 0; i < counts.length; i++) {
                 counts[i] += local[i];
             }
-            if (built.isEmpty()) {
+            var held = holdInteriors(interiors);
+            if (built.isEmpty() && held.isEmpty()) {
                 count(Count.ROOT_EMPTY);
                 return RootState.EMPTY;
+            }
+            if (!held.isEmpty()) {
+                // An interior-only root draws nothing until the interior pass; a model with no
+                // meshes costs no draws and takes no building slot until then.
+                heldInteriors.put(rootId, held);
             }
             rootDoodads.put(rootId, root.doodads());
             modelSlots.put(rootId, models.size());
@@ -1752,11 +1961,11 @@ public final class WorldExteriorObjects {
                         token::isCanceled,
                         borrow -> {
                             long flags = borrow.header().flags();
-                            if ((flags & INTERIOR) != 0) {
+                            if ((flags & INTERIOR) != 0 && !interiors) {
                                 outcome[0] = Count.GROUP_INTERIOR;
                                 return;
                             }
-                            if ((flags & EXTERIOR) == 0) {
+                            if ((flags & (EXTERIOR | INTERIOR)) == 0) {
                                 outcome[0] = Count.GROUP_UNSUPPORTED;
                                 return;
                             }

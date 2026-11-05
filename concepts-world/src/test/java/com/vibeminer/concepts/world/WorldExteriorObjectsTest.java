@@ -287,6 +287,18 @@ class WorldExteriorObjectsTest {
                     detail);
         }
 
+        /** A dungeon or raid map: interior WMO groups are drawn too (#280). */
+        WorldExteriorObjects.TileObjects runInstance() {
+            return WorldExteriorObjects.prepare(
+                    engine,
+                    scope,
+                    TILE,
+                    Cancellation.NONE,
+                    WorldExteriorObjects.ModelReader.STANDARD,
+                    WorldExteriorObjects.ImageDetail.STANDARD,
+                    true);
+        }
+
         WorldExteriorObjects.TileObjects run(WorldExteriorObjects.ModelReader reader) {
             return WorldExteriorObjects.prepare(engine, scope, TILE, Cancellation.NONE, reader);
         }
@@ -514,6 +526,55 @@ class WorldExteriorObjectsTest {
                 assertPlacementsAccounted(set, records.size());
                 assertEquals(1, f.files.opens.get(101L).get());
                 assertEquals(null, f.files.opens.get(106L), "oversize declined before opening");
+            }
+        }
+    }
+
+    @Test
+    void instanceMapsDrawInteriorGroupsAfterTheExterior() {
+        // One root: an interior group recorded first, then an exterior group, then a group with
+        // neither flag. On an open-world map the interior is omitted; on a dungeon or raid map it
+        // draws, and the flagless group stays unsupported either way.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(ROOT, root(INTERIOR, GROUP, 210));
+            f.files.sources.put(210L, group(0x1));
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+            }
+            try (var set = f.runInstance()) {
+                assertEquals(0, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_UNSUPPORTED));
+                assertEquals(2, set.models().getFirst().meshes().size());
+            }
+        }
+        // An interior-only root (a dungeon's own building) draws on an instance map.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(ROOT, root(INTERIOR));
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_EMPTY));
+            }
+            try (var set = f.runInstance()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+            }
+        }
+    }
+
+    @Test
+    void anInteriorThatDoesNotFitIsSkippedWithoutCappingTheExterior() {
+        // A 65,536-vertex exterior group leaves 32,768 opaque vertices; a 40,000-vertex interior
+        // group recorded before it is skipped alone, and the building keeps its exterior.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(ROOT, root(INTERIOR, GROUP));
+            f.files.sources.put(GROUP, group(EXT, 65536, 1, List.of(new Batch(0, 3, 0, 0))));
+            f.files.sources.put(INTERIOR, group(INT, 40000, 1, List.of(new Batch(0, 3, 0, 0))));
+            try (var set = f.runInstance()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_INTERIOR_CAPPED));
+                assertEquals(65536, set.vertices());
             }
         }
     }
