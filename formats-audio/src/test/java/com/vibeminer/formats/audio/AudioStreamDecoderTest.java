@@ -206,6 +206,41 @@ final class AudioStreamDecoderTest {
         }
     }
 
+    /**
+     * Some taggers leave zero padding after a leading ID3v2 tag that its size does not count, or
+     * write a second tag after the first. The first frame follows both.
+     */
+    @Test
+    void skipsUncountedPaddingAndConsecutiveLeadingTags() throws IOException {
+        byte[] audio = fixture("authored-tone.mp3");
+        byte[] expected = decode(audio);
+        byte[] frames = Arrays.copyOfRange(audio, 20, audio.length);
+        var leaders =
+                java.util.Map.of(
+                        "uncounted padding", concat(id3v2(3, false, UTF16_ALBUM), new byte[37]),
+                        "two tags",
+                                concat(id3v2(3, false, UTF16_ALBUM), id3v2(4, true, UTF16_ALBUM)),
+                        "two tags and padding",
+                                concat(
+                                        id3v2(4, true, UTF16_ALBUM),
+                                        new byte[5],
+                                        id3v2(3, false, UTF16_ALBUM),
+                                        new byte[3]));
+        for (var leader : leaders.entrySet()) {
+            byte[] tagged = concat(leader.getValue(), frames);
+            assertEquals(AudioStreamDecoder.Codec.MPEG, AudioStreamDecoder.codec(tagged));
+            assertEquals(
+                    leader.getValue().length,
+                    AudioStreamDecoder.mpegStart(tagged),
+                    leader.getKey());
+            assertArrayEquals(expected, decode(tagged), leader.getKey());
+        }
+        // Only padding after a tag is skipped: zeros alone are still not MPEG audio.
+        assertEquals(
+                AudioStreamDecoder.Codec.UNSUPPORTED,
+                AudioStreamDecoder.codec(concat(new byte[8], frames)));
+    }
+
     @Test
     void streamsAuthoredMpegAsBigEndianPcm() throws IOException {
         try (var stream = AudioStreamDecoder.open(fixture("authored-tone.mp3"), () -> false)) {

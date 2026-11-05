@@ -48,15 +48,24 @@ public final class AudioStreamDecoder {
     }
 
     /**
-     * Offset of the first byte after a leading ID3v2 tag (0 without one), or -1 for a tag whose
-     * size is not syncsafe. The MPEG decoder does not skip ID3v2 itself: UTF-16 text frames start
+     * Offset of the first byte after the leading ID3v2 tags (0 without one), or -1 for a tag whose
+     * size is not syncsafe. Consecutive tags, and zero padding after a tag that its size does not
+     * count, are skipped too. The MPEG decoder does not skip ID3v2 itself: UTF-16 text frames start
      * with {@code FF FE}, which it would take for a Layer I frame header.
      */
     static int mpegStart(byte[] encoded) {
-        if (encoded.length < 10 || !ascii(encoded, 0, "ID3")) {
-            return 0;
+        int offset = 0;
+        while (encoded.length - offset >= 10 && ascii(encoded, offset, "ID3")) {
+            int length = id3Length(encoded, offset);
+            if (length < 0) {
+                return -1;
+            }
+            offset += length;
+            while (offset < encoded.length && encoded[offset] == 0) {
+                offset++;
+            }
         }
-        return id3Length(encoded, 0);
+        return offset;
     }
 
     /**
