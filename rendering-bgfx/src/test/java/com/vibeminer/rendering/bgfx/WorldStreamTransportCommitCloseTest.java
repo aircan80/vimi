@@ -117,6 +117,8 @@ class WorldStreamTransportCommitCloseTest {
     }
 
     @Test
+    // Two child JVMs in sequence: two startup guards, plus the test body.
+    @Timeout(2 * WorldStreamTestChildren.TEST_TIMEOUT_SECONDS)
     void stoppedDirtyCancellationAndFailedOwnedCleanupRemainFatal() throws Exception {
         for (boolean dirty : new boolean[] {true, false}) {
             var session = launch();

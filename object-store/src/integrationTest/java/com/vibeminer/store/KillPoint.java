@@ -41,15 +41,27 @@ final class KillPoint {
             throw failure;
         } finally {
             child.destroyForcibly();
-            if (!child.waitFor(KILL_GUARD_SECONDS, TimeUnit.SECONDS)) {
-                var killFailure =
-                        new AssertionError(
-                                "Killed child did not exit within "
-                                        + KILL_GUARD_SECONDS
-                                        + " s; child log:\n"
-                                        + childLog(log));
+            Throwable killFailure = null;
+            try {
+                if (!child.waitFor(KILL_GUARD_SECONDS, TimeUnit.SECONDS)) {
+                    killFailure =
+                            new AssertionError(
+                                    "Killed child did not exit within "
+                                            + KILL_GUARD_SECONDS
+                                            + " s; child log:\n"
+                                            + childLog(log));
+                }
+            } catch (InterruptedException interrupted) {
+                // Keep the interrupt for the caller; the wait itself is the failure.
+                Thread.currentThread().interrupt();
+                killFailure = interrupted;
+            }
+            if (killFailure != null) {
                 if (primary == null) {
-                    throw killFailure;
+                    if (killFailure instanceof Error error) {
+                        throw error;
+                    }
+                    throw (InterruptedException) killFailure;
                 }
                 // Keep the readiness failure as the reported cause.
                 primary.addSuppressed(killFailure);
