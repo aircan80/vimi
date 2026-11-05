@@ -438,9 +438,27 @@ final class WorldStreamScopes {
         TERRAIN_BASIC(67, 0, 0, 0, 0, 0, 0),
         BASIC_WMO(11, 1, 1 << 10, 1, 32 << 10, 6, 64 << 10),
         LIQUID_INSPECTION(11, 0, 0, 0, 0, 0, 0),
-        /** Per-tile outdoor exterior set: WDT, OBJ0 and the capped derived WMO reads. */
-        BASIC_EXTERIOR(2 + 24 + 256 + 64, 24, 1 << 20, 256, 1 << 20, 64, 1 << 20);
+        /**
+         * Per-tile outdoor exterior set: WDT, OBJ0, the capped derived WMO reads (64 opaque and 32
+         * cutout or blended images) and the capped BASIC doodad reads (M2 models, their first SKIN
+         * and their images).
+         */
+        BASIC_EXTERIOR(
+                2 + 24 + 256 + 64 + 32 + 48 + 48 + 64,
+                24,
+                1 << 20,
+                256,
+                1 << 20,
+                64 + 32,
+                1 << 20,
+                48,
+                2 << 20,
+                48,
+                1 << 20,
+                64,
+                1 << 20);
         private final int bindings, roots, rootLimit, groups, groupLimit, images, imageLimit;
+        private final int models, modelLimit, skins, skinLimit, modelImages, modelImageLimit;
 
         UseProfile(
                 int bindings,
@@ -450,6 +468,36 @@ final class WorldStreamScopes {
                 int groupLimit,
                 int images,
                 int imageLimit) {
+            this(
+                    bindings,
+                    roots,
+                    rootLimit,
+                    groups,
+                    groupLimit,
+                    images,
+                    imageLimit,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0);
+        }
+
+        UseProfile(
+                int bindings,
+                int roots,
+                int rootLimit,
+                int groups,
+                int groupLimit,
+                int images,
+                int imageLimit,
+                int models,
+                int modelLimit,
+                int skins,
+                int skinLimit,
+                int modelImages,
+                int modelImageLimit) {
             this.bindings = bindings;
             this.roots = roots;
             this.rootLimit = rootLimit;
@@ -457,6 +505,12 @@ final class WorldStreamScopes {
             this.groupLimit = groupLimit;
             this.images = images;
             this.imageLimit = imageLimit;
+            this.models = models;
+            this.modelLimit = modelLimit;
+            this.skins = skins;
+            this.skinLimit = skinLimit;
+            this.modelImages = modelImages;
+            this.modelImageLimit = modelImageLimit;
         }
 
         /** Maximum distinct consumed source identities, including the scope WDT. */
@@ -474,6 +528,9 @@ final class WorldStreamScopes {
                 case WMO_ROOT -> roots;
                 case WMO_GROUP -> groups;
                 case WMO_IMAGE -> images;
+                case M2_MODEL -> models;
+                case M2_SKIN -> skins;
+                case M2_IMAGE -> modelImages;
             };
         }
 
@@ -482,6 +539,9 @@ final class WorldStreamScopes {
                 case WMO_ROOT -> rootLimit;
                 case WMO_GROUP -> groupLimit;
                 case WMO_IMAGE -> imageLimit;
+                case M2_MODEL -> modelLimit;
+                case M2_SKIN -> skinLimit;
+                case M2_IMAGE -> modelImageLimit;
             };
         }
     }
@@ -489,7 +549,11 @@ final class WorldStreamScopes {
     enum DerivedKind {
         WMO_ROOT,
         WMO_GROUP,
-        WMO_IMAGE
+        WMO_IMAGE,
+        /** BASIC_EXTERIOR doodad model, its first SKIN, and its texture images. */
+        M2_MODEL,
+        M2_SKIN,
+        M2_IMAGE
     }
 
     enum RecordedInput {
@@ -846,6 +910,9 @@ final class WorldStreamScopes {
                             case WMO_ROOT -> "WMO root read limit";
                             case WMO_GROUP -> "WMO group read limit";
                             case WMO_IMAGE -> "WMO image read limit";
+                            case M2_MODEL -> "Doodad model read limit";
+                            case M2_SKIN -> "Doodad skin read limit";
+                            case M2_IMAGE -> "Doodad image read limit";
                         });
             }
             derivedReads[ordinal]++;

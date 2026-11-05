@@ -161,7 +161,8 @@ final class WorldStreamSourceController {
         final Cancellation cancellation = new Cancellation();
         CompletableFuture<WorldStreamSourceBridge.ExteriorCopy> prepared;
         CompletableFuture<WorldStreamTransport.ObjectsOutcome> attached;
-        int placements;
+        WorldStreamSourceBridge.ExteriorSummary summary =
+                WorldStreamSourceBridge.ExteriorSummary.NONE;
         boolean buildingsFailed;
         WorldTileCreatures.Summary creatures = WorldTileCreatures.Summary.NONE;
 
@@ -866,7 +867,7 @@ final class WorldStreamSourceController {
                 if (copy.exterior() == null || copy.failed()) exteriorTried.add(work.entry);
                 return;
             }
-            work.placements = copy.placements();
+            work.summary = copy.summary();
             work.buildingsFailed = copy.failed();
             work.creatures = copy.creatures();
             work.attached = session.attachObjects(work.entry.resident(), copy.exterior());
@@ -884,7 +885,7 @@ final class WorldStreamSourceController {
         try {
             switch (work.attached.join()) {
                 case ATTACHED -> {
-                    work.entry.source().exteriorAttached(work.placements);
+                    work.entry.source().exteriorAttached(work.summary);
                     work.entry.source().creatures(work.creatures);
                     if (work.buildingsFailed) work.entry.source().exteriorFailedLate();
                 }
@@ -937,9 +938,38 @@ final class WorldStreamSourceController {
         catch(RuntimeException failed) { return false; }
     }
 
+    /**
+     * Drawn BASIC exterior objects and, when any were not drawn, what was omitted. Counts are the
+     * attached tiles' source records; nothing omitted is drawn approximately.
+     */
+    static String objectsDetail(WorldStreamSourceBridge.ExteriorSummary s, int tiles) {
+        var text = new StringBuilder("; ").append(s.buildings()).append(" BASIC exterior buildings");
+        if (s.doodads() > 0) text.append(" and ").append(s.doodads()).append(" doodads");
+        text.append(" on ").append(tiles);
+        if (s.omitted() > 0) {
+            var parts = new java.util.ArrayList<String>();
+            if (s.buildingsOmitted() > 0) parts.add(plural(s.buildingsOmitted(), "building"));
+            if (s.doodadsOmitted() > 0) {
+                parts.add(plural(s.doodadsOmitted(), "doodad")
+                        + (s.tilted() > 0 ? " (" + s.tilted() + " tilted)" : ""));
+            }
+            if (s.surfacesOmitted() > 0) {
+                parts.add(plural(s.surfacesOmitted(), "surface")
+                        + (s.unreadable() > 0 ? " (" + s.unreadable() + " unreadable)" : ""));
+            }
+            text.append(" (not drawn: ").append(String.join(", ", parts)).append(')');
+        }
+        return text.toString();
+    }
+
+    private static String plural(int count, String noun) {
+        return count + " " + noun + (count == 1 ? "" : "s");
+    }
+
     private String readyDetail() {
         int textured = 0, partial = 0, height = 0, watered = 0;
-        int buildingTiles = 0, buildings = 0, buildingFailures = 0, creatureTiles = 0;
+        int buildingTiles = 0, buildingFailures = 0, creatureTiles = 0;
+        var objects = WorldStreamSourceBridge.ExteriorSummary.NONE;
         var creatures = WorldTileCreatures.Summary.NONE;
         String reason = "";
         for (var entry : current) {
@@ -949,8 +979,9 @@ final class WorldStreamSourceController {
             creatures = creatures.plus(tileCreatures);
             switch (entry.resident().exteriorObjects()) {
                 case DRAWN -> {
-                    if (entry.source().exteriorPlacements() > 0) buildingTiles++;
-                    buildings += entry.source().exteriorPlacements();
+                    var summary = entry.source().exteriorSummary();
+                    if (summary.buildings() > 0 || summary.doodads() > 0) buildingTiles++;
+                    objects = objects.plus(summary);
                     if (entry.source().exteriorFailed()) buildingFailures++;
                 }
                 case FAILED -> buildingFailures++;
@@ -981,9 +1012,7 @@ final class WorldStreamSourceController {
                 + " height fallback"
                 + (reason.isEmpty() ? "" : "; " + reason)
                 + (watered == 0 ? "" : "; static diagnostic water on " + watered)
-                + (buildingTiles == 0
-                        ? ""
-                        : "; " + buildings + " BASIC exterior buildings on " + buildingTiles)
+                + (buildingTiles == 0 ? "" : objectsDetail(objects, buildingTiles))
                 + (buildingFailures == 0 ? "" : "; building objects failed on " + buildingFailures)
                 + creatureDetail(creatures, creatureTiles)
                 + (exterior == null ? "" : "; loading buildings")

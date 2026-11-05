@@ -291,7 +291,7 @@ class WorldExteriorObjectsTest {
                             new long[] {GROUP, INTERIOR, GROUP + 2},
                             List.of(
                                     new Material(0, IMAGE, 0),
-                                    new Material(1, IMAGE, 0), // alpha key: unsupported batch
+                                    new Material(1, IMAGE, 0), // alpha key: cutout batch
                                     // MOMT word 1 (shader) 6 is admitted, texture1 only.
                                     new Material(0, IMAGE2, 6))));
             f.files.sources.put(
@@ -317,33 +317,41 @@ class WorldExteriorObjectsTest {
                 var mesh = model.meshes().getFirst();
                 assertEquals(0, mesh.groupOrdinal());
                 assertEquals(GROUP, mesh.groupId());
-                // Alpha-key batch is dropped and kept ranges are compacted.
+                // Opaque ranges come first, exactly as the opaque-only profile resolved them;
+                // the alpha-key batch follows as a cutout range with its own alpha-keeping image.
                 assertEquals(
                         List.of(
-                                new WorldExteriorObjects.DrawRange(0, 3, 0, 0),
-                                new WorldExteriorObjects.DrawRange(3, 3, 1, 2)),
+                                new WorldExteriorObjects.DrawRange(
+                                        0, 3, 0, 0, WorldExteriorObjects.OPAQUE),
+                                new WorldExteriorObjects.DrawRange(
+                                        3, 3, 1, 2, WorldExteriorObjects.OPAQUE),
+                                new WorldExteriorObjects.DrawRange(
+                                        6, 3, 2, 1, WorldExteriorObjects.CUTOUT)),
                         mesh.ranges());
-                assertEquals(6, mesh.indices().remaining());
+                assertEquals(9, mesh.indices().remaining());
                 assertTrue(mesh.vertices().isReadOnly());
                 var v = mesh.vertices();
                 assertEquals(1, v.get(8), 0); // second vertex x
                 assertEquals(1, v.get(5), 0); // normalized source normal (0,0,2)
                 assertEquals(1, v.get(14), 0); // second vertex u
                 assertEquals(2, model.meshes().get(1).groupOrdinal());
-                assertEquals(2, set.images().size());
+                assertEquals(3, set.images().size());
                 var red = set.images().getFirst();
                 assertEquals(IMAGE, red.id());
                 assertEquals(255, red.rgba().get(0) & 255);
                 assertEquals(255, red.rgba().get(3) & 255);
+                // The same source is decoded again for the cutout range (alpha not forced).
+                assertEquals(IMAGE2, set.images().get(1).id());
+                assertEquals(IMAGE, set.images().get(2).id());
                 assertEquals(
                         Map.of(
                                 WorldExteriorObjects.Count.PLACEMENT_DRAWN, 2,
                                 WorldExteriorObjects.Count.ROOT_DRAWN, 1,
                                 WorldExteriorObjects.Count.GROUP_DRAWN, 2,
                                 WorldExteriorObjects.Count.GROUP_INTERIOR, 1,
-                                WorldExteriorObjects.Count.BATCH_DRAWN, 3,
-                                WorldExteriorObjects.Count.BATCH_UNSUPPORTED, 1,
-                                WorldExteriorObjects.Count.IMAGE_DECODED, 2),
+                                WorldExteriorObjects.Count.BATCH_DRAWN, 4,
+                                WorldExteriorObjects.Count.BATCH_CUTOUT, 1,
+                                WorldExteriorObjects.Count.IMAGE_DECODED, 3),
                         counts(set));
                 assertEquals(2, set.placements().size());
                 for (int i = 0; i < 2; i++) {
@@ -538,8 +546,8 @@ class WorldExteriorObjectsTest {
                             new long[] {GROUP},
                             List.of(
                                     new Material(0, IMAGE, 0),
-                                    new Material(2, IMAGE, 0), // blended
-                                    new Material(3, IMAGE, 0), // additive
+                                    new Material(2, IMAGE, 0), // blended: drawn, alpha kept
+                                    new Material(3, IMAGE, 0), // additive: unsupported
                                     new Material(0, 0, 0), // no texture1
                                     new Material(0, 400, 0), // missing image source
                                     new Material(0, 401, 0), // undecodable
@@ -560,15 +568,20 @@ class WorldExteriorObjectsTest {
                                 WorldExteriorObjects.Count.PLACEMENT_DRAWN, 1,
                                 WorldExteriorObjects.Count.ROOT_DRAWN, 1,
                                 WorldExteriorObjects.Count.GROUP_DRAWN, 1,
-                                WorldExteriorObjects.Count.BATCH_DRAWN, 1,
-                                WorldExteriorObjects.Count.BATCH_UNSUPPORTED, 5,
+                                WorldExteriorObjects.Count.BATCH_DRAWN, 2,
+                                WorldExteriorObjects.Count.BATCH_BLENDED, 1,
+                                WorldExteriorObjects.Count.BATCH_UNSUPPORTED, 4,
                                 WorldExteriorObjects.Count.BATCH_MISSING_IMAGE, 3,
-                                WorldExteriorObjects.Count.IMAGE_DECODED, 1,
+                                WorldExteriorObjects.Count.IMAGE_DECODED, 2,
                                 WorldExteriorObjects.Count.IMAGE_UNAVAILABLE, 2,
                                 WorldExteriorObjects.Count.IMAGE_UNDECODABLE, 1),
                         counts(set));
                 assertEquals(
-                        List.of(new WorldExteriorObjects.DrawRange(0, 3, 0, 0)),
+                        List.of(
+                                new WorldExteriorObjects.DrawRange(
+                                        0, 3, 0, 0, WorldExteriorObjects.OPAQUE),
+                                new WorldExteriorObjects.DrawRange(
+                                        3, 3, 1, 1, WorldExteriorObjects.BLENDED)),
                         set.models().getFirst().meshes().getFirst().ranges());
             }
         }
@@ -714,7 +727,7 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
-    void tileWithoutObj0IsEmptyAndDoodadsAreCountedNotDrawn() {
+    void tileWithoutObj0IsEmptyAndUnqualifiedDoodadsAreCountedNotDrawn() {
         try (var f = new Fixture(null);
                 var set =
                         WorldExteriorObjects.prepare(
@@ -725,7 +738,9 @@ class WorldExteriorObjectsTest {
         try (var f = new Fixture(List.of())) {
             f.files.sources.put(4L, obj0(List.of(Modf.of(ROOT, 1, 0x8)), 3));
             try (var set = f.run()) {
-                assertEquals(3, set.count(WorldExteriorObjects.Count.DOODAD_NOT_IN_SLICE));
+                // Three zeroed MDDF records: no direct-ID flag, then identical duplicates.
+                assertEquals(1, set.count(WorldExteriorObjects.Count.DOODAD_UNSUPPORTED));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.DOODAD_SHARED_DUPLICATE));
                 assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
             }
         }
@@ -924,5 +939,623 @@ class WorldExteriorObjectsTest {
             }
         }
         throw new AssertionError("Missing authored chunk " + name);
+    }
+
+    // ---- BASIC doodads and material classes -------------------------------------------------
+
+    private static final long MODEL = 500, SKIN = 900, MODEL_IMAGE = 700;
+
+    private static byte[] resource(String name) {
+        try (var in = WorldExteriorObjectsTest.class.getResourceAsStream(name)) {
+            return java.util.Objects.requireNonNull(in, name).readAllBytes();
+        } catch (java.io.IOException e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    /** Authored chunked 274 M2 (SFID 900, TXID 700): 4 vertices, one opaque one-triangle batch. */
+    private static byte[] model() {
+        return resource("doodad-274.m2");
+    }
+
+    private static byte[] skin() {
+        return resource("doodad-274.skin");
+    }
+
+    /** The authored model with material 0's blend mode replaced. */
+    private static byte[] model(int blend) {
+        var bytes = model();
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putShort(40 + 537 + 2, (short) blend);
+        return bytes;
+    }
+
+    /** DXT1 with 1-bit alpha whose every texel is transparent. */
+    private static byte[] transparentBlp() {
+        var bytes = blp(4, 4, 1, 0);
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).put(9, (byte) 1);
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putShort(148, (short) 0);
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putShort(150, (short) 0xffff);
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(152, -1);
+        return bytes;
+    }
+
+    record Mddf(
+            long id,
+            long uid,
+            int flags,
+            float x,
+            float y,
+            float z,
+            float pitch,
+            float heading,
+            float roll,
+            int scale) {
+        static Mddf of(long id, long uid, int flags) {
+            return new Mddf(id, uid, flags, 100, 20, 300, 0, 90, 0, 2048);
+        }
+
+        byte[] bytes() {
+            var b = buffer(36);
+            b.putInt((int) id).putInt((int) uid).put(floats(x, y, z));
+            b.put(floats(pitch, heading, roll)).putShort((short) scale).putShort((short) flags);
+            return b.array();
+        }
+    }
+
+    /** obj0 with MDDF doodads and MODF placements; doodadSets patch each MODF's doodad set. */
+    private static byte[] obj0(List<Modf> records, List<Mddf> doodads, int... doodadSets) {
+        var mddf = new ByteArrayOutputStream();
+        for (var d : doodads) {
+            mddf.writeBytes(d.bytes());
+        }
+        var modf = new ByteArrayOutputStream();
+        for (int i = 0; i < records.size(); i++) {
+            var bytes = records.get(i).bytes();
+            if (i < doodadSets.length) {
+                ByteBuffer.wrap(bytes)
+                        .order(ByteOrder.LITTLE_ENDIAN)
+                        .putShort(58, (short) doodadSets[i]);
+            }
+            modf.writeBytes(bytes);
+        }
+        return join(
+                version(18), chunk("MDDF", mddf.toByteArray()), chunk("MODF", modf.toByteArray()));
+    }
+
+    /** One MODD definition in WMO-local axes (quaternion x, y, z, w). */
+    record Modd(int reference, float x, float y, float z, double[] q, float scale) {
+        byte[] bytes() {
+            var b = buffer(40);
+            b.putInt(reference).put(floats(x, y, z));
+            b.put(floats((float) q[0], (float) q[1], (float) q[2], (float) q[3]));
+            b.putFloat(scale).putInt(0);
+            return b.array();
+        }
+    }
+
+    private static byte[] doodadChunks(int[][] sets, long[] fileIds, List<Modd> defs) {
+        var mods = buffer(32 * sets.length);
+        for (int i = 0; i < sets.length; i++) {
+            mods.putInt(i * 32 + 20, sets[i][0]).putInt(i * 32 + 24, sets[i][1]);
+        }
+        var modi = buffer(4 * fileIds.length);
+        for (long id : fileIds) {
+            modi.putInt((int) id);
+        }
+        var modd = new ByteArrayOutputStream();
+        for (var d : defs) {
+            modd.writeBytes(d.bytes());
+        }
+        return join(
+                chunk("MODS", mods.array()),
+                chunk("MODI", modi.array()),
+                chunk("MODD", modd.toByteArray()));
+    }
+
+    private static void putModel(Fixture f, long id, byte[] bytes) {
+        f.files.sources.put(id, bytes);
+        f.files.sources.put(SKIN, skin());
+        f.files.sources.put(MODEL_IMAGE, blp(4, 4, 1, 0x07e0));
+    }
+
+    private static WorldExteriorObjects.TileObjects run(Fixture f, byte[] obj0) {
+        f.files.sources.put(4L, obj0);
+        return f.run();
+    }
+
+    private static void assertRotation(
+            WorldExteriorObjects.Rotation expected, WorldExteriorObjects.Rotation actual) {
+        var e = expected.rowMajor();
+        var a = actual.rowMajor();
+        for (int i = 0; i < 9; i++) {
+            assertEquals(e[i], a[i], 1e-12, "rotation element " + i);
+        }
+    }
+
+    @Test
+    void mddfDoodadsShareOneStaticModelUnderTheReviewedHeadingRule() {
+        var drawn = Mddf.of(MODEL, 1, 0x40);
+        var shrub = new Mddf(MODEL, 2, 0x42, 50, 5, 60, 0, 180, 0, 512);
+        var doodads =
+                List.of(
+                        drawn,
+                        shrub,
+                        shrub, // identical duplicate shares one placement
+                        Mddf.of(MODEL, 3, 0x41), // 0x1 is not admitted
+                        Mddf.of(MODEL, 4, 0x2), // name-table reference
+                        new Mddf(MODEL, 5, 0x40, 1, 2, 3, 5, 0, 0, 1024), // pitch
+                        new Mddf(MODEL, 6, 0x40, 1, 2, 3, 0, 0, 5, 1024), // roll
+                        new Mddf(MODEL, 7, 0x40, 1, 2, 3, 0, 0, 0, 0), // zero scale
+                        Mddf.of(0, 8, 0x40), // zero FileDataID
+                        Mddf.of(MODEL + 1, 9, 0x40), // unavailable model
+                        Mddf.of(MODEL, 10, 0x40),
+                        new Mddf(MODEL, 10, 0x40, 1, 1, 1, 0, 0, 0, 1024)); // conflicting
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            try (var set = run(f, obj0(List.of(), doodads))) {
+                assertEquals(
+                        Map.ofEntries(
+                                Map.entry(WorldExteriorObjects.Count.DOODAD_DRAWN, 2),
+                                Map.entry(WorldExteriorObjects.Count.DOODAD_SHARED_DUPLICATE, 1),
+                                Map.entry(WorldExteriorObjects.Count.DOODAD_UNSUPPORTED, 4),
+                                Map.entry(WorldExteriorObjects.Count.DOODAD_TILTED, 2),
+                                Map.entry(WorldExteriorObjects.Count.DOODAD_CONFLICTING, 2),
+                                Map.entry(WorldExteriorObjects.Count.DOODAD_FAILED_MODEL, 1),
+                                Map.entry(WorldExteriorObjects.Count.MODEL_DRAWN, 1),
+                                Map.entry(WorldExteriorObjects.Count.MODEL_UNAVAILABLE, 1),
+                                Map.entry(WorldExteriorObjects.Count.MODEL_BATCH_DRAWN, 1),
+                                Map.entry(WorldExteriorObjects.Count.MODEL_IMAGE_DECODED, 1)),
+                        counts(set));
+                assertEquals(1, set.models().size());
+                var model = set.models().getFirst();
+                assertEquals(MODEL, model.rootId());
+                assertTrue(model.doodad());
+                var mesh = model.meshes().getFirst();
+                assertEquals(SKIN, mesh.groupId());
+                // The SKIN vertex lookup (2, 0, 1, 3) orders the mesh vertices.
+                assertEquals(4, mesh.vertexCount());
+                var v = mesh.vertices();
+                assertEquals(0, v.get(0), 0);
+                assertEquals(3, v.get(1), 0);
+                assertEquals(1, v.get(5), 0); // unit source normal (0, 0, 1)
+                assertEquals(1, v.get(7), 0); // uv0 v of global vertex 2
+                assertEquals(0, v.get(8), 0); // second: global vertex 0
+                assertEquals(2, v.get(16), 0); // third: global vertex 1
+                assertEquals(List.of(0, 1, 2), toList(mesh.indices()));
+                assertEquals(
+                        List.of(
+                                new WorldExteriorObjects.DrawRange(
+                                        0, 3, 0, 0, WorldExteriorObjects.OPAQUE)),
+                        mesh.ranges());
+                assertEquals(MODEL_IMAGE, set.images().getFirst().id());
+                assertEquals(2, set.placements().size());
+                for (int i = 0; i < 2; i++) {
+                    var p = set.placements().get(i);
+                    var r = i == 0 ? drawn : shrub;
+                    assertEquals(WorldExteriorObjects.Kind.DOODAD, p.kind());
+                    assertEquals(i, p.ordinal());
+                    assertEquals(r.uid(), p.uniqueId());
+                    var oracle =
+                            new WorldBasicWmo.Transform(
+                                    new WorldPlacements.Vec3(r.x(), r.y(), r.z()),
+                                    r.heading(),
+                                    r.scale() / 1024.0);
+                    assertEquals(oracle.originX(), p.x(), 0);
+                    assertEquals(oracle.originY(), p.y(), 0);
+                    assertEquals(oracle.originZ(), p.z(), 0);
+                    assertEquals(r.scale() / 1024.0, p.scale(), 0);
+                    assertRotation(
+                            WorldExteriorObjects.Rotation.heading(oracle.cos(), oracle.sin()),
+                            p.rotation());
+                }
+            }
+        }
+    }
+
+    private static List<Integer> toList(java.nio.IntBuffer buffer) {
+        var out = new ArrayList<Integer>();
+        while (buffer.hasRemaining()) {
+            out.add(buffer.get());
+        }
+        return out;
+    }
+
+    @Test
+    void modelBlendClassesKeepAlphaAndUnsupportedBlendsEmptyTheModel() {
+        for (int blend : new int[] {1, 2, 3, 4}) {
+            try (var f = new Fixture(List.of())) {
+                putModel(f, MODEL, model(blend));
+                f.files.sources.put(MODEL_IMAGE, transparentBlp());
+                try (var set = run(f, obj0(List.of(), List.of(Mddf.of(MODEL, 1, 0x40))))) {
+                    if (blend > 2) {
+                        assertEquals(
+                                Map.of(
+                                        WorldExteriorObjects.Count.DOODAD_EMPTY, 1,
+                                        WorldExteriorObjects.Count.MODEL_EMPTY, 1,
+                                        WorldExteriorObjects.Count.MODEL_BATCH_UNSUPPORTED, 1),
+                                counts(set));
+                        assertTrue(set.models().isEmpty());
+                        continue;
+                    }
+                    var range = set.models().getFirst().meshes().getFirst().ranges().getFirst();
+                    assertEquals(blend, range.blend());
+                    // Alpha is kept for cutout and blended ranges.
+                    assertEquals(0, set.images().getFirst().rgba().get(3) & 255);
+                }
+            }
+        }
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(MODEL_IMAGE, transparentBlp());
+            try (var set = run(f, obj0(List.of(), List.of(Mddf.of(MODEL, 1, 0x40))))) {
+                // Opaque ranges force alpha.
+                assertEquals(255, set.images().getFirst().rgba().get(3) & 255);
+            }
+        }
+    }
+
+    @Test
+    void wmoCutoutKeepsAlphaWhileTheOpaqueDecodeForcesIt() {
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            1,
+                            new long[] {GROUP},
+                            List.of(new Material(0, IMAGE, 0), new Material(1, IMAGE, 0))));
+            f.files.sources.put(
+                    GROUP, group(EXT, 3, 2, List.of(new Batch(0, 3, 0, 0), new Batch(3, 3, 0, 1))));
+            f.files.sources.put(IMAGE, transparentBlp());
+            try (var set = f.run()) {
+                assertEquals(2, set.images().size());
+                assertEquals(255, set.images().get(0).rgba().get(3) & 255);
+                assertEquals(0, set.images().get(1).rgba().get(3) & 255);
+                assertEquals(1, set.count(WorldExteriorObjects.Count.BATCH_CUTOUT));
+            }
+        }
+    }
+
+    @Test
+    void modelFailuresAreCountedAndOmitOnlyTheirDoodads() {
+        var bad = model();
+        ByteBuffer.wrap(bad).order(ByteOrder.LITTLE_ENDIAN).putInt(40 + 4, 273); // version
+        var truncated = java.util.Arrays.copyOf(model(), 100);
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(MODEL + 1, bad);
+            f.files.sources.put(MODEL + 2, truncated);
+            var noSkin = model();
+            ByteBuffer.wrap(noSkin).order(ByteOrder.LITTLE_ENDIAN).putInt(8, 901); // SFID
+            f.files.sources.put(MODEL + 3, noSkin);
+            var doodads =
+                    List.of(
+                            Mddf.of(MODEL + 1, 1, 0x40),
+                            Mddf.of(MODEL + 2, 2, 0x40),
+                            Mddf.of(MODEL + 3, 3, 0x40),
+                            Mddf.of(MODEL, 4, 0x40));
+            try (var set = run(f, obj0(List.of(), doodads))) {
+                assertEquals(3, set.count(WorldExteriorObjects.Count.DOODAD_FAILED_MODEL));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.MODEL_UNSUPPORTED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.MODEL_FAILED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.MODEL_UNAVAILABLE));
+                assertEquals(1, set.placements().size());
+            }
+        }
+    }
+
+    @Test
+    void doodadPlacementAndModelCapsKeepSourceOrder() {
+        var doodads = new ArrayList<Mddf>();
+        for (int i = 0; i < WorldExteriorObjects.MAX_DOODADS + 3; i++) {
+            doodads.add(Mddf.of(MODEL, i + 1, 0x40));
+        }
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            try (var set = run(f, obj0(List.of(), doodads))) {
+                assertEquals(
+                        WorldExteriorObjects.MAX_DOODADS,
+                        set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+                assertEquals(3, set.count(WorldExteriorObjects.Count.DOODAD_CAPPED));
+                assertEquals(
+                        WorldExteriorObjects.MAX_DOODADS - 1, set.placements().getLast().ordinal());
+            }
+        }
+        var distinct = new ArrayList<Mddf>();
+        for (int i = 0; i < WorldExteriorObjects.MAX_MODELS + 2; i++) {
+            distinct.add(Mddf.of(MODEL + i, i + 1, 0x40));
+        }
+        try (var f = new Fixture(List.of())) {
+            for (int i = 0; i < WorldExteriorObjects.MAX_MODELS + 2; i++) {
+                putModel(f, MODEL + i, model());
+            }
+            try (var set = run(f, obj0(List.of(), distinct))) {
+                assertEquals(
+                        WorldExteriorObjects.MAX_MODELS,
+                        set.count(WorldExteriorObjects.Count.MODEL_DRAWN));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.DOODAD_CAPPED));
+                assertEquals(WorldExteriorObjects.MAX_MODELS, set.models().size());
+            }
+        }
+    }
+
+    @Test
+    void wmoDoodadSetsComposeTheBuildingTransform() {
+        double h = Math.sqrt(0.5);
+        var defs =
+                List.of(
+                        new Modd(0, 1, 2, 3, new double[] {0, 0, 0, 1}, 1),
+                        new Modd(0, 0, 0, 0, new double[] {0, 0, h, h}, 0.5f), // 90 deg about z
+                        new Modd(1, 0, 0, 0, new double[] {0, 0, 0, 1}, 1), // MODI entry 0
+                        new Modd(5, 0, 0, 0, new double[] {0, 0, 0, 1}, 1), // outside MODI
+                        new Modd(0, 0, 0, 0, new double[] {0, 0, 0, 2}, 1), // not unit
+                        new Modd(0, 0, 0, 0, new double[] {h, 0, 0, h}, 1), // pitched: tilted
+                        new Modd(0x02000000, 0, 0, 0, new double[] {0, 0, 0, 1}, 1)); // flag 0x2
+        var chunks =
+                doodadChunks(new int[][] {{0, 2}, {2, 5}, {4, 1}}, new long[] {MODEL, 0}, defs);
+        var building = new Modf(ROOT, 77, 0xc, 100, 20, 300, 0, 90, 0, 2048);
+        var other = new Modf(ROOT, 78, 0x8, 50, 5, 60, 0, 180, 0, 1024);
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(
+                    ROOT, root(1, new long[] {GROUP}, List.of(new Material(0, IMAGE, 0)), chunks));
+            // The first building selects set 1 besides set 0; the second names a missing set 9.
+            try (var set = run(f, obj0(List.of(building, other), List.of(), 1, 9))) {
+                assertEquals(
+                        Map.ofEntries(
+                                Map.entry(WorldExteriorObjects.Count.PLACEMENT_DRAWN, 2),
+                                Map.entry(WorldExteriorObjects.Count.ROOT_DRAWN, 1),
+                                Map.entry(WorldExteriorObjects.Count.GROUP_DRAWN, 1),
+                                Map.entry(WorldExteriorObjects.Count.BATCH_DRAWN, 1),
+                                Map.entry(WorldExteriorObjects.Count.IMAGE_DECODED, 1),
+                                Map.entry(WorldExteriorObjects.Count.SET_DOODAD_DRAWN, 4),
+                                Map.entry(WorldExteriorObjects.Count.SET_DOODAD_UNSUPPORTED, 4),
+                                Map.entry(WorldExteriorObjects.Count.SET_DOODAD_TILTED, 1),
+                                Map.entry(WorldExteriorObjects.Count.SET_UNSUPPORTED, 1),
+                                Map.entry(WorldExteriorObjects.Count.MODEL_DRAWN, 1),
+                                Map.entry(WorldExteriorObjects.Count.MODEL_BATCH_DRAWN, 1),
+                                Map.entry(WorldExteriorObjects.Count.MODEL_IMAGE_DECODED, 1)),
+                        counts(set));
+                // Buildings first, then building 77's set 0 and set 1, then building 78's set 0.
+                var kinds = set.placements().stream().map(p -> p.kind()).toList();
+                assertEquals(
+                        List.of(
+                                WorldExteriorObjects.Kind.BUILDING,
+                                WorldExteriorObjects.Kind.BUILDING,
+                                WorldExteriorObjects.Kind.SET_DOODAD,
+                                WorldExteriorObjects.Kind.SET_DOODAD,
+                                WorldExteriorObjects.Kind.SET_DOODAD,
+                                WorldExteriorObjects.Kind.SET_DOODAD),
+                        kinds);
+                var parent = new WorldBasicWmo.Transform(declared(building), 2.0);
+                var heading = WorldExteriorObjects.Rotation.heading(parent.cos(), parent.sin());
+                var first = set.placements().get(2);
+                assertEquals(0, first.ordinal());
+                assertEquals(77, first.uniqueId());
+                assertEquals(parent.x(1, 2), first.x(), 1e-9);
+                assertEquals(parent.y(1, 2), first.y(), 1e-9);
+                assertEquals(parent.z(3), first.z(), 1e-9);
+                assertEquals(2.0, first.scale(), 0);
+                assertRotation(heading, first.rotation());
+                var turned = set.placements().get(3);
+                assertEquals(1, turned.ordinal());
+                assertEquals(1.0, turned.scale(), 1e-9);
+                assertRotation(
+                        heading.times(WorldExteriorObjects.Rotation.quaternion(0, 0, h, h)),
+                        turned.rotation());
+                // A quarter turn about local z maps local x to local y before the heading.
+                var r = turned.rotation();
+                assertEquals(heading.m01(), r.m00(), 1e-12);
+                assertEquals(heading.m11(), r.m10(), 1e-12);
+                assertEquals(78, set.placements().get(4).uniqueId());
+                assertEquals(0, set.placements().get(4).ordinal());
+                assertEquals(1, set.placements().get(5).ordinal());
+            }
+        }
+    }
+
+    /** Files whose reads of {@code shortId} end early (a found, unprotected short read). */
+    private static WorldTerrainTextureSourceTest.Files shortRead(long shortId) {
+        return new WorldTerrainTextureSourceTest.Files() {
+            @Override
+            com.vibeminer.files.FileReadStream open(long id, Cancellation cancel) {
+                var actual = super.open(id, cancel);
+                if (id != shortId) {
+                    return actual;
+                }
+                return new com.vibeminer.files.FileReadStream() {
+                    public long length() {
+                        return actual.length();
+                    }
+
+                    public long position() {
+                        return actual.position();
+                    }
+
+                    public void seek(long position) {
+                        actual.seek(position);
+                    }
+
+                    public List<com.vibeminer.files.FileTypes.FileHole> holes() {
+                        return actual.holes();
+                    }
+
+                    public java.util.concurrent.CompletableFuture<Integer> read(
+                            ByteBuffer destination, Cancellation token) {
+                        return java.util.concurrent.CompletableFuture.completedFuture(-1);
+                    }
+
+                    public void close() {
+                        actual.close();
+                    }
+                };
+            }
+        };
+    }
+
+    @Test
+    void doodadInputRefusalsOmitOnlyDoodadsButChangedSourcesFailTheSet() {
+        for (long id : new long[] {MODEL, SKIN, MODEL_IMAGE}) {
+            try (var f = new Fixture(List.of(), shortRead(id))) {
+                putModel(f, MODEL, model());
+                var obj0 = obj0(List.of(Modf.of(ROOT, 1, 0x8)), List.of(Mddf.of(MODEL, 2, 0x40)));
+                try (var set = run(f, obj0)) {
+                    assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN), "" + id);
+                    assertEquals(1, set.count(WorldExteriorObjects.Count.DOODAD_SOURCE_INPUT));
+                    assertEquals(
+                            id == MODEL_IMAGE ? 1 : 0,
+                            set.count(WorldExteriorObjects.Count.MODEL_IMAGE_UNAVAILABLE));
+                    assertEquals(
+                            id == MODEL_IMAGE ? 0 : 1,
+                            set.count(WorldExteriorObjects.Count.MODEL_UNAVAILABLE));
+                    assertEquals(0, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+                }
+            }
+            try (var f = new Fixture(List.of())) {
+                putModel(f, MODEL, model());
+                f.files.changedId = id;
+                f.files.changeAfterRead = true;
+                f.files.sources.put(4L, obj0(List.of(), List.of(Mddf.of(MODEL, 2, 0x40))));
+                var refusal = assertThrows(WorldTerrainStreaming.Refusal.class, f::run);
+                assertEquals("SOURCE_BINDING", refusal.site(), "id " + id);
+            }
+        }
+    }
+
+    @Test
+    void anUnreadableCutoutOrBlendedImageOmitsOnlyItsSurfaces() {
+        for (int blend : new int[] {1, 2}) {
+            try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), shortRead(IMAGE2))) {
+                f.files.sources.put(
+                        ROOT,
+                        root(
+                                1,
+                                new long[] {GROUP},
+                                List.of(
+                                        new Material(0, IMAGE, 0),
+                                        new Material(blend, IMAGE2, 0))));
+                f.files.sources.put(
+                        GROUP,
+                        group(EXT, 3, 2, List.of(new Batch(0, 3, 0, 0), new Batch(3, 3, 0, 1))));
+                // The opaque-only profile drew this building; an unreadable cutout or blended
+                // texture must not cost it.
+                try (var set = f.run()) {
+                    assertEquals(
+                            Map.of(
+                                    WorldExteriorObjects.Count.PLACEMENT_DRAWN, 1,
+                                    WorldExteriorObjects.Count.ROOT_DRAWN, 1,
+                                    WorldExteriorObjects.Count.GROUP_DRAWN, 1,
+                                    WorldExteriorObjects.Count.BATCH_DRAWN, 1,
+                                    WorldExteriorObjects.Count.BATCH_UNREADABLE, 1,
+                                    WorldExteriorObjects.Count.IMAGE_DECODED, 1,
+                                    WorldExteriorObjects.Count.IMAGE_UNAVAILABLE, 1),
+                            counts(set),
+                            "blend " + blend);
+                    assertEquals(
+                            List.of(
+                                    new WorldExteriorObjects.DrawRange(
+                                            0, 3, 0, 0, WorldExteriorObjects.OPAQUE)),
+                            set.models().getFirst().meshes().getFirst().ranges());
+                }
+            }
+        }
+        // The opaque-only profile's own reads keep failing the whole set, as before.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), shortRead(IMAGE))) {
+            var refusal = assertThrows(WorldTerrainStreaming.Refusal.class, f::run);
+            assertEquals("SOURCE_INPUT", refusal.site());
+        }
+    }
+
+    @Test
+    void cutoutAndBlendedSurfacesNeverCapTheOpaqueBudget() {
+        // A root whose opaque geometry exactly fills the vertex cap, plus a cutout batch in a
+        // second group: the opaque outcome is unchanged and the cutout draws from its own budget
+        // or is capped there, never capping the root.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            int vertices = 16_384;
+            var groups = new long[6];
+            for (int g = 0; g < 6; g++) {
+                groups[g] = GROUP + 10 + g;
+                f.files.sources.put(
+                        groups[g], group(EXT, vertices, 1, List.of(new Batch(0, 3, 0, 0))));
+            }
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            7,
+                            java.util.stream.LongStream.concat(
+                                            java.util.Arrays.stream(groups),
+                                            java.util.stream.LongStream.of(GROUP + 20))
+                                    .toArray(),
+                            List.of(new Material(0, IMAGE, 0), new Material(1, IMAGE2, 0))));
+            f.files.sources.put(GROUP + 20, group(EXT, 3, 1, List.of(new Batch(0, 3, 0, 1))));
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(7, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.BATCH_CUTOUT));
+                assertEquals(16_384 * 6 + 3, set.vertices());
+            }
+        }
+    }
+
+    @Test
+    void cutoutRangesAreDroppedBeforeAnOpaqueBuildingIsCappedAtTheDrawBudget() {
+        // A group of 64 opaque batches and a group with one cutout batch: 64 placements cost
+        // exactly the 4,096-draw budget under the opaque-only profile, 4,160 with the cutout.
+        var batches = new ArrayList<Batch>();
+        for (int b = 0; b < 64; b++) {
+            batches.add(new Batch(b * 3, 3, 0, 0));
+        }
+        var cutout = group(EXT, 3, 1, List.of(new Batch(0, 3, 0, 1)));
+        var records = new ArrayList<Modf>();
+        for (int i = 0; i < 64; i++) {
+            records.add(Modf.of(ROOT, i + 1, 0x8));
+        }
+        try (var f = new Fixture(records)) {
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            2,
+                            new long[] {GROUP, GROUP + 1},
+                            List.of(new Material(0, IMAGE, 0), new Material(1, IMAGE2, 0))));
+            f.files.sources.put(GROUP, group(EXT, 3, 64, batches));
+            f.files.sources.put(GROUP + 1, cutout);
+            putModel(f, MODEL, model());
+            f.files.sources.put(4L, obj0(records, List.of(Mddf.of(MODEL, 900, 0x40))));
+            try (var set = f.run()) {
+                assertEquals(64, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.BATCH_CAPPED));
+                assertEquals(64, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_CUTOUT));
+                // The cutout-only group is dropped whole; the opaque group is untouched.
+                assertEquals(1, set.models().getFirst().meshes().size());
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                var mesh = set.models().getFirst().meshes().getFirst();
+                assertEquals(64, mesh.ranges().size());
+                assertEquals(64 * 3, mesh.indices().remaining());
+                assertTrue(
+                        mesh.ranges().stream()
+                                .allMatch(r -> r.blend() == WorldExteriorObjects.OPAQUE));
+                // The budget is full, so the doodad is capped, never a building.
+                assertEquals(1, set.count(WorldExteriorObjects.Count.DOODAD_CAPPED));
+            }
+        }
+        // One placement fewer: the cutout range fits (63 * 65 = 4,095 draws) and is kept.
+        try (var f = new Fixture(records.subList(0, 63))) {
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            2,
+                            new long[] {GROUP, GROUP + 1},
+                            List.of(new Material(0, IMAGE, 0), new Material(1, IMAGE2, 0))));
+            f.files.sources.put(GROUP, group(EXT, 3, 64, batches));
+            f.files.sources.put(GROUP + 1, cutout);
+            try (var set = f.run()) {
+                assertEquals(63, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.BATCH_CUTOUT));
+            }
+        }
     }
 }

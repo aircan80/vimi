@@ -24,7 +24,8 @@ final class WorldStreamSourceBridge {
     static final class Prepared implements AutoCloseable {
         private final WorldTerrainStreaming.Facts facts;
         private WorldTerrainStreaming.WrittenTile<WorldStreamTileWriter.PacketFile> owned;
-        private volatile int waterCells, exteriorPlacements;
+        private volatile int waterCells;
+        private volatile ExteriorSummary exteriorSummary = ExteriorSummary.NONE;
         private volatile boolean exteriorFailed;
 
         /** Descriptive: this tile's exterior objects failed on the parent side; terrain kept. */
@@ -33,8 +34,8 @@ final class WorldStreamSourceBridge {
         }
 
         /** Records late objects attached to this tile's resident (descriptive only). */
-        void exteriorAttached(int placements) {
-            exteriorPlacements = placements;
+        void exteriorAttached(ExteriorSummary summary) {
+            exteriorSummary = Objects.requireNonNull(summary);
         }
 
         /** Records a parent-side failure of this tile's late objects (descriptive only). */
@@ -59,9 +60,9 @@ final class WorldStreamSourceBridge {
             return waterCells;
         }
 
-        /** Descriptive count of exterior placements carried by this tile's objects file. */
-        int exteriorPlacements() {
-            return exteriorPlacements;
+        /** Descriptive drawn/omitted counts of this tile's attached objects. */
+        ExteriorSummary exteriorSummary() {
+            return exteriorSummary;
         }
 
         private Prepared(WorldTerrainStreaming.WrittenTile<WorldStreamTileWriter.PacketFile> owned) {
@@ -114,6 +115,112 @@ final class WorldStreamSourceBridge {
     }
 
     /**
+     * Descriptive drawn and omitted counts of one tile's BASIC_EXTERIOR set, as written. Omitted
+     * buildings and doodads are records (MODF, MDDF and selected MODD entries) that are not
+     * drawn for any reason; tilted doodads are the omitted MDDF and MODD doodads with a pitch or
+     * roll (no reviewed convention is applied to them).
+     * Omitted surfaces are unsupported, image-less, capped or unreadable batches of drawn or
+     * empty roots and models; unreadable surfaces are the cutout and blended building batches
+     * whose image could not be read now (they never cost the building).
+     */
+    record ExteriorSummary(
+            int buildings,
+            int buildingsOmitted,
+            int doodads,
+            int doodadsOmitted,
+            int tilted,
+            int surfacesOmitted,
+            int unreadable) {
+        static final ExteriorSummary NONE = new ExteriorSummary(0, 0, 0, 0, 0, 0, 0);
+
+        ExteriorSummary plus(ExteriorSummary o) {
+            return new ExteriorSummary(
+                    buildings + o.buildings,
+                    buildingsOmitted + o.buildingsOmitted,
+                    doodads + o.doodads,
+                    doodadsOmitted + o.doodadsOmitted,
+                    tilted + o.tilted,
+                    surfacesOmitted + o.surfacesOmitted,
+                    unreadable + o.unreadable);
+        }
+
+        int omitted() {
+            return buildingsOmitted + doodadsOmitted + surfacesOmitted;
+        }
+
+        /** The counts after the bridge's own draw-budget cap (normally a no-op). */
+        ExteriorSummary capped(int buildingsCapped, int doodadsCapped) {
+            return new ExteriorSummary(
+                    buildings - buildingsCapped,
+                    buildingsOmitted + buildingsCapped,
+                    doodads - doodadsCapped,
+                    doodadsOmitted + doodadsCapped,
+                    tilted,
+                    surfacesOmitted,
+                    unreadable);
+        }
+
+        static ExteriorSummary of(WorldExteriorObjects.TileObjects set) {
+            int buildings = set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN);
+            int buildingsOmitted =
+                    sum(
+                            set,
+                            WorldExteriorObjects.Count.PLACEMENT_UNSUPPORTED,
+                            WorldExteriorObjects.Count.PLACEMENT_CONFLICTING,
+                            WorldExteriorObjects.Count.PLACEMENT_CAPPED,
+                            WorldExteriorObjects.Count.PLACEMENT_FAILED_ROOT,
+                            WorldExteriorObjects.Count.PLACEMENT_EMPTY);
+            int doodads =
+                    sum(
+                            set,
+                            WorldExteriorObjects.Count.DOODAD_DRAWN,
+                            WorldExteriorObjects.Count.SET_DOODAD_DRAWN);
+            int tilted =
+                    set.count(WorldExteriorObjects.Count.DOODAD_TILTED)
+                            + set.count(WorldExteriorObjects.Count.SET_DOODAD_TILTED);
+            int doodadsOmitted =
+                    tilted
+                            + sum(
+                                    set,
+                                    WorldExteriorObjects.Count.DOODAD_UNSUPPORTED,
+                                    WorldExteriorObjects.Count.DOODAD_CONFLICTING,
+                                    WorldExteriorObjects.Count.DOODAD_CAPPED,
+                                    WorldExteriorObjects.Count.DOODAD_FAILED_MODEL,
+                                    WorldExteriorObjects.Count.DOODAD_EMPTY,
+                                    WorldExteriorObjects.Count.SET_DOODAD_UNSUPPORTED,
+                                    WorldExteriorObjects.Count.SET_DOODAD_CAPPED,
+                                    WorldExteriorObjects.Count.SET_DOODAD_FAILED_MODEL,
+                                    WorldExteriorObjects.Count.SET_DOODAD_EMPTY);
+            int surfaces =
+                    sum(
+                            set,
+                            WorldExteriorObjects.Count.BATCH_UNSUPPORTED,
+                            WorldExteriorObjects.Count.BATCH_MISSING_IMAGE,
+                            WorldExteriorObjects.Count.BATCH_CAPPED,
+                            WorldExteriorObjects.Count.BATCH_UNREADABLE,
+                            WorldExteriorObjects.Count.MODEL_BATCH_UNSUPPORTED,
+                            WorldExteriorObjects.Count.MODEL_BATCH_MISSING_IMAGE);
+            return new ExteriorSummary(
+                    buildings,
+                    buildingsOmitted,
+                    doodads,
+                    doodadsOmitted,
+                    tilted,
+                    surfaces,
+                    set.count(WorldExteriorObjects.Count.BATCH_UNREADABLE));
+        }
+
+        private static int sum(
+                WorldExteriorObjects.TileObjects set, WorldExteriorObjects.Count... counts) {
+            int total = 0;
+            for (var count : counts) {
+                total += set.count(count);
+            }
+            return total;
+        }
+    }
+
+    /**
      * Outcome of one tile's BASIC_EXTERIOR preparation, detached from the source: a validated
      * copy to deliver late, or none ({@code failed} distinguishes a building failure from an empty
      * tile). {@code placements} counts buildings only; {@code creatures} is the tile's creature
@@ -124,13 +231,39 @@ final class WorldStreamSourceBridge {
             int placements,
             boolean failed,
             String note,
-            WorldTileCreatures.Summary creatures) {
+            WorldTileCreatures.Summary creatures,
+            ExteriorSummary summary) {
         ExteriorCopy {
             Objects.requireNonNull(creatures);
+            Objects.requireNonNull(summary);
         }
 
-        ExteriorCopy(WorldStreamTileWriter.Exterior exterior, int placements, boolean failed, String note) {
+        /** A buildings-only copy whose summary counts {@code placements} buildings. */
+        ExteriorCopy(
+                WorldStreamTileWriter.Exterior exterior,
+                int placements,
+                boolean failed,
+                String note) {
             this(exterior, placements, failed, note, WorldTileCreatures.Summary.NONE);
+        }
+
+        ExteriorCopy(
+                WorldStreamTileWriter.Exterior exterior,
+                int placements,
+                boolean failed,
+                String note,
+                WorldTileCreatures.Summary creatures) {
+            this(
+                    exterior,
+                    placements,
+                    failed,
+                    note,
+                    creatures,
+                    new ExteriorSummary(placements, 0, 0, 0, 0, 0, 0));
+        }
+
+        ExteriorCopy withSummary(ExteriorSummary replacement) {
+            return new ExteriorCopy(exterior, placements, failed, note, creatures, replacement);
         }
     }
 
@@ -181,15 +314,11 @@ final class WorldStreamSourceBridge {
         try {
             boolean failed = false;
             String note;
+            var summary = ExteriorSummary.NONE;
             try {
                 set = source.prepareExteriorObjects(scope, tile, cancellation);
-                int drawn = set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN);
-                int omitted = set.count(WorldExteriorObjects.Count.PLACEMENT_UNSUPPORTED)
-                        + set.count(WorldExteriorObjects.Count.PLACEMENT_CONFLICTING)
-                        + set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED)
-                        + set.count(WorldExteriorObjects.Count.PLACEMENT_FAILED_ROOT)
-                        + set.count(WorldExteriorObjects.Count.PLACEMENT_EMPTY);
-                note = "exterior placements drawn=" + drawn + " omitted=" + omitted;
+                summary = ExteriorSummary.of(set);
+                note = note(summary);
             } catch (CancellationException canceled) {
                 throw canceled;
             } catch (WorldTerrainStreaming.Refusal refused) {
@@ -203,14 +332,22 @@ final class WorldStreamSourceBridge {
                 WorldDiagnostics.degraded("exterior objects",
                         "World exterior objects failed; tile kept as terrain only", failure);
             }
+            // Buildings and doodads; capped receives the bridge's own draw-budget drops.
+            var capped = new int[2];
             if (creatures == null) {
-                if (failed || set.placements().isEmpty()) return new ExteriorCopy(null, 0, failed, note);
-                var copy = copy(set, cancellation);
-                return new ExteriorCopy(copy, copy.placements(), false, note);
+                if (failed || set.placements().isEmpty())
+                    return new ExteriorCopy(null, 0, failed, note).withSummary(summary);
+                var copy = copy(set, cancellation, capped);
+                return new ExteriorCopy(copy, buildings(set), false, note)
+                        .withSummary(summary.capped(capped[0], capped[1]));
             }
             var drawn = set;
-            return assemble(failed || set.placements().isEmpty() ? null
-                    : builder -> copyInto(builder, drawn, cancellation), failed, note, creatures, tile, cancellation);
+            var result = assemble(failed || set.placements().isEmpty() ? null
+                    : builder -> copyInto(builder, drawn, cancellation, capped), failed, note, creatures, tile, cancellation);
+            // A building failure inside assemble leaves no buildings or doodads to describe.
+            if (result.failed() && !failed) return result.withSummary(ExteriorSummary.NONE);
+            return result.withSummary(result.exterior() == null && set != null && !set.placements().isEmpty()
+                    ? ExteriorSummary.NONE : summary.capped(capped[0], capped[1]));
         } finally {
             if (set != null) set.close();
         }
@@ -490,17 +627,32 @@ final class WorldStreamSourceBridge {
         }
     }
 
+    private static String note(ExteriorSummary s) {
+        return "exterior buildings drawn=" + s.buildings() + " omitted=" + s.buildingsOmitted()
+                + " doodads drawn=" + s.doodads() + " omitted=" + s.doodadsOmitted()
+                + " (tilted " + s.tilted() + ") surfaces omitted=" + s.surfacesOmitted()
+                + " (unreadable " + s.unreadable() + ")";
+    }
+
+    /** capped receives the buildings and doodads dropped by the bridge's draw-budget check. */
     private static WorldStreamTileWriter.Exterior copy(
-            WorldExteriorObjects.TileObjects set, Cancellation cancellation) {
+            WorldExteriorObjects.TileObjects set, Cancellation cancellation, int[] capped) {
         var builder = WorldStreamTileWriter.Exterior.builder();
-        copyInto(builder, set, cancellation);
+        copyInto(builder, set, cancellation, capped);
         return builder.build();
+    }
+
+    /** Buildings drawn in a set (its other placements are doodads). */
+    private static int buildings(WorldExteriorObjects.TileObjects set) {
+        return set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN);
     }
 
     private static void copyInto(
             WorldStreamTileWriter.Exterior.Builder builder,
             WorldExteriorObjects.TileObjects set,
-            Cancellation cancellation) {
+            Cancellation cancellation,
+            int[] capped) {
+        capped[0] = capped[1] = 0;
         for (var image : set.images()) {
             cancellation.check();
             builder.image(image.width(), image.height(), image.rgba());
@@ -510,17 +662,19 @@ final class WorldStreamSourceBridge {
             for (var mesh : model.meshes()) {
                 cancellation.check();
                 var ranges = new int[mesh.ranges().size() * 3];
+                var blends = new int[mesh.ranges().size()];
                 for (int r = 0; r < mesh.ranges().size(); r++) {
                     var range = mesh.ranges().get(r);
                     ranges[r * 3] = range.firstIndex();
                     ranges[r * 3 + 1] = range.indexCount();
                     ranges[r * 3 + 2] = range.image();
+                    blends[r] = range.blend();
                 }
-                builder.mesh(mesh.vertices(), mesh.indices(), ranges);
+                builder.mesh(mesh.vertices(), mesh.indices(), ranges, blends);
             }
         }
-        // Placements beyond the per-tile draw budget are capped in source order, never
-        // failing the whole tile's set.
+        // The source already caps placements to the per-tile draw budget; this repeats it in
+        // source order so the file profile can never fail the whole tile's set.
         var modelDraws = new int[set.models().size()];
         for (int m = 0; m < modelDraws.length; m++) {
             for (var mesh : set.models().get(m).meshes()) {
@@ -531,11 +685,12 @@ final class WorldStreamSourceBridge {
         for (var placement : set.placements()) {
             int cost = modelDraws[placement.model()];
             if (draws + cost > WorldStreamTileWriter.Exterior.MAX_DRAWS) {
+                capped[placement.kind() == WorldExteriorObjects.Kind.BUILDING ? 0 : 1]++;
                 continue;
             }
             draws += cost;
             builder.placement(placement.model(), placement.x(), placement.y(), placement.z(),
-                    placement.scale(), placement.cos(), placement.sin());
+                    placement.scale(), placement.rotation().rowMajor());
         }
     }
 
