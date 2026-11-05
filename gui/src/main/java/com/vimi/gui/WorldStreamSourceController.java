@@ -165,6 +165,7 @@ final class WorldStreamSourceController {
                 WorldStreamSourceBridge.ExteriorSummary.NONE;
         boolean buildingsFailed;
         WorldTileCreatures.Summary creatures = WorldTileCreatures.Summary.NONE;
+        WorldObjectPicks.Tile picks;
 
         Exterior(Entry entry) {
             this.entry = entry;
@@ -218,6 +219,8 @@ final class WorldStreamSourceController {
     private final IdentityHashMap<Entry, Optional<TerrainGround.Tile>> heights =
             new IdentityHashMap<>();
     private volatile TerrainGround ground = TerrainGround.empty();
+    // Worker-published pick geometry of the current residents whose late objects are drawn.
+    private volatile List<WorldObjectPicks.Tile> objects = List.of();
     // Worker-owned immutable area metadata of current residents, for pure point lookups.
     private final IdentityHashMap<Entry, Optional<WorldFormats.AreaMetadata>> areaMetadata =
             new IdentityHashMap<>();
@@ -325,6 +328,14 @@ final class WorldStreamSourceController {
     /** Rendered-surface heights of the current resident tiles; never source or payload handles. */
     TerrainGround ground() {
         return closing ? TerrainGround.empty() : ground;
+    }
+
+    /**
+     * Pick geometry and sources of the exterior objects the current residents draw; immutable,
+     * any thread.
+     */
+    List<WorldObjectPicks.Tile> objects() {
+        return closing ? List.of() : objects;
     }
 
     /**
@@ -870,6 +881,7 @@ final class WorldStreamSourceController {
             work.summary = copy.summary();
             work.buildingsFailed = copy.failed();
             work.creatures = copy.creatures();
+            work.picks = copy.picks();
             work.attached = session.attachObjects(work.entry.resident(), copy.exterior());
             work.attached.whenComplete((ignored, failure) -> kick());
             return;
@@ -887,7 +899,9 @@ final class WorldStreamSourceController {
                 case ATTACHED -> {
                     work.entry.source().exteriorAttached(work.summary);
                     work.entry.source().creatures(work.creatures);
+                    work.entry.source().picks(work.picks);
                     if (work.buildingsFailed) work.entry.source().exteriorFailedLate();
+                    updateObjects();
                 }
                 case FAILED -> {
                     // Write, read or upload failed; the helper reports no detail of its own.
@@ -1135,6 +1149,19 @@ final class WorldStreamSourceController {
         }
         ground = TerrainGround.of(tiles);
         areas = List.copyOf(metadata);
+        updateObjects();
+    }
+
+    /** Publishes the pick tiles of the current residents whose late objects are drawn. */
+    private void updateObjects() {
+        var drawn = new ArrayList<WorldObjectPicks.Tile>();
+        for (var entry : current) {
+            var picks = entry.source().picks();
+            if (picks != null
+                    && entry.resident().exteriorObjects() == WorldStreamTransport.ExteriorObjects.DRAWN)
+                drawn.add(picks);
+        }
+        objects = List.copyOf(drawn);
     }
 
     private void updateArea() {
@@ -1296,6 +1323,7 @@ final class WorldStreamSourceController {
             if (borrowed != null) return;
             queued = null;
             current = List.of();
+            objects = List.of();
             presented = List.of();
             committing = List.of();
         }

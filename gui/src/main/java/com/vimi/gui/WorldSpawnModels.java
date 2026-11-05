@@ -125,7 +125,7 @@ final class WorldSpawnModels implements AutoCloseable {
     }
 
     /** Listfile name, or null when unknown; a failed name lookup never changes the model choice. */
-    private static String path(BuildFiles files, long fileDataId, Cancellation token) {
+    static String path(BuildFiles files, long fileDataId, Cancellation token) {
         if (files == null || fileDataId < 0 || fileDataId > 0xffffffffL) return null;
         try (var cursor = files.listMetadata(
                 new FileTypes.FileFilter(fileDataId, fileDataId, null, null, null, null), token)) {

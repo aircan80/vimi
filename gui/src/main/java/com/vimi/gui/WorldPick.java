@@ -17,8 +17,8 @@ import java.util.Optional;
 /**
  * CPU picking for the World explorer: viewport pixels to camera rays, rays against the retained
  * rendered-surface heights, and screen-space hits on already projected spawn markers. Pure and
- * thread-agnostic; inputs are immutable snapshots. Only ADT terrain surfaces are picked: WMOs,
- * doodads, water and live creatures are not, and nothing here infers an identity.
+ * thread-agnostic; inputs are immutable snapshots. Drawn exterior objects are picked by
+ * {@link WorldObjectPicks}; water and live creatures are not, and nothing here infers an identity.
  */
 final class WorldPick {
     /** Farthest picked surface, matching the explorer's whole-triangle draw distance. */
@@ -148,8 +148,17 @@ final class WorldPick {
         return Optional.ofNullable(hit);
     }
 
-    /** Terrain inspection text; every unknown field says so. */
+    /** Terrain inspection text without object picking (no drawn objects were tested). */
     static String describeTerrain(Hit hit, long mapId, String mapName, WorldCurrentArea.Result area) {
+        return describeTerrain(hit, mapId, mapName, area, 0);
+    }
+
+    /**
+     * Terrain inspection text; every unknown field says so. {@code objectTiles} is how many
+     * resident tiles' drawn objects were tested and found farther than the terrain, or missed.
+     */
+    static String describeTerrain(Hit hit, long mapId, String mapName, WorldCurrentArea.Result area,
+            int objectTiles) {
         Objects.requireNonNull(hit);
         Objects.requireNonNull(area);
         var text = new StringBuilder("Terrain · ").append(map(mapId, mapName)).append(" · ")
@@ -157,7 +166,11 @@ final class WorldPick {
                 .append(String.format(Locale.ROOT, "x %.1f / y %.1f / z %.1f · %.0f yd away",
                         hit.x(), hit.y(), hit.z(), hit.distance()))
                 .append(" · ").append(area(area));
-        return text.append(" · rendered ADT surface only; buildings, doodads and water are not picked").toString();
+        text.append(" · rendered ADT surface");
+        if (objectTiles > 0) text.append("; no drawn building, doodad or creature model of the ").append(objectTiles)
+                .append(objectTiles == 1 ? " object tile" : " object tiles").append(" is nearer");
+        else text.append("; no exterior objects are drawn here to pick");
+        return text.append("; water is not picked").toString();
     }
 
     /** Pointer over sky, a hole or terrain that is not loaded: report that, never a guess. */
