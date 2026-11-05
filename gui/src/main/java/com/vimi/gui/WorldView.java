@@ -2462,7 +2462,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                         detail);
         stallWatchdog.reset();
         streaming = new WorldStreamSourceController(request, scope -> {
-            var owner = new WorldStreamGpuOwner(gpuService, scope);
+            var owner = new WorldStreamGpuOwner(gpuService, scope, detail);
             return new WorldStreamSourceController.GpuOwner() {
                 public CompletableFuture<com.vibeminer.rendering.bgfx.WorldStreamTransport.Session> session() {
                     return owner.session();
