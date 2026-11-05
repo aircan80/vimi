@@ -21,7 +21,11 @@ final class Arithmetic {
     record Operand(Long spell, int index) {}
 
     /** The value, or the reason there is none, with the sources of every operand used. */
-    record Result(BigDecimal value, String issue, List<SpellTexts.Source> sources) {
+    record Result(
+            BigDecimal value,
+            String issue,
+            List<SpellTexts.Source> sources,
+            boolean percentageOnly) {
         Result {
             sources = List.copyOf(sources);
         }
@@ -67,9 +71,9 @@ final class Arithmetic {
             if (parser.at != parser.terms.size()) {
                 throw new Failure("The expression is not supported arithmetic");
             }
-            return new Result(value, null, sources);
+            return new Result(value, null, sources, parser.percentageOnly);
         } catch (Failure failure) {
-            return new Result(null, failure.getMessage(), sources);
+            return new Result(null, failure.getMessage(), sources, false);
         }
     }
 
@@ -160,6 +164,7 @@ final class Arithmetic {
         final Map<Long, Map<Integer, SpellText.Amount>> amounts;
         final List<SpellTexts.Source> sources;
         int at;
+        boolean percentageOnly;
 
         Parser(
                 List<Term> terms,
@@ -244,12 +249,6 @@ final class Arithmetic {
                     throw new Failure("Effect amount is unavailable for " + amount.raw());
                 }
                 sources.addAll(found.sources());
-                if (found.percentageOnly()) {
-                    // Such an amount is fixed only where it is shown with a literal %; the
-                    // evaluator does not track that, so it refuses the operand.
-                    throw new Failure(
-                            amount.raw() + ": this amount is shown only as a plain percentage");
-                }
                 if (found.issue() != null || found.base() == null) {
                     throw new Failure(
                             amount.raw()
@@ -258,6 +257,7 @@ final class Arithmetic {
                                             ? "Effect base amount is unreadable"
                                             : found.issue()));
                 }
+                percentageOnly |= found.percentageOnly();
                 return bounded(found.base());
             }
             throw new Failure("The expression is not supported arithmetic");

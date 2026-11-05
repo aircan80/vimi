@@ -720,6 +720,60 @@ final class SpellTextsTest {
     }
 
     @Test
+    void dummyAndProcAmountsWithCoefficientOneResolveOnlyAsPercentages() {
+        for (var type : List.of(List.of("6", "4"), List.of("6", "42"), List.of("3", "0"))) {
+            var effects = List.of(typed(101, type.get(0), type.get(1), "1"));
+            assertEquals(
+                    "A 7% chance.",
+                    scalarPreview("A $s1% chance.", effects, List.of(), List.of()).display(),
+                    type.toString());
+            var flat = scalarPreview("Gain $m1 Rage.", effects, List.of(), List.of());
+            assertEquals("Gain ? Rage.", flat.display(), type.toString());
+            assertEquals(
+                    "Spell power could raise this amount; it is shown only as a percentage",
+                    flat.substitutions().getFirst().issue());
+            assertEquals(
+                    "A 7% chance.",
+                    scalarPreview("A ${$s1*10/10}% chance.", effects, List.of(), List.of())
+                            .display(),
+                    type.toString());
+            assertEquals(
+                    "Gain ? Rage.",
+                    scalarPreview("Gain ${$s1*10/10} Rage.", effects, List.of(), List.of())
+                            .display(),
+                    type.toString());
+        }
+        // Weapon damage, damage and unreviewed auras stay unknown even as a percentage.
+        for (var type :
+                List.of(
+                        List.of("31", "0"),
+                        List.of("2", "0"),
+                        List.of("6", "226"),
+                        List.of("6", "97"))) {
+            assertEquals(
+                    "A ?% chance.",
+                    scalarPreview(
+                                    "A $s1% chance.",
+                                    List.of(typed(101, type.get(0), type.get(1), "1")),
+                                    List.of(),
+                                    List.of())
+                            .display(),
+                    type.toString());
+        }
+        // Every other scaling input must still be zero, and other coefficients never qualify.
+        var leveled = new ArrayList<>(typed(101, "6", "4", "1").values());
+        leveled.set(FIELDS.indexOf("EffectRealPointsPerLevel"), "2");
+        var fractional = typed(101, "6", "4", "0.5");
+        for (var effect :
+                List.of(new Db2Types.Row(101, false, null, leveled, List.of()), fractional)) {
+            assertEquals(
+                    "A ?% chance.",
+                    scalarPreview("A $s1% chance.", List.of(effect), List.of(), List.of())
+                            .display());
+        }
+    }
+
+    @Test
     void aCoefficientOfOneIsInertOnlyForReviewedAuraTypes() {
         // Spell power scaled or unreviewed: health leech (9), school damage (2), heal (10), and
         // periodic damage/heal, mana shield, periodic dummy and heal absorb auras.
