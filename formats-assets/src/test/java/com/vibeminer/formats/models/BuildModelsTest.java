@@ -365,4 +365,65 @@ final class BuildModelsTest {
                                                 .join()));
         assertInstanceOf(java.util.concurrent.CancellationException.class, error);
     }
+
+    /** Version 1, one BIDA entry and one identity BOMT matrix. */
+    private static byte[] boneFile(int bone) {
+        var exact = ByteBuffer.allocate(4 + 8 + 2 + 8 + 64).order(ByteOrder.LITTLE_ENDIAN);
+        exact.putInt(1);
+        exact.put("BIDA".getBytes(java.nio.charset.StandardCharsets.US_ASCII)).putInt(2);
+        exact.putShort((short) bone);
+        exact.put("BOMT".getBytes(java.nio.charset.StandardCharsets.US_ASCII)).putInt(64);
+        for (int i = 0; i < 16; i++) {
+            exact.putFloat(i % 5 == 0 ? 1 : 0);
+        }
+        return exact.array();
+    }
+
+    @Test
+    void declaredBoneFilesAndStandFactsReadThroughFiles() {
+        byte[] model =
+                appendChunk(M2IdleAnimationTest.authored(274, a -> {}), "BFID", 701, 702, 703);
+        byte[] outside = boneFile(9);
+        AssetFilesFixture files =
+                new AssetFilesFixture()
+                        .add(123, CONTENT, model)
+                        .add(701, "4".repeat(32), boneFile(1))
+                        .add(702, "5".repeat(32), outside);
+        BuildModels models = new BuildModels(files);
+        var read = models.readModel(FileRef.id(123), Cancellation.NONE).join();
+        assertEquals(ReadState.READ, read.state());
+        var valid = models.readBoneFile(read, 701, Cancellation.NONE).join();
+        assertEquals(ReadState.READ, valid.state());
+        assertEquals(1, valid.bones().count());
+        var invalid = models.readBoneFile(read, 702, Cancellation.NONE).join();
+        assertEquals(ReadState.REJECTED, invalid.state());
+        assertEquals("MODEL_INVALID", invalid.code());
+        assertNull(invalid.bones());
+        var missing = models.readBoneFile(read, 703, Cancellation.NONE).join();
+        assertEquals(ReadState.UNKNOWN_FILE, missing.state());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> models.readBoneFile(read, 704, Cancellation.NONE));
+        var stand = models.readStandFacts(read, Cancellation.NONE).join();
+        assertEquals(ReadState.READ, stand.state());
+        assertNull(stand.stand().refusal());
+        assertEquals(1000, stand.stand().durationMillis());
+        assertEquals(files.opens.get(), files.streamCloses.get());
+    }
+
+    @Test
+    void oversizedBoneFilesAreRefusedBeforeOpening() {
+        byte[] model = appendChunk(M2IdleAnimationTest.authored(274, a -> {}), "BFID", 701);
+        AssetFilesFixture files =
+                new AssetFilesFixture()
+                        .add(123, CONTENT, model)
+                        .add(701, "4".repeat(32), new byte[M2BoneFile.MAX_BYTES + 1]);
+        BuildModels models = new BuildModels(files);
+        var read = models.readModel(FileRef.id(123), Cancellation.NONE).join();
+        int opens = files.opens.get();
+        var refused = models.readBoneFile(read, 701, Cancellation.NONE).join();
+        assertEquals(ReadState.REJECTED, refused.state());
+        assertEquals("MODEL_LIMIT", refused.code());
+        assertEquals(opens, files.opens.get());
+    }
 }

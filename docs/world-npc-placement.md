@@ -55,14 +55,51 @@ length as the CPU and GPU terrain paths. The frame is fitted to the viewport exa
 `WorldView` changes are limited to mounting the overlay, supplying the view, adding the
 footer row and closing it.
 
+## Creature model policy (second slice)
+
+Each drawn marker's NPC is resolved to a creature model choice, but **no model is drawn yet**.
+Polestar's `npc` table records no display, so the chain is read from the **opened build's**
+client tables with the existing data-only creature lookup (`BuildCreatures.getData`, no asset
+I/O): `Creature` display slots → `CreatureDisplayInfo.ModelID` → `CreatureModelData.FileDataID`.
+The Polestar NPC ID is the client creature ID. The opened build can differ from the Polestar
+source client within the same `major.minor.patch`; both are shown.
+
+`concepts-creatures/CreatureModelPolicy` (`single-declared-display-v1`, pure) decides:
+
+| Outcome | When |
+|---|---|
+| QUALIFIED | exactly one distinct display ID is declared and its chain resolves to a nonzero model FileDataID |
+| AMBIGUOUS | several distinct display IDs are declared (count shown); the client picks one per spawn by probability, so none is claimed |
+| UNRESOLVED | no display is declared, the single reference is invalid, or its chain stops (display/model record absent, encrypted, unreadable, no model, no model file) |
+| UNKNOWN | the `Creature` record is absent, encrypted or unreadable, creature data is not open, or the lookup failed |
+
+Repeated slots of one display ID count as one display. Any invalid (negative) display reference makes the outcome UNRESOLVED, even beside valid displays, because the record's display set is then not fully known. Display probabilities are not used to pick
+a winner. Every outcome has a stable reason code and a readable detail.
+
+`gui/WorldSpawnModels` resolves on one daemon worker, one NPC at a time, nearest drawn markers
+first and a clicked marker ahead of the queue. FX owns the queue (≤ 512, replaced by the currently drawn NPCs on
+each redraw so off-screen NPCs are dropped) and an LRU cache (≤ 4,096 NPCs). A workspace revision change cancels the running lookup, empties queue and cache,
+and drops late results. A qualified model's name is a metadata-only listfile lookup
+(`BuildFiles.listMetadata`, no payload read); without a listfile name, or if that lookup
+fails, it says "name unknown" and the choice is kept.
+
+- The **inspect panel** for a clicked marker adds the outcome: for QUALIFIED the FileDataID, its
+  listfile path, the display and CreatureModelData IDs and the source (tables, opened build,
+  policy); otherwise the state, reason and why. While pending it says "model: resolving…" and
+  updates when the outcome arrives, unless another pick happened.
+- The **status line** adds per-state counts over drawn markers, with per-reason counts for
+  UNRESOLVED and UNKNOWN and the number still resolving, for example
+  `models (not drawn yet): 12 qualified, 5 ambiguous, 2 unresolved (2 no display), 3 resolving`.
+
 ## Limitations
 
 - Markers are drawn **over** the frame and are not depth-tested, so terrain does not hide
   them. Streaming frames can trail the camera by a frame, so markers may move ahead of the
   terrain slightly during fast motion.
-- No creature models yet. Model placement needs a CreatureDisplayInfo choice policy, the
-  shared-depth draw pass from the World placement proposal, and the models lane's
-  animation work. That is the next slice of #175.
+- No creature models are drawn yet. The display choice policy above exists, but drawing needs
+  the shared-depth draw pass from the World placement proposal (depth shared with terrain) and
+  the models lane's animation work. That is the next slice of #175. Ambiguous creatures stay
+  undrawn until a source records the per-spawn display.
 - Game objects (`kind=object`) are not shown. Phase, patrol paths, respawn and faction
   visibility are not evaluated.
 
@@ -70,6 +107,7 @@ footer row and closing it.
 
 ```sh
 ./gradlew :concepts-locations:check :gui:worldSpawnsTest :gui:dataSourcesTest
+./gradlew :concepts-creatures:test --tests '*CreatureModelPolicyTest' :gui:worldSpawnModelsTest
 # Requires a working JavaFX display:
 ./gradlew :gui:worldSpawnsUiTest -PworldSpawnsScreenshot=/absolute/path.png
 ```

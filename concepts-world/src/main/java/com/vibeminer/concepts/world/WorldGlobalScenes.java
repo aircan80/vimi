@@ -45,7 +45,21 @@ public final class WorldGlobalScenes {
             boolean liquid,
             int liquidBytes,
             String canonicalMeshSha256,
-            WmoFormats.GroupHeader header) {}
+            WmoFormats.GroupHeader header,
+            String name) {
+        /**
+         * Recorded MOGP bounds in the drawn mesh's native space (min xyz, max xyz). Descriptive
+         * inspection framing only, never an entrance, floor or navigation claim.
+         */
+        public float[] nativeBounds() {
+            return WorldGlobalAssetFactory.nativeBounds(header);
+        }
+
+        /** The MOGN name at the recorded offset, when readable; never inferred. */
+        public java.util.Optional<String> recordedName() {
+            return java.util.Optional.ofNullable(name);
+        }
+    }
 
     public record Image(
             long id,
@@ -97,7 +111,8 @@ public final class WorldGlobalScenes {
                                                     g.liquid(),
                                                     g.liquidBytes(),
                                                     g.canonicalMeshSha256(),
-                                                    g.header()))
+                                                    g.header(),
+                                                    g.name()))
                             .toList();
             images =
                     manifest.images().stream()

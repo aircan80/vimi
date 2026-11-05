@@ -78,6 +78,23 @@ public interface BuildWorld extends AutoCloseable {
         return java.util.Optional.empty();
     }
 
+    /** Optional recorded area music/ambience relationships; custom providers report none. */
+    default CompletableFuture<WorldAreaAudio.Plan> areaAudio(
+            long mapId,
+            WorldCurrentArea.Result area,
+            WorldAreaAudio.Variant variant,
+            Cancellation token) {
+        return CompletableFuture.failedFuture(
+                new UnsupportedOperationException("Recorded area audio is unavailable"));
+    }
+
+    /** Optional bounded original audio bytes for a recorded sound-kit file. */
+    default CompletableFuture<WorldAreaAudio.AudioFile> audioFile(
+            long fileDataId, Cancellation token) {
+        return CompletableFuture.failedFuture(
+                new UnsupportedOperationException("Recorded area audio is unavailable"));
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override

@@ -30,6 +30,33 @@ final class ClientHotfixDetails {
                 ? "The operation was canceled." : "The local cache could not be read or verified.";
     }
 
+    /** Fixed-vocabulary refresh summary; never includes paths, payloads or provider text. */
+    static String refreshSummary(List<ClientHotfixStore.RefreshResult> results) {
+        if (results.isEmpty()) return "No client caches are marked for checking";
+        int updated = 0, unchanged = 0, moved = 0, missing = 0, failed = 0;
+        for (var result : results) {
+            switch (result.outcome()) {
+                case UPDATED -> updated++;
+                case UNCHANGED -> unchanged++;
+                case CLIENT_BUILD_CHANGED -> moved++;
+                case MISSING -> missing++;
+                case FAILED -> failed++;
+            }
+        }
+        var parts = new java.util.ArrayList<String>();
+        if (updated > 0) parts.add(updated + " newer cache" + (updated == 1 ? "" : "s")
+                + " imported; reopen the build to apply");
+        if (unchanged > 0) parts.add(unchanged + " unchanged");
+        if (moved > 0) parts.add(moved + " now for another client build; existing import kept");
+        if (missing > 0) parts.add(missing + " not found; existing import kept");
+        if (failed > 0) parts.add(failed + " could not be verified; existing import kept");
+        return String.join(" · ", parts);
+    }
+
+    static boolean refreshFailed(List<ClientHotfixStore.RefreshResult> results) {
+        return results.stream().anyMatch(result -> result.outcome() == ClientHotfixStore.RefreshOutcome.FAILED);
+    }
+
     static CompletableFuture<String> row(BuildTables tables, String table, long id,
             String label, String version, Cancellation token) {
         return tables.hotfixInfo(TableTypes.Ref.forName(table), id,
@@ -53,13 +80,27 @@ final class ClientHotfixDetails {
             com.vibeminer.concepts.talents.TalentTypes.Talent talent,
             String version, Cancellation token) {
         long spell = talent.rankSpells().getFirst();
-        var node = row(tables, "Talent", talent.id(), "Tree record", version, token);
-        var name = row(tables, "SpellName", spell, "Name", version, token);
-        var description = row(tables, "Spell", spell, "Description", version, token);
-        var icon = icon(tables, spell, talent.iconFileDataId(), version, token);
-        return CompletableFuture.allOf(node, name, description, icon)
-                .thenApply(ignored -> List.of(node.join(), name.join(), description.join(), icon.join(),
-                        "Local client caches may be incomplete. Cache absence does not prove server absence."));
+        var origin = talent.origin();
+        var records = new java.util.ArrayList<CompletableFuture<String>>();
+        if (origin.model() == com.vibeminer.concepts.talents.TalentTypes.Model.TRAIT_TREE) {
+            records.add(row(tables, "TraitNode", talent.id(), "Trait node record", version, token));
+            if (origin.traitNodeEntryId() != null)
+                records.add(row(tables, "TraitNodeEntry", origin.traitNodeEntryId(), "Trait entry record", version, token));
+            if (origin.traitDefinitionId() != null)
+                records.add(row(tables, "TraitDefinition", origin.traitDefinitionId(), "Trait definition record", version, token));
+        } else {
+            records.add(row(tables, "Talent", talent.id(), "Tree record", version, token));
+        }
+        records.add(row(tables, "SpellName", spell, "Name", version, token));
+        records.add(row(tables, "Spell", spell, "Description", version, token));
+        records.add(icon(tables, spell, talent.iconFileDataId(), version, token));
+        return CompletableFuture.allOf(records.toArray(CompletableFuture[]::new))
+                .thenApply(ignored -> {
+                    var lines = new java.util.ArrayList<String>();
+                    for (var record : records) lines.add(record.join());
+                    lines.add("Local client caches may be incomplete. Cache absence does not prove server absence.");
+                    return List.copyOf(lines);
+                });
     }
 
     private static CompletableFuture<String> icon(BuildTables tables, long spell, Long icon,

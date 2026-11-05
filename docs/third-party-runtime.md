@@ -27,6 +27,9 @@ GPL-3.0-or-later artwork from VibeMiner; hashes/provenance are in
   Source: https://github.com/stephengold/j-ogg-all . Required attribution:
   This software is based on or using the J-Ogg library available from
   http://www.j-ogg.de and copyrighted by Tor-Einar Jarnbjo.
+- JavaMP3 1.0.1 (`fr.delthas:javamp3`): MIT, Copyright (c) 2017 delthas. The license
+  text is in the formats-audio JAR (`META-INF/LICENSE-JavaMP3`).
+  Source: https://github.com/delthas/JavaMP3 .
 
 - LWJGL3.4.3: BSD-3-Clause; bgfx API156: BSD-2-Clause.
   Explicit notices are bundled in `rendering-bgfx` resources under

@@ -12,7 +12,8 @@ import java.util.Objects;
 final class WorldStreamControl {
     static final int MAX_LINE_BYTES = 256;
 
-    sealed interface Command permits Camera, Offer, Commit, Cancel, CancelUnused, Close {
+    sealed interface Command
+            permits Camera, Offer, Commit, Cancel, CancelUnused, LateObjects, Close {
         WorldStreamState.Nonce nonce();
     }
 
@@ -78,6 +79,30 @@ final class WorldStreamControl {
             Objects.requireNonNull(nonce);
             Objects.requireNonNull(lease);
             WorldStreamControl.transaction(transaction);
+        }
+    }
+
+    /**
+     * Late BASIC_EXTERIOR objects file {@code tile-<txn>.wso} for the resident that tile
+     * transaction staged under this exact lease. The child attaches it only while that slot
+     * generation is still active, and answers with exactly one {@code OBJECTS_DONE}.
+     */
+    record LateObjects(
+            WorldStreamState.Nonce nonce,
+            long transaction,
+            WorldStreamState.Lease lease,
+            int length,
+            String sha256)
+            implements Command {
+        LateObjects {
+            Objects.requireNonNull(nonce);
+            Objects.requireNonNull(lease);
+            WorldStreamControl.transaction(transaction);
+            digest(sha256);
+            if (length < WorldStreamObjectsFile.HEADER_BYTES
+                    || length > WorldStreamObjectsFile.MAX_BYTES) {
+                throw new IllegalArgumentException("Invalid objects length");
+            }
         }
     }
 
@@ -151,6 +176,21 @@ final class WorldStreamControl {
                                     + c.lease().slot()
                                     + " "
                                     + c.lease().generation();
+                    case LateObjects c ->
+                            "OBJECTS "
+                                    + c.transaction()
+                                    + " "
+                                    + c.lease().serial()
+                                    + " "
+                                    + c.lease().slot()
+                                    + " "
+                                    + c.lease().generation()
+                                    + " "
+                                    + WorldStreamObjectsFile.basename(c.transaction())
+                                    + " "
+                                    + c.length()
+                                    + " "
+                                    + c.sha256();
                     case Close ignored -> "CLOSE";
                 };
         byte[] line = (prefix + tail + "\n").getBytes(StandardCharsets.US_ASCII);
@@ -253,6 +293,18 @@ final class WorldStreamControl {
                                     number(parts[3]),
                                     new WorldStreamState.Lease(
                                             integer(parts[5]), number(parts[6]), number(parts[4])));
+                        }
+                        case "OBJECTS" -> {
+                            arity(parts, 10);
+                            long tx = number(parts[3]);
+                            basename(parts[7], WorldStreamObjectsFile.basename(tx));
+                            yield new LateObjects(
+                                    nonce,
+                                    tx,
+                                    new WorldStreamState.Lease(
+                                            integer(parts[5]), number(parts[6]), number(parts[4])),
+                                    integer(parts[8]),
+                                    parts[9]);
                         }
                         case "CLOSE" -> {
                             arity(parts, 3);

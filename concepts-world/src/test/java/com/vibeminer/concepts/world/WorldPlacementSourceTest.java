@@ -475,7 +475,8 @@ class WorldPlacementSourceTest {
                                 if (method.getName().equals("locale")) {
                                     return "enUS";
                                 }
-                                if (method.getName().equals("stat")) {
+                                if (method.getName().equals("stat")
+                                        || method.getName().equals("statContent")) {
                                     var ref = (FileTypes.FileRef) args[0];
                                     assertNull(ref.path());
                                     assertTrue(

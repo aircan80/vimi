@@ -1,0 +1,510 @@
+package com.vibeminer.formats.models;
+
+import static com.vibeminer.formats.models.M2Input.error;
+import static com.vibeminer.formats.models.M2Input.f;
+import static com.vibeminer.formats.models.M2Input.i16;
+import static com.vibeminer.formats.models.M2Input.i32;
+import static com.vibeminer.formats.models.M2Input.u16;
+import static com.vibeminer.formats.models.M2Input.u32;
+import static com.vibeminer.formats.models.M2Input.v3;
+
+import com.vibeminer.access.Cancellation;
+import com.vibeminer.formats.AssetSource;
+import com.vibeminer.formats.AssetTasks;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+
+/**
+ * Bounded reader for one qualified idle sequence: the Stand animation (ID 0, variation 0) whose
+ * bone keys are stored in the model itself. External skeletons, external bone or animation files,
+ * aliases and curve interpolation are refused as unsupported rather than approximated. Bone flags
+ * are left to consumers, which know which bones move rendered vertices.
+ */
+public final class M2IdleAnimation {
+    public static final String REVISION = "m2-idle-local-stand-v1";
+    public static final int STAND = 0;
+    public static final int MAX_BONES = 256;
+    public static final int MAX_SEQUENCES = 4096;
+    public static final int MAX_GLOBAL_SEQUENCES = 1024;
+    public static final int MAX_KEYS_PER_TRACK = 4096;
+    public static final int MAX_TOTAL_KEYS = 262_144;
+    public static final long MAX_DURATION_MILLIS = 600_000;
+
+    private static final int SEQUENCE_IN_MODEL = 0x20;
+    private static final int SEQUENCE_ALIAS = 0x40;
+
+    private M2IdleAnimation() {}
+
+    public enum Interpolation {
+        STEP,
+        LINEAR
+    }
+
+    /** One key slice; times are milliseconds, values are packed with {@link #components()}. */
+    public static final class Track {
+        private final Interpolation interpolation;
+        private final int globalSequence;
+        private final int components;
+        private final int[] times;
+        private final float[] values;
+
+        Track(
+                Interpolation interpolation,
+                int globalSequence,
+                int components,
+                int[] times,
+                float[] values) {
+            this.interpolation = Objects.requireNonNull(interpolation);
+            this.globalSequence = globalSequence;
+            this.components = components;
+            this.times = times;
+            this.values = values;
+        }
+
+        public Interpolation interpolation() {
+            return interpolation;
+        }
+
+        /** -1 for sequence time; otherwise the global sequence index whose clock drives it. */
+        public int globalSequence() {
+            return globalSequence;
+        }
+
+        public int components() {
+            return components;
+        }
+
+        public int keyCount() {
+            return times.length;
+        }
+
+        public int[] times() {
+            return times.clone();
+        }
+
+        /** Translation/scale as xyz; rotation as normalized xyzw quaternions. */
+        public float[] values() {
+            return values.clone();
+        }
+    }
+
+    /** Own tracks of one bone; an absent track is an identity component for this sequence. */
+    public record BoneTracks(Track translation, Track rotation, Track scale) {
+        public boolean animated() {
+            return translation != null || rotation != null || scale != null;
+        }
+    }
+
+    public static final class Idle {
+        private final M2Types.Model model;
+        private final int sequenceIndex;
+        private final long durationMillis;
+        private final long[] globalSequenceMillis;
+        private final List<BoneTracks> bones;
+        private final int keys;
+
+        private Idle(
+                M2Types.Model model,
+                int sequenceIndex,
+                long durationMillis,
+                long[] globalSequenceMillis,
+                List<BoneTracks> bones,
+                int keys) {
+            this.model = model;
+            this.sequenceIndex = sequenceIndex;
+            this.durationMillis = durationMillis;
+            this.globalSequenceMillis = globalSequenceMillis;
+            this.bones = List.copyOf(bones);
+            this.keys = keys;
+        }
+
+        public M2Types.Model model() {
+            return model;
+        }
+
+        public int sequenceIndex() {
+            return sequenceIndex;
+        }
+
+        public long durationMillis() {
+            return durationMillis;
+        }
+
+        public long[] globalSequenceMillis() {
+            return globalSequenceMillis.clone();
+        }
+
+        /** Same order and size as {@link M2Types.Model#bones()}. */
+        public List<BoneTracks> bones() {
+            return bones;
+        }
+
+        public int keyCount() {
+            return keys;
+        }
+
+        public boolean animated() {
+            return bones.stream().anyMatch(BoneTracks::animated);
+        }
+    }
+
+    public static CompletableFuture<Idle> read(
+            AssetSource source, M2Types.Model model, Cancellation token) {
+        Objects.requireNonNull(model);
+        Objects.requireNonNull(token);
+        return AssetTasks.run(() -> readCore(source, model, token, true));
+    }
+
+    /**
+     * Facts about the model-resident Stand sequence, read with every check of {@link #read} except
+     * the external skeleton and bone-file gate. It never yields tracks, so its result cannot be
+     * evaluated; callers use it to report every reason a model with external files is refused.
+     *
+     * @param refusal null when the model-resident Stand passed; otherwise the unsupported or budget
+     *     reason, in which case the other fields are 0 or -1
+     */
+    public record StandFacts(
+            int sequenceIndex,
+            long durationMillis,
+            int keyCount,
+            int animatedBones,
+            String refusal) {}
+
+    /**
+     * Reads {@link StandFacts} for a parsed chunked model. Structural disagreement still fails with
+     * {@code MODEL_INVALID}; unsupported content and budget refusals are returned as the refusal.
+     */
+    public static CompletableFuture<StandFacts> assessStand(
+            AssetSource source, M2Types.Model model, Cancellation token) {
+        Objects.requireNonNull(model);
+        Objects.requireNonNull(token);
+        return AssetTasks.run(
+                () -> {
+                    try {
+                        var idle = readCore(source, model, token, false);
+                        int animated =
+                                (int) idle.bones().stream().filter(BoneTracks::animated).count();
+                        return new StandFacts(
+                                idle.sequenceIndex(),
+                                idle.durationMillis(),
+                                idle.keyCount(),
+                                animated,
+                                null);
+                    } catch (ModelFormatException refused) {
+                        if (!refused.code().equals("MODEL_UNSUPPORTED")
+                                && !refused.code().equals("MODEL_LIMIT")) {
+                            throw refused;
+                        }
+                        return new StandFacts(-1, 0, 0, 0, refused.getMessage());
+                    }
+                });
+    }
+
+    private static Idle readCore(
+            AssetSource source, M2Types.Model model, Cancellation token, boolean localBonesOnly) {
+        token.check();
+        if (!model.isChunked() || model.version() != 272 && model.version() != 274) {
+            throw error("UNSUPPORTED", "Idle animation requires a chunked 272/274 model.");
+        }
+        if (localBonesOnly
+                && (model.skeletonFileDataId() != 0
+                        || model.boneFileDataIds().stream().anyMatch(id -> id != 0))) {
+            throw error(
+                    "UNSUPPORTED",
+                    "The model uses an external skeleton or bone file; idle evaluation reads"
+                            + " only bones stored in the model.");
+        }
+        if (model.bones().isEmpty()) {
+            throw error("UNSUPPORTED", "The model has no bones to animate.");
+        }
+        if (model.bones().size() > MAX_BONES) {
+            throw error(
+                    "UNSUPPORTED",
+                    "The model has "
+                            + model.bones().size()
+                            + " bones; idle evaluation admits at most "
+                            + MAX_BONES
+                            + " directly indexed bones.");
+        }
+        var input = new M2Input(source, model.limits(), token);
+        if (input.length != model.sourceBytes()) {
+            throw error("INVALID", "Animation source differs from the parsed model.");
+        }
+        int header = (model.flags() & 8) == 0 ? 304 : 312;
+        var core = input.at(model.baseOffset(), 52);
+        if (i32(core, 0) != 0x3032444d
+                || u32(core, 4) != model.version()
+                || u32(core, 16) != model.flags()) {
+            throw error("INVALID", "Animation source header differs from the parsed model.");
+        }
+        var globals = declaration(model, "globalSequences", core, 20);
+        var sequences = declaration(model, "sequences", core, 28);
+        var bones = declaration(model, "bones", core, 44);
+        if (bones.count() != model.bones().size() || bones.stride() != 88) {
+            throw error("INVALID", "Animation bone declaration differs from parsed bones.");
+        }
+        if (globals.count() > MAX_GLOBAL_SEQUENCES || sequences.count() > MAX_SEQUENCES) {
+            throw error("LIMIT", "The model's sequence declarations exceed idle policy.");
+        }
+        long[] globalMillis = new long[(int) globals.count()];
+        input.records(
+                span(input, model, header, "globalSequences", globals, 4),
+                (row, i) -> globalMillis[i] = u32(row));
+        int[] found = {-1};
+        long[] duration = {0};
+        int[] flags = {0};
+        input.records(
+                span(input, model, header, "sequences", sequences, 64),
+                (row, i) -> {
+                    if (found[0] < 0 && u16(row) == STAND && u16(row, 2) == 0) {
+                        found[0] = i;
+                        duration[0] = u32(row, 4);
+                        flags[0] = i32(row, 12);
+                    }
+                });
+        if (found[0] < 0) {
+            throw error("UNSUPPORTED", "The model records no Stand sequence (ID 0, variation 0).");
+        }
+        if ((flags[0] & SEQUENCE_ALIAS) != 0) {
+            throw error("UNSUPPORTED", "The Stand sequence is an alias of another sequence.");
+        }
+        if ((flags[0] & SEQUENCE_IN_MODEL) == 0) {
+            throw error(
+                    "UNSUPPORTED",
+                    "Stand keys are stored in an external animation file, which idle evaluation"
+                            + " does not read.");
+        }
+        if (duration[0] <= 0 || duration[0] > MAX_DURATION_MILLIS) {
+            throw error(
+                    "UNSUPPORTED",
+                    "The Stand sequence duration is outside the idle playback range.");
+        }
+        int sequence = found[0];
+        var budget = new int[] {0};
+        var rows = new ArrayList<byte[]>();
+        input.records(span(input, model, header, "bones", bones, 88), (row, i) -> rows.add(row));
+        var result = new ArrayList<BoneTracks>(rows.size());
+        for (int index = 0; index < rows.size(); index++) {
+            token.check();
+            byte[] row = rows.get(index);
+            var bone = model.bones().get(index);
+            if (bone.keyBoneId() != i32(row, 0)
+                    || bone.flags() != u32(row, 4)
+                    || bone.parent() != i16(row, 8)
+                    || !bone.pivot().equals(v3(row, 76))) {
+                throw error("INVALID", "Animation bone row differs from parsed bone metadata.");
+            }
+            result.add(
+                    new BoneTracks(
+                            track(
+                                    input,
+                                    model,
+                                    header,
+                                    row,
+                                    16,
+                                    3,
+                                    sequence,
+                                    globalMillis,
+                                    duration[0],
+                                    budget),
+                            track(
+                                    input,
+                                    model,
+                                    header,
+                                    row,
+                                    36,
+                                    4,
+                                    sequence,
+                                    globalMillis,
+                                    duration[0],
+                                    budget),
+                            track(
+                                    input,
+                                    model,
+                                    header,
+                                    row,
+                                    56,
+                                    3,
+                                    sequence,
+                                    globalMillis,
+                                    duration[0],
+                                    budget)));
+        }
+        input.finish();
+        return new Idle(model, sequence, duration[0], globalMillis, result, budget[0]);
+    }
+
+    private static M2Types.ArrayDeclaration declaration(
+            M2Types.Model model, String name, byte[] core, int at) {
+        var matches = model.declarations().stream().filter(d -> d.name().equals(name)).toList();
+        if (matches.size() != 1) {
+            throw error("INVALID", "Animation declaration " + name + " is missing or ambiguous.");
+        }
+        var declaration = matches.getFirst();
+        if (u32(core, at) != declaration.count() || u32(core, at + 4) != declaration.offset()) {
+            throw error("INVALID", "Animation declaration " + name + " differs from the model.");
+        }
+        return declaration;
+    }
+
+    private static M2Input.Span span(
+            M2Input input,
+            M2Types.Model model,
+            int header,
+            String name,
+            M2Types.ArrayDeclaration declaration,
+            int stride) {
+        return input.span(
+                name,
+                declaration.count(),
+                declaration.offset(),
+                stride,
+                Integer.MAX_VALUE,
+                model.baseOffset(),
+                model.baseBytes(),
+                header);
+    }
+
+    private static Track track(
+            M2Input input,
+            M2Types.Model model,
+            int header,
+            byte[] row,
+            int at,
+            int components,
+            int sequence,
+            long[] globalMillis,
+            long sequenceMillis,
+            int[] budget) {
+        int interpolation = u16(row, at);
+        int global = i16(row, at + 2);
+        long timeSlices = u32(row, at + 4), timeOffset = u32(row, at + 8);
+        long valueSlices = u32(row, at + 12), valueOffset = u32(row, at + 16);
+        if (timeSlices != valueSlices) {
+            throw error("INVALID", "A bone track has different time and value slice counts.");
+        }
+        if (global < -1 || global >= globalMillis.length) {
+            throw error("INVALID", "A bone track names an undeclared global sequence.");
+        }
+        if (timeSlices == 0) {
+            return null;
+        }
+        int slice = global >= 0 ? 0 : sequence;
+        if (slice >= timeSlices) {
+            // The track declares no keys for this sequence.
+            return null;
+        }
+        var outerTimes =
+                input.span(
+                        "bone track times",
+                        timeSlices,
+                        timeOffset,
+                        8,
+                        MAX_SEQUENCES,
+                        model.baseOffset(),
+                        model.baseBytes(),
+                        header);
+        var outerValues =
+                input.span(
+                        "bone track values",
+                        valueSlices,
+                        valueOffset,
+                        8,
+                        MAX_SEQUENCES,
+                        model.baseOffset(),
+                        model.baseBytes(),
+                        header);
+        byte[] times = input.at(outerTimes.offset() + 8L * slice, 8);
+        byte[] values = input.at(outerValues.offset() + 8L * slice, 8);
+        long keys = u32(times);
+        if (keys != u32(values)) {
+            throw error("INVALID", "A bone track has different time and value key counts.");
+        }
+        if (keys == 0) {
+            return null;
+        }
+        if (interpolation > 1) {
+            throw error(
+                    "UNSUPPORTED",
+                    "A Stand bone track uses curve interpolation "
+                            + interpolation
+                            + "; only step and linear keys are evaluated.");
+        }
+        if (keys > MAX_KEYS_PER_TRACK || keys > MAX_TOTAL_KEYS - budget[0]) {
+            throw error("LIMIT", "Stand bone keys exceed the idle evaluation budget.");
+        }
+        budget[0] += (int) keys;
+        long limit = global >= 0 ? globalMillis[global] : sequenceMillis;
+        int count = (int) keys;
+        int[] stamps = new int[count];
+        input.records(
+                input.span(
+                        "bone key times",
+                        keys,
+                        u32(times, 4),
+                        4,
+                        MAX_KEYS_PER_TRACK,
+                        model.baseOffset(),
+                        model.baseBytes(),
+                        header),
+                (key, i) -> {
+                    long stamp = u32(key);
+                    if (stamp > limit || i > 0 && stamp < stamps[i - 1]) {
+                        throw error(
+                                "INVALID",
+                                "Bone key times are unordered or outside their sequence.");
+                    }
+                    stamps[i] = (int) stamp;
+                });
+        int stride = components == 4 ? 8 : 12;
+        float[] packed = new float[count * components];
+        input.records(
+                input.span(
+                        "bone key values",
+                        keys,
+                        u32(values, 4),
+                        stride,
+                        MAX_KEYS_PER_TRACK,
+                        model.baseOffset(),
+                        model.baseBytes(),
+                        header),
+                (key, i) -> {
+                    if (components == 3) {
+                        packed[i * 3] = f(key, 0);
+                        packed[i * 3 + 1] = f(key, 4);
+                        packed[i * 3 + 2] = f(key, 8);
+                        for (int c = 0; c < 3; c++) {
+                            if (Math.abs(packed[i * 3 + c]) > 1_000_000) {
+                                throw error("INVALID", "A bone key value is out of range.");
+                            }
+                        }
+                    } else {
+                        double x = quaternion(i16(key, 0)),
+                                y = quaternion(i16(key, 2)),
+                                z = quaternion(i16(key, 4)),
+                                w = quaternion(i16(key, 6));
+                        double length = Math.sqrt(x * x + y * y + z * z + w * w);
+                        if (length < 1e-6) {
+                            throw error("INVALID", "A bone rotation key is degenerate.");
+                        }
+                        packed[i * 4] = (float) (x / length);
+                        packed[i * 4 + 1] = (float) (y / length);
+                        packed[i * 4 + 2] = (float) (z / length);
+                        packed[i * 4 + 3] = (float) (w / length);
+                    }
+                });
+        return new Track(
+                interpolation == 0 ? Interpolation.STEP : Interpolation.LINEAR,
+                global,
+                components,
+                stamps,
+                packed);
+    }
+
+    /** Signed 16-bit compressed quaternion component as written by the client format. */
+    static double quaternion(int value) {
+        return (value < 0 ? value + 32768 : value - 32767) / 32767.0;
+    }
+}

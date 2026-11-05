@@ -106,10 +106,10 @@ are part of the local trust boundary.
 
 | Location | What the app reads / stores | Lifetime / privacy consequence |
 | --- | --- | --- |
-| `<data>/library/objects.sqlite3` | Unified library index, ownership and build metadata; saved preparation receipts, product/source settings and background-download policy use this database. SQLite sidecar/journal files can exist while in use. | Persistent. Can reveal selected products/builds/locales, source use and preparation/download history. |
+| `<data>/library/objects.sqlite3` | Unified library index, ownership and build metadata; saved preparation receipts, product/source settings, background-download policy and saved World camera bookmarks (`world_bookmarks*`: names, map IDs/names and coordinates) use this database. SQLite sidecar/journal files can exist while in use. | Persistent. Can reveal selected products/builds/locales, source use and preparation/download history. |
 | `<data>/library/packs/pack-*.vmp` | Acquired originals and generated objects (including decoded voice PCM) through owner-bound library views; retained content/provenance can be shared across builds. | Persistent content cache. It is not encrypted by an application storage key. Content decryption is distinct from storage encryption. |
 | `<data>/library/staging/` and library lock files | Store transaction/recovery staging and exclusive-writer coordination. | Operational state; do not delete or manipulate a live library. Crash recovery and retained originals need separate handling. |
-| `<data>/client-hotfix/` | Explicitly selected local DBCache.bin imports, immutable private copies, scope manifests and writer lock. Cache records can include content decryption keys. The original is read-only; its path is not retained in the manifest. | Persistent local copies, not uploaded by this feature. Disable removes the active association but retains imported files. Copies are not encrypted at rest; private directory/file permissions protect access. No automatic scan of installed clients. |
+| `<data>/client-hotfix/` | Explicitly selected local DBCache.bin imports, immutable private copies, scope manifests and writer lock. Cache records can include content decryption keys. The original is read-only; its path is not retained in the manifest. Only when the user ticks "Check on Refresh sources", `watches/<scope>.watch` records that original's absolute path plus its last verified size, modification time and filesystem file identity. | Persistent local copies, not uploaded by this feature. Disable removes the active association and any watch but retains imported files. Copies and watch records are not encrypted at rest; private directory/file permissions protect access. Refresh sources (manual and startup) rereads only watched originals: a changed same-build cache is fully verified, imported as a new immutable copy and bound for the next open, while open workspaces keep their loaded snapshot until reopened. Missing, unreadable, malformed or other-build originals keep the existing import. Unticking, a plain reimport or Use base data deletes the watch. Watched paths never enter manifests, logs or status text. No automatic scan of installed clients. |
 | `<data>/catalog.sqlite` | Local advertised/observed build catalog. | Persistent browsing/build history rather than an account login database. |
 | `<data>/derived/grids/` | Compact prepared browser grids/derived indexes. | Persistent, reconstructible derived content; still may reveal the builds/tables inspected. |
 | `<data>/derived/comparison-work/` | Session comparison/sort/item temporary runs such as `comparison-*`, `results*.tmp`, `run-*.tmp`, `candidates-*.tmp`. | Session work; startup cleans only recognized stale owned shapes under exclusive library ownership without traversing symlinks. Abrupt termination can leave residue. |
@@ -144,8 +144,12 @@ and [EgLinkRepository](../eg-link/src/main/java/com/vibeminer/eglink/EgLinkRepos
   argument lists. GPU file paths/classpaths appear in child arguments. Audio uses
   pipes for encoded input and decoded PCM rather than an audio temporary file.
   `RaceVoices` can cache decoded PCM as a generated library object for later playback;
-  closing the preview does not erase that derivative. Child JVMs inherit user
-  privileges and environment; they are not OS sandboxes.
+  closing the preview does not erase that derivative. World explorer music/ambience
+  (off by default) streams original Vorbis/MPEG bytes from memory through an
+  `AudioStreamDecoder` child pipe to the audio line and persists no PCM derivative; a
+  single-file ambience loop retains at most 16 MiB of decoded PCM in memory (transient
+  peak higher while it is built) until the area changes or the channel stops. Child JVMs inherit user privileges and environment; they
+  are not OS sandboxes.
 - Runtime reads also include packaged JARs, pinned bundled definitions, shaders,
   native libraries, JRE configuration and OS fonts/drivers/audio resources. Native
   loading and OS-specific caches are not fully enumerable from Java source alone.
@@ -159,6 +163,8 @@ Evidence: [GpuPreviewService](../gui/src/main/java/com/vimi/gui/GpuPreviewServic
 [WorldStreamPreparedFiles](../rendering-bgfx/src/main/java/com/vibeminer/rendering/bgfx/WorldStreamPreparedFiles.java),
 [WorldStreamTransport](../rendering-bgfx/src/main/java/com/vibeminer/rendering/bgfx/WorldStreamTransport.java),
 [VoiceDecoder](../formats-audio/src/main/java/com/vibeminer/formats/audio/VoiceDecoder.java),
+[AudioStreamDecoder](../formats-audio/src/main/java/com/vibeminer/formats/audio/AudioStreamDecoder.java),
+[WorldAudioPlayback](../gui/src/main/java/com/vimi/gui/WorldAudioPlayback.java),
 and [RaceVoices](../concepts-races/src/main/java/com/vibeminer/concepts/races/RaceVoices.java)
 `decode` / generated PCM read and write.
 

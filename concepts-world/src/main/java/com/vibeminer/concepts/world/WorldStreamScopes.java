@@ -16,9 +16,11 @@ import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.BitSet;
+import java.util.EnumSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -433,9 +435,55 @@ final class WorldStreamScopes {
     }
 
     enum UseProfile {
-        TERRAIN_BASIC,
-        BASIC_WMO,
-        LIQUID_INSPECTION
+        TERRAIN_BASIC(67, 0, 0, 0, 0, 0, 0),
+        BASIC_WMO(11, 1, 1 << 10, 1, 32 << 10, 6, 64 << 10),
+        LIQUID_INSPECTION(11, 0, 0, 0, 0, 0, 0),
+        /** Per-tile outdoor exterior set: WDT, OBJ0 and the capped derived WMO reads. */
+        BASIC_EXTERIOR(2 + 24 + 256 + 64, 24, 1 << 20, 256, 1 << 20, 64, 1 << 20);
+        private final int bindings, roots, rootLimit, groups, groupLimit, images, imageLimit;
+
+        UseProfile(
+                int bindings,
+                int roots,
+                int rootLimit,
+                int groups,
+                int groupLimit,
+                int images,
+                int imageLimit) {
+            this.bindings = bindings;
+            this.roots = roots;
+            this.rootLimit = rootLimit;
+            this.groups = groups;
+            this.groupLimit = groupLimit;
+            this.images = images;
+            this.imageLimit = imageLimit;
+        }
+
+        /** Maximum distinct consumed source identities, including the scope WDT. */
+        int bindingLimit() {
+            return bindings;
+        }
+
+        /** Profiles that read OBJ0 and derived WMO root/group/image candidates. */
+        boolean derivedWmo() {
+            return roots > 0;
+        }
+
+        int derivedReads(DerivedKind kind) {
+            return switch (kind) {
+                case WMO_ROOT -> roots;
+                case WMO_GROUP -> groups;
+                case WMO_IMAGE -> images;
+            };
+        }
+
+        int derivedLimit(DerivedKind kind) {
+            return switch (kind) {
+                case WMO_ROOT -> rootLimit;
+                case WMO_GROUP -> groupLimit;
+                case WMO_IMAGE -> imageLimit;
+            };
+        }
     }
 
     enum DerivedKind {
@@ -603,7 +651,7 @@ final class WorldStreamScopes {
         private Input input;
         private final long threadId = Thread.currentThread().threadId();
         private boolean reserved;
-        private int roots, groups, images;
+        private final int[] derivedReads = new int[DerivedKind.values().length];
 
         private TileAdmission(
                 WorldStreamScopes engine,
@@ -699,7 +747,7 @@ final class WorldStreamScopes {
                 throw new IllegalArgumentException("Root proof bound");
             }
             var binding = new Binding(recorded.rootId(), key, length);
-            if (bindings.size() >= (profile == UseProfile.TERRAIN_BASIC ? 67 : 11)) {
+            if (bindings.size() >= profile.bindingLimit()) {
                 throw new IllegalStateException("Binding limit");
             }
             for (var prior : bindings) {
@@ -753,7 +801,12 @@ final class WorldStreamScopes {
             check();
             long id =
                     switch (kind) {
-                        case ROOT -> recorded.rootId();
+                        case ROOT -> {
+                            if (profile == UseProfile.BASIC_EXTERIOR) {
+                                throw new IllegalArgumentException("Unused exterior root input");
+                            }
+                            yield recorded.rootId();
+                        }
                         case TEX0 -> {
                             if (profile != UseProfile.TERRAIN_BASIC) {
                                 throw new IllegalArgumentException("Unused WMO tex0 input");
@@ -761,7 +814,7 @@ final class WorldStreamScopes {
                             yield recorded.tex0Id();
                         }
                         case OBJ0 -> {
-                            if (profile != UseProfile.BASIC_WMO) {
+                            if (!profile.derivedWmo()) {
                                 throw new IllegalArgumentException("Wrong input profile");
                             }
                             yield recorded.obj0Id();
@@ -780,54 +833,49 @@ final class WorldStreamScopes {
         /** Actual bytes only: private WMO factory must independently prove parent ancestry. */
         Input readDerivedCandidate(long id, DerivedKind kind) {
             check();
-            if (profile != UseProfile.BASIC_WMO) {
+            if (!profile.derivedWmo()) {
                 throw new IllegalArgumentException("Wrong derived profile");
             }
             if (reserved || input != null) {
                 throw new IllegalStateException("Input credit busy");
             }
-            int limit =
-                    switch (Objects.requireNonNull(kind)) {
-                        case WMO_ROOT -> {
-                            if (roots >= 1) {
-                                throw new IllegalStateException("WMO root read limit");
-                            }
-                            roots++;
-                            yield 1 << 10;
-                        }
-                        case WMO_GROUP -> {
-                            if (groups >= 1) {
-                                throw new IllegalStateException("WMO group read limit");
-                            }
-                            groups++;
-                            yield 32 << 10;
-                        }
-                        case WMO_IMAGE -> {
-                            if (images >= 6) {
-                                throw new IllegalStateException("WMO image read limit");
-                            }
-                            images++;
-                            yield 64 << 10;
-                        }
-                    };
-            return readCandidate(id, limit);
+            int ordinal = Objects.requireNonNull(kind).ordinal();
+            if (derivedReads[ordinal] >= profile.derivedReads(kind)) {
+                throw new IllegalStateException(
+                        switch (kind) {
+                            case WMO_ROOT -> "WMO root read limit";
+                            case WMO_GROUP -> "WMO group read limit";
+                            case WMO_IMAGE -> "WMO image read limit";
+                        });
+            }
+            derivedReads[ordinal]++;
+            int limit = profile.derivedLimit(kind);
+            return readCandidate(id, limit, profile == UseProfile.BASIC_EXTERIOR);
         }
 
         private Input readCandidate(long id, int limit) {
+            return readCandidate(id, limit, false);
+        }
+
+        /**
+         * With {@code classifyUnavailable}, only a missing, protected or over-limit source is
+         * refused at SOURCE_UNAVAILABLE; every other refusal keeps its original site.
+         */
+        private Input readCandidate(long id, int limit, boolean classifyUnavailable) {
             if (id <= 0 || id > 0xffff_ffffL) {
                 throw new IllegalArgumentException("Missing or invalid input ID");
             }
             if (reserved || input != null) {
                 throw new IllegalStateException("Input credit busy");
             }
-            if (bindings.size() >= (profile == UseProfile.TERRAIN_BASIC ? 67 : 11)) {
+            if (bindings.size() >= profile.bindingLimit()) {
                 throw new IllegalStateException("Binding limit");
             }
             // Reservation precedes even stat/open, and remains held through actual read drain.
             reserved = true;
             Source source = null;
             try {
-                source = engine.read(id, limit, token);
+                source = engine.read(id, limit, token, classifyUnavailable);
                 var binding = new Binding(id, source.key(), source.bytes().length);
                 for (var prior : bindings) {
                     if (prior.id() == id && !prior.equals(binding)) {
@@ -904,7 +952,7 @@ final class WorldStreamScopes {
             for (var observed : admission.materialObservations) {
                 finalIds.add(observed.fileId());
             }
-            if (finalIds.size() > (profile == UseProfile.TERRAIN_BASIC ? 67 : 11)) {
+            if (finalIds.size() > profile.bindingLimit()) {
                 throw new IllegalStateException("Final binding observation limit");
             }
             for (var binding : admission.bindings) {
@@ -1333,26 +1381,61 @@ final class WorldStreamScopes {
     }
 
     private Source read(long id, int limit, Cancellation token) {
+        return read(id, limit, token, false);
+    }
+
+    private static final Set<FileTypes.FileReadState> UNAVAILABLE_READS =
+            EnumSet.of(
+                    FileTypes.FileReadState.PROTECTED,
+                    FileTypes.FileReadState.WRONG_KEY,
+                    FileTypes.FileReadState.UNKNOWN_FILE,
+                    FileTypes.FileReadState.NOT_IN_LOCALE,
+                    FileTypes.FileReadState.NOT_IN_ENCODING,
+                    FileTypes.FileReadState.MISSING,
+                    FileTypes.FileReadState.TOO_LARGE);
+
+    private Source read(long id, int limit, Cancellation token, boolean classifyUnavailable) {
+        var unavailable =
+                classifyUnavailable
+                        ? WorldSourceRefusals.Site.SOURCE_UNAVAILABLE
+                        : WorldSourceRefusals.Site.SOURCE_INPUT;
+        if (classifyUnavailable) {
+            token.check();
+            var looked = WorldSourceFutures.await(files.stat(FileTypes.FileRef.id(id), token));
+            token.check();
+            if (looked.state() != FileTypes.FileLookupState.FOUND) {
+                throw WorldSourceRefusals.at(unavailable); // missing from this build/locale
+            }
+        }
         var before = stat(id, token);
         if (before.size() != null && before.size() > limit) {
-            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_INPUT);
+            throw WorldSourceRefusals.at(unavailable);
         }
         var opened = WorldSourceFutures.await(files.openRead(FileTypes.FileRef.id(id), token));
         if (opened.stream() == null) {
             if (opened.state() == FileTypes.FileReadState.COMPLETE) {
                 throw new IllegalStateException("Complete source has no stream");
             }
-            throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_INPUT);
+            throw WorldSourceRefusals.at(
+                    UNAVAILABLE_READS.contains(opened.state())
+                            ? unavailable
+                            : WorldSourceRefusals.Site.SOURCE_INPUT);
         }
         try (var stream = opened.stream()) {
             final long observedLength = stream.length();
             if (before.size() != null && before.size() != observedLength) {
                 throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_BINDING);
             }
+            if (observedLength > limit
+                    || UNAVAILABLE_READS.contains(opened.state())
+                    || opened.state() == FileTypes.FileReadState.COMPLETE
+                            && !stream.holes().isEmpty()) {
+                // Over the cap, protected/keyless, or encrypted holes in a complete stream.
+                throw WorldSourceRefusals.at(unavailable);
+            }
             if (opened.state() != FileTypes.FileReadState.COMPLETE
                     || !stream.holes().isEmpty()
-                    || observedLength < 12
-                    || observedLength > limit) {
+                    || observedLength < 12) {
                 throw WorldSourceRefusals.at(WorldSourceRefusals.Site.SOURCE_INPUT);
             }
             var bytes = ByteBuffer.allocate(Math.toIntExact(observedLength));

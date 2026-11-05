@@ -2,3 +2,7 @@ This software is based on or using the J-Ogg library available from http://www.j
 
 Dependency: com.github.stephengold:j-ogg-vorbis:1.0.6
 Source and license: https://github.com/stephengold/j-ogg-all
+
+JavaMP3 (fr.delthas:javamp3:1.0.1)
+Source: https://github.com/delthas/JavaMP3
+License: MIT, see META-INF/LICENSE-JavaMP3

@@ -25,14 +25,27 @@ final class SourceRefresh implements AutoCloseable {
             Supplier<Boolean> enabled,
             Supplier<CompletableFuture<Void>> update,
             Supplier<Progress> progress,
-            Runnable cancel) {
+            Runnable cancel,
+            Supplier<String> completed) {
         Provider {
+            Objects.requireNonNull(completed);
             Objects.requireNonNull(id);
             Objects.requireNonNull(name);
             Objects.requireNonNull(enabled);
             Objects.requireNonNull(update);
             Objects.requireNonNull(progress);
             Objects.requireNonNull(cancel);
+        }
+
+        /** Completes with the generic "Up to date" message. */
+        Provider(
+                String id,
+                String name,
+                Supplier<Boolean> enabled,
+                Supplier<CompletableFuture<Void>> update,
+                Supplier<Progress> progress,
+                Runnable cancel) {
+            this(id, name, enabled, update, progress, cancel, () -> null);
         }
     }
 
@@ -131,7 +144,13 @@ final class SourceRefresh implements AutoCloseable {
                             task.handle(
                                     (value, error) -> {
                                         if (error == null) {
-                                            entry.message = "Up to date";
+                                            String summary = null;
+                                            try {
+                                                summary = entry.provider.completed().get();
+                                            } catch (RuntimeException ignored) {
+                                                /* The generic completion text remains accurate. */
+                                            }
+                                            entry.message = summary == null ? "Up to date" : summary;
                                             entry.state = State.COMPLETE;
                                         } else {
                                             Throwable cause = unwrap(error);

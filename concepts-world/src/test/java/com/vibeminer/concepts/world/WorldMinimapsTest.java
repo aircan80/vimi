@@ -132,7 +132,8 @@ class WorldMinimapsTest {
                                 calls.incrementAndGet();
                                 assertEquals(FileTypes.FileRef.id(91), args[0]);
                                 byte[] data = blp(side, gradient);
-                                if (method.getName().equals("stat")) {
+                                if (method.getName().equals("stat")
+                                        || method.getName().equals("statContent")) {
                                     return CompletableFuture.completedFuture(
                                             new FileTypes.FileStat(
                                                     FileTypes.FileLookupState.FOUND,

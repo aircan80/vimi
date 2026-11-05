@@ -582,7 +582,8 @@ final class WorldStreamScopesTest {
                                     com.vibeminer.files.BuildFiles.class.getClassLoader(),
                                     new Class<?>[] {com.vibeminer.files.BuildFiles.class},
                                     (proxy, method, args) -> {
-                                        if (method.getName().equals("stat")
+                                        if ((method.getName().equals("stat")
+                                                        || method.getName().equals("statContent"))
                                                 && failing.get()
                                                 && (selected == 1 || selected == 3)
                                                 && ((FileTypes.FileRef) args[0]).fileDataId()

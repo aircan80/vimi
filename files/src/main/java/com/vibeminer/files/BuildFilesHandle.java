@@ -330,6 +330,34 @@ final class BuildFilesHandle implements BuildFiles {
                 });
     }
 
+    @Override
+    public CompletableFuture<FileStat> statContent(FileRef file, Cancellation token) {
+        Build built = opened();
+        return Io.async(
+                () -> {
+                    token.check();
+                    var resolved = find(built, file, token).resolution();
+                    if (resolved.state() == FileResolutionState.UNKNOWN_FILE
+                            || resolved.fileDataId() == null) {
+                        return new FileStat(FileLookupState.UNKNOWN_FILE, null);
+                    }
+                    var variant = pick(resolved.variants(), bit);
+                    if (variant == null) {
+                        return new FileStat(FileLookupState.NOT_IN_LOCALE, null);
+                    }
+                    return new FileStat(
+                            variant.encodedKey() == null
+                                    ? FileLookupState.NOT_IN_ENCODING
+                                    : FileLookupState.FOUND,
+                            toFile(
+                                    resolved.fileDataId(),
+                                    variant,
+                                    storage(List.of(variant), token).getFirst(),
+                                    null,
+                                    FilePathSource.NONE));
+                });
+    }
+
     private FileReader readerFor(Build built, FileRef file, long offset, Cancellation token) {
         return readerFor(built, find(built, file, token), offset);
     }

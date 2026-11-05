@@ -528,6 +528,29 @@ public final class WorldTerrainStreaming {
         }
     }
 
+    /**
+     * Prepares one recorded tile's BASIC_EXTERIOR_V1 outdoor building set as its own serialized
+     * source operation. Call it outside any terrain write. The returned set is immutable neutral
+     * heap data that the caller closes; omissions are counted, never guessed.
+     */
+    public WorldExteriorObjects.TileObjects prepareExteriorObjects(
+            Scope scope, WorldFormats.Tile comparison, Cancellation cancel) {
+        Objects.requireNonNull(scope);
+        Objects.requireNonNull(comparison);
+        Objects.requireNonNull(cancel);
+        if (comparison.x() < 0
+                || comparison.x() >= 64
+                || comparison.y() < 0
+                || comparison.y() >= 64) {
+            throw new IllegalArgumentException("Tile coordinate profile");
+        }
+        try {
+            return source().exteriorObjects(scope.token, comparison, cancel);
+        } catch (RuntimeException failure) {
+            throw WorldSourceRefusals.boundary(failure);
+        }
+    }
+
     public <R extends AutoCloseable> WrittenTile<R> prepareAndWrite(
             Scope scope, WorldFormats.Tile comparison, Cancellation cancel, Output<R> writer) {
         Objects.requireNonNull(scope);

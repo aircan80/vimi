@@ -58,6 +58,10 @@ public final class WorldSpawnOverlayUiTest {
                 return gates.get(calls.getAndIncrement()).get(10, TimeUnit.SECONDS);
             }, revision::get);
             created.bind(view::get);
+            created.attachModels(new WorldSpawnModels((npc, token) -> {
+                require(!Platform.isFxApplicationThread(), "Model lookups run off FX");
+                return WorldSpawnModelsTest.resolved(npc, WorldSpawnModelsTest.qualified(123456), "creature/authored.m2");
+            }, revision::get, Platform::runLater));
             overlay.set(created);
             var frame = new Rectangle(800, 500, Color.rgb(64, 92, 72));
             var viewport = new StackPane(frame, created);
@@ -88,6 +92,19 @@ public final class WorldSpawnOverlayUiTest {
             require(markers.equals(expected), "Markers use the presented camera and frame fit");
             String status = overlay.get().status().getText();
             require(status.contains("2 in view of 2 placed") && status.contains("1 without recorded height"), status);
+            var top = markers.getLast();
+            var picked = overlay.get().pick(top.x(), top.headY()).orElseThrow();
+            require(picked.spawn().equals(top.spawn()) && picked.npc() != null
+                    && "Authored guard".equals(picked.npc().name()), "Clicking a drawn marker picks its record");
+            require(overlay.get().pick(5, 5).isEmpty(), "Clicking away from markers picks none");
+        });
+        await(() -> fxValue(() -> overlay.get().status().getText().contains("models (not drawn yet): 2 qualified")),
+                "Drawn markers count their model outcomes");
+        fx(() -> {
+            var top = overlay.get().markers().getLast();
+            var model = overlay.get().pick(top.x(), top.headY()).orElseThrow().model();
+            require(model != null && model.choice().modelFileDataId() == 123456
+                    && "creature/authored.m2".equals(model.modelPath()), "A picked marker carries its model outcome");
         });
         snapshot(stage.get());
         fx(() -> view.set(null));
@@ -103,6 +120,7 @@ public final class WorldSpawnOverlayUiTest {
         await(() -> fxValue(() -> overlay.get().markers().size() == 2), "Resumed overlay redraws");
         fx(() -> overlay.get().toggle().setSelected(false));
         fx(() -> require(overlay.get().status().getText().contains("off"), "Disabling clears markers"));
+        fx(() -> require(overlay.get().pick(400, 250).isEmpty(), "Hidden markers are never picked"));
         fx(() -> {
             overlay.get().toggle().setSelected(true);
             revision.set(3L);

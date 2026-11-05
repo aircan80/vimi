@@ -53,6 +53,45 @@ public final class PreviewMesh {
         }
     }
 
+    private PreviewMesh(PreviewMesh rest, float[] posed, float[] frameMin, float[] frameMax) {
+        positions = posed;
+        indices = rest.indices;
+        parts = rest.parts;
+        for (int axis = 0; axis < 3; axis++) {
+            min[axis] = frameMin[axis];
+            max[axis] = frameMax[axis];
+        }
+        for (int i = 0; i < posed.length; i++) {
+            float value = posed[i];
+            if (!Float.isFinite(value) || Math.abs(value) > 1_000_000) {
+                throw new IllegalArgumentException("Invalid model coordinate");
+            }
+            min[i % 3] = Math.min(min[i % 3], value);
+            max[i % 3] = Math.max(max[i % 3], value);
+        }
+    }
+
+    /**
+     * Same triangles and parts with replaced vertex positions. The reported bounds are the union of
+     * the posed positions and the supplied framing bounds, so a camera framed on them does not
+     * follow every frame of an evaluated pose.
+     */
+    PreviewMesh posed(float[] posed, float[] frameMin, float[] frameMax) {
+        if (posed.length != positions.length || frameMin.length != 3 || frameMax.length != 3) {
+            throw new IllegalArgumentException("Posed mesh differs from its rest surface");
+        }
+        for (int axis = 0; axis < 3; axis++) {
+            if (!Float.isFinite(frameMin[axis])
+                    || !Float.isFinite(frameMax[axis])
+                    || frameMin[axis] > frameMax[axis]
+                    || Math.abs(frameMin[axis]) > 1_000_000
+                    || Math.abs(frameMax[axis]) > 1_000_000) {
+                throw new IllegalArgumentException("Invalid framing bounds");
+            }
+        }
+        return new PreviewMesh(this, posed.clone(), frameMin, frameMax);
+    }
+
     public int vertexCount() {
         return positions.length / 3;
     }

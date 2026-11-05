@@ -277,7 +277,8 @@ class WorldAreaNavigationTest {
                                 var ref = (FileTypes.FileRef) args[0];
                                 long id = ref.fileDataId();
                                 byte[] bytes = payloads.get(id);
-                                if (method.getName().equals("stat")) {
+                                if (method.getName().equals("stat")
+                                        || method.getName().equals("statContent")) {
                                     int calls =
                                             stats.computeIfAbsent(id, key -> new AtomicInteger())
                                                     .incrementAndGet();

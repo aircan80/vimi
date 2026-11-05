@@ -26,6 +26,7 @@ public final class RacesService implements BuildRaces {
     private final RaceMedia media;
     private final RaceVoices voices;
     private final RaceAppearance appearance;
+    private final RaceIdleAnimations idle;
     private final ThreadPoolExecutor worker = worker("race-projection"),
             appearanceWorker = worker("race-appearance");
 
@@ -59,6 +60,13 @@ public final class RacesService implements BuildRaces {
         media = new RaceMedia(this, tables, files, generated);
         voices = new RaceVoices(this, media, tables, files, generated);
         appearance = new RaceAppearance(this, media, tables, files, generated);
+        idle = new RaceIdleAnimations(media, files);
+    }
+
+    @Override
+    public CompletableFuture<RaceMediaTypes.Idle> idle(
+            long raceId, long chrModelId, Cancellation token) {
+        return submit(token, request -> idle.assess(raceId, chrModelId, request));
     }
 
     @Override

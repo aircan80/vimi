@@ -22,6 +22,9 @@ final class RaceVoicePanel extends VBox implements AutoCloseable {
     private final ComboBox<RaceVoiceTypes.Clip> clips = new ComboBox<>();
     private final Button play = new Button("Play"), stop = new Button("Stop");
     private final Label status = new Label("Choose a recorded model voice");
+    private final Label source = new Label();
+    private final Label refused = new Label();
+    private final Label notes = new Label();
     private final VoicePlayback playback = new VoicePlayback();
     private final ProgressIndicator activity = new ProgressIndicator(-1);
     private Cancellation token = new Cancellation();
@@ -54,6 +57,16 @@ final class RaceVoicePanel extends VBox implements AutoCloseable {
         stop.setOnAction(event -> stop());
         status.getStyleClass().add("muted");
         status.setWrapText(true);
+        for (var label : new Label[] {source, refused, notes}) {
+            label.getStyleClass().add("muted");
+            label.setWrapText(true);
+            label.setVisible(false);
+            label.managedProperty().bind(label.visibleProperty());
+        }
+        source.setAccessibleText("Recorded voice source chain");
+        refused.setAccessibleText("Refused voice links");
+        notes.setAccessibleText("Voice record notes");
+        clips.valueProperty().addListener((observable, previous, value) -> showSource(value));
         activity.setPrefSize(18, 18);
         activity.setMaxSize(18, 18);
         activity.setVisible(false);
@@ -62,7 +75,47 @@ final class RaceVoicePanel extends VBox implements AutoCloseable {
                 .addAll(
                         new Label("Voice previews"),
                         new HBox(10, clips, play, stop),
-                        new HBox(9, activity, status));
+                        new HBox(9, activity, status),
+                        source,
+                        refused,
+                        notes);
+    }
+
+    static final int SHOWN_REFUSALS = 6;
+
+    private void showSource(RaceVoiceTypes.Clip clip) {
+        source.setText(clip == null ? "" : "Source: " + clip.chain());
+        source.setVisible(clip != null);
+    }
+
+    static final int SHOWN_NOTES = 4;
+
+    private void showRecords(RaceVoiceTypes.Catalog catalog) {
+        showRefusals(catalog == null ? null : catalog.refusals());
+        var shown =
+                catalog == null
+                        ? java.util.List.<String>of()
+                        : catalog.issues().stream().limit(SHOWN_NOTES).toList();
+        notes.setText(String.join("\n", shown));
+        notes.setVisible(!shown.isEmpty());
+    }
+
+    private void showRefusals(java.util.List<RaceVoiceTypes.Refusal> refusals) {
+        if (refusals == null || refusals.isEmpty()) {
+            refused.setText("");
+            refused.setVisible(false);
+            return;
+        }
+        var text = new StringBuilder("Not playable (" + refusals.size() + " listed):");
+        for (int i = 0; i < refusals.size() && i < SHOWN_REFUSALS; i++) {
+            var refusal = refusals.get(i);
+            text.append("\n").append(refusal.link()).append(" — ").append(refusal.reason());
+        }
+        if (refusals.size() > SHOWN_REFUSALS) {
+            text.append("\n…and ").append(refusals.size() - SHOWN_REFUSALS).append(" more");
+        }
+        refused.setText(text.toString());
+        refused.setVisible(true);
     }
 
     void selection(long raceId, long classId, int sex) {
@@ -74,6 +127,8 @@ final class RaceVoicePanel extends VBox implements AutoCloseable {
         clips.getItems().clear();
         clips.setDisable(false);
         play.setDisable(true);
+        clips.setValue(null);
+        showRecords(null);
         busy("Loading recorded voice clips…");
         long request = ++generation;
         request(() -> handle.voices(raceId, classId, sex, token))
@@ -85,6 +140,7 @@ final class RaceVoicePanel extends VBox implements AutoCloseable {
                                                 return;
                                             }
                                             activity.setVisible(false);
+                                            showRecords(error == null ? result : null);
                                             if (error != null
                                                     || result == null
                                                     || result.clips().isEmpty()) {
@@ -207,6 +263,8 @@ final class RaceVoicePanel extends VBox implements AutoCloseable {
         if (!workspaceStale.getAsBoolean()) return false;
         stop();
         clips.getItems().clear();
+        clips.setValue(null);
+        showRecords(null);
         clips.setDisable(true);
         play.setDisable(true);
         stop.setDisable(true);

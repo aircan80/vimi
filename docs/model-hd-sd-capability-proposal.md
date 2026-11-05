@@ -2,6 +2,22 @@
 
 Status: exploration and proposed capability contract, not implementation approval. The Forever client has a real HD/SD control. Vimi has not yet established the local asset-selection mapping that implements it. No production code, account settings or asset acquisition changed during this investigation.
 
+## Implemented first slice: source-stated definition label (#185)
+
+The Races model preview now states a definition only from an explicit ChrRaces field pair for the selected sex: `MaleDisplayID`/`HighResMaleDisplayID` or `FemaleDisplayID`/`HighResFemaleDisplayID`. Both fields must be verified-name integer references to `CreatureDisplayInfo.ID`. Such layouts exist in the pinned definitions (for example ChrRaces `8BE33A75`, 2.5.1); current Forever ChrModel-era layouts do not have them. `RaceModelDefinitions` compares the ChrModel-selected display with that pair. The selector and detail view show `SD` or `HD` together with the exact source field, for example `HD · ChrRaces #1 HighResMaleDisplayID`.
+
+Every other case is a refusal with its reason. The selected display does not change:
+
+| State | Meaning |
+| --- | --- |
+| `UNSUPPORTED_PROFILE` | The layout has no pair, has only one side, or a side is unverified or unlinked. Readable current 70755 ChrRaces ends here; the race row is not even read. |
+| `NO_RECORDED_PAIR` | Both fields are verified, but one side records zero. |
+| `AMBIGUOUS` | Both fields name the same display. |
+| `UNMATCHED` | The selected display is neither recorded side. |
+| `UNREADABLE` | ChrRaces, the race row or a cell is unavailable, or a display ID is out of range. Each preview reassesses it. |
+
+Fallback slots, file names, LODs, mips and polygon counts are never evidence. Definition failures never discard or degrade the recorded variants. This slice adds no toggle. A selector that switches to the counterpart display is a later slice and needs the full composition chain described below.
+
 ## What the matching client UI proves
 
 The extracted Blizzard UI source mirror has an exact Forever **1.60.1 (70755)** revision, `17ed2c3e8471cdc3806ab0d26a082be7c67d3d7c`. This is client-authored UI published by a third-party mirror, not a claim that Gethe is a Blizzard-operated repository.

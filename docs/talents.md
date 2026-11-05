@@ -13,6 +13,14 @@ Technical source details remain collapsed outside the tooltip. Arrow keys move
 focus to the nearest node along a row or column; Enter selects it. The tree strip
 scrolls horizontally when the detail rail leaves less room.
 
+Forever builds that record TraitTree talents read them from `SkillLineXTraitTree`,
+`TraitNode`, `TraitNodeEntry`, `TraitDefinition`, node groups and `TraitEdge`, not
+from the legacy Talent rows that keep the Classic 1.12 layout. Talents recorded
+outside the tree grid are listed under their tree with the reason. Trait edges
+record no rank requirement, so prerequisites show only the required talent. See
+the [TraitTree checkpoint](talents-traittree-checkpoint.md) for the evidence and
+limits. Other Classic products keep the legacy reader.
+
 Class names, trees, positions and ranks come from the selected build's verified
 client tables. Rank badges show recorded maximum ranks. The browser does not
 allocate points, load character builds or calculate level/point gates. It does

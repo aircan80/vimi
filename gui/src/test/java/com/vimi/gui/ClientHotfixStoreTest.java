@@ -38,8 +38,10 @@ public final class ClientHotfixStoreTest {
         concurrentOriginalMutationAndBoundedQueuedCloseDoNotPublish();
         symbolicLinksAreRefusedAndCleanupErrorsRemainSticky();
         metadataCallbacksAndCleanupFailuresDoNotLeakAcceptedOwners();
+        watchedRefreshDetectsAndAppliesOnlyNewerSameBuildCaches();
+        watchesAreOptInAndClearedByPlainImportUnwatchAndDisable();
         System.out.println(
-                "CLIENT_HOTFIX_STORE_PASS authoredScenarios=6 noNetwork=true noGameAssets=true");
+                "CLIENT_HOTFIX_STORE_PASS authoredScenarios=8 noNetwork=true noGameAssets=true");
     }
 
     private static byte[] cache(int build, int value) {
@@ -501,6 +503,193 @@ public final class ClientHotfixStoreTest {
         while ((error instanceof ExecutionException || error instanceof CompletionException)
                 && error.getCause() != null) error = error.getCause();
         return error;
+    }
+
+    private static java.util.List<ClientHotfixStore.RefreshResult> refresh(ClientHotfixStore store)
+            throws Exception {
+        return store.refreshWatched(Cancellation.NONE).get(5, TimeUnit.SECONDS);
+    }
+
+    private static ClientHotfixStore.RefreshResult only(
+            java.util.List<ClientHotfixStore.RefreshResult> results,
+            ClientHotfixStore.RefreshOutcome outcome,
+            String message) {
+        check(results.size() == 1, message + ": one watched scope");
+        var result = results.getFirst();
+        check(result.outcome() == outcome, message + ": " + result.outcome());
+        check(SCOPE.equals(result.scope()), message + ": exact scope");
+        return result;
+    }
+
+    /** Distinct mtimes so the size/mtime fast path cannot hide authored rewrites. */
+    private static void rewrite(Path original, byte[] bytes, int step) throws Exception {
+        Files.write(original, bytes);
+        Files.setLastModifiedTime(
+                original, FileTime.fromMillis(1_700_000_000_000L + step * 10_000L));
+    }
+
+    private static byte[] boundPayload(ClientHotfixStore store) throws Exception {
+        try (var snapshot = store.open(SCOPE, Cancellation.NONE).get(3, TimeUnit.SECONDS)) {
+            return payload(snapshot);
+        }
+    }
+
+    private static void watchedRefreshDetectsAndAppliesOnlyNewerSameBuildCaches()
+            throws Exception {
+        Path root = Files.createTempDirectory("client-hotfix-refresh-").toRealPath();
+        Path original = root.resolve("DBCache.bin"), storage = root.resolve("store");
+        rewrite(original, cache(70707, 1), 1);
+        try {
+            try (var store = new ClientHotfixStore(storage)) {
+                var first =
+                        store.importCache(SCOPE, original, true, Cancellation.NONE)
+                                .get(3, TimeUnit.SECONDS);
+                var unchanged = only(refresh(store), ClientHotfixStore.RefreshOutcome.UNCHANGED,
+                        "untouched original");
+                check(unchanged.summary().sha256().equals(first.sha256()), "same binding");
+                var held = store.open(SCOPE, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+                try {
+                    check(held.watched(), "snapshot reports watch");
+                    rewrite(original, cache(70707, 2), 2);
+                    var updated = only(refresh(store), ClientHotfixStore.RefreshOutcome.UPDATED,
+                            "newer same-build cache");
+                    check(!updated.summary().sha256().equals(first.sha256()), "new digest bound");
+                    check(payload(held)[0] == 1, "open snapshot stays immutable");
+                    check(boundPayload(store)[0] == 2, "new opens use refreshed import");
+                    check(Files.exists(storage.resolve("objects").resolve(first.sha256() + ".bin")),
+                            "earlier import retained");
+
+                    Files.setLastModifiedTime(original, FileTime.fromMillis(1_700_000_100_000L));
+                    var touched = only(refresh(store), ClientHotfixStore.RefreshOutcome.UNCHANGED,
+                            "mtime-only change");
+                    check(touched.summary().equals(updated.summary()),
+                            "identical bytes do not rewrite the binding");
+                    check(only(refresh(store), ClientHotfixStore.RefreshOutcome.UNCHANGED,
+                                    "recorded touched stat").summary().equals(updated.summary()),
+                            "touched stat is recorded");
+
+                    rewrite(original, cache(70800, 3), 3);
+                    var moved = only(refresh(store),
+                            ClientHotfixStore.RefreshOutcome.CLIENT_BUILD_CHANGED, "client update");
+                    check(moved.clientBuild() == 70800, "declared client build reported");
+                    check(boundPayload(store)[0] == 2, "other-build cache is not applied");
+
+                    byte[] malformed = cache(70707, 4);
+                    malformed[44] = 0;
+                    rewrite(original, malformed, 4);
+                    var failed = only(refresh(store), ClientHotfixStore.RefreshOutcome.FAILED,
+                            "malformed same-build cache");
+                    check(failed.failure() != null && !String.valueOf(failed.summary()).contains(root.toString()),
+                            "failure retained without path in summary");
+                    check(boundPayload(store)[0] == 2, "malformed cache keeps binding");
+                    check(ClientHotfixDetails.refreshFailed(java.util.List.of(failed)), "failure surfaces");
+
+                    Files.delete(original);
+                    only(refresh(store), ClientHotfixStore.RefreshOutcome.MISSING, "missing original");
+                    check(boundPayload(store)[0] == 2, "missing original keeps binding");
+                } finally {
+                    held.close();
+                }
+                byte[] manifestBytes;
+                try (var bindings = Files.list(storage.resolve("bindings"))) {
+                    manifestBytes = Files.readAllBytes(bindings.findFirst().orElseThrow());
+                }
+                check(!new String(manifestBytes, java.nio.charset.StandardCharsets.UTF_8)
+                                .contains("DBCache"),
+                        "binding manifest still omits the original path");
+                if (Files.getFileStore(storage).supportsFileAttributeView("posix")) {
+                    check(Files.getPosixFilePermissions(storage.resolve("watches"))
+                                    .equals(PosixFilePermissions.fromString("rwx------")),
+                            "private watch directory");
+                    try (var watches = Files.list(storage.resolve("watches"))) {
+                        for (var watch : watches.toList())
+                            check(Files.getPosixFilePermissions(watch)
+                                            .equals(PosixFilePermissions.fromString("rw-------")),
+                                    "private watch record");
+                    }
+                }
+            }
+            rewrite(original, cache(70707, 5), 5);
+            try (var store = new ClientHotfixStore(storage)) {
+                only(refresh(store), ClientHotfixStore.RefreshOutcome.UPDATED,
+                        "watch survives store reopen");
+                check(boundPayload(store)[0] == 5, "reopened store applies newer cache");
+                var other = new ClientHotfixStore.Scope(SCOPE.build(), "deDE", SCOPE.version());
+                check(store.open(other, Cancellation.NONE).get(3, TimeUnit.SECONDS) == null,
+                        "refresh never binds another locale");
+            }
+            check(ClientHotfixDetails.refreshSummary(java.util.List.of()).startsWith("No client caches"),
+                    "empty summary");
+        } finally {
+            remove(root);
+        }
+    }
+
+    private static void watchesAreOptInAndClearedByPlainImportUnwatchAndDisable()
+            throws Exception {
+        Path root = Files.createTempDirectory("client-hotfix-watch-").toRealPath();
+        Path original = root.resolve("DBCache.bin");
+        rewrite(original, cache(70707, 1), 1);
+        try (var store = new ClientHotfixStore(root.resolve("store"))) {
+            store.importCache(SCOPE, original, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            check(refresh(store).isEmpty(), "plain import is not watched");
+            try (var snapshot = store.open(SCOPE, Cancellation.NONE).get(3, TimeUnit.SECONDS)) {
+                check(!snapshot.watched(), "unwatched snapshot");
+            }
+            store.importCache(SCOPE, original, true, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            check(refresh(store).size() == 1, "opted-in watch");
+            store.importCache(SCOPE, original, false, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            check(refresh(store).isEmpty(), "later plain import clears watch");
+
+            store.importCache(SCOPE, original, true, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            store.unwatch(SCOPE, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            check(refresh(store).isEmpty(), "unwatch clears watch");
+            check(boundPayload(store)[0] == 1, "unwatch keeps binding");
+
+            store.importCache(SCOPE, original, true, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            store.disable(SCOPE, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            check(refresh(store).isEmpty(), "disable clears watch");
+            rewrite(original, cache(70707, 2), 2);
+            check(refresh(store).isEmpty(), "disabled scope is never re-enabled by refresh");
+            check(store.open(SCOPE, Cancellation.NONE).get(3, TimeUnit.SECONDS) == null,
+                    "disabled stays disabled");
+
+            // Atomic replacement keeping size and mtime is still detected by file identity.
+            rewrite(original, cache(70707, 6), 6);
+            store.importCache(SCOPE, original, true, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            var keptTime = Files.getLastModifiedTime(original);
+            Path replacement = root.resolve("DBCache.bin.new");
+            Files.write(replacement, cache(70707, 7));
+            Files.setLastModifiedTime(replacement, keptTime);
+            Files.move(replacement, original, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            var replaced = refresh(store);
+            var replacedKey = Files.readAttributes(original,
+                    java.nio.file.attribute.BasicFileAttributes.class).fileKey();
+            if (replacedKey != null) {
+                check(replaced.size() == 1
+                                && replaced.getFirst().outcome() == ClientHotfixStore.RefreshOutcome.UPDATED,
+                        "same size/mtime replacement detected by file identity");
+                check(boundPayload(store)[0] == 7, "replacement applied");
+            }
+
+            // A corrupt private watch record fails one refresh, then is removed.
+            Path watches = root.resolve("store").resolve("watches");
+            Path record;
+            try (var listed = Files.list(watches)) {
+                record = listed.findFirst().orElseThrow();
+            }
+            Files.writeString(record, "not a watch record\n");
+            var corrupt = refresh(store);
+            check(corrupt.size() == 1 && corrupt.getFirst().scope() == null
+                            && corrupt.getFirst().outcome() == ClientHotfixStore.RefreshOutcome.FAILED,
+                    "corrupt watch reported once");
+            check(refresh(store).isEmpty(), "corrupt watch removed after reporting");
+            check(boundPayload(store)[0] == (replacedKey != null ? 7 : 6),
+                    "corrupt watch keeps the binding");
+        } finally {
+            remove(root);
+        }
     }
 
     private static void check(boolean value, String message) {
