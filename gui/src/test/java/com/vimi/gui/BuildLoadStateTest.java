@@ -46,6 +46,7 @@ public final class BuildLoadStateTest {
             failuresRemainDistinctFromLoaded(directory.resolve("failure"));
             duplicateCanonicalIndexReleasesOnlyDuplicateContext(directory.resolve("duplicate"));
             openedContextsReleaseOnCancellationOrReportingFailure(directory.resolve("release"));
+            recordedRegionHasAnAcceptedRouteNotTheFirstInSortOrder(directory.resolve("region"));
             System.out.println(
                     "BuildLoadState: persisted status, async accounting and metadata-only load"
                             + " passed");
@@ -99,6 +100,146 @@ public final class BuildLoadStateTest {
             require(calls.get() == 2, "Repeated changes coalesce into one final refresh");
         } finally {
             first.complete(figures());
+            state.closeAsync().join();
+            registry.closeAsync().join();
+            library.closeAsync().join();
+        }
+    }
+
+    private static void recordedRegionHasAnAcceptedRouteNotTheFirstInSortOrder(Path directory)
+            throws Exception {
+        String config = "b".repeat(32);
+        var cn = new BuildInfo.RegionEvidence("cn", config, true, Instant.EPOCH, Instant.EPOCH);
+        var eu = new BuildInfo.RegionEvidence("eu", config, true, Instant.EPOCH, Instant.EPOCH);
+        var us = new BuildInfo.RegionEvidence("us", config, true, Instant.EPOCH, Instant.EPOCH);
+        var info =
+                new BuildInfo(
+                        "wow",
+                        "Retail",
+                        "1.2.3",
+                        "cn, eu, us",
+                        "a".repeat(32),
+                        BuildInfo.BuildSource.CURRENT,
+                        false,
+                        null,
+                        0,
+                        "test-region-build",
+                        Instant.EPOCH,
+                        Instant.EPOCH,
+                        List.of(cn, eu, us));
+        require(
+                BuildLoadState.recorded(info, null, null).equals(us),
+                "Without route facts the record prefers US over the first region in sort order");
+        var routes = java.util.Set.of("eu", "us");
+        require(
+                BuildLoadState.recorded(info, null, routes).equals(us),
+                "A first record is a routed region, preferring US");
+        // The prior region is no longer observed: prefer routed evidence with the prior config.
+        String other = "c".repeat(32);
+        var usOther = new BuildInfo.RegionEvidence("us", other, true, Instant.EPOCH, Instant.EPOCH);
+        var moved =
+                new BuildInfo(
+                        "wow",
+                        "Retail",
+                        "1.2.3",
+                        "eu, us",
+                        "a".repeat(32),
+                        BuildInfo.BuildSource.CURRENT,
+                        false,
+                        null,
+                        0,
+                        "test-region-build",
+                        Instant.EPOCH,
+                        Instant.EPOCH,
+                        List.of(eu, usOther));
+        var krPrior =
+                new BuildRegistry.Entry(
+                        "test-region-build",
+                        new BuildTypes.BuildRef("wow", "a".repeat(32), config, "kr"),
+                        "1.2.3",
+                        "enUS",
+                        BuildRegistry.Status.LOADED,
+                        null,
+                        null,
+                        Instant.EPOCH,
+                        1);
+        require(
+                BuildLoadState.recorded(moved, krPrior, routes).equals(eu),
+                "A re-record keeps the prior CDN config when a routed region serves it");
+        // A cn row whose config no routed region serves cannot fetch files, so it is replaced.
+        var cnOnly = new BuildInfo.RegionEvidence("cn", other, true, Instant.EPOCH, Instant.EPOCH);
+        var split =
+                new BuildInfo(
+                        "wow",
+                        "Retail",
+                        "1.2.3",
+                        "cn, us",
+                        "a".repeat(32),
+                        BuildInfo.BuildSource.CURRENT,
+                        false,
+                        null,
+                        0,
+                        "test-region-build",
+                        Instant.EPOCH,
+                        Instant.EPOCH,
+                        List.of(cnOnly, us));
+        var cnPrior =
+                new BuildRegistry.Entry(
+                        "test-region-build",
+                        new BuildTypes.BuildRef("wow", "a".repeat(32), other, "cn"),
+                        "1.2.3",
+                        "enUS",
+                        BuildRegistry.Status.DISCOVERED,
+                        null,
+                        null,
+                        Instant.EPOCH,
+                        0);
+        require(
+                BuildLoadState.recorded(split, cnPrior, routes).equals(us),
+                "An unreachable cn record is replaced by a routed region");
+        ObjectStore library = ObjectStore.openLibrary(directory.resolve("library")).join();
+        BuildRegistry registry = BuildRegistry.open(library.databasePath()).join();
+        var state =
+                new BuildLoadState(
+                                registry,
+                                (build, opened) -> CompletableFuture.completedFuture(null),
+                                identity -> CompletableFuture.completedFuture(figures()))
+                        .withRoutedRegions(product -> routes);
+        var opening =
+                new BuildOpening(
+                        (build, ref, token) -> CompletableFuture.completedFuture(success(ref)),
+                        state);
+        try {
+            state.observe(List.of(info));
+            require(
+                    registry.get(info.identity(), Cancellation.NONE)
+                            .join()
+                            .reference()
+                            .region()
+                            .equals("us"),
+                    "A new record is routed US, not cn, the first in sort order");
+            // The user explicitly opens with cn evidence; US serves the same CDN config.
+            opening.open(info, cn).get(5, TimeUnit.SECONDS);
+            var chosen = registry.get(info.identity(), Cancellation.NONE).join();
+            require(chosen.reference().region().equals("cn"), "The explicit cn open is recorded");
+            state.observe(List.of(info));
+            state.observe(List.of(info));
+            var after = registry.get(info.identity(), Cancellation.NONE).join();
+            require(
+                    after.reference().region().equals("cn")
+                            && after.updatedAt().equals(chosen.updatedAt()),
+                    "A reachable cn choice is kept without re-recording on later listings");
+            opening.open(info, eu).get(5, TimeUnit.SECONDS);
+            state.observe(List.of(info));
+            require(
+                    registry.get(info.identity(), Cancellation.NONE)
+                            .join()
+                            .reference()
+                            .region()
+                            .equals("eu"),
+                    "The user's chosen routed region is kept");
+        } finally {
+            opening.closeAsync().join();
             state.closeAsync().join();
             registry.closeAsync().join();
             library.closeAsync().join();

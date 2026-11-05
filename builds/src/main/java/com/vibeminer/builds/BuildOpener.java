@@ -213,6 +213,7 @@ public final class BuildOpener implements Builds {
                                                                 build,
                                                                 context.metadata(),
                                                                 context.cdn(),
+                                                                context.cdnNote(),
                                                                 context.encoding(),
                                                                 context.root(),
                                                                 empty);
@@ -230,6 +231,7 @@ public final class BuildOpener implements Builds {
 
     private record MetadataContext(
             CdnContext cdn,
+            CdnNote cdnNote,
             ConfigFiles.CdnConfig config,
             EncodingTable encoding,
             RootTable root,
@@ -263,6 +265,7 @@ public final class BuildOpener implements Builds {
                 build,
                 context.metadata(),
                 context.cdn(),
+                context.cdnNote(),
                 context.encoding(),
                 context.root(),
                 locations);
@@ -296,10 +299,49 @@ public final class BuildOpener implements Builds {
 
     private MetadataContext readMetadata(BuildRef build, Cancellation token) {
         token.check();
-        var route =
-                CdnsRoutes.route(
-                        CdnsRoutes.newestFirst(source, build.product(), token).join(),
-                        build.region());
+        CdnsRoutes.Resolution resolution = resolveRoute(build, token);
+        try {
+            return readMetadata(build, resolution, token);
+        } catch (OpenFailed e) {
+            if (resolution.code() != null && "OBJECT_ACCESS_NO_CDN_CONTEXT".equals(e.code)) {
+                throw new OpenFailed(
+                        BuildOpenState.UNAVAILABLE,
+                        e.part,
+                        resolution.code(),
+                        resolution.note(),
+                        e.observedAt);
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * The build's own region first; a region with no accepted host borrows the route of another
+     * region only when a stored versions reply shows that region serving this build with the same
+     * CDN config.
+     */
+    private CdnsRoutes.Resolution resolveRoute(BuildRef build, Cancellation token) {
+        var cdns = CdnsRoutes.newestFirst(source, build.product(), token).join();
+        if (build.region() == null
+                || cdns.isEmpty()
+                || CdnsRoutes.route(cdns, build.region()) != null) {
+            return CdnsRoutes.resolve(cdns, build.region(), java.util.Set.of());
+        }
+        return CdnsRoutes.resolve(
+                cdns,
+                build.region(),
+                CdnsRoutes.regionsServing(
+                                source,
+                                build.product(),
+                                build.buildConfig(),
+                                build.cdnConfig(),
+                                token)
+                        .join());
+    }
+
+    private MetadataContext readMetadata(
+            BuildRef build, CdnsRoutes.Resolution resolution, Cancellation token) {
+        var route = resolution.route();
         CdnContext configContext = route == null ? null : new CdnContext(route);
         ObjectRequest
                 buildRequest =
@@ -400,8 +442,16 @@ public final class BuildOpener implements Builds {
                         root.fileCount(),
                         BuildLocales.of(root.localeUnion()));
         token.check();
-        return new MetadataContext(context, cdnConfig, encoding, root, metadata);
+        return new MetadataContext(
+                context,
+                new CdnNote(resolution.code(), resolution.note()),
+                cdnConfig,
+                encoding,
+                root,
+                metadata);
     }
+
+    record CdnNote(String code, String note) {}
 
     private record IndexRequest(ObjectRequest request, BuildPart part, CdnKey key) {}
 
@@ -676,6 +726,7 @@ final class OpenedBuild implements Build, LedgerSource {
     private final BuildTypes.BuildRef build;
     private final BuildTypes.BuildMetadata metadata;
     private final CdnContext cdn;
+    private final BuildOpener.CdnNote cdnNote;
     private final EncodingTable encoding;
     private final RootTable root;
     private final ArchiveLocations locations;
@@ -685,12 +736,14 @@ final class OpenedBuild implements Build, LedgerSource {
             BuildTypes.BuildRef build,
             BuildTypes.BuildMetadata metadata,
             CdnContext cdn,
+            BuildOpener.CdnNote cdnNote,
             EncodingTable encoding,
             RootTable root,
             ArchiveLocations locations) {
         this.build = build;
         this.metadata = metadata;
         this.cdn = cdn;
+        this.cdnNote = cdnNote;
         this.encoding = encoding;
         this.root = root;
         this.locations = locations;
@@ -709,6 +762,16 @@ final class OpenedBuild implements Build, LedgerSource {
     @Override
     public CdnContext cdn() {
         return cdn;
+    }
+
+    @Override
+    public String cdnNote() {
+        return cdnNote.note();
+    }
+
+    @Override
+    public String cdnProblem() {
+        return cdnNote.code();
     }
 
     @Override

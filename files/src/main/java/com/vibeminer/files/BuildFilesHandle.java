@@ -207,6 +207,8 @@ final class BuildFilesHandle implements BuildFiles {
                 objects,
                 variant,
                 local ? null : built.cdn(),
+                local ? null : built.cdnProblem(),
+                local ? null : built.cdnNote(),
                 options.keys(),
                 layouts,
                 options.maxReadBytes(),
@@ -994,7 +996,13 @@ final class BuildFilesHandle implements BuildFiles {
                         case UNSUPPORTED -> FileEnsureState.UNSUPPORTED;
                         case STORE_FAILED -> FileEnsureState.STORE_FAILED;
                     };
-            tally.settle(entry.tally(), state, got.code(), encodedSize(entry.variant()));
+            String code =
+                    built.cdn() == null
+                                    && built.cdnProblem() != null
+                                    && "OBJECT_ACCESS_NO_CDN_CONTEXT".equals(got.code())
+                            ? built.cdnProblem()
+                            : got.code();
+            tally.settle(entry.tally(), state, code, encodedSize(entry.variant()));
         }
         tally.offer();
     }

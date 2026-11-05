@@ -23,6 +23,7 @@ public final class BuildLoadState implements BuildOpening.Observer {
     private final BiFunction<BuildInfo, Build, CompletableFuture<Void>> index;
     private final Function<String, CompletableFuture<LibraryCatalog.Figures>> figures;
     private final Function<Build, CompletableFuture<Void>> release;
+    private volatile Function<String, java.util.Set<String>> routedRegions = product -> null;
     private long duplicateSequence;
     private final Map<String, BuildLoadSnapshot> snapshots = new ConcurrentHashMap<>();
     private final Map<String, BuildRegistry.LoadAttempt> attempts = new ConcurrentHashMap<>();
@@ -46,6 +47,15 @@ public final class BuildLoadState implements BuildOpening.Observer {
         this.index = Objects.requireNonNull(index);
         this.figures = Objects.requireNonNull(figures);
         this.release = Objects.requireNonNull(release);
+    }
+
+    /**
+     * Supplies, per product, the regions with an accepted CDN route (null when unknown), so a
+     * recorded region is one that can fetch files. It is asked once per product per listing.
+     */
+    public BuildLoadState withRoutedRegions(Function<String, java.util.Set<String>> routed) {
+        routedRegions = Objects.requireNonNull(routed);
+        return this;
     }
 
     public BuildLoadSnapshot snapshot(BuildInfo build) {
@@ -75,17 +85,25 @@ public final class BuildLoadState implements BuildOpening.Observer {
                     cache(entry);
                 });
         var result = new ArrayList<>(discovered);
+        var routed = new HashMap<String, java.util.Optional<java.util.Set<String>>>();
         for (var build : discovered) {
             check.run();
             if (build.observations().isEmpty()) continue;
-            var evidence = build.observations().getFirst();
+            BuildRegistry.Entry prior = known.remove(build.identity());
+            var regions =
+                    routed.computeIfAbsent(
+                                    build.product(),
+                                    product ->
+                                            java.util.Optional.ofNullable(
+                                                    routedRegions.apply(product)))
+                            .orElse(null);
+            var evidence = recorded(build, prior, regions);
             var ref =
                     new BuildTypes.BuildRef(
                             build.product(),
                             build.config(),
                             evidence.cdnConfig(),
                             evidence.region());
-            BuildRegistry.Entry prior = known.remove(build.identity());
             if (prior == null
                     || !prior.reference().equals(ref)
                     || !Objects.equals(prior.version(), build.version())) {
@@ -125,6 +143,55 @@ public final class BuildLoadState implements BuildOpening.Observer {
                                             entry.updatedAt()))));
         }
         return List.copyOf(result);
+    }
+
+    /**
+     * Records once: an earlier record (including a user's explicit choice) is kept while it is
+     * still observed and reachable, directly or through another routed region listing the same CDN
+     * config. Otherwise a routed region is preferred, then the earlier CDN config, current
+     * evidence and US, rather than the first region in sort order.
+     */
+    static BuildInfo.RegionEvidence recorded(
+            BuildInfo build, BuildRegistry.Entry prior, java.util.Set<String> routed) {
+        java.util.function.Predicate<BuildInfo.RegionEvidence> direct =
+                evidence -> routed == null || routed.contains(evidence.region());
+        if (prior != null) {
+            String priorConfig = prior.reference().cdnConfig();
+            boolean reachable =
+                    build.observations().stream()
+                            .anyMatch(
+                                    evidence ->
+                                            direct.test(evidence)
+                                                    && evidence.cdnConfig()
+                                                            .equalsIgnoreCase(priorConfig));
+            var kept =
+                    build.observations().stream()
+                            .filter(
+                                    evidence ->
+                                            evidence.region().equals(prior.reference().region())
+                                                    && evidence.cdnConfig()
+                                                            .equalsIgnoreCase(priorConfig))
+                            .findFirst();
+            if (kept.isPresent() && (direct.test(kept.get()) || reachable)) return kept.get();
+        }
+        String priorConfig = prior == null ? null : prior.reference().cdnConfig();
+        return build.observations().stream()
+                .min(
+                        java.util.Comparator.comparing(
+                                        (BuildInfo.RegionEvidence evidence) ->
+                                                !direct.test(evidence))
+                                .thenComparing(
+                                        evidence ->
+                                                !evidence.cdnConfig().equalsIgnoreCase(
+                                                        String.valueOf(priorConfig)))
+                                .thenComparing(evidence -> !evidence.current())
+                                .thenComparing(evidence -> !evidence.region().equals("us"))
+                                .thenComparing(BuildInfo.RegionEvidence::region)
+                                .thenComparing(
+                                        BuildInfo.RegionEvidence::lastSeen,
+                                        java.util.Comparator.nullsLast(
+                                                java.util.Comparator.reverseOrder())))
+                .orElseThrow();
     }
 
     @Override

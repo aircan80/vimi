@@ -13,6 +13,8 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 
@@ -143,6 +145,189 @@ public final class CdnsRoutes {
             }
         }
         return null;
+    }
+
+    /** The build has no accepted CDN host in its region or any region serving its config. */
+    public static final String NO_ACCEPTED_HOST = "BUILD_NO_ACCEPTED_CDN_HOST";
+
+    /** No CDN host list (cdns reply) is stored for the product at all. */
+    public static final String NO_HOST_LIST = "BUILD_NO_CDN_HOST_LIST";
+
+    /**
+     * How a build reaches the CDN. Only official hosts are ever accepted ({@link CdnRoute}); a
+     * region without one may borrow another region's accepted route, but only when that region
+     * advertises the same build with the exact same CDN config. {@code code} is null when a route
+     * was found.
+     */
+    public record Resolution(
+            CdnRoute route, String requested, String served, String code, String note) {
+        public boolean fallback() {
+            return route != null && requested != null && !requested.equals(served);
+        }
+    }
+
+    public static Resolution resolve(
+            List<VersionsTable> cdnsNewestFirst, String region, Set<String> sameConfigRegions) {
+        CdnRoute direct = route(cdnsNewestFirst, region);
+        if (direct != null) {
+            return new Resolution(direct, region, region, null, null);
+        }
+        if (cdnsNewestFirst.isEmpty()) {
+            return new Resolution(
+                    null,
+                    region,
+                    null,
+                    NO_HOST_LIST,
+                    "No CDN host list is stored for this product; refresh the catalog with"
+                            + " network access");
+        }
+        if (region == null) {
+            return new Resolution(
+                    null,
+                    null,
+                    null,
+                    NO_ACCEPTED_HOST,
+                    "No accepted CDN host is listed; refresh the catalog with network access");
+        }
+        List<String> candidates =
+                sameConfigRegions.stream()
+                        .filter(other -> !other.equals(region))
+                        .sorted(
+                                Comparator.comparing((String other) -> !other.equals("us"))
+                                        .thenComparing(Comparator.naturalOrder()))
+                        .toList();
+        for (String other : candidates) {
+            CdnRoute borrowed = route(cdnsNewestFirst, other);
+            if (borrowed != null) {
+                return new Resolution(
+                        borrowed,
+                        region,
+                        other,
+                        null,
+                        "Region "
+                                + label(region)
+                                + " has no accepted CDN host; files come from region "
+                                + label(other)
+                                + ", which serves the same CDN config");
+            }
+        }
+        return new Resolution(
+                null,
+                region,
+                null,
+                NO_ACCEPTED_HOST,
+                "No accepted CDN host for region "
+                        + label(region)
+                        + (candidates.isEmpty()
+                                ? "; no stored versions reply shows another region serving the"
+                                        + " same CDN config"
+                                : "; no region serving the same CDN config has an accepted host")
+                        + ". Choose another region's listing of this build, if one exists.");
+    }
+
+    /**
+     * Every region that any stored versions reply shows serving this build config with exactly this
+     * CDN config. Unlike {@link #newestFirst}, the whole history is read, one document at a time,
+     * so an older same-config listing still counts.
+     */
+    public static CompletableFuture<Set<String>> regionsServing(
+            ObjectSource source,
+            String product,
+            String buildConfig,
+            String cdnConfig,
+            Cancellation token) {
+        return TASKS.submit(
+                token,
+                () -> {
+                    Set<ObjectKey> documents = new java.util.LinkedHashSet<>();
+                    History.Entry after = null;
+                    Set<String> regions = new TreeSet<>();
+                    try {
+                        while (true) {
+                            token.check();
+                            List<History.Entry> page =
+                                    source.readHistory(
+                                                    new History.Query(
+                                                            product, null, 1, after, 1000),
+                                                    token)
+                                            .join();
+                            for (History.Entry entry : page) {
+                                documents.add(entry.document());
+                            }
+                            if (page.size() < 1000) {
+                                break;
+                            }
+                            after = page.getLast();
+                        }
+                    } catch (RuntimeException e) {
+                        if (CatalogTasks.unwrap(e) instanceof CancellationException canceled) {
+                            throw canceled;
+                        }
+                        return regions;
+                    }
+                    for (ObjectKey document : documents) {
+                        try {
+                            token.check();
+                            var reply =
+                                    source.getKey(
+                                                    new ObjectRequest(document),
+                                                    null,
+                                                    FetchPriority.INTERACTIVE,
+                                                    token)
+                                            .join();
+                            byte[] bytes = reply.bytes();
+                            if (!reply.isPresent() || bytes == null) {
+                                continue;
+                            }
+                            regions.addAll(
+                                    regionsServing(
+                                            List.of(VersionsTable.parse(bytes)),
+                                            buildConfig,
+                                            cdnConfig));
+                        } catch (RuntimeException e) {
+                            if (CatalogTasks.unwrap(e) instanceof CancellationException canceled) {
+                                throw canceled;
+                            }
+                        }
+                    }
+                    return regions;
+                });
+    }
+
+    /** Regions whose versions rows list this build config with exactly this CDN config. */
+    public static Set<String> regionsServing(
+            List<VersionsTable> versions, String buildConfig, String cdnConfig) {
+        Set<String> regions = new TreeSet<>();
+        for (VersionsTable table : versions) {
+            for (var row : table.rows()) {
+                String region = row.fields().get("Region");
+                if (region != null
+                        && buildConfig.equalsIgnoreCase(row.fields().get("BuildConfig"))
+                        && cdnConfig.equalsIgnoreCase(row.fields().get("CDNConfig"))) {
+                    regions.add(region);
+                }
+            }
+        }
+        return regions;
+    }
+
+    /** Regions with at least one accepted route in these CDN tables. */
+    public static Set<String> routedRegions(List<VersionsTable> cdnsNewestFirst) {
+        Set<String> regions = new TreeSet<>();
+        for (VersionsTable table : cdnsNewestFirst) {
+            for (var row : table.rows()) {
+                String name = row.fields().get("Name");
+                if (name != null) {
+                    regions.add(name);
+                }
+            }
+        }
+        regions.removeIf(name -> route(cdnsNewestFirst, name) == null);
+        return regions;
+    }
+
+    private static String label(String region) {
+        return region.toUpperCase(java.util.Locale.ROOT);
     }
 
     private static CdnRoute routeOf(VersionsTable table, String region) {

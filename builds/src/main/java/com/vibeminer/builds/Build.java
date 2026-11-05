@@ -13,6 +13,22 @@ public interface Build {
 
     CdnContext cdn();
 
+    /**
+     * Why the CDN route differs from the build's region, or why there is none; null when the
+     * region's own accepted route is used.
+     */
+    default String cdnNote() {
+        return null;
+    }
+
+    /**
+     * The failure code when the build has no CDN route ({@link CdnsRoutes#NO_ACCEPTED_HOST} or
+     * {@link CdnsRoutes#NO_HOST_LIST}); null when a route was found.
+     */
+    default String cdnProblem() {
+        return null;
+    }
+
     FileResolution resolve(long fileDataId);
 
     FileResolution resolve(String path);

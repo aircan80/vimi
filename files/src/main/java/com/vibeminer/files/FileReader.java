@@ -71,6 +71,7 @@ final class FileReader {
     final long max;
     private final ObjectSource objects;
     private final CdnContext cdn;
+    private final String unrouted, unroutedCode;
     private final LayoutCache cache;
     private final Runnable decoded;
 
@@ -82,8 +83,27 @@ final class FileReader {
             LayoutCache cache,
             long max,
             Runnable decoded) {
+        this(objects, variant, cdn, null, null, keys, cache, max, decoded);
+    }
+
+    /**
+     * {@code unroutedCode} and {@code unrouted} name why a build has no CDN route, replacing the
+     * generic no-context failure.
+     */
+    FileReader(
+            ObjectSource objects,
+            FileVariant variant,
+            CdnContext cdn,
+            String unroutedCode,
+            String unrouted,
+            TactKeySource keys,
+            LayoutCache cache,
+            long max,
+            Runnable decoded) {
         this.objects = objects;
         this.cdn = cdn;
+        this.unroutedCode = unroutedCode;
+        this.unrouted = unrouted;
         this.keys = keys;
         this.cache = cache;
         this.max = max;
@@ -159,6 +179,10 @@ final class FileReader {
                 objects.getRange(request, offset, length, cdn, FetchPriority.INTERACTIVE, token)
                         .join();
         if (!got.isPresent()) {
+            boolean unroutedFailure =
+                    cdn == null
+                            && unroutedCode != null
+                            && "OBJECT_ACCESS_NO_CDN_CONTEXT".equals(got.code());
             throw new Failure(
                     switch (got.state()) {
                         case NOT_FOUND -> FileReadState.MISSING;
@@ -169,8 +193,8 @@ final class FileReader {
                         case UNSUPPORTED -> FileReadState.UNSUPPORTED;
                         default -> throw new IllegalStateException("Present without bytes");
                     },
-                    got.code(),
-                    got.message(),
+                    unroutedFailure ? unroutedCode : got.code(),
+                    unroutedFailure ? unrouted : got.message(),
                     got.observedAt());
         }
         if (got.bytes() == null || got.bytes().length != length) {
