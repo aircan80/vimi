@@ -94,12 +94,20 @@ final class WorldStreamNeighborhoodBudgetTest {
                 new WorldStreamTransport.Spec(
                                 "ab".repeat(32), 1, WorldStreamTransport.Backend.DEFAULT)
                         .objectTextures());
-        // Measured real-data means per tile object set (#267): STANDARD 5.70 MB, HIGH 7.69 MB.
+        // Measured real-data means per tile object set with #286 mip chains (40 Elwynn tiles):
+        // STANDARD 6.87 MiB, HIGH 9.72 MiB.
+        long standardMean = (long) (6.87 * (1 << 20)), highMean = (long) (9.72 * (1 << 20));
+        long near = WorldStreamTransport.ViewDistance.NEAR.residents();
         long far = WorldStreamTransport.ViewDistance.FAR.residents();
-        assertTrue(BgfxWorldStreamRenderer.objectsFit(standard.budgetBytes(), 0, far * 5_700_000));
-        assertTrue(BgfxWorldStreamRenderer.objectsFit(high.budgetBytes(), 0, far * 7_690_000));
-        // FAR + HIGH at the mean would not fit the STANDARD budget: why HIGH has its own.
-        assertFalse(BgfxWorldStreamRenderer.objectsFit(standard.budgetBytes(), 0, far * 7_690_000));
+        // NEAR fits either tier; FAR + HIGH fits the HIGH budget.
+        assertTrue(
+                BgfxWorldStreamRenderer.objectsFit(standard.budgetBytes(), 0, near * standardMean));
+        assertTrue(BgfxWorldStreamRenderer.objectsFit(high.budgetBytes(), 0, near * highMean));
+        assertTrue(BgfxWorldStreamRenderer.objectsFit(high.budgetBytes(), 0, far * highMean));
+        // Documented degradation: FAR + STANDARD at the mean (about 172 MiB) exceeds 160 MiB, so
+        // some outer-ring sets report FAILED and keep their terrain (objects load nearest-first).
+        assertFalse(
+                BgfxWorldStreamRenderer.objectsFit(standard.budgetBytes(), 0, far * standardMean));
     }
 
     @Test

@@ -67,8 +67,22 @@ final class WorldStreamGpuOwner {
 
     /** The streaming session this owner opens; its profile follows {@link #EXTERIORS}. */
     static WorldStreamTransport.Spec spec(String scopeSha256) {
+        return spec(scopeSha256, IMAGE_DETAIL);
+    }
+
+    /** The session follows the runtime object texture choice, which selects its objects budget. */
+    static WorldStreamTransport.Spec spec(
+            String scopeSha256, com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail detail) {
         return new WorldStreamTransport.Spec(
-                scopeSha256, 1, configuredBackend(), EXTERIORS, VIEW_DISTANCE);
+                scopeSha256, 1, configuredBackend(), EXTERIORS, VIEW_DISTANCE, objectTextures(detail));
+    }
+
+    /** HIGH image detail selects the HIGH objects budget; anything else is STANDARD. */
+    static WorldStreamTransport.ObjectTextures objectTextures(
+            com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail detail) {
+        return detail == com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.HIGH
+                ? WorldStreamTransport.ObjectTextures.HIGH
+                : WorldStreamTransport.ObjectTextures.STANDARD;
     }
 
     /**
@@ -99,9 +113,14 @@ final class WorldStreamGpuOwner {
     private CompletableFuture<Void> closing;
 
     WorldStreamGpuOwner(GpuPreviewService service, String scopeSha256) {
+        this(service, scopeSha256, IMAGE_DETAIL);
+    }
+
+    WorldStreamGpuOwner(GpuPreviewService service, String scopeSha256,
+            com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail detail) {
         this.service = Objects.requireNonNull(service);
         lifetime = service.openStreaming(owner,
-                spec(scopeSha256),
+                spec(scopeSha256, detail),
                 opened::complete,
                 status -> {
                     if (status.state() == GpuPreviewService.State.FAILED) {
