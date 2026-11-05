@@ -242,14 +242,32 @@ final class WorldBasicWmo {
 
         /** Same ADT heading rule with a caller-qualified scale (BASIC_EXTERIOR_V1 placements). */
         Transform(WorldPlacements.WorldObject p, double scale) {
+            this(p.position(), p.rotation().y(), scale);
+        }
+
+        /**
+         * The same ADT origin and heading rule for any ADT placement record (MODF or MDDF): raw
+         * position and the raw heading (rotation y) in degrees.
+         */
+        Transform(WorldPlacements.Vec3 position, float heading, double scale) {
             double c = 51200.0 / 3.0;
-            x = c - (double) p.position().z();
-            y = c - (double) p.position().x();
-            z = p.position().y();
+            x = c - (double) position.z();
+            y = c - (double) position.x();
+            z = position.y();
             this.scale = scale;
-            double theta = ((double) p.rotation().y()) * (StrictMath.PI / 180.0);
+            double theta = ((double) heading) * (StrictMath.PI / 180.0);
             co = StrictMath.cos(theta);
             si = StrictMath.sin(theta);
+        }
+
+        /** An already qualified transform (a drawn BASIC_EXTERIOR building's placement). */
+        Transform(double x, double y, double z, double scale, double co, double si) {
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.scale = scale;
+            this.co = co;
+            this.si = si;
         }
 
         double x(double a, double b) {
