@@ -1549,11 +1549,12 @@ public final class WorldExteriorObjects {
             var materials = root.materials();
             for (var batch : borrow.batches()) {
                 // Index ranges and vertex domains are already validated by WmoGroupSpans.
-                if (batch.flags() != 0 || batch.materialByte() >= materials.size()) {
+                int index = batch.materialIndex();
+                if (index < 0 || index >= materials.size()) {
                     unsupported++;
                     continue;
                 }
-                var material = materials.get(batch.materialByte());
+                var material = materials.get(index);
                 // MOMT blend mode: 0 opaque, 1 alpha key (cutout), 2 alpha (blended).
                 long blend = material.word(2);
                 if (blend > BLENDED || material.word(3) == 0) {
@@ -1564,7 +1565,7 @@ public final class WorldExteriorObjects {
                         new Candidate(
                                 (int) batch.firstIndex(),
                                 batch.indexCount(),
-                                batch.materialByte(),
+                                index,
                                 material.word(3),
                                 (int) blend));
                 candidateIndices += batch.indexCount();

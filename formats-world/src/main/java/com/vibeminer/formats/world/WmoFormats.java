@@ -422,7 +422,8 @@ public final class WmoFormats {
     }
 
     /**
-     * MaterialByte and bounds words stay raw; alternate material-index flags are not interpreted.
+     * MaterialByte and bounds words stay raw; {@link #materialIndex()} is the only interpretation
+     * of the alternate material-index flag.
      */
     public record Batch(
             List<Integer> rawBounds,
@@ -447,6 +448,22 @@ public final class WmoFormats {
             if (flags < 0 || flags > 255 || materialByte < 0 || materialByte > 255) {
                 throw invalid("Batch byte");
             }
+        }
+
+        /** Batch flag 0x2: the MOMT index is the sixth bounds word, not the material byte. */
+        public static final int LARGE_MATERIAL = 0x2;
+
+        /**
+         * The batch's MOMT index: the material byte when no flag is set, the sixth bounds word when
+         * only {@link #LARGE_MATERIAL} is set (newer groups with more than 255 materials or MPY2
+         * triangle records), and -1 for any other flag combination.
+         */
+        public int materialIndex() {
+            return switch (flags) {
+                case 0 -> materialByte;
+                case LARGE_MATERIAL -> rawBounds.get(5);
+                default -> -1;
+            };
         }
     }
 
