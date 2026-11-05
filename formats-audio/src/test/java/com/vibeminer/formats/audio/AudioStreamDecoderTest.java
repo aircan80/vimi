@@ -75,6 +75,24 @@ final class AudioStreamDecoderTest {
     }
 
     /**
+     * An ID3v2.3 album frame with UTF-16 text, as in game files. The text's byte-order mark {@code
+     * FF FE} looks like an MPEG Layer I frame header.
+     */
+    private static final byte[] UTF16_ALBUM =
+            concat(
+                    "TALB".getBytes(java.nio.charset.StandardCharsets.US_ASCII),
+                    new byte[] {0, 0, 0, 11, 0, 0}, // size 11, no flags
+                    new byte[] {1, (byte) 0xff, (byte) 0xfe, 'C', 0, '6', 0, '0', 0, 0, 0});
+
+    private static byte[] concat(byte[]... parts) {
+        var all = new ByteArrayOutputStream();
+        for (byte[] part : parts) {
+            all.writeBytes(part);
+        }
+        return all.toByteArray();
+    }
+
+    /**
      * Game music carries an ID3v2 tag with UTF-16 text frames. Their byte-order mark {@code FF FE}
      * looks like an MPEG Layer I frame header, so a decoder that scans the tag for frame sync
      * decodes garbage. The worker must start at the first frame after the tag.
@@ -83,29 +101,7 @@ final class AudioStreamDecoderTest {
     void skipsId3TagsWhoseTextLooksLikeFrameSync() throws IOException {
         byte[] tagged = fixture("authored-tone.mp3");
         int body = 10 + 10; // the fixture's own ID3 header and its 10 padding bytes
-        byte[] frame = {
-            'T',
-            'A',
-            'L',
-            'B',
-            0,
-            0,
-            0,
-            11,
-            0,
-            0, // UTF-16 album text, as in game files
-            1,
-            (byte) 0xff,
-            (byte) 0xfe,
-            'C',
-            0,
-            '6',
-            0,
-            '0',
-            0,
-            0,
-            0
-        };
+        byte[] frame = UTF16_ALBUM;
         var withText = new ByteArrayOutputStream();
         withText.write(new byte[] {'I', 'D', '3', 3, 0, 0, 0, 0, 0, (byte) frame.length});
         withText.write(frame);
@@ -118,6 +114,95 @@ final class AudioStreamDecoderTest {
             assertEquals(44100, stream.sampleRate());
             assertEquals(2, stream.channels());
             assertArrayEquals(expected, drain(stream));
+        }
+    }
+
+    private static byte[] decode(byte[] encoded) throws IOException {
+        try (var stream = AudioStreamDecoder.open(encoded, () -> false)) {
+            return drain(stream);
+        }
+    }
+
+    /** Sync-like bytes as they can appear inside tag text. */
+    private static final byte[] SYNC_TEXT = {(byte) 0xff, (byte) 0xfe, (byte) 0xff, (byte) 0xfb};
+
+    private static byte[] id3v2(int version, boolean footer, byte[] frames) {
+        int size = frames.length;
+        byte[] syncsafe = {
+            (byte) (size >> 21 & 0x7f),
+            (byte) (size >> 14 & 0x7f),
+            (byte) (size >> 7 & 0x7f),
+            (byte) (size & 0x7f)
+        };
+        byte flags = footer ? (byte) 0x10 : 0;
+        var tag = new ByteArrayOutputStream();
+        tag.writeBytes(new byte[] {'I', 'D', '3', (byte) version, 0, flags});
+        tag.writeBytes(syncsafe);
+        tag.writeBytes(frames);
+        if (footer) {
+            tag.writeBytes(new byte[] {'3', 'D', 'I', (byte) version, 0, flags});
+            tag.writeBytes(syncsafe);
+        }
+        return tag.toByteArray();
+    }
+
+    private static byte[] id3v1() {
+        byte[] tag = new byte[128];
+        tag[0] = 'T';
+        tag[1] = 'A';
+        tag[2] = 'G';
+        System.arraycopy(SYNC_TEXT, 0, tag, 3, SYNC_TEXT.length);
+        tag[127] = (byte) 0xff;
+        return tag;
+    }
+
+    private static byte[] apev2() {
+        var item = new ByteArrayOutputStream();
+        item.writeBytes(le(SYNC_TEXT.length));
+        item.writeBytes(le(0));
+        item.writeBytes("Album\0".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        item.writeBytes(SYNC_TEXT);
+        int size = item.size() + 32;
+        return concat(apeBlock(size, 0xa000_0000), item.toByteArray(), apeBlock(size, 0x8000_0000));
+    }
+
+    private static byte[] apeBlock(int size, int flags) {
+        return concat(
+                "APETAGEX".getBytes(java.nio.charset.StandardCharsets.US_ASCII),
+                le(2000),
+                le(size),
+                le(1),
+                le(flags),
+                new byte[8]);
+    }
+
+    private static byte[] le(int value) {
+        return new byte[] {
+            (byte) value, (byte) (value >> 8), (byte) (value >> 16), (byte) (value >> 24)
+        };
+    }
+
+    /**
+     * Tags after the last frame can hold sync-like bytes. The MPEG decoder takes them for a frame
+     * header and runs out of data, so the track used to fail near its end and lose its last block.
+     */
+    @Test
+    void ignoresTrailingTagsWhoseTextLooksLikeFrameSync() throws IOException {
+        byte[] audio = fixture("authored-tone.mp3");
+        byte[] expected = decode(audio);
+        assertEquals(audio.length, AudioStreamDecoder.mpegEnd(audio, 20));
+        var trailers =
+                java.util.Map.of(
+                        "ID3v1", id3v1(),
+                        "ID3v2.3", id3v2(3, false, UTF16_ALBUM),
+                        "ID3v2.4 with footer", id3v2(4, true, UTF16_ALBUM),
+                        "APEv2", apev2(),
+                        "ID3v2.3, APEv2 and ID3v1",
+                                concat(id3v2(3, false, UTF16_ALBUM), apev2(), id3v1()));
+        for (var trailer : trailers.entrySet()) {
+            byte[] tagged = concat(audio, trailer.getValue());
+            assertArrayEquals(expected, decode(tagged), trailer.getKey());
+            assertEquals(audio.length, AudioStreamDecoder.mpegEnd(tagged, 20), trailer.getKey());
         }
     }
 

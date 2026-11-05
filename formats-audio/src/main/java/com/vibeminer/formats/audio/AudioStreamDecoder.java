@@ -53,17 +53,97 @@ public final class AudioStreamDecoder {
      * with {@code FF FE}, which it would take for a Layer I frame header.
      */
     static int mpegStart(byte[] encoded) {
-        if (encoded.length < 10 || encoded[0] != 'I' || encoded[1] != 'D' || encoded[2] != '3') {
+        if (encoded.length < 10 || !ascii(encoded, 0, "ID3")) {
             return 0;
         }
+        return id3Length(encoded, 0);
+    }
+
+    /**
+     * End of the MPEG data that starts at {@code start}: tags appended after the last frame (ID3v1,
+     * APEv2, and ID3v2 with or without a footer, in any order) are excluded. The decoder scans
+     * every byte for frame sync, so sync-like bytes in tag text would otherwise decode as a bogus
+     * frame: noise, a decoder exception, or running out of data near the end of the track.
+     */
+    static int mpegEnd(byte[] encoded, int start) {
+        int end = encoded.length;
+        for (int tag = trailingTag(encoded, start + 4, end);
+                tag >= 0;
+                tag = trailingTag(encoded, start + 4, end)) {
+            end = tag;
+        }
+        return end;
+    }
+
+    /** Start of a recognized tag that ends exactly at {@code end} and starts at or after floor. */
+    private static int trailingTag(byte[] encoded, int floor, int end) {
+        if (end - 128 >= floor && ascii(encoded, end - 128, "TAG")) {
+            return end - 128;
+        }
+        if (end - 32 >= floor && ascii(encoded, end - 32, "APETAGEX")) {
+            // The size counts the items and the footer; a flagged header adds 32 bytes before them.
+            long size = littleEndian(encoded, end - 20);
+            long length = size + ((littleEndian(encoded, end - 12) & 0x8000_0000L) != 0 ? 32 : 0);
+            if (size >= 32 && length <= end - floor) {
+                return (int) (end - length);
+            }
+        }
+        if (end - 10 >= floor && ascii(encoded, end - 10, "3DI")) {
+            int size = syncsafe(encoded, end - 4);
+            if (size >= 0 && size + 20L <= end - floor) {
+                int tag = end - size - 20;
+                if (id3Length(encoded, tag) == size + 20) {
+                    return tag;
+                }
+            }
+        }
+        // An ID3v2 tag without a footer can only be found by its header: one whose declared length
+        // reaches exactly to the end.
+        for (int tag = end - 10; tag >= floor; tag--) {
+            if (encoded[tag] == 'I'
+                    && encoded[tag + 3] >= 2
+                    && encoded[tag + 3] <= 4
+                    && id3Length(encoded, tag) == end - tag) {
+                return tag;
+            }
+        }
+        return -1;
+    }
+
+    /** Whole length of an ID3v2 tag whose header is at offset, or -1 without a valid header. */
+    private static int id3Length(byte[] encoded, int offset) {
+        if (offset < 0 || encoded.length - offset < 10 || !ascii(encoded, offset, "ID3")) {
+            return -1;
+        }
+        int size = syncsafe(encoded, offset + 6);
+        return size < 0 ? -1 : 10 + size + ((encoded[offset + 5] & 0x10) != 0 ? 10 : 0);
+    }
+
+    private static int syncsafe(byte[] encoded, int offset) {
         int size = 0;
-        for (int i = 6; i < 10; i++) {
+        for (int i = offset; i < offset + 4; i++) {
             if ((encoded[i] & 0x80) != 0) {
                 return -1;
             }
             size = size << 7 | encoded[i];
         }
-        return 10 + size + ((encoded[5] & 0x10) != 0 ? 10 : 0);
+        return size;
+    }
+
+    private static long littleEndian(byte[] encoded, int offset) {
+        return (encoded[offset] & 0xffL)
+                | (encoded[offset + 1] & 0xffL) << 8
+                | (encoded[offset + 2] & 0xffL) << 16
+                | (encoded[offset + 3] & 0xffL) << 24;
+    }
+
+    private static boolean ascii(byte[] encoded, int offset, String text) {
+        for (int i = 0; i < text.length(); i++) {
+            if (encoded[offset + i] != text.charAt(i)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
