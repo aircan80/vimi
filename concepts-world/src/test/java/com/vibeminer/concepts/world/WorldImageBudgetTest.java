@@ -1,0 +1,81 @@
+package com.vibeminer.concepts.world;
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.util.ArrayList;
+import java.util.List;
+import org.junit.jupiter.api.Test;
+
+class WorldImageBudgetTest {
+    private static final int[] SIDES = {256, 128, 64, 32};
+
+    private static WorldImageBudget.Request square(int side) {
+        int levels = 1;
+        while ((side >> (levels - 1)) > 1) {
+            levels++;
+        }
+        return new WorldImageBudget.Request(side, side, levels);
+    }
+
+    @Test
+    void levelForPicksTheLargestLevelWithinTheSideAndStopsAtRecordedLevels() {
+        assertEquals(0, WorldImageBudget.levelFor(256, 256, 256, 9));
+        assertEquals(1, WorldImageBudget.levelFor(512, 512, 256, 10));
+        assertEquals(2, WorldImageBudget.levelFor(1024, 512, 256, 11));
+        assertEquals(4, WorldImageBudget.levelFor(512, 8, 32, 10));
+        assertEquals(1, WorldImageBudget.levelFor(1024, 1024, 32, 2), "file stops at level 1");
+        assertEquals(16384, WorldImageBudget.pixels(256, 256, 1));
+        assertEquals(1, WorldImageBudget.pixels(4, 4, 5));
+        assertThrows(IllegalArgumentException.class, () -> WorldImageBudget.levelFor(0, 1, 1, 1));
+    }
+
+    @Test
+    void anAmpleBudgetGivesEveryImageTheLargestSide() {
+        var requests = List.of(square(512), square(256), square(64));
+        assertArrayEquals(new int[] {1, 0, 0}, WorldImageBudget.allocate(requests, 1 << 20, SIDES));
+    }
+
+    @Test
+    void aTightBudgetLowersResolutionRoundByRoundInPriorityOrder() {
+        // 20 images of 256^2 in 1 Mi pixels: all reach 128^2 (320 Ki), then the first 14 can
+        // also take 256^2 (14 x 48 Ki more = 992 Ki), the rest stay at 128^2. None is dropped.
+        var requests = new ArrayList<WorldImageBudget.Request>();
+        for (int i = 0; i < 20; i++) {
+            requests.add(square(256));
+        }
+        int[] levels = WorldImageBudget.allocate(requests, 1 << 20, SIDES);
+        long total = 0;
+        for (int i = 0; i < 20; i++) {
+            assertEquals(i < 14 ? 0 : 1, levels[i], "image " + i);
+            total += WorldImageBudget.pixels(256, 256, levels[i]);
+        }
+        assertEquals(14 * 65536 + 6 * 16384, total);
+    }
+
+    @Test
+    void imagesAreDroppedOnlyWhenEvenTheSmallestSideCannotFit() {
+        // A file that records only level 0 of 1024^2 cannot shrink below 1 Mi pixels: it is the
+        // one dropped, and the lower-priority image after it still fits at 32^2.
+        var requests = List.of(square(64), new WorldImageBudget.Request(1024, 1024, 1), square(64));
+        int[] levels = WorldImageBudget.allocate(requests, 4096, SIDES);
+        assertArrayEquals(new int[] {1, -1, 1}, levels);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> WorldImageBudget.allocate(List.of(), 1, new int[] {32, 64}));
+    }
+
+    @Test
+    void recordedLevelsCountsTheLeadingLevelsInsideTheFile() {
+        var blp = ByteBuffer.allocate(400).order(ByteOrder.LITTLE_ENDIAN);
+        blp.putInt(20, 148).putInt(84, 100);
+        blp.putInt(24, 248).putInt(88, 40);
+        blp.putInt(28, 288).putInt(92, 200); // runs past the end of the file
+        assertEquals(2, WorldImageBudget.recordedLevels(blp.array()));
+        assertEquals(0, WorldImageBudget.recordedLevels(new byte[10]));
+        assertEquals(0, WorldImageBudget.recordedLevels(new byte[200]));
+    }
+}

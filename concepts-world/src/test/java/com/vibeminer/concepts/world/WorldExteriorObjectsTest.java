@@ -84,15 +84,36 @@ class WorldExteriorObjectsTest {
             float pitch,
             float heading,
             float roll,
-            int scale) {
+            int scale,
+            float extent) {
+        Modf(
+                long id,
+                long uid,
+                int flags,
+                float x,
+                float y,
+                float z,
+                float pitch,
+                float heading,
+                float roll,
+                int scale) {
+            this(id, uid, flags, x, y, z, pitch, heading, roll, scale, 10);
+        }
+
         static Modf of(long id, long uid, int flags) {
             return new Modf(id, uid, flags, 100, 20, 300, 0, 90, 0, 2048);
+        }
+
+        /** The same placement with recorded MODF bounds of half-size {@code extent}. */
+        Modf sized(float half) {
+            return new Modf(id, uid, flags, x, y, z, pitch, heading, roll, scale, half);
         }
 
         byte[] bytes() {
             var b = buffer(64);
             b.putInt((int) id).putInt((int) uid).put(floats(x, y, z));
-            b.put(floats(pitch, heading, roll)).put(floats(-10, -10, -10, 10, 10, 10));
+            b.put(floats(pitch, heading, roll))
+                    .put(floats(-extent, -extent, -extent, extent, extent, extent));
             b.putShort((short) flags).putShort((short) 0).putShort((short) 0);
             b.putShort((short) scale);
             return b.array();
@@ -254,6 +275,16 @@ class WorldExteriorObjectsTest {
 
         WorldExteriorObjects.TileObjects run() {
             return run(WorldExteriorObjects.ModelReader.STANDARD);
+        }
+
+        WorldExteriorObjects.TileObjects run(WorldExteriorObjects.ImageDetail detail) {
+            return WorldExteriorObjects.prepare(
+                    engine,
+                    scope,
+                    TILE,
+                    Cancellation.NONE,
+                    WorldExteriorObjects.ModelReader.STANDARD,
+                    detail);
         }
 
         WorldExteriorObjects.TileObjects run(WorldExteriorObjects.ModelReader reader) {
@@ -677,13 +708,10 @@ class WorldExteriorObjectsTest {
 
     @Test
     void mipSelectionPrefersLargestUpTo256AndFallsBackNearThePixelBudget() {
-        assertEquals(0, WorldExteriorObjects.mipFor(256, 256, 1 << 20));
-        assertEquals(2, WorldExteriorObjects.mipFor(1024, 512, 1 << 20));
-        assertEquals(1, WorldExteriorObjects.mipFor(512, 8, 1 << 20));
-        assertEquals(1, WorldExteriorObjects.mipFor(256, 256, 128 * 128));
-        assertEquals(2, WorldExteriorObjects.mipFor(256, 256, 64 * 64));
-        assertEquals(-1, WorldExteriorObjects.mipFor(256, 256, 64 * 64 - 1));
-        assertEquals(0, WorldExteriorObjects.mipFor(4, 4, 16));
+        assertEquals(0, WorldImageBudget.levelFor(256, 256, 256, 9));
+        assertEquals(2, WorldImageBudget.levelFor(1024, 512, 256, 11));
+        assertEquals(1, WorldImageBudget.levelFor(512, 8, 256, 10));
+        assertEquals(0, WorldImageBudget.levelFor(4, 4, 256, 3));
         try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
             f.files.sources.put(IMAGE, blp(512, 8, 2, 0xf800));
             try (var set = f.run()) {
@@ -956,9 +984,10 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
-    void tilePixelBudgetFallsBackToSmallerMipThenCapsImage() {
-        // 15 x 256^2 + 256x128 leave 32,768 pixels: the next 256^2 image falls to its 128^2
-        // level. The last then also selects level 1 by budget, which it does not declare.
+    void tilePixelBudgetLowersLevelsInsteadOfDroppingImages() {
+        // 15 x 256^2 + 256x128 fill the 1 Mi pixel budget exactly; the last two images still
+        // draw at 128^2 instead of being dropped. 4016 records level 1, so its own mip is read
+        // again from the file; 4017 records only level 0, so it is reduced by a 2x2 box.
         var materials = new ArrayList<Material>();
         var batches = new ArrayList<Batch>();
         for (int i = 0; i < 18; i++) {
@@ -975,14 +1004,83 @@ class WorldExteriorObjectsTest {
             f.files.sources.put(4016L, blp(256, 256, 3, 0));
             f.files.sources.put(4017L, blp(256, 256, 1, 0)); // only level 0 declared
             try (var set = f.run()) {
-                var fallback = set.images().get(16);
-                assertEquals(4016L, fallback.id());
-                assertEquals(1, fallback.mipLevel());
-                assertEquals(128, fallback.width());
-                // 16,384 pixels remain: 4017 selects level 1 by budget but declares none.
-                assertEquals(1, set.count(WorldExteriorObjects.Count.IMAGE_UNDECODABLE));
-                assertEquals(17, set.images().size());
-                assertEquals(15 * 65536 + 32768 + 16384, set.pixels());
+                assertEquals(18, set.images().size());
+                assertEquals(18, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_MISSING_IMAGE));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.IMAGE_CAPPED));
+                for (int i = 0; i < 15; i++) {
+                    assertEquals(256, set.images().get(i).width(), "image " + i);
+                }
+                var recorded = set.images().get(16);
+                assertEquals(4016L, recorded.id());
+                assertEquals(1, recorded.mipLevel());
+                assertEquals(128, recorded.width());
+                // Registered at 128 (its recorded level 1): no second read was needed.
+                assertEquals(1, f.files.opens.get(4016L).get());
+                var reduced = set.images().get(17);
+                assertEquals(4017L, reduced.id());
+                assertEquals(1, reduced.mipLevel());
+                assertEquals(128, reduced.width());
+                assertEquals(128, reduced.height());
+                assertEquals(15 * 65536 + 32768 + 2 * 16384, set.pixels());
+                // Single-level files are registered at their only level: one read each.
+                assertEquals(1, f.files.opens.get(4000L).get());
+            }
+            // The HIGH tier doubles the pixel budget: every image keeps its 256 level.
+            try (var set = f.run(WorldExteriorObjects.ImageDetail.HIGH)) {
+                assertEquals(18, set.images().size());
+                assertTrue(set.images().stream().allMatch(i -> i.width() == 256));
+                assertEquals(17 * 65536 + 32768, set.pixels());
+            }
+        }
+    }
+
+    @Test
+    void largerBuildingsAreServedFirstAndEveryImageStillDraws() {
+        // obj0 records a small building with 16 distinct 256^2 images first and a large one
+        // with a single 256^2 image second. The large building is admitted and upgraded first:
+        // its image is full size, and the small building's images all draw, some smaller.
+        long smallRoot = ROOT, largeRoot = 110, largeGroup = 210, largeImage = 5100;
+        var materials = new ArrayList<Material>();
+        var batches = new ArrayList<Batch>();
+        for (int i = 0; i < 16; i++) {
+            materials.add(new Material(0, 5000 + i, 0));
+            batches.add(new Batch(i * 3, 3, 0, i));
+        }
+        var small = new Modf(smallRoot, 1, 0x8, 100, 20, 300, 0, 90, 0, 2048).sized(5);
+        var large = new Modf(largeRoot, 2, 0x8, 400, 20, 300, 0, 90, 0, 2048).sized(200);
+        try (var f = new Fixture(List.of(small, large))) {
+            f.files.sources.put(smallRoot, root(1, new long[] {GROUP}, materials));
+            f.files.sources.put(GROUP, group(EXT, 3, 16, batches));
+            for (int i = 0; i < 16; i++) {
+                f.files.sources.put(5000L + i, blp(256, 256, 3, i));
+            }
+            f.files.sources.put(
+                    largeRoot,
+                    root(1, new long[] {largeGroup}, List.of(new Material(0, largeImage, 0))));
+            f.files.sources.put(largeGroup, group(EXT));
+            f.files.sources.put(largeImage, blp(256, 256, 3, 7));
+            try (var set = f.run()) {
+                assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_MISSING_IMAGE));
+                assertEquals(17, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
+                assertTrue(set.pixels() <= WorldExteriorObjects.MAX_PIXELS);
+                var big =
+                        set.images().stream()
+                                .filter(i -> i.id() == largeImage)
+                                .findFirst()
+                                .orElseThrow();
+                assertEquals(256, big.width(), "the large building keeps full resolution");
+                assertTrue(
+                        set.images().stream()
+                                .anyMatch(i -> i.id() != largeImage && i.width() < 256),
+                        "the small building absorbs the shortfall");
+                assertEquals(
+                        List.of(0, 1),
+                        set.placements().stream()
+                                .map(WorldExteriorObjects.Placement::ordinal)
+                                .toList(),
+                        "placements keep obj0 source order");
+                assertEquals(largeRoot, set.models().getFirst().rootId(), "admitted first");
             }
         }
     }

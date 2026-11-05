@@ -24,6 +24,22 @@ final class WorldStreamGpuOwner {
     static final boolean CREATURES =
             EXTERIORS && creaturesEnabled(System.getProperty("vimi.world.creatures"));
 
+    /**
+     * Object texture budget tier (#267): STANDARD by default, the original per-tile pixel budgets;
+     * {@code -Dvimi.world.objectTextures=high} starts with HIGH, twice the pixels per tile. The
+     * World view can switch it at runtime.
+     */
+    static final com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail IMAGE_DETAIL =
+            imageDetail(System.getProperty("vimi.world.objectTextures"));
+
+    /** Only {@code high} (any letter case) selects the HIGH object texture tier. */
+    static com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail imageDetail(
+            String property) {
+        return "high".equalsIgnoreCase(property)
+                ? com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.HIGH
+                : com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.STANDARD;
+    }
+
     /** Only {@code true} (any letter case) turns creature models on. */
     static boolean creaturesEnabled(String property) {
         return "true".equalsIgnoreCase(property);

@@ -110,7 +110,7 @@ final class WorldStreamObjectsFileTest {
     }
 
     @Test
-    void maximumProfileFitsUnderTheSixteenMebibyteCeiling() throws Exception {
+    void maximumProfileFitsUnderTheObjectsFileCeiling() throws Exception {
         var builder = WorldStreamTileWriter.Exterior.builder();
         for (int i = 0; i < 24; i++) {
             builder.image(256, 256, ByteBuffer.allocate(256 * 256 * 4));
@@ -160,7 +160,7 @@ final class WorldStreamObjectsFileTest {
         over.model();
         assertThrows(
                 IllegalArgumentException.class,
-                () -> over.image(1400, 1400, ByteBuffer.allocate(1400 * 1400 * 4)));
+                () -> over.image(2000, 2000, ByteBuffer.allocate(2000 * 2000 * 4)));
         var draws = WorldStreamTileWriter.Exterior.builder();
         draws.image(1, 1, ByteBuffer.allocate(4));
         draws.model();

@@ -535,6 +535,17 @@ public final class WorldTerrainStreaming {
      */
     public WorldExteriorObjects.TileObjects prepareExteriorObjects(
             Scope scope, WorldFormats.Tile comparison, Cancellation cancel) {
+        return prepareExteriorObjects(
+                scope, comparison, cancel, WorldExteriorObjects.ImageDetail.STANDARD);
+    }
+
+    /** As above, with the object texture budget tier (#267). */
+    public WorldExteriorObjects.TileObjects prepareExteriorObjects(
+            Scope scope,
+            WorldFormats.Tile comparison,
+            Cancellation cancel,
+            WorldExteriorObjects.ImageDetail detail) {
+        Objects.requireNonNull(detail);
         Objects.requireNonNull(scope);
         Objects.requireNonNull(comparison);
         Objects.requireNonNull(cancel);
@@ -545,7 +556,7 @@ public final class WorldTerrainStreaming {
             throw new IllegalArgumentException("Tile coordinate profile");
         }
         try {
-            return source().exteriorObjects(scope.token, comparison, cancel);
+            return source().exteriorObjects(scope.token, comparison, cancel, detail);
         } catch (RuntimeException failure) {
             throw WorldSourceRefusals.boundary(failure);
         }
