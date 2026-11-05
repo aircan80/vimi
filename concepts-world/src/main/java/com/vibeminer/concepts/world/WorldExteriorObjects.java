@@ -46,8 +46,13 @@ public final class WorldExteriorObjects {
     static final int MAX_VERTICES = 98_304, MAX_INDICES = 294_912;
     static final int MAX_RANGES = 1024, MAX_MESHES = 256, MAX_PIXELS = 1 << 20;
 
-    /** BASIC doodad caps, separate from the building caps so buildings are never displaced. */
-    static final int MAX_DOODADS = 512, MAX_MODELS = 48, MAX_MODEL_IMAGES = 64;
+    /**
+     * BASIC doodad caps, separate from the building caps so buildings are never displaced. Distinct
+     * models are the binding cap on dense tiles: Zephras Isle read 48 models per tile and capped
+     * 791 set doodads at 48, while no tile came near 512 doodad placements, so 96 models (and 96
+     * model images) are read.
+     */
+    static final int MAX_DOODADS = 512, MAX_MODELS = 96, MAX_MODEL_IMAGES = 96;
 
     static final int MAX_DOODAD_VERTICES = 65_536, MAX_DOODAD_INDICES = 196_608;
     static final int MAX_DOODAD_RANGES = 512, MAX_DOODAD_PIXELS = 1 << 19;
@@ -130,8 +135,21 @@ public final class WorldExteriorObjects {
      */
     private static final int DOODAD_DIRECT_ID = 0x40, DOODAD_ADMITTED = 0x2 | 0x20 | 0x200 | 0x1000;
 
-    /** MODD flags: only 0x1 (accepts projected textures) is admitted; it carries no transform. */
-    private static final int SET_DOODAD_ADMITTED = 0x1;
+    /**
+     * MODD flags (the high byte over the 24-bit reference) admitted without being interpreted: 0x1
+     * accepts projected textures, 0x2 selects interior rather than exterior lighting, and 0x4, 0x8
+     * and 0x10 are undocumented (0x10 lies in the bits wowdev records as unused as of 7.0.1.20994).
+     * No reviewed source lets any of them change the model reference or the transform: wowdev WMO
+     * (MODD, SMODoodadDef) keeps them apart from nameIndex, position, orientation and scale, and
+     * wow.export 4474fa4 reads them in WMOLoader.js but never uses them; WMORendererGL.js:380-418
+     * resolves the model from the reference alone and places it from position, rotation and scale.
+     * Zephras Isle records 0x10, 0x12, 0x16 and 0x1e on 1,337 set doodads. 0x20 to 0x80 are not
+     * seen and stay refused.
+     */
+    private static final int SET_DOODAD_ADMITTED = 0x1 | 0x2 | 0x4 | 0x8 | 0x10;
+
+    // MODD 0x2 selects interior rather than exterior lighting; vimi lights every set doodad as
+    // exterior (BASIC profile, fixed light), so the flag is admitted but not honoured.
 
     /**
      * Whether texture1 of a batch is sampled with UV0: the batch's shader ID and texture count name
@@ -238,7 +256,7 @@ public final class WorldExteriorObjects {
         DOODAD_EMPTY,
         SET_DOODAD_DRAWN,
         /**
-         * Name-table (MODN) reference, zero or out-of-range MODI entry, a MODD flag other than 0x1,
+         * Name-table (MODN) reference, zero or out-of-range MODI entry, a MODD flag outside 0x1F,
          * or a bad transform.
          */
         SET_DOODAD_UNSUPPORTED,
@@ -1389,6 +1407,8 @@ public final class WorldExteriorObjects {
             int[] local = new int[counts.length];
             var pending = new ArrayList<PendingMesh>();
             int tentativeVertices = 0, tentativeIndices = 0, tentativeRanges = 0;
+            // Heap held by pending copies: every candidate vertex and index of every kept group.
+            long pendingVertices = 0, pendingIndices = 0, tentativeMaterialVertices = 0;
             for (int g = 0; g < lod0; g++) {
                 token.check();
                 long groupId = root.gfid(g);
@@ -1400,6 +1420,33 @@ public final class WorldExteriorObjects {
                 var mesh = readGroup(g, groupId, root, local);
                 if (mesh == null) {
                     continue;
+                }
+                int meshVertices = mesh.vertices().length / VERTEX_FLOATS;
+                boolean materialOnly = mesh.ranges().stream().noneMatch(r -> r.blend() == OPAQUE);
+                if (materialOnly
+                        && !mesh.ranges().isEmpty()
+                        && meshVertices
+                                > MAX_MATERIAL_VERTICES
+                                        - materialVertices
+                                        - tentativeMaterialVertices) {
+                    // resolveBuilding would cap every range of this cutout- or blend-only mesh on
+                    // its vertices (BATCH_CAPPED, then GROUP_EMPTY) before reading any image; do it
+                    // now so its copy is never held. Material vertices still pending are charged
+                    // as if kept, a conservative bound.
+                    local[Count.BATCH_CAPPED.ordinal()] += mesh.ranges().size();
+                    local[Count.GROUP_EMPTY.ordinal()]++;
+                    continue;
+                }
+                if (materialOnly) {
+                    tentativeMaterialVertices += meshVertices;
+                }
+                pendingVertices += meshVertices;
+                pendingIndices += mesh.indices().length;
+                if (pendingVertices > MAX_VERTICES + MAX_MATERIAL_VERTICES
+                        || pendingIndices > MAX_INDICES + MAX_MATERIAL_INDICES) {
+                    // More candidate geometry than both budgets could ever draw: never hold it.
+                    count(Count.ROOT_CAPPED);
+                    return RootState.CAPPED;
                 }
                 pending.add(mesh);
                 // Caps are decided by opaque candidates alone, exactly as the opaque-only profile

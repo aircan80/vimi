@@ -1666,6 +1666,101 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void moddFlagsThatNeverChangeReferenceOrTransformAreAdmitted() {
+        // Zephras Isle records 0x10, 0x12, 0x16 and 0x1e; 0x1 to 0x10 are admitted uninterpreted,
+        // unseen higher bits stay refused.
+        int[] flags = {0x01, 0x02, 0x04, 0x08, 0x10, 0x12, 0x16, 0x1e, 0x20, 0x40, 0x80};
+        var defs = new ArrayList<Modd>();
+        for (int flag : flags) {
+            defs.add(new Modd(flag << 24, 0, 0, 0, new double[] {0, 0, 0, 1}, 1));
+        }
+        var chunks = doodadChunks(new int[][] {{0, flags.length}}, new long[] {MODEL}, defs);
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(
+                    ROOT, root(1, new long[] {GROUP}, List.of(new Material(0, IMAGE, 0)), chunks));
+            try (var set = run(f, obj0(List.of(Modf.of(ROOT, 1, 0x8)), List.of(), 0))) {
+                assertEquals(8, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                assertEquals(3, set.count(WorldExteriorObjects.Count.SET_DOODAD_UNSUPPORTED));
+            }
+        }
+    }
+
+    @Test
+    void aGroupFileOverOneMebibyteIsReadAndDrawn() {
+        // The BASIC_EXTERIOR read profile follows WmoGroupSpans.MAX_BYTES (8 MiB): a group padded
+        // past the old 1 MiB cap with an unparsed chunk still draws.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            byte[] small = group(EXT);
+            int mogp = indexOf(small, "MOGP");
+            byte[] pad = chunk("ZZZZ", new byte[1 << 20]);
+            byte[] big = join(small, pad);
+            ByteBuffer.wrap(big)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .putInt(mogp + 4, small.length - mogp - 8 + pad.length);
+            assertTrue(big.length > 1 << 20);
+            f.files.sources.put(GROUP, big);
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+            }
+        }
+    }
+
+    @Test
+    void pendingGroupCopiesStayWithinWhatTheBudgetsCanDraw() {
+        // A cutout-only group larger than the whole material vertex budget is capped before its
+        // copy is held (BATCH_CAPPED, GROUP_EMPTY), exactly as resolving it would have; its image
+        // is never read.
+        int vertices = WorldExteriorObjects.MAX_MATERIAL_VERTICES + 1;
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            2,
+                            new long[] {GROUP, GROUP + 1},
+                            List.of(new Material(0, IMAGE, 0), new Material(1, IMAGE2, 0))));
+            f.files.sources.put(GROUP + 1, group(EXT, vertices, 1, List.of(new Batch(0, 3, 0, 1))));
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_EMPTY));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.BATCH_CAPPED));
+                assertNull(f.files.opens.get(IMAGE2), "the capped cutout image is never read");
+            }
+        }
+        // Hostile input: three groups each with one opaque triangle and 65,535 cutout triangles,
+        // hold more candidate indices than both index budgets together; the root is capped whole
+        // instead of keeping every copy.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            3,
+                            new long[] {GROUP, GROUP + 1, GROUP + 2},
+                            List.of(new Material(0, IMAGE, 0), new Material(1, IMAGE2, 0))));
+            for (int g = 0; g < 3; g++) {
+                f.files.sources.put(
+                        GROUP + g,
+                        group(
+                                EXT,
+                                3,
+                                65536,
+                                List.of(
+                                        new Batch(0, 3, 0, 0),
+                                        // MOBA counts are u16: three batches of 21,845 triangles
+                                        new Batch(3, 65535, 0, 1),
+                                        new Batch(3 + 65535, 65535, 0, 1),
+                                        new Batch(3 + 2 * 65535, 65535, 0, 1))));
+            }
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                assertTrue(set.models().isEmpty());
+            }
+        }
+    }
+
+    @Test
     void wmoDoodadSetsComposeTheBuildingTransform() {
         double h = Math.sqrt(0.5);
         var defs =
@@ -1676,7 +1771,7 @@ class WorldExteriorObjectsTest {
                         new Modd(5, 0, 0, 0, new double[] {0, 0, 0, 1}, 1), // outside MODI
                         new Modd(0, 0, 0, 0, new double[] {0, 0, 0, 2}, 1), // not unit
                         new Modd(0, 0, 0, 0, new double[] {h, 0, 0, h}, 1), // pitched: drawn
-                        new Modd(0x02000000, 0, 0, 0, new double[] {0, 0, 0, 1}, 1)); // flag 0x2
+                        new Modd(0x20000000, 0, 0, 0, new double[] {0, 0, 0, 1}, 1)); // flag 0x20
         var chunks =
                 doodadChunks(new int[][] {{0, 2}, {2, 5}, {4, 1}}, new long[] {MODEL, 0}, defs);
         var building = new Modf(ROOT, 77, 0xc, 100, 20, 300, 0, 90, 0, 2048);

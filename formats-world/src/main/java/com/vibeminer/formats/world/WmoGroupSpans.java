@@ -20,8 +20,21 @@ import java.util.function.Consumer;
  * Borrow#triangleBytes()} tells which.
  */
 public final class WmoGroupSpans {
-    public static final int MAX_BYTES = 1 << 20;
-    public static final int MAX_VERTICES = 16384, MAX_TRIANGLES = 16384;
+    /**
+     * Source bytes of one group file: the same 8 MiB ceiling as {@link
+     * WmoFormats#MAX_SOURCE_BYTES}. Real interior groups exceed 1 MiB (Blackrock Spire, Blackrock
+     * Depths and Wailing Caverns reach 1.31 MB with 28,721 vertices); every parsed stream at its
+     * cap fits in about 4.3 MB.
+     */
+    public static final int MAX_BYTES = 8 << 20;
+
+    /**
+     * Vertices: the whole domain of MOVI's unsigned 16-bit indices, the format's own bound.
+     * Triangles: the same 65,536, above the largest recorded group seen (22,194 triangles, in the
+     * unused Monastery map 44) and within the exterior path's per-tile index cap of 294,912.
+     */
+    public static final int MAX_VERTICES = 65536, MAX_TRIANGLES = 65536;
+
     public static final int MAX_BATCHES = 64, MAX_CHUNKS = 256, MAX_METADATA_BYTES = 64 << 10;
     private static final int MVER = 0x4d564552, MOGP = 0x4d4f4750;
     private static final int MOVT = 0x4d4f5654, MONR = 0x4d4f4e52, MOVI = 0x4d4f5649;

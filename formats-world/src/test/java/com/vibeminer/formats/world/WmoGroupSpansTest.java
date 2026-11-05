@@ -287,6 +287,74 @@ class WmoGroupSpansTest {
     }
 
     @Test
+    void realInteriorGroupSizesAboveTheOldSixteenThousandAndOneMebibyteCapsParse() {
+        // Shaped like Blackrock Depths group 14: 19,919 vertices and 14,632 triangles in a file
+        // over 1 MiB, and the unused Monastery group 42: 22,194 triangles.
+        for (int[] shape : new int[][] {{19919, 14632}, {17302, 22194}, {28721, 19288}}) {
+            int vertices = shape[0], triangles = shape[1];
+            var indices = buffer(triangles * 6);
+            for (int t = 0; t < triangles; t++) {
+                indices.putShort((short) 0).putShort((short) 1).putShort((short) (vertices - 1));
+            }
+            var parts = new ArrayList<byte[]>();
+            parts.add(header(1));
+            parts.add(chunk("MOVT", new byte[vertices * 12]));
+            parts.add(chunk("MONR", new byte[vertices * 12]));
+            parts.add(chunk("MOTV", new byte[vertices * 8]));
+            parts.add(chunk("MOVI", indices.array()));
+            parts.add(chunk("MOPY", new byte[triangles * 2]));
+            parts.add(chunk("MOBA", batch(0, Math.min(triangles, 21845) * 3, vertices - 1)));
+            parts.add(chunk("MOCV", new byte[vertices * 4]));
+            parts.add(chunk("ZZZZ", new byte[1 << 20])); // unparsed bulk such as MOBR or MLIQ
+            byte[] raw =
+                    join(
+                            chunk("MVER", buffer(4).putInt(17).array()),
+                            chunk("MOGP", join(parts.toArray(byte[][]::new))));
+            assertTrue(raw.length > 1 << 20, "over the old 1 MiB cap");
+            WmoGroupSpans.withGroup(
+                    raw,
+                    () -> false,
+                    b -> {
+                        assertEquals(vertices * 3, b.positions().size());
+                        assertEquals(triangles * 3, b.indices().size());
+                    });
+        }
+        // The format's own bound: 16-bit indices address at most 65,536 vertices. Every vertex
+        // stream at N, one triangle using index N - 1.
+        for (int n : new int[] {65536, 65537}) {
+            int last = Math.min(n, 65536) - 1;
+            var full =
+                    new byte[][] {
+                        chunk("MOVT", new byte[n * 12]),
+                        chunk("MONR", new byte[n * 12]),
+                        chunk("MOTV", new byte[n * 8]),
+                        chunk(
+                                "MOVI",
+                                buffer(6)
+                                        .putShort((short) 0)
+                                        .putShort((short) 1)
+                                        .putShort((short) last)
+                                        .array()),
+                        chunk("MOPY", new byte[2]),
+                        chunk("MOBA", batch(0, 3, last)),
+                        chunk("MOCV", new byte[n * 4])
+                    };
+            if (n == 65536) {
+                WmoGroupSpans.withGroup(
+                        group(full),
+                        () -> false,
+                        b -> assertEquals(65536 * 3, b.positions().size()));
+            } else {
+                var refused =
+                        assertThrows(
+                                IllegalArgumentException.class,
+                                () -> WmoGroupSpans.withGroup(group(full), () -> false, b -> {}));
+                assertEquals("Group stream count", refused.getMessage());
+            }
+        }
+    }
+
+    @Test
     void maximumShapeKeepsOneRawAliasAndBoundedMetadataWithoutPayloadArrays() {
         var batches = new byte[WmoGroupSpans.MAX_BATCHES][];
         Arrays.setAll(batches, i -> batch(0, 3, 0));
