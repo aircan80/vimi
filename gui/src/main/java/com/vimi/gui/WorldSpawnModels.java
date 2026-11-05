@@ -114,6 +114,7 @@ final class WorldSpawnModels implements AutoCloseable {
                         handle.getData(npcId, TableTypes.Priority.INTERACTIVE, token).join());
             } catch (RuntimeException failure) {
                 token.check();
+                WorldDiagnostics.degraded("creature lookups", "World creature model lookup failed", failure);
                 return new Resolved(npcId, CreatureModelPolicy.unknown("Model lookup failed: " + message(failure)),
                         null, source);
             }
@@ -240,6 +241,8 @@ final class WorldSpawnModels implements AutoCloseable {
                 try {
                     result = resolver.resolve(id, lookup);
                 } catch (Throwable failure) {
+                    if (!lookup.isCanceled())
+                        WorldDiagnostics.degraded("creature lookups", "World creature model lookup failed", failure);
                     result = lookup.isCanceled() ? null : new Resolved(id, CreatureModelPolicy.unknown(
                             "Model lookup failed: " + message(failure)), null, "client creature tables");
                 }

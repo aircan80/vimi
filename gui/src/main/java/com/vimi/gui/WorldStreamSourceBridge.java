@@ -200,6 +200,8 @@ final class WorldStreamSourceBridge {
                 cancellation.check();
                 failed = true;
                 note = "exterior objects failed: " + failure.getClass().getSimpleName();
+                WorldDiagnostics.degraded("exterior objects",
+                        "World exterior objects failed; tile kept as terrain only", failure);
             }
             if (creatures == null) {
                 if (failed || set.placements().isEmpty()) return new ExteriorCopy(null, 0, failed, note);
@@ -244,6 +246,8 @@ final class WorldStreamSourceBridge {
                 cancellation.check();
                 failed = true;
                 note = "exterior objects failed: " + failure.getClass().getSimpleName();
+                WorldDiagnostics.degraded("exterior objects",
+                        "World exterior objects copy failed; tile kept as terrain only", failure);
                 buildings = null;
                 builder = WorldStreamTileWriter.Exterior.builder();
             }
@@ -256,6 +260,8 @@ final class WorldStreamSourceBridge {
                 return new ExteriorCopy(builder.build(), count, failed, note, summary);
             } catch (RuntimeException invalid) {
                 cancellation.check();
+                WorldDiagnostics.degraded("creatures",
+                        "World creature models failed the objects file checks; buildings kept", invalid);
                 summary = WorldTileCreatures.Summary.failed(
                         "creature models invalid: " + invalid.getMessage());
             }
@@ -264,6 +270,7 @@ final class WorldStreamSourceBridge {
             summary = WorldTileCreatures.Summary.failed("creature models canceled outside this tile");
         } catch (RuntimeException failure) {
             cancellation.check();
+            WorldDiagnostics.degraded("creatures", "World creature models failed; buildings kept", failure);
             summary = WorldTileCreatures.Summary.failed(
                     "creature models failed: " + failure.getClass().getSimpleName());
         }
@@ -279,6 +286,8 @@ final class WorldStreamSourceBridge {
             return new ExteriorCopy(null, 0, true, "exterior objects failed: canceled outside this tile", summary);
         } catch (RuntimeException failure) {
             cancellation.check();
+            WorldDiagnostics.degraded("exterior objects",
+                    "World exterior objects rebuild failed; tile kept as terrain only", failure);
             return new ExteriorCopy(
                     null, 0, true, "exterior objects failed: " + failure.getClass().getSimpleName(), summary);
         }
@@ -444,6 +453,7 @@ final class WorldStreamSourceBridge {
                     throw failed;
                 }
                 waterNote = "water failed: " + failed.getClass().getSimpleName();
+                WorldDiagnostics.degraded("water", "World water failed; tile kept as terrain only", failed);
                 return null;
             }
         }

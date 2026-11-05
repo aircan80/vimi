@@ -526,6 +526,14 @@ tasks.register('worldMinimapUiTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldMinimapUiTest'
 }
 
+// Pure cancellation chains from nested JDK joins stay routine; no display required.
+tasks.register('cleanCancellationTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.CleanCancellationTest'
+}
+check.dependsOn cleanCancellationTest
+
 // Authored coalesced texture loading and owned result retirement; no display required.
 tasks.register('worldTextureLoadingTest', JavaExec) {
     dependsOn testClasses
@@ -614,6 +622,14 @@ tasks.register('worldStreamSourceControllerTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldStreamSourceControllerTest'
 }
 check.dependsOn worldStreamSourceControllerTest
+
+// Bounded, redacted World failure log/UI summaries (#166), without live data or a GPU.
+tasks.register('worldDiagnosticsTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldDiagnosticsTest'
+}
+check.dependsOn worldDiagnosticsTest
 
 // Off-FX display feedback and actual legacy-work retirement, without live data or a GPU.
 tasks.register('worldStreamBackgroundTest', JavaExec) {

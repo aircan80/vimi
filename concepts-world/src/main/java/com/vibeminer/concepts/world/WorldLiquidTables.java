@@ -504,7 +504,8 @@ final class WorldLiquidTables {
         if (!build.equals(files.build()) || !locale.equals(files.locale())) {
             throw unavailable(Reason.SOURCE_CHANGED);
         }
-        var stat = WorldSourceFutures.await(files.stat(FileTypes.FileRef.id(p.id), token));
+        // Identity facts only: never load listfile names or sniff formats for a liquid table.
+        var stat = WorldSourceFutures.await(files.statContent(FileTypes.FileRef.id(p.id), token));
         token.check();
         if (stat.state() != FileTypes.FileLookupState.FOUND
                 || stat.file() == null
