@@ -135,10 +135,42 @@ class WorldStreamLateObjectsTransportTest {
                                     + " session)"),
                     record);
             assertTrue(record.contains("synthetic shader failure at <path>"), record);
+            assertTrue(record.contains("(world-wmo/spirv, program)"), record);
             assertFalse(record.contains("tester"), record);
             // Terrain keeps streaming and committing after the failed objects.
             var second = fixture.stage(7, 20);
             fixture.commit(first, second);
+            assertFalse(fixture.session.completion().isDone());
+        }
+    }
+
+    @Test
+    void inlineObjectsFailureLogsTheRenderersReason() throws Exception {
+        try (var fixture = new Fixture(directory)) {
+            // Inline objects the renderer draws are not a failure.
+            var drawn = fixture.stage(7, 18, WorldStreamObjectsFileTest.small());
+            assertSame(WorldStreamTransport.ExteriorObjects.DRAWN, drawn.exteriorObjects());
+            fixture.commit(drawn);
+            // The renderer's reason is on stderr before the failure is reported.
+            fixture.until(() -> !fixture.stderrTail().isEmpty());
+            Files.writeString(fixture.control("fail-objects"), "fail");
+            var failed = fixture.stage(7, 19, WorldStreamObjectsFileTest.small());
+            assertSame(WorldStreamTransport.ExteriorObjects.FAILED, failed.exteriorObjects());
+            // STAGED objects state 2 logs the renderer's redacted reason with the first failure.
+            String record = fixture.session.objectsDiagnostic().get(5, TimeUnit.SECONDS);
+            assertTrue(
+                    record.startsWith(
+                            "World renderer could not draw exterior objects (1 tile this"
+                                    + " session)"),
+                    record);
+            assertTrue(record.contains("synthetic shader failure at <path>"), record);
+            assertTrue(record.contains("(world-wmo/spirv, program)"), record);
+            assertFalse(record.contains("tester"), record);
+            // Terrain commits and keeps streaming after the failed inline objects.
+            fixture.commit(drawn, failed);
+            Files.delete(fixture.control("fail-objects"));
+            var next = fixture.stage(7, 20);
+            fixture.commit(drawn, failed, next);
             assertFalse(fixture.session.completion().isDone());
         }
     }
@@ -334,6 +366,15 @@ class WorldStreamLateObjectsTransportTest {
         }
 
         WorldStreamTransport.Resident stage(int x, int y) throws Exception {
+            return stage(x, y, null);
+        }
+
+        /**
+         * Stages one tile; with {@code exterior}, its objects file is published first and named
+         * inline in the tile header, as the exterior tile writer does.
+         */
+        WorldStreamTransport.Resident stage(int x, int y, WorldStreamTileWriter.Exterior exterior)
+                throws Exception {
             WorldStreamTransport.TileReservation ticket = null;
             long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
             while (ticket == null) {
@@ -348,6 +389,21 @@ class WorldStreamLateObjectsTransportTest {
             return ticket.produce(
                             (destination, stopping) -> {
                                 var c = destination.context();
+                                Path objectsPath = null;
+                                WorldStreamObjectsFile.Reference reference = null;
+                                if (exterior != null) {
+                                    // The packet adopts the published file; closing the handle
+                                    // here would delete it.
+                                    var objects =
+                                            WorldStreamTileWriter.writeObjectsUnadvertised(
+                                                    destination, exterior, stopping);
+                                    objectsPath =
+                                            c.path()
+                                                    .resolveSibling(
+                                                            WorldStreamObjectsFile.basename(
+                                                                    c.transaction()));
+                                    reference = reference(objects.bytes(), objectsPath);
+                                }
                                 var tile = WorldStreamTileFileTest.full(x, y, false);
                                 var h = WorldStreamTileFileTest.header(tile, false);
                                 var header =
@@ -372,17 +428,25 @@ class WorldStreamLateObjectsTransportTest {
                                                 h.wdt(),
                                                 h.root(),
                                                 h.tex0(),
-                                                h.diffuse());
+                                                h.diffuse(),
+                                                reference);
                                 var expected =
                                         WorldStreamTileFile.write(
                                                 c.path().getParent(), header, tile, null, stopping);
                                 try (var original =
                                         WorldStreamPacketFile.finalized(
-                                                expected, c.path(), c.identity())) {
+                                                expected, c.path(), c.identity(), objectsPath)) {
                                     return destination.adopt(original.move(), header);
                                 }
                             })
                     .get(10, TimeUnit.SECONDS);
+        }
+
+        private static WorldStreamObjectsFile.Reference reference(int length, Path file)
+                throws Exception {
+            var digest = java.security.MessageDigest.getInstance("SHA-256");
+            return new WorldStreamObjectsFile.Reference(
+                    length, HexFormat.of().formatHex(digest.digest(Files.readAllBytes(file))));
         }
 
         void commit(WorldStreamTransport.Resident... residents) throws Exception {
@@ -410,9 +474,10 @@ class WorldStreamLateObjectsTransportTest {
     }
 
     /**
-     * Scripted child: stages every offered tile without inline objects, applies commits, and
-     * answers OBJECTS on its own thread after reading the actual objects file for the resident
-     * tile. ATTACHED only while that exact lease is still committed; DROPPED otherwise.
+     * Scripted child: stages every offered tile (inline objects drawn, or failed under
+     * fail-objects), applies commits, and answers OBJECTS on its own thread after reading the
+     * actual objects file for the resident tile. ATTACHED only while that exact lease is still
+     * committed; DROPPED otherwise.
      */
     public static final class Child {
         private static PrintStream out;
@@ -440,8 +505,13 @@ class WorldStreamLateObjectsTransportTest {
             long serial = 0;
             // The renderer's object pass reports why it is unavailable on stderr only.
             System.err.println(
-                    "World exterior objects pass unavailable: java.io.IOException: synthetic"
-                            + " shader failure at /home/tester/vimi/world-wmo/vs.bin");
+                    BgfxWorldStreamRenderer.objectsReason(
+                            "pass unavailable",
+                            "world-wmo/spirv",
+                            "program",
+                            new java.io.IOException(
+                                    "synthetic shader failure at"
+                                            + " /home/tester/vimi/world-wmo/vs.bin")));
             System.err.flush();
             send("SESSION TERRAIN_EXTERIOR_V1");
             var lease = new WorldStreamState.Lease(0, ++generations[0], ++serial);
@@ -474,6 +544,12 @@ class WorldStreamLateObjectsTransportTest {
                             transactions.put(offer.lease().slot(), offer.transaction());
                         }
                         send("INPUT_CONSUMED " + offer.transaction() + " TILE");
+                        // Inline objects are drawn (1), or failed (2) under fail-objects, as
+                        // when the renderer's object pass is unavailable; terrain is kept.
+                        int objects =
+                                h.objects() == null
+                                        ? 0
+                                        : Files.exists(control.resolve("fail-objects")) ? 2 : 1;
                         send(
                                 "STAGED "
                                         + offer.transaction()
@@ -483,7 +559,8 @@ class WorldStreamLateObjectsTransportTest {
                                         + offer.lease().slot()
                                         + " "
                                         + offer.lease().generation()
-                                        + " 2 0 0");
+                                        + " 2 0 "
+                                        + objects);
                         staged = offer.lease();
                     }
                 } else if (command instanceof WorldStreamControl.Commit next) {
