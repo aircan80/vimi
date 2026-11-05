@@ -15,11 +15,52 @@ import java.util.concurrent.CompletableFuture;
  * and retains its permit until terminatedAndDrained completes successfully.
  */
 public final class WorldStreamTransport {
-    /** Most residents one commit may name: the 5 x 5 neighborhood around the camera tile. */
+    /** Hard ceiling on residents one commit may name: the far 5 x 5 neighborhood. */
     public static final int MAX_RESIDENTS = WorldStreamState.MAX_ACTIVE;
 
     /** One tile beside the active residents is staged while the next commit is prepared. */
     public static final int MAX_PREPARED = MAX_RESIDENTS + 1;
+
+    /**
+     * Tile neighborhood a session keeps resident (issue #173). Every slot is the same fixed size,
+     * so NEAR needs 10 slots and FAR 26; FAR costs about 2.6 times the terrain GPU memory.
+     */
+    public enum ViewDistance {
+        /** The 3 x 3 neighborhood: 9 residents, 10 slots. */
+        NEAR(1, WorldStreamEnvelope.Session.NEAR_ACTIVE),
+        /** The 5 x 5 neighborhood: 25 residents, 26 slots. */
+        FAR(2, WorldStreamState.MAX_ACTIVE);
+        private final int radius, residents;
+
+        ViewDistance(int radius, int residents) {
+            this.radius = radius;
+            this.residents = residents;
+        }
+
+        /** Tiles on each side of the camera tile. */
+        public int radius() {
+            return radius;
+        }
+
+        /** Most residents one commit may name. */
+        public int residents() {
+            return residents;
+        }
+
+        /** Renderer slots: every resident plus one staged. */
+        public int slots() {
+            return residents + 1;
+        }
+
+        static ViewDistance of(int residents) {
+            for (var value : values()) {
+                if (value.residents == residents) {
+                    return value;
+                }
+            }
+            throw new IllegalArgumentException("Unknown view distance");
+        }
+    }
 
     public enum Backend {
         DEFAULT,
@@ -33,13 +74,23 @@ public final class WorldStreamTransport {
      * packet may carry one immutable objects file drawn after terrain.
      */
     public record Spec(
-            String scopeSha256, long initialPolicy, Backend backend, boolean exteriorObjects) {
+            String scopeSha256,
+            long initialPolicy,
+            Backend backend,
+            boolean exteriorObjects,
+            ViewDistance viewDistance) {
         public Spec(String scopeSha256, long initialPolicy, Backend backend) {
             this(scopeSha256, initialPolicy, backend, false);
         }
 
+        public Spec(
+                String scopeSha256, long initialPolicy, Backend backend, boolean exteriorObjects) {
+            this(scopeSha256, initialPolicy, backend, exteriorObjects, ViewDistance.NEAR);
+        }
+
         public Spec {
             Objects.requireNonNull(backend);
+            Objects.requireNonNull(viewDistance);
             new WorldStreamEnvelope.Session(
                     new WorldStreamState.Nonce(1, 1), scopeSha256, initialPolicy);
         }
@@ -540,7 +591,8 @@ public final class WorldStreamTransport {
                         new WorldStreamState.Nonce(high, low),
                         spec.scopeSha256(),
                         spec.initialPolicy(),
-                        spec.exteriorObjects());
+                        spec.exteriorObjects(),
+                        spec.viewDistance().residents());
         String backend =
                 spec.backend() == Backend.DEFAULT
                         ? null
@@ -747,6 +799,11 @@ public final class WorldStreamTransport {
             return descriptor.exteriorObjects();
         }
 
+        /** This session's resident neighborhood; commits name at most its residents. */
+        public ViewDistance viewDistance() {
+            return ViewDistance.of(descriptor.maxActive());
+        }
+
         /** Protocol success is separate from process/resource drain. */
         public CompletableFuture<Void> completion() {
             return completion.copy();
@@ -755,7 +812,7 @@ public final class WorldStreamTransport {
         /** Bounded array snapshot on caller; validation/publication and all IO run off caller. */
         public CompletableFuture<CommitReceipt> commit(long policy, Resident... ordered) {
             Objects.requireNonNull(ordered);
-            if (ordered.length > MAX_RESIDENTS || policy < descriptor.policy()) {
+            if (ordered.length > descriptor.maxActive() || policy < descriptor.policy()) {
                 throw new IllegalArgumentException("World commit bounds");
             }
             var snapshot = ordered.clone();

@@ -7,17 +7,21 @@ import java.util.List;
 
 /** Orders the recorded camera neighborhood without acquiring source data. */
 final class WorldStreamNeighborhood {
-    /** Tiles on each side of the camera tile: a 5 x 5 neighborhood (issue #173). */
-    static final int RADIUS = 2;
-
     private WorldStreamNeighborhood() {}
 
+    /** The far 5 x 5 neighborhood (issue #173); see the view-distance overload. */
     static List<WorldFormats.Tile> select(List<WorldFormats.Tile> recorded,
             int cameraX, int cameraY, double yaw) {
+        return select(recorded, cameraX, cameraY, yaw, WorldStreamTransport.ViewDistance.FAR);
+    }
+
+    static List<WorldFormats.Tile> select(List<WorldFormats.Tile> recorded,
+            int cameraX, int cameraY, double yaw, WorldStreamTransport.ViewDistance distance) {
+        int radius = distance.radius();
         if (!Double.isFinite(yaw)) throw new IllegalArgumentException("Nonfinite World heading");
         double forwardX = -Math.cos(yaw), forwardY = -Math.sin(yaw);
         return recorded.stream()
-                .filter(tile -> ring(tile, cameraX, cameraY) <= RADIUS)
+                .filter(tile -> ring(tile, cameraX, cameraY) <= radius)
                 // Whole rings first, so the inner 3 x 3 still loads before the outer ring.
                 .sorted(Comparator.comparingInt((WorldFormats.Tile tile) ->
                         ring(tile, cameraX, cameraY))
@@ -29,7 +33,7 @@ final class WorldStreamNeighborhood {
                                 + (tile.y() - cameraY) * forwardY))
                         .thenComparingInt(WorldFormats.Tile::x)
                         .thenComparingInt(WorldFormats.Tile::y))
-                .limit(WorldStreamTransport.MAX_RESIDENTS).toList();
+                .limit(distance.residents()).toList();
     }
 
     /** Chebyshev tile distance: 0 for the camera tile, 1 for the inner ring, 2 for the outer. */

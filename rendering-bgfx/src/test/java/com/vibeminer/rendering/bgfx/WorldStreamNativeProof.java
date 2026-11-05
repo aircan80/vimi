@@ -377,17 +377,12 @@ public final class WorldStreamNativeProof {
                     }
                     var stats = owner.stats();
                     require(
-                            stats.dynamicBuffers() == BgfxWorldStreamRenderer.SLOT_COUNT
+                            stats.dynamicBuffers() == SESSION.slots()
                                     && stats.backingBuffers()
-                                            == stats.contextBuffers()
-                                                    + BgfxWorldStreamRenderer.SLOT_COUNT
-                                                    + 1,
+                                            == stats.contextBuffers() + SESSION.slots() + 1,
                             "Fixed native buffer counts " + stats);
                     require(
-                            stats.textures()
-                                    == stats.contextTextures()
-                                            + BgfxWorldStreamRenderer.SLOT_COUNT
-                                            + 5,
+                            stats.textures() == stats.contextTextures() + SESSION.slots() + 5,
                             "One atlas per slot plus five fixed target/readbacks");
                     require(
                             stats.upload().references() == 0
@@ -487,7 +482,7 @@ public final class WorldStreamNativeProof {
                         new WorldStreamNativeOwner(
                                 nextSession, nextFrames, BGFX_RENDERER_TYPE_VULKAN)) {
             require(
-                    successor.stats().dynamicBuffers() == BgfxWorldStreamRenderer.SLOT_COUNT,
+                    successor.stats().dynamicBuffers() == SESSION.slots(),
                     "Successor context resources");
         }
     }

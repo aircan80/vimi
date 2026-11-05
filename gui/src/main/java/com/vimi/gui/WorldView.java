@@ -2469,7 +2469,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 }
                 public CompletableFuture<Void> closeAsync() { return owner.closeAsync(); }
             };
-        }, streamingEvents, Platform::runLater, System::nanoTime, preparer);
+        }, streamingEvents, Platform::runLater, System::nanoTime, preparer,
+                WorldStreamGpuOwner.VIEW_DISTANCE.residents());
         if (camera != null) {
             streamCamera();
             streamNeighborhood();
@@ -2622,7 +2623,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (streaming == null || camera == null || inventory == null) return;
         int x = tileX(), y = tileY();
         streaming.neighborhood(WorldStreamNeighborhood.select(
-                inventory.world().tiles(), x, y, camera.yaw()));
+                inventory.world().tiles(), x, y, camera.yaw(), WorldStreamGpuOwner.VIEW_DISTANCE));
     }
 
     private void retireGpu() {
