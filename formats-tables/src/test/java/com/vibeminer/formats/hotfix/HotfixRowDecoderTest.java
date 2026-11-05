@@ -107,10 +107,88 @@ class HotfixRowDecoderTest {
                         "4294967295",
                         "-9223372036854775808",
                         "18446744073709551615",
-                        "-0.0"),
+                        "-0"),
                 result.row().values());
         assertFalse(result.row().isCopy());
         assertEquals(List.of(), result.row().textIssues());
+    }
+
+    @Test
+    void floatsUseTheSameTextAsBaseDb2Rows() {
+        // Effective views mix hotfix and base rows in one table: filters, spell text and
+        // BigDecimal consumers must see one spelling for the same single value.
+        var layout = layout("int ID\nfloat V", "$id,noninline$ID<u32>\nV[5]");
+        float[] values = {20f, 1.0E-4f, 1.5f, -0f, 3.0E9f};
+        var body = ByteBuffer.allocate(4 * values.length).order(ByteOrder.LITTLE_ENDIAN);
+        for (float value : values) {
+            body.putFloat(value);
+        }
+        body.flip();
+        assertEquals(
+                List.of("9", "20", "0.0001", "1.5", "-0", "3E+09"),
+                decode(layout, 9, body).row().values());
+        for (float bad : new float[] {Float.NaN, Float.POSITIVE_INFINITY}) {
+            var nonfinite = ByteBuffer.allocate(20).order(ByteOrder.LITTLE_ENDIAN);
+            nonfinite.putFloat(bad).putFloat(0).putFloat(0).putFloat(0).putFloat(0).flip();
+            refused(HotfixRowDecoder.Reason.FLOAT, layout, 9, nonfinite);
+        }
+    }
+
+    private static HotfixRowDecoder.Layout rawPhysical(
+            HotfixRowDecoder.Layout layout, int column, int candidateBits, boolean unsigned) {
+        var columns = new ArrayList<>(layout.header().columns());
+        var plain = columns.get(column);
+        columns.set(
+                column,
+                new Db2Types.Column(
+                        plain.name(),
+                        plain.kind(),
+                        plain.isId(),
+                        new Db2Types.Interpretation(
+                                "raw-physical-integer-v1",
+                                32,
+                                false,
+                                candidateBits,
+                                unsigned,
+                                "authored"),
+                        null));
+        var h = layout.header();
+        return new HotfixRowDecoder.Layout(
+                layout.schema(),
+                new Db2Types.Header(
+                        h.schemaVersion(),
+                        h.tableHash(),
+                        h.layoutHash(),
+                        h.declaredRecords(),
+                        h.declaredCopyRecords(),
+                        h.recordSize(),
+                        columns,
+                        h.format()),
+                layout.nativeFlags(),
+                layout.nativeIdFieldIndex());
+    }
+
+    @Test
+    void rawPhysicalBaseColumnsDecodeAtTheirDeclaredWidthWhenTheTextIsUnambiguous() {
+        // Base DB2 keeps the physical 32-bit integer when a field is stored wider than its
+        // declared width. The hotfix body uses the declared width; the same non-negative value
+        // has one spelling either way, so such tables are not masked wholesale.
+        var plain = layout("int ID\nint A\nint B", "$id,noninline$ID<u32>\nA<u8>\nB<8>");
+        var layout = rawPhysical(rawPhysical(plain, 1, 8, true), 2, 8, false);
+        var body = ByteBuffer.allocate(2).put((byte) 200).put((byte) 5).flip();
+        assertEquals(List.of("9", "200", "5"), decode(layout, 9, body).row().values());
+        // A negative declared value has no single physical spelling in the base row.
+        refused(
+                HotfixRowDecoder.Reason.RAW_INTEGER,
+                layout,
+                9,
+                ByteBuffer.allocate(2).put((byte) 1).put((byte) -1).flip());
+        // The interpretation must describe the same declared field the body is decoded with.
+        refused(
+                HotfixRowDecoder.Reason.COLUMNS,
+                rawPhysical(plain, 1, 16, true),
+                9,
+                ByteBuffer.allocate(2).put((byte) 1).put((byte) 1).flip());
     }
 
     @Test
@@ -287,7 +365,7 @@ class HotfixRowDecoderTest {
     }
 
     @Test
-    void unsupportedWidthsAndRawPhysicalInterpretationsAreNotGuessed() {
+    void unsupportedWidthsAndUnknownInterpretationsAreNotGuessed() {
         var original = layout("int ID\nint Value", "$id,noninline$ID<u32>\nValue<u8>");
         // The DBD parser itself rejects24bits; exercise the public structural DTO defense too.
         var fields = new ArrayList<>(original.schema().columns());
@@ -324,7 +402,7 @@ class HotfixRowDecoderTest {
                         "integer",
                         false,
                         new Db2Types.Interpretation(
-                                "raw-physical-integer-v1",
+                                "authored-unknown-policy-v1",
                                 32,
                                 false,
                                 8,
