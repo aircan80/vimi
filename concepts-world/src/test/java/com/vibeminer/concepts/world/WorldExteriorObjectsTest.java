@@ -1,6 +1,7 @@
 package com.vibeminer.concepts.world;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -243,7 +244,11 @@ class WorldExteriorObjectsTest {
         }
 
         WorldExteriorObjects.TileObjects run() {
-            return WorldExteriorObjects.prepare(engine, scope, TILE, Cancellation.NONE);
+            return run(WorldExteriorObjects.ModelReader.STANDARD);
+        }
+
+        WorldExteriorObjects.TileObjects run(WorldExteriorObjects.ModelReader reader) {
+            return WorldExteriorObjects.prepare(engine, scope, TILE, Cancellation.NONE, reader);
         }
 
         public void close() {
@@ -1245,6 +1250,34 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void unexpectedReaderFailuresAreCountedAndKeptForTheCallerToLog() {
+        var bug = new IllegalStateException("Authored reader bug");
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(MODEL + 1, model());
+            var doodads = List.of(Mddf.of(MODEL + 1, 1, 0x40), Mddf.of(MODEL, 2, 0x40));
+            f.files.sources.put(4L, obj0(List.of(), doodads));
+            WorldExteriorObjects.ModelReader failing =
+                    (id, raw, token) -> {
+                        if (id == MODEL + 1) {
+                            throw bug;
+                        }
+                        return WorldExteriorObjects.ModelReader.STANDARD.read(id, raw, token);
+                    };
+            try (var set = f.run(failing)) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.MODEL_FAILED));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.DOODAD_FAILED_MODEL));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
+                assertTrue(set.modelFailure() == bug, "the failure itself is kept");
+            }
+            try (var set = f.run()) {
+                assertEquals(0, set.count(WorldExteriorObjects.Count.MODEL_FAILED));
+                assertNull(set.modelFailure());
+            }
+        }
+    }
+
+    @Test
     void doodadPlacementAndModelCapsKeepSourceOrder() {
         var doodads = new ArrayList<Mddf>();
         for (int i = 0; i < WorldExteriorObjects.MAX_DOODADS + 3; i++) {
@@ -1566,6 +1599,9 @@ class WorldExteriorObjectsTest {
                                 .allMatch(r -> r.blend() == WorldExteriorObjects.OPAQUE));
                 // The budget is full, so the doodad is capped, never a building.
                 assertEquals(1, set.count(WorldExteriorObjects.Count.DOODAD_CAPPED));
+                // The dropped cutout range's image is not uploaded.
+                assertTrue(set.images().stream().noneMatch(image -> image.id() == IMAGE2));
+                assertImageSlotsValid(set);
             }
         }
         // One placement fewer: the cutout range fits (63 * 65 = 4,095 draws) and is kept.
@@ -1582,6 +1618,197 @@ class WorldExteriorObjectsTest {
                 assertEquals(63, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
                 assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_CAPPED));
                 assertEquals(1, set.count(WorldExteriorObjects.Count.BATCH_CUTOUT));
+            }
+        }
+    }
+
+    private static void assertImageSlotsValid(WorldExteriorObjects.TileObjects set) {
+        for (var model : set.models()) {
+            for (var mesh : model.meshes()) {
+                for (var range : mesh.ranges()) {
+                    assertTrue(range.image() >= 0 && range.image() < set.images().size());
+                }
+            }
+        }
+    }
+
+    @Test
+    void aMaterialOnlyBuildingNeverCapsALaterOpaqueBuildingAndIsTrimmedInstead() {
+        // A building with only two cutout batches, placed first, then a building with 65 opaque
+        // batches in two groups. The opaque-only profile left the first empty, so it costs
+        // nothing at admission: 63 opaque placements (4,095 draws) are all drawn, and the cutout
+        // building, which no longer fits, returns to its opaque-only outcome.
+        long cutoutRoot = ROOT + 10, cutoutGroup = GROUP + 10;
+        var opaque = new ArrayList<Batch>();
+        for (int b = 0; b < 64; b++) {
+            opaque.add(new Batch(b * 3, 3, 0, 0));
+        }
+        // Two cutout placements then 63 opaque (the review's repro), then one cutout and 63 or 62.
+        for (int[] scenario : new int[][] {{2, 63}, {1, 63}, {1, 62}}) {
+            int cutouts = scenario[0], buildings = scenario[1];
+            var records = new ArrayList<Modf>();
+            for (int i = 0; i < cutouts; i++) {
+                records.add(Modf.of(cutoutRoot, 1000 + i, 0x8));
+            }
+            for (int i = 0; i < buildings; i++) {
+                records.add(Modf.of(ROOT, i + 2, 0x8));
+            }
+            try (var f = new Fixture(records)) {
+                // 64 opaque batches in one group and one in a second: 65 opaque ranges.
+                f.files.sources.put(
+                        ROOT,
+                        root(2, new long[] {GROUP, GROUP + 1}, List.of(new Material(0, IMAGE, 0))));
+                f.files.sources.put(GROUP, group(EXT, 3, 64, opaque));
+                f.files.sources.put(GROUP + 1, group(EXT));
+                f.files.sources.put(
+                        cutoutRoot,
+                        root(1, new long[] {cutoutGroup}, List.of(new Material(1, IMAGE2, 0))));
+                f.files.sources.put(
+                        cutoutGroup,
+                        group(EXT, 3, 2, List.of(new Batch(0, 3, 0, 0), new Batch(3, 3, 0, 0))));
+                try (var set = f.run()) {
+                    // Slots: only a material-only placement beyond 64 placements is capped.
+                    int capped =
+                            Math.max(0, cutouts + buildings - WorldExteriorObjects.MAX_PLACEMENTS);
+                    assertEquals(
+                            capped,
+                            set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED),
+                            counts(set).toString());
+                    assertImageSlotsValid(set);
+                    if (buildings == 63) {
+                        assertEquals(
+                                63,
+                                set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN),
+                                counts(set).toString());
+                        assertEquals(
+                                cutouts - capped,
+                                set.count(WorldExteriorObjects.Count.PLACEMENT_EMPTY));
+                        assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                        assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_EMPTY));
+                        assertEquals(2, set.count(WorldExteriorObjects.Count.BATCH_CAPPED));
+                        assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_CUTOUT));
+                        assertEquals(2, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                        assertEquals(1, set.count(WorldExteriorObjects.Count.GROUP_EMPTY));
+                        assertEquals(1, set.models().size());
+                        assertEquals(63, set.placements().size());
+                        assertTrue(
+                                set.placements().stream()
+                                        .allMatch(p -> p.rootId() == ROOT && p.model() == 0));
+                        // Only the opaque image is uploaded.
+                        assertEquals(1, set.images().size());
+                        assertEquals(IMAGE, set.images().getFirst().id());
+                    } else {
+                        assertEquals(63, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                        assertEquals(2, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                        assertEquals(2, set.count(WorldExteriorObjects.Count.BATCH_CUTOUT));
+                        assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_CAPPED));
+                        assertEquals(2, set.images().size());
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void materialOnlyPlacementsNeverTakeABuildingSlotFromAnOpaqueOne() {
+        // Cutout-only placements first, then opaque one-batch buildings. Only opaque placements
+        // fill the 64 slots at admission; material-only ones beyond them are capped, last first.
+        long cutoutRoot = ROOT + 10, cutoutGroup = GROUP + 10;
+        for (int[] scenario : new int[][] {{3, 63}, {2, 64}}) {
+            int cutouts = scenario[0], buildings = scenario[1];
+            var records = new ArrayList<Modf>();
+            for (int i = 0; i < cutouts; i++) {
+                records.add(Modf.of(cutoutRoot, 1000 + i, 0x8));
+            }
+            for (int i = 0; i < buildings; i++) {
+                records.add(Modf.of(ROOT, i + 2, 0x8));
+            }
+            try (var f = new Fixture(records)) {
+                f.files.sources.put(
+                        cutoutRoot,
+                        root(1, new long[] {cutoutGroup}, List.of(new Material(1, IMAGE2, 0))));
+                f.files.sources.put(cutoutGroup, group(EXT, 3, 1, List.of(new Batch(0, 3, 0, 0))));
+                try (var set = f.run()) {
+                    assertImageSlotsValid(set);
+                    long opaque = set.placements().stream().filter(p -> p.rootId() == ROOT).count();
+                    assertEquals(buildings, opaque, counts(set).toString());
+                    assertEquals(
+                            WorldExteriorObjects.MAX_PLACEMENTS,
+                            set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                    assertEquals(WorldExteriorObjects.MAX_PLACEMENTS, set.placements().size());
+                    assertEquals(
+                            cutouts + buildings - WorldExteriorObjects.MAX_PLACEMENTS,
+                            set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
+                    // Kept placements stay in source order, and each names its own model.
+                    var uids = set.placements().stream().map(p -> p.uniqueId()).toList();
+                    assertEquals(
+                            records.stream().map(Modf::uid).filter(uids::contains).toList(), uids);
+                    for (var p : set.placements()) {
+                        assertEquals(p.rootId(), set.models().get(p.model()).rootId());
+                    }
+                    if (cutouts + buildings - WorldExteriorObjects.MAX_PLACEMENTS == cutouts) {
+                        // Every cutout placement was capped: its building is removed whole.
+                        assertEquals(1, set.models().size());
+                        assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_EMPTY));
+                        assertEquals(1, set.images().size());
+                    } else {
+                        // The first cutout placement is kept; the later ones are capped.
+                        assertEquals(1000, set.placements().getFirst().uniqueId());
+                        assertEquals(2, set.models().size());
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    void materialOnlyBuildingsSetDoodadsNeverSpendBudgetAheadOfAnOpaqueBuildings() {
+        // A cutout-only building placed first declares 512 set doodads, the whole doodad budget;
+        // an opaque building placed after it declares one. The opaque building's set comes first.
+        long cutoutRoot = ROOT + 10, cutoutGroup = GROUP + 10;
+        var many = new ArrayList<Modd>();
+        for (int i = 0; i < WorldExteriorObjects.MAX_DOODADS; i++) {
+            many.add(new Modd(0, i, 0, 0, new double[] {0, 0, 0, 1}, 1));
+        }
+        var one = List.of(new Modd(0, 0, 0, 0, new double[] {0, 0, 0, 1}, 1));
+        var records = List.of(Modf.of(cutoutRoot, 1, 0x8), Modf.of(ROOT, 2, 0x8));
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(
+                    cutoutRoot,
+                    root(
+                            1,
+                            new long[] {cutoutGroup},
+                            List.of(new Material(1, IMAGE2, 0)),
+                            doodadChunks(
+                                    new int[][] {{0, WorldExteriorObjects.MAX_DOODADS}},
+                                    new long[] {MODEL},
+                                    many)));
+            f.files.sources.put(cutoutGroup, group(EXT, 3, 1, List.of(new Batch(0, 3, 0, 0))));
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            1,
+                            new long[] {GROUP},
+                            List.of(new Material(0, IMAGE, 0)),
+                            doodadChunks(new int[][] {{0, 1}}, new long[] {MODEL}, one)));
+            try (var set = run(f, obj0(records, List.of(), 0, 0))) {
+                assertEquals(2, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                assertEquals(
+                        WorldExteriorObjects.MAX_DOODADS,
+                        set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN),
+                        counts(set).toString());
+                assertEquals(1, set.count(WorldExteriorObjects.Count.SET_DOODAD_CAPPED));
+                var setDoodads =
+                        set.placements().stream()
+                                .filter(p -> p.kind() == WorldExteriorObjects.Kind.SET_DOODAD)
+                                .toList();
+                // The opaque building's doodad is drawn, and first.
+                assertEquals(2, setDoodads.getFirst().uniqueId());
+                assertEquals(1, setDoodads.stream().filter(p -> p.uniqueId() == 2).count());
+                // Buildings keep their source order ahead of every doodad.
+                assertEquals(1, set.placements().get(0).uniqueId());
+                assertEquals(2, set.placements().get(1).uniqueId());
             }
         }
     }

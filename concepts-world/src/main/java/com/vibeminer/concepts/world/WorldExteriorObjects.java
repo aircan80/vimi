@@ -407,6 +407,7 @@ public final class WorldExteriorObjects {
         private final List<Image> images;
         private final int[] counts;
         private final int vertices, indices, ranges, pixels;
+        private final RuntimeException modelFailure;
         private volatile boolean closed;
 
         private TileObjects(
@@ -416,7 +417,9 @@ public final class WorldExteriorObjects {
                 List<Model> models,
                 List<Placement> placements,
                 List<Image> images,
-                int[] counts) {
+                int[] counts,
+                RuntimeException modelFailure) {
+            this.modelFailure = modelFailure;
             this.mapId = mapId;
             this.tileX = tileX;
             this.tileY = tileY;
@@ -499,6 +502,15 @@ public final class WorldExteriorObjects {
             return counts[count.ordinal()];
         }
 
+        /**
+         * The first unexpected doodad reader failure counted as {@link Count#MODEL_FAILED}, or
+         * null. Only its doodads were omitted; the caller logs it so reader bugs stay visible.
+         */
+        public RuntimeException modelFailure() {
+            check();
+            return modelFailure;
+        }
+
         public int vertices() {
             check();
             return vertices;
@@ -531,6 +543,26 @@ public final class WorldExteriorObjects {
             WorldStreamScopes.Scope scope,
             WorldFormats.Tile tile,
             Cancellation token) {
+        return prepare(engine, scope, tile, token, ModelReader.STANDARD);
+    }
+
+    /** Reads one doodad model's bytes; tests substitute a failing reader. */
+    @FunctionalInterface
+    interface ModelReader {
+        ModelReader STANDARD =
+                (id, raw, token) -> M2ModelReader.read(AssetSource.bytes(raw), MODEL_LIMITS, token);
+
+        java.util.concurrent.CompletableFuture<M2Types.Model> read(
+                long id, byte[] raw, Cancellation token);
+    }
+
+    static TileObjects prepare(
+            WorldStreamScopes engine,
+            WorldStreamScopes.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation token,
+            ModelReader modelReader) {
+        Objects.requireNonNull(modelReader);
         Objects.requireNonNull(engine);
         Objects.requireNonNull(scope);
         Objects.requireNonNull(tile);
@@ -540,7 +572,7 @@ public final class WorldExteriorObjects {
                 tile,
                 WorldStreamScopes.UseProfile.BASIC_EXTERIOR,
                 token,
-                admission -> new Builder(admission).build());
+                admission -> new Builder(admission, modelReader).build());
     }
 
     private enum RootState {
@@ -586,15 +618,23 @@ public final class WorldExteriorObjects {
         private final Map<Long, WmoFormats.Doodads> rootDoodads = new HashMap<>();
         private final Map<Long, RootState> doodadStates = new HashMap<>();
         private final Map<Long, Integer> doodadSlots = new HashMap<>();
+
+        /** Building placements with opaque draws; only these take one of MAX_PLACEMENTS. */
+        private int opaquePlacements;
+
         private int rootsRead, groupsRead, imagesRead, vertices, indices, ranges, pixels;
         private int modelsRead, modelImagesRead, doodadVertices, doodadIndices, doodadRanges;
         private int doodadPixels, doodads, draws;
         private int materialImagesRead, materialPixels, materialVertices, materialIndices;
         private int materialRanges;
 
-        Builder(WorldStreamScopes.TileAdmission admission) {
+        private final ModelReader modelReader;
+        private RuntimeException modelFailure;
+
+        Builder(WorldStreamScopes.TileAdmission admission, ModelReader modelReader) {
             this.admission = admission;
             this.token = admission.cancellation();
+            this.modelReader = modelReader;
         }
 
         TileObjects build() {
@@ -610,6 +650,7 @@ public final class WorldExteriorObjects {
                 placeDoodads(metadata.doodads());
                 placeSetDoodads();
             }
+            dropUnusedImages();
             return new TileObjects(
                     admission.mapId(),
                     recorded.x(),
@@ -617,7 +658,8 @@ public final class WorldExteriorObjects {
                     models,
                     placements,
                     images,
-                    counts);
+                    counts,
+                    modelFailure);
         }
 
         private void count(Count count) {
@@ -625,8 +667,9 @@ public final class WorldExteriorObjects {
         }
 
         /**
-         * A building's draw cost under the opaque-only profile: its opaque ranges, or (for a
-         * building that profile would not have drawn) all of its ranges.
+         * A building's draw cost under the opaque-only profile: its opaque ranges. A building with
+         * only cutout or blended ranges, which that profile left empty, costs nothing here, so it
+         * can never cap a later building that profile drew; fitMaterialDraws trims it instead.
          */
         private int admissionDraws(int model) {
             int opaque = 0;
@@ -635,15 +678,21 @@ public final class WorldExteriorObjects {
                     opaque += range.blend() == OPAQUE ? 1 : 0;
                 }
             }
-            return opaque > 0 ? opaque : modelDraws(model);
+            return opaque;
         }
 
         /**
-         * When the drawn buildings' full cost exceeds the draw budget, drops the cutout and blended
-         * ranges of buildings that also have opaque ranges, last root first, until it fits. Their
-         * placements stay: a building the opaque-only profile drew is never capped.
+         * First caps material-only placements, last first, beyond MAX_PLACEMENTS building
+         * placements. Then, when the drawn buildings' full cost exceeds the draw budget, drops
+         * cutout and blended ranges, last root first, until it fits. A building that keeps opaque
+         * ranges keeps its placements: a building the opaque-only profile drew is never capped. A
+         * building left with nothing returns to that profile's outcome: its placements and root
+         * count as EMPTY, and its model and placements are removed. A material-only building whose
+         * placements were all capped is removed too, its root counted EMPTY. Kept placements keep
+         * their source order; kept models are renumbered in order.
          */
         private void fitMaterialDraws() {
+            capMaterialOnlyPlacements();
             int[] uses = new int[models.size()];
             for (var placement : placements) {
                 uses[placement.model()]++;
@@ -652,9 +701,14 @@ public final class WorldExteriorObjects {
             for (int m = 0; m < models.size(); m++) {
                 total += (long) uses[m] * modelDraws(m);
             }
-            for (int m = models.size() - 1; m >= 0 && total > MAX_DRAWS; m--) {
+            boolean[] removed = new boolean[models.size()];
+            for (int m = models.size() - 1; m >= 0; m--) {
                 var model = models.get(m);
                 if (model.doodad() || admissionDraws(m) == modelDraws(m)) {
+                    continue;
+                }
+                boolean unusedMaterialOnly = uses[m] == 0 && admissionDraws(m) == 0;
+                if (!unusedMaterialOnly && (uses[m] == 0 || total <= MAX_DRAWS)) {
                     continue;
                 }
                 var kept = new ArrayList<Mesh>();
@@ -690,10 +744,145 @@ public final class WorldExteriorObjects {
                                     Arrays.copyOf(mesh.indices, end),
                                     opaque));
                 }
+                if (kept.isEmpty()) {
+                    removed[m] = true;
+                    counts[Count.PLACEMENT_DRAWN.ordinal()] -= uses[m];
+                    counts[Count.PLACEMENT_EMPTY.ordinal()] += uses[m];
+                    counts[Count.ROOT_DRAWN.ordinal()]--;
+                    count(Count.ROOT_EMPTY);
+                    rootStates.put(model.rootId(), RootState.EMPTY);
+                    rootDoodads.remove(model.rootId());
+                }
                 models.set(m, new Model(model.rootId(), false, kept));
                 total -= (long) uses[m] * dropped;
             }
             draws = (int) total;
+            removeModels(removed);
+        }
+
+        /** Caps the last material-only placements while building placements exceed the slots. */
+        private void capMaterialOnlyPlacements() {
+            int excess = placements.size() - MAX_PLACEMENTS;
+            if (excess <= 0) {
+                return;
+            }
+            var capped = new boolean[placements.size()];
+            for (int i = placements.size() - 1; i >= 0 && excess > 0; i--) {
+                if (admissionDraws(placements.get(i).model()) == 0) {
+                    capped[i] = true;
+                    excess--;
+                    counts[Count.PLACEMENT_DRAWN.ordinal()]--;
+                    count(Count.PLACEMENT_CAPPED);
+                }
+            }
+            var kept = new ArrayList<Placement>(MAX_PLACEMENTS);
+            for (int i = 0; i < placements.size(); i++) {
+                if (!capped[i]) {
+                    kept.add(placements.get(i));
+                }
+            }
+            placements.clear();
+            placements.addAll(kept);
+        }
+
+        /** Removes the flagged building models and their placements, renumbering the rest. */
+        private void removeModels(boolean[] removed) {
+            int[] renumbered = new int[removed.length];
+            var keptModels = new ArrayList<Model>();
+            for (int m = 0; m < removed.length; m++) {
+                renumbered[m] = removed[m] ? -1 : keptModels.size();
+                if (!removed[m]) {
+                    keptModels.add(models.get(m));
+                }
+            }
+            if (keptModels.size() == models.size()) {
+                return;
+            }
+            var keptPlacements = new ArrayList<Placement>();
+            for (var p : placements) {
+                int model = renumbered[p.model()];
+                if (model < 0) {
+                    continue;
+                }
+                keptPlacements.add(
+                        new Placement(
+                                p.kind(),
+                                p.ordinal(),
+                                p.uniqueId(),
+                                p.rootId(),
+                                model,
+                                p.flags(),
+                                p.doodadSet(),
+                                p.nameSet(),
+                                p.x(),
+                                p.y(),
+                                p.z(),
+                                p.scale(),
+                                p.cos(),
+                                p.sin(),
+                                p.rotation()));
+            }
+            models.clear();
+            models.addAll(keptModels);
+            placements.clear();
+            placements.addAll(keptPlacements);
+            modelSlots.clear();
+            for (int m = 0; m < models.size(); m++) {
+                modelSlots.put(models.get(m).rootId(), m);
+            }
+        }
+
+        /**
+         * Drops decoded images that no kept range draws (those of ranges fitMaterialDraws dropped),
+         * so they are never uploaded, and renumbers the ranges' image slots.
+         */
+        private void dropUnusedImages() {
+            boolean[] used = new boolean[images.size()];
+            for (var model : models) {
+                for (var mesh : model.meshes()) {
+                    for (var range : mesh.ranges()) {
+                        used[range.image()] = true;
+                    }
+                }
+            }
+            int[] slot = new int[images.size()];
+            var kept = new ArrayList<Image>();
+            for (int i = 0; i < used.length; i++) {
+                slot[i] = used[i] ? kept.size() : -1;
+                if (used[i]) {
+                    kept.add(images.get(i));
+                }
+            }
+            if (kept.size() == images.size()) {
+                return;
+            }
+            for (int m = 0; m < models.size(); m++) {
+                var model = models.get(m);
+                var meshes = new ArrayList<Mesh>();
+                for (var mesh : model.meshes()) {
+                    var ranges = new ArrayList<DrawRange>();
+                    for (var r : mesh.ranges()) {
+                        ranges.add(
+                                new DrawRange(
+                                        r.firstIndex(),
+                                        r.indexCount(),
+                                        slot[r.image()],
+                                        r.material(),
+                                        r.blend()));
+                    }
+                    meshes.add(
+                            new Mesh(
+                                    mesh.groupOrdinal,
+                                    mesh.groupId,
+                                    mesh.groupFlags,
+                                    mesh.vertices,
+                                    mesh.indices,
+                                    ranges));
+                }
+                models.set(m, new Model(model.rootId(), model.doodad(), meshes));
+            }
+            images.clear();
+            images.addAll(kept);
         }
 
         private int modelDraws(int model) {
@@ -737,7 +926,9 @@ public final class WorldExteriorObjects {
                     continue;
                 }
                 long rootId = record.reference().value();
-                if (placements.size() >= MAX_PLACEMENTS) {
+                // As in the opaque-only profile, only placements with opaque draws fill the
+                // slots; material-only ones are trimmed in fitMaterialDraws if they overflow.
+                if (opaquePlacements >= MAX_PLACEMENTS) {
                     count(Count.PLACEMENT_CAPPED);
                     continue;
                 }
@@ -763,6 +954,9 @@ public final class WorldExteriorObjects {
                             continue;
                         }
                         draws += cost;
+                        if (cost > 0) {
+                            opaquePlacements++;
+                        }
                         count(Count.PLACEMENT_DRAWN);
                         placements.add(
                                 new Placement(
@@ -858,10 +1052,23 @@ public final class WorldExteriorObjects {
         /**
          * Each drawn building's set 0 and, when nonzero, its MODF doodad set, in MODD order. A MODD
          * entry is placed in the building's local axes: its position goes through the building
-         * transform and its quaternion composes with the building heading.
+         * transform and its quaternion composes with the building heading. Buildings with opaque
+         * draws go first, then material-only ones, each in placement order, so a building the
+         * opaque-only profile left empty never spends doodad, model or draw budget ahead of one it
+         * drew. Set doodads are appended in this order.
          */
         private void placeSetDoodads() {
-            var buildings = List.copyOf(placements);
+            var buildings = new ArrayList<Placement>(placements.size());
+            for (int pass = 0; pass < 2; pass++) {
+                for (var placement : placements) {
+                    boolean opaque =
+                            placement.kind() == Kind.BUILDING
+                                    && admissionDraws(placement.model()) > 0;
+                    if (opaque == (pass == 0)) {
+                        buildings.add(placement);
+                    }
+                }
+            }
             for (var building : buildings) {
                 token.check();
                 var declared = rootDoodads.get(building.rootId());
@@ -1374,7 +1581,7 @@ public final class WorldExteriorObjects {
             }
             try (input) {
                 byte[] raw = input.bytes();
-                model = await(M2ModelReader.read(AssetSource.bytes(raw), MODEL_LIMITS, token));
+                model = await(modelReader.read(id, raw, token));
             } catch (ModelFormatException malformed) {
                 count(modelOutcome(malformed));
                 return RootState.FAILED;
@@ -1457,6 +1664,9 @@ public final class WorldExteriorObjects {
             }
             token.check();
             count(Count.MODEL_FAILED);
+            if (modelFailure == null) {
+                modelFailure = failure;
+            }
             return RootState.FAILED;
         }
 

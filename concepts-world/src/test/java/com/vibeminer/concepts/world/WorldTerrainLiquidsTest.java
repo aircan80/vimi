@@ -164,6 +164,11 @@ class WorldTerrainLiquidsTest {
         volatile Cancellation cancelAtTableStat;
 
         volatile java.util.concurrent.CancellationException tableStop;
+
+        /** Names-loading stats of a liquid table while the tile admission remembers it. */
+        final java.util.concurrent.atomic.AtomicInteger tableNameStats =
+                new java.util.concurrent.atomic.AtomicInteger();
+
         final BuildFiles files = canceling(base.files());
 
         private BuildFiles canceling(BuildFiles actual) {
@@ -173,15 +178,29 @@ class WorldTerrainLiquidsTest {
                             new Class<?>[] {BuildFiles.class},
                             (proxy, method, args) -> {
                                 var stop = cancelAtTableStat;
-                                // Only liquid validation's statContent cancels, so the
-                                // test fails if that validation reverts to a names-loading stat.
-                                boolean table =
-                                        method.getName().equals("statContent")
+                                boolean tableId =
+                                        (method.getName().equals("stat")
+                                                        || method.getName().equals("statContent"))
                                                 && (((FileTypes.FileRef) args[0]).fileDataId()
                                                                 == 1371380
                                                         || ((FileTypes.FileRef) args[0])
                                                                         .fileDataId()
                                                                 == 1132538);
+                                if (tableId
+                                        && method.getName().equals("stat")
+                                        && StackWalker.getInstance()
+                                                .walk(
+                                                        frames ->
+                                                                frames.anyMatch(
+                                                                        frame ->
+                                                                                frame.getMethodName()
+                                                                                        .equals(
+                                                                                                "rememberLiquidTable")))) {
+                                    tableNameStats.incrementAndGet();
+                                }
+                                // Only liquid validation's statContent cancels, so the
+                                // test fails if that validation reverts to a names-loading stat.
+                                boolean table = tableId && method.getName().equals("statContent");
                                 if (stop != null && table) {
                                     cancelAtTableStat = null;
                                     stop.cancel();
@@ -362,6 +381,10 @@ class WorldTerrainLiquidsTest {
             try (var owner = f.inspect()) {
                 assertEquals(WorldTerrainLiquids.State.READY, owner.summary().state());
                 assertEquals(4, f.liquidCaptures);
+                assertEquals(
+                        0,
+                        f.tableNameStats.get(),
+                        "remembering a liquid table uses statContent, never stat");
                 owner.withBorrow(
                         v -> {
                             assertEquals(1, v.layers());

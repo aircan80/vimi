@@ -828,7 +828,7 @@ final class GpuPreviewService {
                 }
             }
             if (!drained) failClosed(request);
-            if (failure == null || drained && request.stopping && canceled(failure)) {
+            if (failure == null || drained && request.stopping && CleanCancellation.is(failure)) {
                 request.publish(State.CLOSED, "GPU interior renderer stopped");
                 request.finish(null);
             } else {
@@ -836,18 +836,6 @@ final class GpuPreviewService {
                 request.finish(failure);
             }
         }
-    }
-
-    private static boolean canceled(Throwable failure) {
-        // Exact standard cancellation, possibly inside future wrappers; nothing else is clean.
-        Throwable at = failure;
-        for (int depth = 0; depth < 8 && at != null; depth++) {
-            if (at.getClass() == java.util.concurrent.CancellationException.class) return true;
-            if (!(at instanceof java.util.concurrent.CompletionException)
-                    && !(at instanceof java.util.concurrent.ExecutionException)) return false;
-            at = at.getCause();
-        }
-        return false;
     }
 
     /** Bounded user text; never raw paths, provider messages or arbitrary causes. */

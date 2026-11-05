@@ -769,6 +769,80 @@ class WorldTerrainTextureSourceTest {
     }
 
     @Test
+    void realFailureCausedByACancellationStaysAFailureAndPureChainsStayCancellation()
+            throws Exception {
+        var joined = new java.util.concurrent.CancellationException("join");
+        joined.initCause(new java.util.concurrent.CancellationException());
+        var real = new IllegalStateException("cleanup failed", joined);
+        var pure = new java.util.concurrent.CompletionException(joined);
+        for (var thrown : List.<RuntimeException>of(real, pure)) {
+            var files =
+                    new Files() {
+                        @Override
+                        FileTypes.FileStat stat(long id, Cancellation token) {
+                            if (id == 10) {
+                                throw thrown;
+                            }
+                            return super.stat(id, token);
+                        }
+                    };
+            var pool = new TerrainAtlasPool();
+            var source = new WorldTerrainTextureSource(files.files(), pool);
+            try {
+                var owned = source.readOwned(MAP, List.of(TILE), Cancellation.NONE, p -> {});
+                try {
+                    Throwable failure =
+                            assertThrows(
+                                    Exception.class, () -> owned.result().get(5, TimeUnit.SECONDS));
+                    if (failure instanceof java.util.concurrent.ExecutionException) {
+                        failure = failure.getCause();
+                    }
+                    if (thrown == real) {
+                        assertTrue(failure == real, "the real failure surfaces: " + failure);
+                    } else {
+                        assertTrue(
+                                WorldSourceRefusals.cleanCancellation(failure) != null,
+                                "a pure chain stays a clean stop: " + failure);
+                    }
+                } finally {
+                    owned.awaitDrained();
+                }
+                assertEquals(0, pool.stats().leaseClaims());
+            } finally {
+                source.closeAsync().join();
+                pool.closeAsync().join();
+            }
+        }
+        // Without strict failures the real failure is a missing diffuse, not a stopped read.
+        var files =
+                new Files() {
+                    @Override
+                    FileTypes.FileStat stat(long id, Cancellation token) {
+                        if (id == 10) {
+                            throw real;
+                        }
+                        return super.stat(id, token);
+                    }
+                };
+        var pool = new TerrainAtlasPool();
+        var source = new WorldTerrainTextureSource(files.files(), pool);
+        try (var legacy =
+                source.read(MAP, List.of(TILE), Cancellation.NONE, p -> {})
+                        .get(5, TimeUnit.SECONDS)) {
+            assertTrue(
+                    legacy.tiles().getFirst().issues().stream()
+                            .anyMatch(
+                                    issue ->
+                                            issue.reason()
+                                                    == WorldTerrainTextureSource.Reason
+                                                            .DIFFUSE_PROFILE));
+        } finally {
+            source.closeAsync().join();
+            pool.closeAsync().join();
+        }
+    }
+
+    @Test
     void handmadeBc3DiffuseReachesQualifiedTerrainAtlas() throws Exception {
         var files = new Files();
         for (long id : new long[] {10, 11}) {

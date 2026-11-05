@@ -39,6 +39,13 @@ public final class HelperStderrTail {
     // Greedy within the authority, so a password containing '@' is covered up to the last '@'.
     private static final Pattern USER_INFO = Pattern.compile("(?i)" + SCHEME + "[^\\s/?#]*@");
     private static final Pattern QUERY = Pattern.compile("(?i)" + SCHEME + "([^\\s?#]*+)[?#]\\S*+");
+    private static final Pattern URL = Pattern.compile("(?i)" + SCHEME + "\\S*+");
+    private static final Pattern ENCODED = Pattern.compile("(?i)%(3A|5C|2F|25)");
+    // Rounds of URL decoding, so a double- or triple-encoded path is still seen.
+    private static final int DECODE_ROUNDS = 3;
+    // Relative too: the WoW account folder, and the realm and character folders below it.
+    private static final Pattern ACCOUNT =
+            Pattern.compile("(?i)(WTF[\\\\/]++Account[\\\\/]++)(?=\\S)");
 
     /**
      * Names too common to replace everywhere: a user or host called "world" must not turn every
@@ -182,17 +189,23 @@ public final class HelperStderrTail {
      * Shareable diagnostics text: no game install path, account name or host name survives.
      *
      * <ol>
+     *   <li>Before anything else, {@code %3A}, {@code %5C}, {@code %2F} and {@code %25} are decoded
+     *       inside non-{@code file:} URLs, up to three rounds. A URL segment in which decoding
+     *       produced a slash or backslash becomes {@code <path>} whole.
      *   <li>Literal sensitive values are replaced in the original text, longest first, in both
      *       slash styles: the home and temporary directories and registered roots become {@code
      *       <path>}, and this machine's user and host names become {@code <redacted>}.
      *   <li>Control and line-separator characters become spaces.
      *   <li>URL user-info becomes {@code <redacted>@}, and URL query strings or fragments, which
      *       can be transient bearer capabilities, become {@code ?<redacted>}.
+     *   <li>Whatever follows {@code WTF/Account/} in either slash style, relative paths included,
+     *       becomes {@code <redacted>}: the account, realm and character folder names.
      *   <li>Every path-like span becomes {@code <path>}: {@code file:} URLs, drive-letter, UNC,
      *       {@code \\?\} and {@code \\.\} paths, POSIX and {@code ~/} paths, including paths right
-     *       after {@code :} or {@code =}. A span runs to the next double quote or backtick, an
-     *       unbalanced {@code )}, {@code ]} or {@code >}, a {@code ;} or {@code ,}, or the end of
-     *       the line, so spaces do not end it. This over-redacts rather than leak.
+     *       after {@code :}, {@code =}, <code>{</code>, {@code |}, {@code ->}, {@code +} or {@code
+     *       #}. A span runs to the next double quote or backtick, an unbalanced {@code )}, {@code
+     *       ]}, {@code >} or <code>}</code>, a {@code ;} or {@code ,}, or the end of the line, so
+     *       spaces do not end it. This over-redacts rather than leak.
      * </ol>
      */
     public static String redact(String text) {
@@ -205,7 +218,7 @@ public final class HelperStderrTail {
 
     /** As {@link #redact(String)} with explicit sensitive values; tests use this directly. */
     static String redact(String text, Sensitive values) {
-        String result = text;
+        String result = decodeUrls(text);
         for (var root : values.roots()) {
             result = root.matcher(result).replaceAll(Matcher.quoteReplacement(PATH));
         }
@@ -215,7 +228,138 @@ public final class HelperStderrTail {
         result = CONTROL.matcher(result).replaceAll(" ");
         result = USER_INFO.matcher(result).replaceAll("$1" + REDACTED + "@");
         result = QUERY.matcher(result).replaceAll("$1$2?" + REDACTED);
-        return paths(result);
+        return paths(accounts(result));
+    }
+
+    /**
+     * Decodes {@code %3A}, {@code %5C} and {@code %2F} inside non-{@code file:} URLs, so an encoded
+     * path such as {@code C%3A%5CUsers%5Cjsmith} meets the literal and path rules. A {@code file:}
+     * URL is a path span already.
+     */
+    private static String decodeUrls(String text) {
+        if (text.indexOf('%') < 0) {
+            return text;
+        }
+        var urls = URL.matcher(text);
+        var out = new StringBuilder(text.length());
+        int last = 0;
+        while (urls.find()) {
+            if (urls.group(1).regionMatches(true, 0, "file:", 0, 5)) {
+                continue;
+            }
+            out.append(text, last, urls.start());
+            String url = urls.group();
+            int segment = 0;
+            for (int i = 0; i <= url.length(); i++) {
+                if (i == url.length() || "/?#&=".indexOf(url.charAt(i)) >= 0) {
+                    out.append(decodeSegment(url.substring(segment, i)));
+                    if (i < url.length()) {
+                        out.append(url.charAt(i));
+                    }
+                    segment = i + 1;
+                }
+            }
+            last = urls.end();
+        }
+        return out.append(text, last, text.length()).toString();
+    }
+
+    /**
+     * One URL segment, decoded up to {@value #DECODE_ROUNDS} times. A segment in which decoding
+     * produced a slash or backslash held an encoded path, wherever in the segment it starts, so the
+     * whole segment becomes {@code <path>}.
+     */
+    private static String decodeSegment(String segment) {
+        String current = segment;
+        for (int round = 0; round < DECODE_ROUNDS; round++) {
+            var escapes = ENCODED.matcher(current);
+            if (!escapes.find()) {
+                break;
+            }
+            var decoded = new StringBuilder(current.length());
+            do {
+                String hex = escapes.group(1).toUpperCase(Locale.ROOT);
+                if (hex.equals("5C") || hex.equals("2F")) {
+                    return PATH;
+                }
+                escapes.appendReplacement(decoded, hex.equals("3A") ? ":" : "%");
+            } while (escapes.find());
+            escapes.appendTail(decoded);
+            current = decoded.toString();
+        }
+        return current;
+    }
+
+    /**
+     * Replaces what follows {@code WTF/Account/} (the account, realm and character folders), in
+     * either slash style and in relative paths too, with {@code <redacted>}. Any delimiter may
+     * start the account name, and {@code ,} or {@code ;} never end the span.
+     */
+    private static String accounts(String text) {
+        var accounts = ACCOUNT.matcher(text);
+        var out = new StringBuilder(text.length());
+        int last = 0;
+        while (accounts.find(last)) {
+            int end = accountEnd(text, accounts.end(), opener(text, accounts.start(), last));
+            int tail = end;
+            while (tail > accounts.end() && Character.isWhitespace(text.charAt(tail - 1))) {
+                tail--;
+            }
+            out.append(text, last, accounts.end()).append(REDACTED).append(text, tail, end);
+            last = end;
+            if (last >= text.length()) {
+                break;
+            }
+        }
+        return out.append(text, last, text.length()).toString();
+    }
+
+    /**
+     * The first character of the whitespace-delimited token holding {@code at}, not before floor.
+     */
+    private static char opener(String text, int at, int floor) {
+        int start = at;
+        while (start > floor && !Character.isWhitespace(text.charAt(start - 1))) {
+            start--;
+        }
+        return start < at ? text.charAt(start) : ' ';
+    }
+
+    /**
+     * The end of an account span: the account folder always, then on as a path span would run,
+     * except that {@code ,} and {@code ;} do not end it.
+     */
+    private static int accountEnd(String text, int from, char opener) {
+        int i = from;
+        while (i < text.length()
+                && !Character.isWhitespace(text.charAt(i))
+                && !slash(text.charAt(i))) {
+            i++;
+        }
+        int depth = 0;
+        for (; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '\n' || c == '\r' || c == '"' || c == '`') {
+                break;
+            }
+            if (c == '\'' && opener == '\'' && closesQuote(text, i)) {
+                break;
+            }
+            if (c == '(' || c == '[' || c == '<' || c == '{') {
+                depth++;
+            } else if (c == ')' || c == ']' || c == '>' || c == '}') {
+                if (depth == 0) {
+                    break;
+                }
+                depth--;
+            }
+        }
+        return i;
+    }
+
+    /** An apostrophe followed by a letter or digit (Kel'Thuzad, it's) does not close a quote. */
+    private static boolean closesQuote(String text, int at) {
+        return at + 1 >= text.length() || !Character.isLetterOrDigit(text.charAt(at + 1));
     }
 
     /** Literal patterns to replace, longest first. */
@@ -255,7 +399,9 @@ public final class HelperStderrTail {
             var patterns = new ArrayList<Pattern>();
             for (var value : sorted) {
                 // Unicode word boundaries: a name inside a longer word is not that name.
-                String before = root ? "" : "(?<![\\p{L}\\p{N}_])";
+                // An encoded separator right before a name ends with a letter: C%5Cjsmith.
+                String before =
+                        root ? "" : "(?:(?<![\\p{L}\\p{N}_])|(?<=(?i:%(?:25){0,2}(?:5C|2F))))";
                 patterns.add(
                         Pattern.compile(
                                 before + Pattern.quote(value) + "(?![\\p{L}\\p{N}_])",
@@ -363,7 +509,8 @@ public final class HelperStderrTail {
             boolean scheme = i + 3 < n && text.charAt(i + 2) == '/' && text.charAt(i + 3) == '/';
             return scheme ? -1 : 0;
         }
-        if (!boundary(prev)) {
+        boolean arrow = prev == '>' && i >= 2 && text.charAt(i - 2) == '-';
+        if (!boundary(prev) && !arrow) {
             return -1;
         }
         if (c == '~' && i + 1 < n && slash(text.charAt(i + 1))) {
@@ -389,12 +536,12 @@ public final class HelperStderrTail {
                 break;
             }
             // An apostrophe ends a path only when one opened it: O'Brien stays inside.
-            if (c == '\'' && opener == '\'') {
+            if (c == '\'' && opener == '\'' && closesQuote(text, i)) {
                 break;
             }
-            if (c == '(' || c == '[' || c == '<') {
+            if (c == '(' || c == '[' || c == '<' || c == '{') {
                 depth++;
-            } else if (c == ')' || c == ']' || c == '>') {
+            } else if (c == ')' || c == ']' || c == '>' || c == '}') {
                 if (depth == 0) {
                     break;
                 }
@@ -420,11 +567,19 @@ public final class HelperStderrTail {
                 || c == '<'
                 || c == ','
                 || c == ';'
-                || c == '@';
+                || c == '@'
+                || c == '{'
+                || c == '|'
+                || c == '+'
+                || c == '#'
+                || c == ')'
+                || c == ']'
+                || c == '}';
     }
 
     private static boolean stop(char c) {
-        return c == '"' || c == '\'' || c == ')' || c == ']' || c == '>' || c == ';' || c == ',';
+        return c == '"' || c == '\'' || c == ')' || c == ']' || c == '>' || c == '}' || c == ';'
+                || c == ',';
     }
 
     /** UTF-8 decode, redact, then keep only printable ASCII. */

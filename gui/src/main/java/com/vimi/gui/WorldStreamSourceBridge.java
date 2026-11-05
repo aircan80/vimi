@@ -361,6 +361,7 @@ final class WorldStreamSourceBridge {
             var summary = ExteriorSummary.NONE;
             try {
                 set = source.prepareExteriorObjects(scope, tile, cancellation);
+                logModelFailure(set);
                 summary = ExteriorSummary.of(set);
                 note = note(summary);
             } catch (CancellationException canceled) {
@@ -737,6 +738,20 @@ final class WorldStreamSourceBridge {
                 + " doodads drawn=" + s.doodads() + " omitted=" + s.doodadsOmitted()
                 + " (tilted " + s.tilted() + ") surfaces omitted=" + s.surfacesOmitted()
                 + " (unreadable " + s.unreadable() + ")";
+    }
+
+    /**
+     * A doodad reader failure omitted only its doodads and the tile kept the rest, but it is still
+     * a reader bug, so it is logged as a degraded part.
+     */
+    static void logModelFailure(WorldExteriorObjects.TileObjects set) {
+        var failure = set.modelFailure();
+        if (failure != null) {
+            WorldDiagnostics.degraded("doodad models",
+                    "World doodad model reader failed; " + set.count(
+                            WorldExteriorObjects.Count.MODEL_FAILED)
+                            + " failed models omitted only their doodads", failure);
+        }
     }
 
     /** Buildings drawn in a set (its other placements are doodads). */
