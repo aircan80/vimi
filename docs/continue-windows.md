@@ -100,11 +100,22 @@ Unix lock-file mode cases in `WriterLockTest` should skip on Windows.
 entry for the current user (write, append, attribute, delete) to each file and
 directory of the test's own temporary store, checks that creating a file is
 refused, and restores the original ACLs on every exit. It never touches other
-directories. If a run is killed mid-test, the leftover temporary folder still
-belongs to the user, who can remove the deny entry with `icacls`.
+directories. If a run is killed mid-test, its `junit-*` folder stays under
+`object-store\build\tmp\integrationTest` (Gradle points `java.io.tmpdir` there)
+with the deny entries in place. Its owner is the current user, or the
+Administrators group on an elevated account; either way the owner's implicit
+WRITE_DAC right allows recovery. Reset the folder's ACLs, then delete it:
+
+```powershell
+icacls <folder> /reset /T /C
+```
+
 `SqliteLibraryTest` checks default-name `sqlite3.dll` startup by putting the
-`-PsqliteLibrary` DLL's directory first on a child JVM's `PATH`. That is not a
-pristine-machine installation test. See [native-sqlite.md](native-sqlite.md).
+`-PsqliteLibrary` DLL's directory first on a child JVM's `PATH`. A companion case
+first starts a child with no `PATH` change and expects the actionable
+`OBJECT_STORE_NATIVE_LIBRARY` failure. If `sqlite3.dll` is already found in the
+JDK, System32, Windows or working directory, or on the inherited `PATH`, both
+cases skip. That is not a pristine-machine installation test. See [native-sqlite.md](native-sqlite.md).
 
 ## Start the agent
 
