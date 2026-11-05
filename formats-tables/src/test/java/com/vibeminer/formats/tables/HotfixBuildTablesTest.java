@@ -84,7 +84,6 @@ class HotfixBuildTablesTest {
                 "$id,noninline$ID<u32>\nValue<u32>");
     }
 
-    /** Base row 7 (copied to 8) holds {@code baseValue} in a 32-bit physical Value field. */
     private static BuildTables numbers(
             long hash,
             Db2ByteSource source,
@@ -92,6 +91,18 @@ class HotfixBuildTablesTest {
             long baseValue,
             String columns,
             String fields) {
+        return numbers(hash, source, memory, baseValue, columns, fields, 200_000);
+    }
+
+    /** Base row 7 (copied to 8) holds {@code baseValue} in a 32-bit physical Value field. */
+    private static BuildTables numbers(
+            long hash,
+            Db2ByteSource source,
+            HotfixMemory memory,
+            long baseValue,
+            String columns,
+            String fields,
+            int maxScanRows) {
         byte[] bytes = Db2Fixture.numeric("WDC5", 0, 32, baseValue, new long[0], true);
         ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(152, (int) hash);
         var files =
@@ -130,7 +141,14 @@ class HotfixBuildTablesTest {
                                 source, 4, new HotfixCacheReader.Limits(), Cancellation.NONE)
                         .join();
         var options =
-                new TablesOptions((b, t) -> CompletableFuture.completedFuture("1.2.3.4"))
+                new TablesOptions(
+                                (b, t) -> CompletableFuture.completedFuture("1.2.3.4"),
+                                new com.vibeminer.formats.db2.Db2Types.Limits(),
+                                build -> com.vibeminer.formats.generated.TactKeyStatus.NONE,
+                                new TableWorkScheduler(),
+                                maxScanRows,
+                                256,
+                                1_000_000)
                         .withLocalDefinitionsOnly()
                         .withHotfix(
                                 new HotfixBinding(
@@ -818,6 +836,10 @@ class HotfixBuildTablesTest {
     }
 
     private static BuildTables rawByte(long baseValue, byte[]... changes) {
+        return rawByte(baseValue, 200_000, changes);
+    }
+
+    private static BuildTables rawByte(long baseValue, int maxScanRows, byte[]... changes) {
         // An unverified provider name ("?") stored in 32 physical bits but declared u8: base rows
         // keep the physical integer and the header carries a raw-physical interpretation.
         return numbers(
@@ -826,7 +848,73 @@ class HotfixBuildTablesTest {
                 new HotfixMemory(64L << 20, 256L << 20),
                 baseValue,
                 "int ID\nint Value?",
-                "$id,noninline$ID<u32>\nValue<u8>");
+                "$id,noninline$ID<u32>\nValue<u8>",
+                maxScanRows);
+    }
+
+    private static TableTypes.RowOutcome rawRow(BuildTables tables) {
+        return tables.get(TableTypes.Ref.id(100), 7, P, Cancellation.NONE).join().outcome();
+    }
+
+    @Test
+    void rawColumnFitIsRefusedWhenTheBaseCannotBeScannedCompletely() {
+        // Two base rows (7 and its copy 8) exceed a one-row scan bound.
+        try (var tables = rawByte(9, 1, entry(0x11223344L, 1, 7, 1, u8(255)))) {
+            assertEquals(TableTypes.RowOutcome.UNKNOWN, rawRow(tables), "over the scan bound");
+        }
+        // A page that is not OK proves nothing.
+        try (var tables = rawByte(9, entry(0x11223344L, 1, 7, 1, u8(255)))) {
+            var hot = (HotfixBuildTables) tables;
+            hot.rawScanProbe =
+                    page ->
+                            new TableTypes.Page(
+                                    page.table(),
+                                    TableTypes.PageState.NOT_READABLE,
+                                    List.of(),
+                                    null,
+                                    page.identity(),
+                                    0,
+                                    "AUTHORED",
+                                    null);
+            assertEquals(TableTypes.RowOutcome.UNKNOWN, rawRow(tables), "non-OK page");
+        }
+        // A PARTIAL base returns OK pages with only its readable rows; hidden rows were never
+        // checked, so the column is refused even though every visible value fits.
+        try (var tables = rawByte(9, entry(0x11223344L, 1, 7, 1, u8(255)))) {
+            var hot = (HotfixBuildTables) tables;
+            hot.rawScanProbe =
+                    page -> {
+                        var t = page.table();
+                        var partial =
+                                new TableTypes.Entry(
+                                        t.fileDataId(),
+                                        t.name(),
+                                        TableTypes.State.PARTIAL,
+                                        t.checked(),
+                                        t.reason(),
+                                        t.counts(),
+                                        t.contentKey());
+                        return new TableTypes.Page(
+                                partial,
+                                page.state(),
+                                page.rows(),
+                                page.nextAfter(),
+                                page.identity(),
+                                page.scanned(),
+                                page.code(),
+                                page.message());
+                    };
+            assertEquals(TableTypes.RowOutcome.UNKNOWN, rawRow(tables), "PARTIAL base");
+        }
+        // A failing (damaged) source refuses the column without failing the view.
+        try (var tables = rawByte(9, entry(0x11223344L, 1, 7, 1, u8(255)))) {
+            var hot = (HotfixBuildTables) tables;
+            hot.rawScanProbe =
+                    page -> {
+                        throw new IllegalStateException("authored damaged base");
+                    };
+            assertEquals(TableTypes.RowOutcome.UNKNOWN, rawRow(tables), "failing scan");
+        }
     }
 
     private static byte[] u8(int value) {

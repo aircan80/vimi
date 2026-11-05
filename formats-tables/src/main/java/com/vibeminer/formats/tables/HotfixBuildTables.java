@@ -206,6 +206,8 @@ public final class HotfixBuildTables implements BuildTables {
     private final LinkedHashMap<Long, View> views = new LinkedHashMap<>(8, .75f, true);
     private final Set<Long> pinned = new HashSet<>();
     private final Map<Long, Unavailable> unavailable = new HashMap<>();
+    // Raw-column fit results per base identity; survive view eviction (insertion order).
+    private final Map<String, Set<Integer>> rawFits = new LinkedHashMap<>();
     // Base identity each table had when it was last asked for; hotfixInfo reports a refusal only
     // while it still describes that base.
     private final Map<Long, String> observed = new HashMap<>();
@@ -216,6 +218,8 @@ public final class HotfixBuildTables implements BuildTables {
     int compiles;
     // Test seam over the bulk base-ordinal result; production keeps it as is.
     java.util.function.UnaryOperator<Map<Long, Long>> ordinalsProbe = found -> found;
+    // Test seam over each base page of the raw-column fit scan; production keeps it as is.
+    java.util.function.UnaryOperator<TableTypes.Page> rawScanProbe = page -> page;
     private final Set<Job<?>> jobs = new HashSet<>();
     private final ThreadPoolExecutor worker =
             new ThreadPoolExecutor(
@@ -729,9 +733,11 @@ public final class HotfixBuildTables implements BuildTables {
 
     /**
      * Raw-physical columns the hotfix body may decode at their declared width: unverified-name,
-     * non-relation columns whose every readable base value already fits that width, so base and
-     * hotfix rows print the same text for the same value. Any other raw column, an unreadable page
-     * or a table larger than the scan bound keeps the whole table refused.
+     * non-relation columns whose every base value already fits that width, so base and hotfix rows
+     * print the same text for the same value. Only a READY base qualifies, scanned completely: a
+     * PARTIAL table (encrypted or missing sections) hides rows that could not be checked. Any other
+     * raw column, a table over the scan bound, a non-OK or failing page, a short scan or a base
+     * that changed during the scan keeps the whole table refused.
      */
     private Set<Integer> fittedRawColumns(
             ClientBuildTables.HotfixMetadata metadata,
@@ -748,26 +754,65 @@ public final class HotfixBuildTables implements BuildTables {
                 }
             }
         }
-        if (candidates.isEmpty() || metadata.rows() > options.maxScanRows()) {
+        if (candidates.isEmpty()
+                || metadata.entry().state() != TableTypes.State.READY
+                || metadata.rows() > options.maxScanRows()) {
             return Set.of();
         }
+        var cached = rawFits.get(metadata.identity());
+        if (cached != null) {
+            return cached;
+        }
+        Set<Integer> fitted;
+        try {
+            fitted = scanRawFits(metadata, candidates, priority, token);
+        } catch (RuntimeException failure) {
+            if (token.isCanceled()
+                    || failure instanceof java.util.concurrent.CancellationException) {
+                throw failure;
+            }
+            // A damaged or unreadable base proves nothing about its values: refuse the columns,
+            // keep the view, and scan again next time instead of caching a failure.
+            return Set.of();
+        }
+        if (fitted == null) {
+            // Inconclusive (unreadable page, short scan, base changed): refuse, do not cache.
+            return Set.of();
+        }
+        if (rawFits.size() >= CACHE_TABLES * 4) {
+            rawFits.remove(rawFits.keySet().iterator().next());
+        }
+        // Keyed by the base identity, so an evicted view does not rescan an unchanged base.
+        rawFits.put(metadata.identity(), fitted);
+        return fitted;
+    }
+
+    private Set<Integer> scanRawFits(
+            ClientBuildTables.HotfixMetadata metadata,
+            java.util.SortedSet<Integer> candidates,
+            TableTypes.Priority priority,
+            Cancellation token) {
+        var columns = metadata.header().columns();
         var ref = TableTypes.Ref.id(metadata.entry().fileDataId());
-        long after = -1;
+        long after = -1, scanned = 0;
         String identity = null;
         for (; ; ) {
             token.check();
             var page =
-                    await(
-                            base.page(
-                                    new TableTypes.PageRequest(
-                                            ref, after, 1000, List.of(), identity),
-                                    priority,
-                                    token));
-            if (page.state() != TableTypes.PageState.OK) {
-                return Set.of();
+                    rawScanProbe.apply(
+                            await(
+                                    base.page(
+                                            new TableTypes.PageRequest(
+                                                    ref, after, 1000, List.of(), identity),
+                                            priority,
+                                            token)));
+            if (page.state() != TableTypes.PageState.OK
+                    || page.table().state() != TableTypes.State.READY) {
+                return null;
             }
             identity = page.identity();
             for (var row : page.rows()) {
+                scanned++;
                 var values = row.row().values();
                 candidates.removeIf(
                         c ->
@@ -775,11 +820,22 @@ public final class HotfixBuildTables implements BuildTables {
                                         || !HotfixRowDecoder.fitsDeclared(
                                                 values.get(c), columns.get(c).interpretation()));
             }
-            if (candidates.isEmpty() || page.nextAfter() == null) {
-                return Set.copyOf(candidates);
+            if (candidates.isEmpty()) {
+                return Set.of();
+            }
+            if (page.nextAfter() == null) {
+                break;
             }
             after = page.nextAfter();
         }
+        // Every row was checked, and the base is still the one the metadata describes.
+        var again = await(base.hotfixMetadata(ref, priority, token));
+        if (scanned != metadata.rows()
+                || again == null
+                || !again.identity().equals(metadata.identity())) {
+            return null;
+        }
+        return Set.copyOf(candidates);
     }
 
     private List<Db2Types.Row> readBase(
