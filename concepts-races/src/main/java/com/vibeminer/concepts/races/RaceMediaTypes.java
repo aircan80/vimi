@@ -118,4 +118,29 @@ public final class RaceMediaTypes {
             issues = List.copyOf(issues);
         }
     }
+
+    /**
+     * Whether the selected race model's Stand idle can be offered. This slice never offers it: a
+     * readable model is {@code UNSUPPORTED} with every blocking reason, and {@code UNAVAILABLE}
+     * means the relationship or a source could not be read, so a retry can reassess it.
+     */
+    public record Idle(
+            RaceTypes.State state,
+            Variant variant,
+            List<String> reasons,
+            List<String> facts,
+            String message) {
+        public Idle {
+            if (state != RaceTypes.State.UNSUPPORTED && state != RaceTypes.State.UNAVAILABLE
+                    || message == null) {
+                throw new IllegalArgumentException("Inconsistent race idle result");
+            }
+            reasons = List.copyOf(reasons);
+            facts = List.copyOf(facts);
+        }
+
+        public static Idle unavailable(Variant variant, String message) {
+            return new Idle(RaceTypes.State.UNAVAILABLE, variant, List.of(), List.of(), message);
+        }
+    }
 }

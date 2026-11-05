@@ -114,4 +114,24 @@ public final class BuildModelTypes {
             chunkKeys = chunkKeys == null ? List.of() : List.copyOf(chunkKeys);
         }
     }
+
+    /** One BFID-declared bone file of a read model; {@code bones} is non-null only when READ. */
+    public record BoneFileRead(
+            ReadState state, long fileDataId, M2BoneFile.Bones bones, String code, String message) {
+        public BoneFileRead {
+            if (state == null || (state == ReadState.READ) != (bones != null)) {
+                throw new IllegalArgumentException("Inconsistent bone file read");
+            }
+        }
+    }
+
+    /** Model-resident Stand facts of a read model; {@code stand} is non-null only when READ. */
+    public record StandRead(
+            ReadState state, M2IdleAnimation.StandFacts stand, String code, String message) {
+        public StandRead {
+            if (state == null || (state == ReadState.READ) != (stand != null)) {
+                throw new IllegalArgumentException("Inconsistent Stand read");
+            }
+        }
+    }
 }

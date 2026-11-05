@@ -142,6 +142,13 @@ final class RacesServiceTest {
             var unavailable = service.preview(1, 1, 10, Cancellation.NONE).join();
             assertEquals(RaceTypes.State.UNAVAILABLE, unavailable.state());
             assertTrue(unavailable.message().contains("Build files"));
+            var idle = service.idle(1, 10, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.UNAVAILABLE, idle.state());
+            assertEquals(10, idle.variant().chrModelId());
+            assertTrue(idle.message().contains("Build files"));
+            var unknown = service.idle(1, 99, Cancellation.NONE).join();
+            assertEquals(RaceTypes.State.UNAVAILABLE, unknown.state());
+            assertTrue(unknown.message().contains("unavailable"));
         } finally {
             service.closeAsync().join();
             tables.closeAsync().join();

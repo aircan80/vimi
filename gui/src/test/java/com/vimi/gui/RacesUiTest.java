@@ -342,6 +342,27 @@ public final class RacesUiTest {
                                         return future;
                                     }
 
+                                    public CompletableFuture<
+                                                    com.vibeminer.concepts.races.RaceMediaTypes
+                                                            .Idle>
+                                            idle(long raceId, long modelId, Cancellation token) {
+                                        return CompletableFuture.completedFuture(
+                                                new com.vibeminer.concepts.races.RaceMediaTypes
+                                                        .Idle(
+                                                        RaceTypes.State.UNSUPPORTED,
+                                                        new com.vibeminer.concepts.races
+                                                                .RaceMediaTypes.Variant(
+                                                                1,
+                                                                0,
+                                                                1,
+                                                                1,
+                                                                1,
+                                                                authoredDefinition()),
+                                                        List.of("Authored bone-file refusal."),
+                                                        List.of("Authored Stand fact."),
+                                                        "Authored bone-file refusal."));
+                                    }
+
                                     public CompletableFuture<Void> closeAsync() {
                                         closes.incrementAndGet();
                                         return CompletableFuture.completedFuture(null);
@@ -459,6 +480,21 @@ public final class RacesUiTest {
                                                                                     + " textured"
                                                                                     + " sample")),
                                                 "Async textured sample reaches the view: "
+                                                        + labels(view));
+                                        require(
+                                                labels(view)
+                                                                .contains(
+                                                                        "Idle animation"
+                                                                                + " unavailable:"
+                                                                                + " Authored"
+                                                                                + " bone-file"
+                                                                                + " refusal.")
+                                                        && labels(view)
+                                                                .contains("Authored Stand fact.")
+                                                        && !view.lookup("#model-idle-animation")
+                                                                .isVisible(),
+                                                "Race idle refusal replaces the toggle and its"
+                                                        + " facts reach the details: "
                                                         + labels(view));
                                         var imageSnapshot = scene.snapshot(null);
                                         var out =
