@@ -2006,6 +2006,8 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
   integration, 59 crash, 41 interoperability), zero failures/errors, 2 skips (the Unix
   lock-mode cases, which have no Windows meaning). All five read-only-media cases and
   all six SQLite library probes ran. Formatting, Checkstyle, compiler lint and assembly passed.
+- The owner decided on 2026-11-05 that compatibility with the C# store is not required.
+  The interoperability results here are a record only, not an acceptance requirement.
 - Covered on Windows: bidirectional Java/C# writer exclusion (`InteropTest`), lock
   reacquisition, leased pack handles with concurrent writes and deletion
   (`PackReaderCacheTest`), process-kill crash recovery, clean read-only opens
@@ -2015,7 +2017,7 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
   existing development machine), read-only removable/optical media, and ARM64 Windows.
   The worktree setup needed a `..\vibeminer` junction; see `docs/continue-windows.md`.
 - Next: hosted Windows CI on the PR confirms the ACL path on a runner; then the PM can
-  update #24/#25/#26. #26's final parity/readiness review is still separate work.
+  update #24/#25/#26. #26's storage and readiness review (#264) is separate work.
 
 ## Generated store and record files (#36)
 

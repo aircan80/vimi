@@ -90,7 +90,8 @@ $dotnetExecutable = (Resolve-Path ..\vibeminer\.local\toolchains\dotnet\dotnet.e
   "-PsqliteLibrary=$sqliteLibrary" "-Pdotnet=$dotnetExecutable"
 ```
 
-The C# harness finds the reference at `..\vibeminer` relative to the `vimi`
+C# compatibility is not required; the interoperability suite is optional evidence.
+Its C# harness finds the reference at `..\vibeminer` relative to the `vimi`
 checkout. A worktree in another folder needs a sibling directory junction to it
 (`New-Item -ItemType Junction`); otherwise `buildCsharpInterop` fails with CS0246.
 
