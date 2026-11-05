@@ -24,6 +24,7 @@ public final class BuildLoadingIntegrationTest {
     public static void main(String[] args) throws Exception {
         Path directory = Files.createTempDirectory("vimi-native-build-loading-");
         SyntheticBuild fixture = new SyntheticBuild();
+        Throwable primary = null;
         try {
             var old = ObjectStore.open(directory.resolve("objects")).join();
             try {
@@ -66,6 +67,7 @@ public final class BuildLoadingIntegrationTest {
             }
             String identity;
             var service = BuildApplication.open(directory, OfflineSourceFixtures::publicKeys).get(15, TimeUnit.SECONDS);
+            Throwable loadFailure = null;
             try {
                 var build =
                         service.listBuilds().get(15, TimeUnit.SECONDS).stream()
@@ -155,8 +157,11 @@ public final class BuildLoadingIntegrationTest {
                             indexRows == 0,
                             "Metadata-only build load never requests archive/file indexes");
                 }
+            } catch (Throwable failure) {
+                loadFailure = failure;
+                throw failure;
             } finally {
-                service.closeAsync().get(15, TimeUnit.SECONDS);
+                TestCleanup.after(loadFailure, () -> service.closeAsync().get(15, TimeUnit.SECONDS));
             }
             var reopened = BuildApplication.open(directory, OfflineSourceFixtures::publicKeys).get(15, TimeUnit.SECONDS);
             try {
@@ -189,11 +194,11 @@ public final class BuildLoadingIntegrationTest {
             System.out.println(
                     "BuildLoadingIntegration: owned metadata load, persisted status, accounting and"
                             + " restart passed");
+        } catch (Throwable failure) {
+            primary = failure;
+            throw failure;
         } finally {
-            try (var paths = Files.walk(directory)) {
-                for (Path path : paths.sorted(java.util.Comparator.reverseOrder()).toList())
-                    Files.delete(path);
-            }
+            TestCleanup.deleteTree(primary, directory);
         }
     }
 
