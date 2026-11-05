@@ -20,22 +20,22 @@ final class WorldStreamEnvelopeTest {
     void sessionUsesPinnedLittleEndianOffsetsAndExactFixedCaps() throws Exception {
         var session = new WorldStreamEnvelope.Session(NONCE, SCOPE, 7);
         byte[] bytes = WorldStreamEnvelope.encode(session);
-        assertEquals(256, bytes.length);
+        assertEquals(512, bytes.length);
         assertEquals(
-                "56494d4957535332020000000001000029000000000000004d00000000000000",
+                "56494d4957535332020000000002000029000000000000004d00000000000000",
                 HexFormat.of().formatHex(bytes, 0, 32));
         assertEquals(SCOPE, HexFormat.of().formatHex(bytes, 32, 64));
         var values = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
         assertEquals(7, values.getLong(80));
         assertEquals(800, values.getInt(88));
         assertEquals(500, values.getInt(92));
-        assertEquals(10, values.getInt(96));
-        assertEquals(9, values.getInt(100));
+        assertEquals(26, values.getInt(96));
+        assertEquals(25, values.getInt(100));
         assertEquals(2_907_264, values.getInt(104));
         assertEquals(
                 session,
                 WorldStreamEnvelope.decodeSession(bytes, WorldStreamEnvelope.sha256(bytes)));
-        for (int offset = 108; offset < 256; offset++) {
+        for (int offset = 108; offset < 512; offset++) {
             byte[] corrupt = bytes.clone();
             corrupt[offset] = 1;
             assertThrows(WorldStreamEnvelope.Invalid.class, () -> decodeSession(corrupt));
@@ -48,34 +48,35 @@ final class WorldStreamEnvelopeTest {
     }
 
     @Test
-    void commitPreservesExplicitOrderAtNineMemberBoundaryAndUnusedBytesAreZero() throws Exception {
+    void commitPreservesExplicitOrderAtMaximumMemberBoundaryAndUnusedBytesAreZero()
+            throws Exception {
         var members = new ArrayList<WorldStreamEnvelope.Resident>();
-        for (int slot = 8; slot >= 0; slot--) {
+        for (int slot = 24; slot >= 0; slot--) {
             members.add(new WorldStreamEnvelope.Resident(slot, slot + 17));
         }
         var commit = new WorldStreamEnvelope.Commit(NONCE, 19, 9, 10, 3, members);
         byte[] bytes = WorldStreamEnvelope.encode(commit);
-        assertEquals(256, bytes.length);
+        assertEquals(512, bytes.length);
         var in = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
         assertEquals(19, in.getLong(32));
         assertEquals(9, in.getLong(40));
         assertEquals(10, in.getLong(48));
         assertEquals(3, in.getLong(56));
-        assertEquals(9, in.getInt(64));
-        for (int i = 0; i < 9; i++) {
-            assertEquals(8 - i, bytes[72 + 16 * i]);
-            assertEquals(25 - i, in.getLong(80 + 16 * i));
+        assertEquals(25, in.getInt(64));
+        for (int i = 0; i < 25; i++) {
+            assertEquals(24 - i, bytes[72 + 16 * i]);
+            assertEquals(41 - i, in.getLong(80 + 16 * i));
         }
         assertEquals(commit, decodeCommit(bytes));
         assertArrayEquals(bytes, WorldStreamEnvelope.encode(decodeCommit(bytes)));
-        for (int i = 0; i < 9; i++) {
+        for (int i = 0; i < 25; i++) {
             for (int pad = 1; pad <= 7; pad++) {
                 byte[] corrupt = bytes.clone();
                 corrupt[72 + 16 * i + pad] = 1;
                 assertThrows(WorldStreamEnvelope.Invalid.class, () -> decodeCommit(corrupt));
             }
         }
-        for (int offset = 216; offset < 256; offset++) {
+        for (int offset = 472; offset < 512; offset++) {
             byte[] corrupt = bytes.clone();
             corrupt[offset] = 1;
             assertThrows(WorldStreamEnvelope.Invalid.class, () -> decodeCommit(corrupt));
@@ -83,7 +84,7 @@ final class WorldStreamEnvelopeTest {
         var empty =
                 WorldStreamEnvelope.encode(
                         new WorldStreamEnvelope.Commit(NONCE, 1, 0, 1, 1, List.of()));
-        for (int offset = 72; offset < 256; offset++) {
+        for (int offset = 72; offset < 512; offset++) {
             byte[] corrupt = empty.clone();
             corrupt[offset] = 1;
             assertThrows(WorldStreamEnvelope.Invalid.class, () -> decodeCommit(corrupt));
@@ -102,7 +103,7 @@ final class WorldStreamEnvelopeTest {
                                 1,
                                 List.of(new WorldStreamEnvelope.Resident(0, 1))));
         String sha = WorldStreamEnvelope.sha256(bytes);
-        for (int offset = 0; offset < 256; offset++) {
+        for (int offset = 0; offset < 512; offset++) {
             byte[] corrupt = bytes.clone();
             corrupt[offset] ^= 1;
             assertThrows(
@@ -110,9 +111,9 @@ final class WorldStreamEnvelopeTest {
                     () -> WorldStreamEnvelope.decodeCommit(corrupt, sha, NONCE));
         }
         assertThrows(
-                WorldStreamEnvelope.Invalid.class, () -> decodeCommit(Arrays.copyOf(bytes, 255)));
+                WorldStreamEnvelope.Invalid.class, () -> decodeCommit(Arrays.copyOf(bytes, 511)));
         assertThrows(
-                WorldStreamEnvelope.Invalid.class, () -> decodeCommit(Arrays.copyOf(bytes, 257)));
+                WorldStreamEnvelope.Invalid.class, () -> decodeCommit(Arrays.copyOf(bytes, 513)));
         assertThrows(
                 WorldStreamEnvelope.Invalid.class,
                 () ->
@@ -124,7 +125,7 @@ final class WorldStreamEnvelopeTest {
                         WorldStreamEnvelope.decodeCommit(
                                 bytes, sha, new WorldStreamState.Nonce(1, 2)));
         assertThrows(WorldStreamEnvelope.Invalid.class, () -> decodeSession(bytes));
-        for (int count : new int[] {-1, 10, Integer.MAX_VALUE}) {
+        for (int count : new int[] {-1, 26, Integer.MAX_VALUE}) {
             byte[] corrupt = bytes.clone();
             ByteBuffer.wrap(corrupt).order(ByteOrder.LITTLE_ENDIAN).putInt(64, count);
             assertThrows(WorldStreamEnvelope.Invalid.class, () -> decodeCommit(corrupt));
@@ -150,8 +151,15 @@ final class WorldStreamEnvelopeTest {
                 () ->
                         new WorldStreamEnvelope.Commit(
                                 NONCE, 1, Long.MAX_VALUE, Long.MIN_VALUE, 1, List.of()));
-        assertThrows(IllegalArgumentException.class, () -> new WorldStreamEnvelope.Resident(10, 1));
+        assertThrows(IllegalArgumentException.class, () -> new WorldStreamEnvelope.Resident(26, 1));
         assertThrows(IllegalArgumentException.class, () -> new WorldStreamEnvelope.Resident(0, 0));
+        var tooMany = new ArrayList<WorldStreamEnvelope.Resident>();
+        for (int slot = 0; slot < 26; slot++) {
+            tooMany.add(new WorldStreamEnvelope.Resident(slot, 1));
+        }
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new WorldStreamEnvelope.Commit(NONCE, 1, 0, 1, 1, tooMany));
         var mutable = new ArrayList<>(List.of(one));
         var commit = new WorldStreamEnvelope.Commit(NONCE, 1, 0, 1, 1, mutable);
         mutable.clear();

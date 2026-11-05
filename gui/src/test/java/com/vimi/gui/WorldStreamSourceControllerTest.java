@@ -55,6 +55,37 @@ public final class WorldStreamSourceControllerTest {
         lateObjectsAttachAfterTerrainAndReportBuildings();
         lateObjectFailuresStayIsolatedFromTerrain();
         lateObjectsCompletingAfterRetirementAreIgnored();
+        fiveByFiveNeighborhoodHoldsTwentyFiveResidentsWithinTheSourceUnion();
+    }
+
+    /** Production bound (#173): 25 residents, and moving on replaces only the leaving tiles. */
+    private static void fiveByFiveNeighborhoodHoldsTwentyFiveResidentsWithinTheSourceUnion()
+            throws Exception {
+        int residents = WorldStreamTransport.MAX_RESIDENTS;
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(), residents + 5);
+        fixture.residents = residents;
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed() != null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0, residents));
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase() == WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared() == residents);
+            check(fixture.commitLines().size() == residents, "One commit per resident up to the 5x5 bound");
+            check(fixture.pool.stats().leaseClaims() == residents, "One source atlas owner per resident");
+            fixture.controller.neighborhood(fixture.tiles.subList(5, residents + 5));
+            long[] peak = {0};
+            fixture.untilPresented(() -> {
+                peak[0] = Math.max(peak[0], fixture.pool.stats().leaseClaims());
+                return fixture.controller.snapshot().phase() == WorldStreamSourceController.Phase.READY
+                        && fixture.controller.snapshot().prepared() == residents
+                        && fixture.pool.stats().leaseClaims() == residents;
+            });
+            check(peak[0] <= residents + 3, "Source owners never exceed residents plus staged, pending and retiring");
+            check(fixture.commitLines().size() >= residents + 5, "Five tiles entered the neighborhood");
+            check(fixture.pool.stats().leaseClaims() <= com.vibeminer.concepts.world.TerrainAtlasPool.MAX_ENTRIES,
+                    "The shared atlas pool keeps headroom for other borrowers");
+        } finally { fixture.close(); }
     }
 
     /** One authored building: a quad drawn by one range of one 2x2 image, placed once. */
@@ -1197,6 +1228,8 @@ public final class WorldStreamSourceControllerTest {
         final AtomicLong clock = new AtomicLong();
         final Gpu gpu = new Gpu();
         volatile boolean exteriors;
+        // The legacy 3x3 bound keeps these capacity scenarios small; see fiveByFive below.
+        int residents = 9;
         WorldStreamSourceController controller;
 
         Fixture(AuthoredTerrainSource.Files files, int count) throws Exception {
@@ -1238,7 +1271,8 @@ public final class WorldStreamSourceControllerTest {
                             () -> {},
                             fx::add,
                             clock::get,
-                            preparer);
+                            preparer,
+                            residents);
         }
 
         void camera(long revision) {

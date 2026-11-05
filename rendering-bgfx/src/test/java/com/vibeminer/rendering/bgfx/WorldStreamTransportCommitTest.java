@@ -81,7 +81,11 @@ class WorldStreamTransportCommitTest {
             session.initialized().get(8, TimeUnit.SECONDS);
             assertThrows(
                     IllegalArgumentException.class,
-                    () -> session.commit(1, new WorldStreamTransport.Resident[10]));
+                    () ->
+                            session.commit(
+                                    1,
+                                    new WorldStreamTransport.Resident
+                                            [WorldStreamTransport.MAX_RESIDENTS + 1]));
             WorldStreamTransport.TileReservation ticket = null;
             long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
             while (ticket == null && System.nanoTime() < until) {

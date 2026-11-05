@@ -6,7 +6,12 @@ import java.util.Objects;
 
 /** Pure owner-thread metadata model for the proposed World v2 mode; no renderer is wired to it. */
 final class WorldStreamState {
-    static final int SLOTS = 10, MAX_ACTIVE = 9, MAX_REFERENCES = 48;
+    /**
+     * The 5 x 5 tile neighborhood around the camera tile (issue #173): 25 active slots plus one
+     * staged. Every slot, envelope, commit and renderer bound in the v2 protocol derives from these
+     * two values.
+     */
+    static final int SLOTS = 26, MAX_ACTIVE = 25, MAX_REFERENCES = 48;
 
     record Nonce(long high, long low) {
         Nonce {

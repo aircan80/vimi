@@ -14,7 +14,9 @@ import java.util.Objects;
 
 /** Fixed-size v2 metadata codecs only. No paths, source authority, mappings or native resources. */
 final class WorldStreamEnvelope {
-    static final int BYTES = 256;
+    /** Fixed envelope size; a commit of MAX_ACTIVE 16-byte members needs 72 + 400 bytes. */
+    static final int BYTES = 512;
+
     // Terrain 2,284,544B plus the optional 622,720B static water trailer.
     static final int MAX_PACKET_BYTES = 2_907_264;
     private static final byte[] SESSION_MAGIC = "VIMIWSS2".getBytes(StandardCharsets.US_ASCII);
@@ -40,7 +42,7 @@ final class WorldStreamEnvelope {
 
     record Resident(int slot, long generation) {
         Resident {
-            if (slot < 0 || slot >= 10 || generation <= 0) {
+            if (slot < 0 || slot >= WorldStreamState.SLOTS || generation <= 0) {
                 throw new IllegalArgumentException("Invalid resident identity");
             }
         }
@@ -62,7 +64,7 @@ final class WorldStreamEnvelope {
                     || expected == Long.MAX_VALUE
                     || next != expected + 1
                     || policy <= 0
-                    || members.size() > 9) {
+                    || members.size() > WorldStreamState.MAX_ACTIVE) {
                 throw new IllegalArgumentException("Invalid commit metadata");
             }
             members = List.copyOf(members);
@@ -91,7 +93,8 @@ final class WorldStreamEnvelope {
         nonce(out, session.nonce());
         out.put(HexFormat.of().parseHex(session.scope()));
         out.putInt(1).putInt(1).putInt(1).putInt(session.exteriorObjects() ? 2 : 1);
-        out.putLong(session.policy()).putInt(800).putInt(500).putInt(10).putInt(9);
+        out.putLong(session.policy()).putInt(800).putInt(500);
+        out.putInt(WorldStreamState.SLOTS).putInt(WorldStreamState.MAX_ACTIVE);
         out.putInt(MAX_PACKET_BYTES);
         return out.array();
     }
@@ -111,8 +114,8 @@ final class WorldStreamEnvelope {
             require(
                     in.getInt() == 800
                             && in.getInt() == 500
-                            && in.getInt() == 10
-                            && in.getInt() == 9
+                            && in.getInt() == WorldStreamState.SLOTS
+                            && in.getInt() == WorldStreamState.MAX_ACTIVE
                             && in.getInt() == MAX_PACKET_BYTES,
                     "Invalid session caps");
             zero(in, BYTES);
@@ -147,7 +150,9 @@ final class WorldStreamEnvelope {
                     next = in.getLong(),
                     policy = in.getLong();
             int count = in.getInt();
-            require(count >= 0 && count <= 9 && in.getInt() == 0, "Invalid commit count");
+            require(
+                    count >= 0 && count <= WorldStreamState.MAX_ACTIVE && in.getInt() == 0,
+                    "Invalid commit count");
             var members = new ArrayList<Resident>(count);
             for (int i = 0; i < count; i++) {
                 int slot = Byte.toUnsignedInt(in.get());

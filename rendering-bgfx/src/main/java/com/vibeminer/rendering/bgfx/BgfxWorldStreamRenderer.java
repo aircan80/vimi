@@ -78,12 +78,20 @@ import org.lwjgl.system.MemoryUtil;
 /** Fixed-resource context-owned persistent terrain. All bgfx methods run on its native owner. */
 final class BgfxWorldStreamRenderer implements AutoCloseable {
     /**
-     * Ten slots (nine active, one staged). Exterior objects add at most one validated objects file
-     * per slot: up to {@link WorldStreamObjectsFile#MAX_BYTES} of GPU vertices, indices and RGBA8
-     * textures (the version 2 maximum profile is about 14.9 MB), so the object GPU budget is about
-     * 150 MB in the worst case, charged in Stats.objectBytes; real tiles stay far below it.
+     * Twenty-six slots (25 active, one staged). Each holds a fixed MAX_TRIANGLES instance buffer
+     * (3.93 MB) and one 512 x 512 RGBA8 atlas. Exterior objects add at most one validated objects
+     * file per slot: up to {@link WorldStreamObjectsFile#MAX_BYTES} of GPU vertices, indices and
+     * RGBA8 textures (the version 2 maximum profile is about 14.9 MB). Real tiles stay far below
+     * that, so instead of a per-slot worst case the objects share {@link #OBJECT_BUDGET_BYTES},
+     * charged in Stats.objectBytes.
      */
-    static final int SLOT_COUNT = 10, INSTANCE_BYTES = 48;
+    static final int SLOT_COUNT = WorldStreamState.SLOTS, INSTANCE_BYTES = 48;
+
+    /**
+     * GPU bytes all resident and building exterior object sets may reserve together: the former
+     * ten-slot worst case. A set that does not fit fails alone and its terrain is kept.
+     */
+    static final long OBJECT_BUDGET_BYTES = 10L * WorldStreamObjectsFile.MAX_BYTES;
 
     /** Terrain 65536 plus optional static water 16384 instances in one per-slot buffer. */
     static final int MAX_TRIANGLES = 65536 + WorldStreamPackedTile.MAX_WATER_TRIANGLES;
@@ -290,6 +298,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         short vertices = INVALID, indices = INVALID;
         long bytes;
 
+        /** Full GPU size reserved against OBJECT_BUDGET_BYTES until destroyed. */
+        long reserved;
+
         SlotObjects(WorldStreamPackedObjects source) {
             models = source.models;
             meshes = source.meshes;
@@ -329,6 +340,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 }
             }
             bytes = 0;
+            reserved = 0;
         }
     }
 
@@ -577,7 +589,13 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         var source = build.source;
         try {
             if (build.building == null) {
+                long need = source.payloadBytes();
+                if (!objectsFit(reservedObjectBytes(), need)) {
+                    build.fail();
+                    return 0;
+                }
                 var built = new SlotObjects(source);
+                built.reserved = need;
                 build.building = built;
                 try (var layout = objectLayout()) {
                     built.vertices =
@@ -885,7 +903,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 || expected == Long.MAX_VALUE
                 || next != expected + 1
                 || ordered == null
-                || ordered.size() > 9) {
+                || ordered.size() > WorldStreamState.MAX_ACTIVE) {
             throw new IllegalArgumentException("Commit revision/count");
         }
         boolean[] seen = new boolean[SLOT_COUNT], coordinates = new boolean[4096];
@@ -1237,6 +1255,28 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 peakStepBytes,
                 maximumStepNanos,
                 objectBytes(upload));
+    }
+
+    /** Whether an objects set of {@code need} GPU bytes fits beside {@code reserved} bytes. */
+    static boolean objectsFit(long reserved, long need) {
+        return need >= 0 && reserved >= 0 && need <= OBJECT_BUDGET_BYTES - reserved;
+    }
+
+    private long reservedObjectBytes() {
+        var upload = uploading.get();
+        long total =
+                upload == null || upload.objects == null || upload.objects.building == null
+                        ? 0
+                        : upload.objects.building.reserved;
+        if (late != null && late.build.building != null) {
+            total += late.build.building.reserved;
+        }
+        for (var slot : slots) {
+            if (slot != null && slot.objects != null) {
+                total += slot.objects.reserved;
+            }
+        }
+        return total;
     }
 
     private long objectBytes(Upload upload) {
