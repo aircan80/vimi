@@ -515,7 +515,8 @@ public final class WorldExteriorObjects {
                 List<Placement> placements,
                 List<Image> images,
                 int[] counts,
-                RuntimeException modelFailure) {
+                RuntimeException modelFailure,
+                ImageDetail detail) {
             this.modelFailure = modelFailure;
             this.mapId = mapId;
             this.tileX = tileX;
@@ -545,7 +546,7 @@ public final class WorldExteriorObjects {
                             && i <= MAX_INDICES + MAX_DOODAD_INDICES + MAX_MATERIAL_INDICES
                             && r <= MAX_RANGES + MAX_DOODAD_RANGES + MAX_MATERIAL_RANGES
                             && m <= MAX_MESHES + MAX_MODELS
-                            && p <= ImageDetail.HIGH.totalPixels(),
+                            && p <= detail.totalPixels(),
                     "EXTERIOR_TILE_BOUNDS");
             vertices = v;
             indices = i;
@@ -788,7 +789,8 @@ public final class WorldExteriorObjects {
                     placements,
                     images,
                     counts,
-                    modelFailure);
+                    modelFailure,
+                    detail);
         }
 
         private void count(Count count) {
@@ -2017,13 +2019,34 @@ public final class WorldExteriorObjects {
                 }
                 long width = Integer.toUnsignedLong(header.getInt(12));
                 long height = Integer.toUnsignedLong(header.getInt(16));
-                int recorded = WorldImageBudget.recordedLevels(raw);
+                int recorded;
+                try {
+                    recorded =
+                            WorldImageBudget.recordedLevels(
+                                    Blp2Decoder.readMipsSynchronous(
+                                            AssetSource.bytes(raw),
+                                            IMAGE_LIMITS,
+                                            token,
+                                            Blp2Types.MipProfile.STRICT));
+                } catch (BlpFormatException undeclared) {
+                    recorded = 0;
+                }
                 if (width == 0 || height == 0 || width > 8192 || height > 8192 || recorded == 0) {
                     local[undecodable.ordinal()]++;
                     return -1;
                 }
-                int level = WorldImageBudget.levelFor(width, height, REGISTRATION_SIDE, recorded);
-                var image = decodeLevel(raw, id, width, height, level, opaque);
+                // The registration level first, then every other recorded level with both sides
+                // at most 256, so an image the 256-side profile could draw is never lost here.
+                int preferred =
+                        WorldImageBudget.levelFor(width, height, REGISTRATION_SIDE, recorded);
+                int level = -1;
+                Image image = null;
+                for (int k = 0; k < recorded && image == null; k++) {
+                    int candidate =
+                            k <= recorded - 1 - preferred ? preferred + k : recorded - 1 - k;
+                    image = decodeLevel(raw, id, width, height, candidate, opaque);
+                    level = candidate;
+                }
                 if (image == null) {
                     local[undecodable.ordinal()]++;
                     return -1;
@@ -2140,7 +2163,13 @@ public final class WorldExteriorObjects {
         private Image relevel(Demand demand, int level) {
             var registered = images.get(demand.slot());
             if (level < demand.recorded()) {
-                var input = derived(demand.id(), imageKind(demand.pool()));
+                // A refused second read of a cutout or blended image keeps the registered level,
+                // as the first read would have: it never costs the tile its set.
+                var input =
+                        derived(
+                                demand.id(),
+                                imageKind(demand.pool()),
+                                demand.pool() == Pool.MATERIAL ? new boolean[1] : null);
                 if (input != null) {
                     try (input) {
                         var image =
@@ -2163,8 +2192,12 @@ public final class WorldExteriorObjects {
             return reduce(registered, level - demand.registered());
         }
 
-        /** Halves the image {@code steps} times with a 2x2 box filter (edges clamp). */
-        private static Image reduce(Image image, int steps) {
+        /**
+         * Halves the image {@code steps} times with a 2x2 box filter. Colour is weighted by alpha
+         * (straight alpha), so transparent texels do not darken the edge; alpha is the plain mean.
+         * An odd side truncates, like the halved level sizes: its last row or column is dropped.
+         */
+        static Image reduce(Image image, int steps) {
             int w = image.width, h = image.height;
             byte[] rgba = image.rgba;
             for (int step = 0; step < steps; step++) {
@@ -2174,14 +2207,30 @@ public final class WorldExteriorObjects {
                     for (int x = 0; x < nw; x++) {
                         int x0 = Math.min(w - 1, 2 * x), x1 = Math.min(w - 1, 2 * x + 1);
                         int y0 = Math.min(h - 1, 2 * y), y1 = Math.min(h - 1, 2 * y + 1);
-                        for (int c = 0; c < 4; c++) {
-                            int sum =
-                                    (rgba[(y0 * w + x0) * 4 + c] & 255)
-                                            + (rgba[(y0 * w + x1) * 4 + c] & 255)
-                                            + (rgba[(y1 * w + x0) * 4 + c] & 255)
-                                            + (rgba[(y1 * w + x1) * 4 + c] & 255);
-                            next[(y * nw + x) * 4 + c] = (byte) ((sum + 2) / 4);
+                        int[] at = {
+                            (y0 * w + x0) * 4,
+                            (y0 * w + x1) * 4,
+                            (y1 * w + x0) * 4,
+                            (y1 * w + x1) * 4
+                        };
+                        int alpha = 0;
+                        for (int k : at) {
+                            alpha += rgba[k + 3] & 255;
                         }
+                        int out = (y * nw + x) * 4;
+                        for (int c = 0; c < 3; c++) {
+                            int weighted = 0, plain = 0;
+                            for (int k : at) {
+                                weighted += (rgba[k + c] & 255) * (rgba[k + 3] & 255);
+                                plain += rgba[k + c] & 255;
+                            }
+                            next[out + c] =
+                                    (byte)
+                                            (alpha == 0
+                                                    ? (plain + 2) / 4
+                                                    : (weighted + alpha / 2) / alpha);
+                        }
+                        next[out + 3] = (byte) ((alpha + 2) / 4);
                     }
                 }
                 rgba = next;

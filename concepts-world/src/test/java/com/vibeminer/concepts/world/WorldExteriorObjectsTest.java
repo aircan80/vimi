@@ -1086,6 +1086,177 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void anUndecodableRegistrationLevelFallsBackToAnotherRecordedLevel() {
+        // A 256^2 file whose level 1 runs past the file: registration tries level 1 first, then
+        // level 0, which the old 256-side profile drew; the image is not lost.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            byte[] bad = blp(256, 256, 2, 0xf800);
+            ByteBuffer.wrap(bad).order(ByteOrder.LITTLE_ENDIAN).putInt(88, 1 << 16);
+            f.files.sources.put(IMAGE, bad);
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.IMAGE_DECODED));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.IMAGE_UNDECODABLE));
+                assertEquals(256, set.images().getFirst().width());
+                assertEquals(0, set.images().getFirst().mipLevel());
+            }
+        }
+    }
+
+    @Test
+    void aRefusedSecondReadOfACutoutImageKeepsItsRegisteredLevel() {
+        // The cutout image registers at 128 (level 1) and is allotted 256 (level 0); its second
+        // read is refused at SOURCE_INPUT. The tile keeps the registered level instead of failing.
+        var files =
+                new WorldTerrainTextureSourceTest.Files() {
+                    @Override
+                    com.vibeminer.files.FileReadStream open(long id, Cancellation cancel) {
+                        var actual = super.open(id, cancel);
+                        if (id != IMAGE2 || opens.get(id).get() < 2) {
+                            return actual;
+                        }
+                        return new com.vibeminer.files.FileReadStream() {
+                            public long length() {
+                                return actual.length();
+                            }
+
+                            public long position() {
+                                return actual.position();
+                            }
+
+                            public void seek(long position) {
+                                actual.seek(position);
+                            }
+
+                            public List<com.vibeminer.files.FileTypes.FileHole> holes() {
+                                return actual.holes();
+                            }
+
+                            public java.util.concurrent.CompletableFuture<Integer> read(
+                                    ByteBuffer destination, Cancellation token) {
+                                return java.util.concurrent.CompletableFuture.completedFuture(-1);
+                            }
+
+                            public void close() {
+                                actual.close();
+                            }
+                        };
+                    }
+                };
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), files)) {
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            1,
+                            new long[] {GROUP},
+                            List.of(new Material(0, IMAGE, 0), new Material(1, IMAGE2, 0))));
+            f.files.sources.put(
+                    GROUP, group(EXT, 3, 2, List.of(new Batch(0, 3, 0, 0), new Batch(3, 3, 0, 1))));
+            f.files.sources.put(IMAGE2, blp(256, 256, 3, 0x001f));
+            try (var set = f.run()) {
+                assertEquals(2, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
+                var cutout =
+                        set.images().stream()
+                                .filter(i -> i.id() == IMAGE2)
+                                .findFirst()
+                                .orElseThrow();
+                assertEquals(128, cutout.width(), "registered level kept");
+                assertEquals(2, f.files.opens.get(IMAGE2).get(), "the second read was attempted");
+            }
+        }
+    }
+
+    @Test
+    void cutoutPoolSharesItsOwnBudgetFairly() {
+        // 12 distinct 256^2 cutout images in the 256 Ki cutout pool: all draw, at 128^2
+        // (12 x 16 Ki = 192 Ki); the next round to 256^2 would need 48 Ki more each, and the
+        // first of them (priority order) takes it.
+        var materials = new ArrayList<Material>();
+        var batches = new ArrayList<Batch>();
+        materials.add(new Material(0, IMAGE, 0));
+        batches.add(new Batch(0, 3, 0, 0));
+        for (int i = 0; i < 12; i++) {
+            materials.add(new Material(1, 6000 + i, 0));
+            batches.add(new Batch((i + 1) * 3, 3, 0, i + 1));
+        }
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(ROOT, root(1, new long[] {GROUP}, materials));
+            f.files.sources.put(GROUP, group(EXT, 3, 13, batches));
+            for (int i = 0; i < 12; i++) {
+                f.files.sources.put(6000L + i, blp(256, 256, 3, i));
+            }
+            try (var set = f.run()) {
+                assertEquals(13, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.BATCH_MISSING_IMAGE));
+                long cutoutPixels = 0;
+                int full = 0;
+                for (var image : set.images()) {
+                    if (image.id() >= 6000) {
+                        cutoutPixels += (long) image.width() * image.height();
+                        full += image.width() == 256 ? 1 : 0;
+                    }
+                }
+                assertTrue(cutoutPixels <= WorldExteriorObjects.MAX_MATERIAL_PIXELS);
+                assertEquals(1, full, "only the highest-priority cutout image reaches 256");
+                assertEquals(
+                        256,
+                        set.images().stream()
+                                .filter(i -> i.id() >= 6000)
+                                .findFirst()
+                                .orElseThrow()
+                                .width());
+            }
+        }
+    }
+
+    @Test
+    void boxReductionWeightsColourByAlphaAndTruncatesOddSides() throws Exception {
+        // 3x2 RGBA: a red opaque texel beside a transparent blue one, etc.
+        byte[] rgba = {
+            (byte) 255, 0, 0, (byte) 255, 0, 0, (byte) 255, 0, 9, 9, 9, (byte) 255,
+            (byte) 255, 0, 0, (byte) 255, 0, 0, (byte) 255, 0, 9, 9, 9, (byte) 255
+        };
+        var make =
+                WorldExteriorObjects.Image.class.getDeclaredConstructor(
+                        long.class, int.class, int.class, int.class, byte[].class);
+        make.setAccessible(true);
+        var image = make.newInstance(1L, 3, 2, 0, rgba);
+        var reduce =
+                Class.forName("com.vibeminer.concepts.world.WorldExteriorObjects$Builder")
+                        .getDeclaredMethod("reduce", WorldExteriorObjects.Image.class, int.class);
+        reduce.setAccessible(true);
+        var out = (WorldExteriorObjects.Image) reduce.invoke(null, image, 1);
+        assertEquals(1, out.width(), "the odd third column is dropped");
+        assertEquals(1, out.height());
+        assertEquals(1, out.mipLevel());
+        var px = new byte[4];
+        out.rgba().get(px);
+        assertEquals(255, px[0] & 255, "transparent blue does not tint the colour");
+        assertEquals(0, px[2] & 255);
+        assertEquals(128, px[3] & 255, "alpha is the plain mean");
+    }
+
+    @Test
+    void recordedSizeIsTheBoundsDiagonalAndZeroWhenNotFinite() {
+        var unit = declared(new Modf(ROOT, 1, 0x8, 0, 0, 0, 0, 0, 0, 1024).sized(1));
+        assertEquals(Math.sqrt(12), WorldExteriorObjects.recordedSize(unit), 1e-9);
+        var inverted = declared(new Modf(ROOT, 1, 0x8, 0, 0, 0, 0, 0, 0, 1024).sized(-1));
+        assertEquals(
+                Math.sqrt(12),
+                WorldExteriorObjects.recordedSize(inverted),
+                1e-9,
+                "an inverted box has the same diagonal; it is never negative");
+        // Non-finite bounds never reach it: obj0 parsing refuses them, and recordedSize would
+        // still answer 0 rather than NaN.
+        for (float bad : new float[] {Float.NaN, Float.POSITIVE_INFINITY}) {
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> declared(new Modf(ROOT, 1, 0x8, 0, 0, 0, 0, 0, 0, 1024).sized(bad)));
+        }
+        // Ties keep obj0 order: equal sizes are admitted in source order (all other tests use
+        // the same authored bounds and rely on it).
+    }
+
+    @Test
     void preparationIsDeterministicAcrossRuns() {
         var records = new ArrayList<Modf>();
         for (int i = 0; i < 5; i++) {
