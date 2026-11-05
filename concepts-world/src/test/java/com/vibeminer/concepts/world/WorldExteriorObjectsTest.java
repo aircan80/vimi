@@ -1070,9 +1070,9 @@ class WorldExteriorObjectsTest {
                 assertEquals(4016L, recorded.id());
                 assertEquals(1, recorded.mipLevel());
                 assertEquals(128, recorded.width());
-                // Registered at 128 (its recorded level 1), so no relevel read; its chain then
-                // reads the file once more for the recorded level 2 below it (#265).
-                assertEquals(2, f.files.opens.get(4016L).get());
+                // Registered at 128 (its recorded level 1); its chain takes the recorded level 2
+                // below it from the bytes kept since registration, so one read in all (#265).
+                assertEquals(1, f.files.opens.get(4016L).get());
                 assertEquals(
                         com.vibeminer.rendering.world.ObjectTextureMips.Source.PARTIAL,
                         recorded.mips());

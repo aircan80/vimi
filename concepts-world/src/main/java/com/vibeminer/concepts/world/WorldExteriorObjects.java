@@ -103,6 +103,12 @@ public final class WorldExteriorObjects {
         }
     }
 
+    /**
+     * Image source bytes a tile build keeps between an image's first read, its budget relevel and
+     * its mip chain (#265); real tiles read about 7 MiB of BLP data.
+     */
+    static final long RETAINED_SOURCE_BYTES = 32L << 20;
+
     /** Per-tile draw budget: the sum over all placements of their model's ranges. */
     static final int MAX_DRAWS = 4096;
 
@@ -776,8 +782,14 @@ public final class WorldExteriorObjects {
         private final Map<Long, RootState> doodadStates = new HashMap<>();
         private final Map<Long, Integer> doodadSlots = new HashMap<>();
 
-        /** Source bytes a relevel already read, kept until the image's chain is built. */
-        private final Map<Integer, byte[]> relevelled = new HashMap<>();
+        /**
+         * Image source bytes by slot, kept from their first read until the image's chain is built
+         * so the budget's relevel and the chain's file mips need no second read (#265). Bounded by
+         * {@link #RETAINED_SOURCE_BYTES}; images past it are read again.
+         */
+        private final Map<Integer, byte[]> sources = new HashMap<>();
+
+        private long retainedSourceBytes;
 
         /** Registered images by slot, in admission (priority) order; null for other slots. */
         private final List<Demand> demands = new ArrayList<>();
@@ -823,6 +835,7 @@ public final class WorldExteriorObjects {
             }
             allocateImages();
             chainImages();
+            sources.clear();
             dropUnusedImages();
             return new TileObjects(
                     admission.mapId(),
@@ -2076,6 +2089,10 @@ public final class WorldExteriorObjects {
                 }
                 images.add(image);
                 int slot = images.size() - 1;
+                if (retainedSourceBytes + raw.length <= RETAINED_SOURCE_BYTES) {
+                    sources.put(slot, raw.clone());
+                    retainedSourceBytes += raw.length;
+                }
                 while (demands.size() < slot) {
                     demands.add(null);
                 }
@@ -2194,18 +2211,8 @@ public final class WorldExteriorObjects {
                 token.check();
                 var top = images.get(demand.slot());
                 int level = top.mipLevel();
-                // A relevel already read the source; otherwise read it again only when the file
-                // records levels below the final one.
-                byte[] raw = relevelled.remove(demand.slot());
-                if (raw == null && level + 1 < demand.recorded()) {
-                    var input = derived(demand.id(), imageKind(demand.pool()));
-                    if (input != null) {
-                        try (input) {
-                            raw = input.bytes().clone();
-                        }
-                    }
-                }
-                byte[] file = raw;
+                // The file's own mips below the final level, when it records any.
+                byte[] file = level + 1 < demand.recorded() ? source(demand) : null;
                 var chain =
                         ObjectTextureMips.build(
                                 top.width(),
@@ -2232,6 +2239,23 @@ public final class WorldExteriorObjects {
                                 level,
                                 chain.rgba(),
                                 chain.source()));
+            }
+        }
+
+        /** The image's retained source bytes, or a second read when they were not kept. */
+        private byte[] source(Demand demand) {
+            byte[] kept = sources.get(demand.slot());
+            if (kept != null) {
+                return kept;
+            }
+            var input = derived(demand.id(), imageKind(demand.pool()));
+            if (input == null) {
+                return null;
+            }
+            try (input) {
+                byte[] raw = input.bytes().clone();
+                sources.put(demand.slot(), raw);
+                return raw;
             }
         }
 
@@ -2267,21 +2291,18 @@ public final class WorldExteriorObjects {
         private Image relevel(Demand demand, int level) {
             var registered = images.get(demand.slot());
             if (level < demand.recorded()) {
-                var input = derived(demand.id(), imageKind(demand.pool()));
-                if (input != null) {
-                    try (input) {
-                        relevelled.put(demand.slot(), input.bytes().clone());
-                        var image =
-                                decodeLevel(
-                                        input.bytes(),
-                                        demand.id(),
-                                        demand.width(),
-                                        demand.height(),
-                                        level,
-                                        demand.materialClass() == OPAQUE);
-                        if (image != null) {
-                            return image;
-                        }
+                byte[] raw = source(demand);
+                if (raw != null) {
+                    var image =
+                            decodeLevel(
+                                    raw,
+                                    demand.id(),
+                                    demand.width(),
+                                    demand.height(),
+                                    level,
+                                    demand.materialClass() == OPAQUE);
+                    if (image != null) {
+                        return image;
                     }
                 }
                 if (level < demand.registered()) {
