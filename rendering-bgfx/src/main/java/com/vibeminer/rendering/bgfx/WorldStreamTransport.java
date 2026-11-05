@@ -655,6 +655,11 @@ public final class WorldStreamTransport {
             return initialized.copy();
         }
 
+        /** Whether this session's profile admits BASIC_EXTERIOR objects. */
+        public boolean exteriorObjects() {
+            return descriptor.exteriorObjects();
+        }
+
         /** Protocol success is separate from process/resource drain. */
         public CompletableFuture<Void> completion() {
             return completion.copy();

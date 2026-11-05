@@ -10,8 +10,8 @@ import java.util.concurrent.CompletableFuture;
 final class WorldStreamGpuOwner {
     /**
      * BASIC_EXTERIOR_V1 outdoor buildings are opt-in with {@code -Dvimi.world.exteriors=true}.
-     * They stay off by default because a tile's terrain OFFER still waits for its object
-     * preparation (0.4 to 21 s per tile on a cold cache), which is not acceptable as a default.
+     * Their objects are delivered late, after terrain commits, and object preparation runs only
+     * while terrain is idle (terrain preempts it), so terrain never waits for buildings.
      */
     static final boolean EXTERIORS = exteriorsEnabled(System.getProperty("vimi.world.exteriors"));
 
