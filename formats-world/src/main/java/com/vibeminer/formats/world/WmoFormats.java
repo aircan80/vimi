@@ -265,8 +265,9 @@ public final class WmoFormats {
             float scale) {}
 
     /**
-     * Recorded doodad declarations. {@code retained} is false when MODS or MODD is absent, exceeds
-     * {@link #MAX_DOODAD_SETS}/{@link #MAX_DOODAD_DEFS}, or does not fit the root fact budget: a
+     * Recorded doodad declarations. {@code retained} is false when MODS or MODD is absent, when any
+     * doodad declaration is duplicated or has a partial record, when one exceeds {@link
+     * #MAX_DOODAD_SETS}/{@link #MAX_DOODAD_DEFS}, or when they do not fit the root fact budget: a
      * root that qualifies without its doodads is never declined because of them.
      */
     public static final class Doodads {
@@ -292,7 +293,7 @@ public final class WmoFormats {
             this.fileIds = fileIds;
         }
 
-        /** Any doodad set or definition chunk (MODS, MODD) was declared. */
+        /** Any doodad chunk (MODS, MODN, MODI or MODD) was declared. */
         public boolean declared() {
             return declared;
         }
@@ -528,7 +529,7 @@ public final class WmoFormats {
         GroupNames groupNames = GroupNames.absent();
         int namesAt = -1, namesBytes = 0;
         int setsAt = -1, setsBytes = 0, defsAt = -1, defsBytes = 0, idsAt = -1, idsBytes = 0;
-        boolean doodadNames = false;
+        boolean doodadNames = false, doodadDuplicate = false;
         while (input.hasRemaining()) {
             check(canceled);
             var chunk = chunk(input, input.limit(), chunks, budget, ROOT_TAGS);
@@ -603,21 +604,29 @@ public final class WmoFormats {
                     namesBytes = chunk.bytes();
                 }
                 case MODS -> {
-                    unique(seen, MODS);
+                    // A duplicate doodad declaration leaves the doodads not retained; it never
+                    // declines the root.
+                    doodadDuplicate |= !seen.add(MODS);
                     setsAt = at;
                     setsBytes = chunk.bytes();
                 }
                 case MODN -> {
-                    unique(seen, MODN);
+                    // A duplicate doodad declaration leaves the doodads not retained; it never
+                    // declines the root.
+                    doodadDuplicate |= !seen.add(MODN);
                     doodadNames = true;
                 }
                 case MODI -> {
-                    unique(seen, MODI);
+                    // A duplicate doodad declaration leaves the doodads not retained; it never
+                    // declines the root.
+                    doodadDuplicate |= !seen.add(MODI);
                     idsAt = at;
                     idsBytes = chunk.bytes();
                 }
                 case MODD -> {
-                    unique(seen, MODD);
+                    // A duplicate doodad declaration leaves the doodads not retained; it never
+                    // declines the root.
+                    doodadDuplicate |= !seen.add(MODD);
                     defsAt = at;
                     defsBytes = chunk.bytes();
                 }
@@ -649,6 +658,7 @@ public final class WmoFormats {
                         budget,
                         canceled,
                         doodadNames,
+                        doodadDuplicate,
                         idsAt,
                         idsBytes,
                         setsAt,
@@ -668,15 +678,16 @@ public final class WmoFormats {
     }
 
     /**
-     * Doodad declarations, claimed after every required declaration. A malformed shape (a partial
-     * record) is invalid like any other root declaration; an oversized or over-budget one is only
-     * not retained.
+     * Doodad declarations, claimed after every required declaration. A duplicate, partial
+     * (malformed shape), oversized or over-budget declaration is only not retained; the root is
+     * never declined because of its doodads.
      */
     private static Doodads doodads(
             ByteBuffer input,
             Budget budget,
             BooleanSupplier canceled,
             boolean names,
+            boolean duplicate,
             int idsAt,
             int idsBytes,
             int setsAt,
@@ -684,14 +695,13 @@ public final class WmoFormats {
             int defsAt,
             int defsBytes) {
         boolean ids = idsAt >= 0;
-        if ((ids && idsBytes % 4 != 0)
-                || (setsAt >= 0 && setsBytes % 32 != 0)
-                || (defsAt >= 0 && defsBytes % 40 != 0)) {
-            throw invalid("WMO doodad declaration shape");
-        }
         int setCount = setsBytes / 32, defCount = defsBytes / 40, idCount = idsBytes / 4;
-        boolean declared = setsAt >= 0 || defsAt >= 0;
-        if (setsAt < 0
+        boolean declared = setsAt >= 0 || defsAt >= 0 || ids || names;
+        if (duplicate
+                || (ids && idsBytes % 4 != 0)
+                || (setsAt >= 0 && setsBytes % 32 != 0)
+                || (defsAt >= 0 && defsBytes % 40 != 0)
+                || setsAt < 0
                 || defsAt < 0
                 || setCount > MAX_DOODAD_SETS
                 || defCount > MAX_DOODAD_DEFS

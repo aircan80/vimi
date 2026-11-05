@@ -571,10 +571,35 @@ class WmoFormatsTest {
         assertTrue(Float.isNaN(doodads.definitions().get(1).x()));
         assertEquals(3, doodads.fileIdCount());
         assertEquals(0xffffffffL, doodads.fileId(2));
-        // A partial record is malformed; names without MODI are retained but flagged.
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> WmoFormats.root(join(root(), chunk("MODD", new byte[39])), () -> false));
+        // A partial record or a duplicate declaration leaves the doodads not retained, and the
+        // root still parses as it did before doodads were read.
+        for (var broken :
+                new byte[][] {
+                    join(root(), chunk("MODS", sets.array()), chunk("MODD", new byte[39])),
+                    join(root(), chunk("MODS", new byte[33]), chunk("MODD", def.array())),
+                    join(
+                            root(),
+                            chunk("MODS", sets.array()),
+                            chunk("MODI", new byte[5]),
+                            chunk("MODD", def.array())),
+                    join(
+                            root(),
+                            chunk("MODS", sets.array()),
+                            chunk("MODD", def.array()),
+                            chunk("MODD", def.array())),
+                    join(
+                            root(),
+                            chunk("MODS", sets.array()),
+                            chunk("MODN", new byte[4]),
+                            chunk("MODN", new byte[4]),
+                            chunk("MODD", def.array()))
+                }) {
+            var parsed = WmoFormats.root(broken, () -> false);
+            assertEquals(1, parsed.materials().size());
+            assertTrue(parsed.doodads().declared());
+            assertFalse(parsed.doodads().retained());
+        }
+        // Names without MODI are retained but flagged.
         var named =
                 WmoFormats.root(
                                 join(
