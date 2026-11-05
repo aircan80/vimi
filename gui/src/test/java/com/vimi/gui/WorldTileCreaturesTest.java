@@ -40,6 +40,10 @@ public final class WorldTileCreaturesTest {
         cachesPerRevisionAndRetriesFailures();
         cancellationPropagatesAndSourceFailuresAreNotes();
         statusDisclosure();
+        capsStopLookupsAndForeignCancellationIsAFailure();
+        failedIndexLoadsBackOff();
+        conversionChecksVertexValuesAndLightsMissingNormals();
+        BridgeAssembly.run();
         System.out.println("WorldTileCreaturesTest passed");
     }
 
@@ -178,12 +182,9 @@ public final class WorldTileCreaturesTest {
         require(loads.get() == 2 && chooses.get() == 2 && previews.get() == 3,
                 "A new revision reloads the index and drops cached choices and models");
         creatures.close();
-        try {
-            creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
-            require(false, "A closed source refuses work");
-        } catch (CancellationException expected) {
-            // Closed.
-        }
+        var closed = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(closed.drawn() == 0 && closed.note().contains("closed"),
+                "A closed source is a creature note under a live tile token, never a cancellation");
     }
 
     private static void cancellationPropagatesAndSourceFailuresAreNotes() {
@@ -226,6 +227,147 @@ public final class WorldTileCreaturesTest {
                 "Nothing to disclose without creatures");
         require(WorldStreamSourceController.creatureDetail(WorldTileCreatures.Summary.failed("no prepared spawn source"), 0)
                 .equals("; creatures: no prepared spawn source"), "A note is shown when nothing was considered");
+    }
+
+    private static void capsStopLookupsAndForeignCancellationIsAFailure() {
+        var rows = new ArrayList<Map<String, Object>>();
+        // Forty different NPCs, so each drawn point costs one uncached lookup.
+        for (int i = 0; i < 40; i++) rows.add(WorldSpawnOverlayTest.spawn(i + 1, 1, -100 - i, -100, 10.0));
+        var chooses = new AtomicInteger();
+        var creatures = new WorldTileCreatures(token -> index(rows), () -> "r1", (npc, token) -> {
+            chooses.incrementAndGet();
+            return qualified(7, null);
+        }, (display, token) -> preview(display, 0L, 0L, appearance(true)));
+        var summary = creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(summary.drawn() == WorldTileCreatures.TILE_PLACEMENTS, "The cap still draws its placements");
+        require(chooses.get() == WorldTileCreatures.TILE_PLACEMENTS,
+                "Spawns past the placement cap are capped without a lookup: " + chooses.get());
+        var foreign = new WorldTileCreatures(token -> index(List.of(WorldSpawnOverlayTest.spawn(2, 1, -100, -100, 10.0))),
+                () -> "r1", (npc, token) -> {
+                    throw new CancellationException("component retired");
+                }, (display, token) -> {
+                    throw new CancellationException("preview future canceled");
+                });
+        var failed = foreign.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(failed.count(WorldTileCreatures.Count.FAILED) == 1,
+                "A component's own cancellation under a live tile token is a failed lookup");
+        var previewCanceled = new WorldTileCreatures(
+                token -> index(List.of(WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0))), () -> "r1",
+                (npc, token) -> qualified(7, null), (display, token) -> {
+                    throw new CancellationException("preview future canceled");
+                });
+        require(previewCanceled.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE)
+                .count(WorldTileCreatures.Count.FAILED) == 1, "A canceled preview future is a failed model");
+    }
+
+    private static void failedIndexLoadsBackOff() {
+        var now = new java.util.concurrent.atomic.AtomicLong();
+        var loads = new AtomicInteger();
+        var creatures = new WorldTileCreatures(token -> {
+            loads.incrementAndGet();
+            throw new IllegalStateException("broken snapshot");
+        }, () -> "r1", (npc, token) -> qualified(7, null), (display, token) -> null, now::get);
+        require(creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE).note()
+                .contains("spawn source failed"), "A failed load is a note");
+        creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(loads.get() == 1, "A failed load is reused within its back-off, not retried per tile");
+        now.addAndGet(WorldTileCreatures.INDEX_RETRY_NANOS);
+        creatures.append(WorldStreamTileWriter.Exterior.builder(), 0, TILE, Cancellation.NONE);
+        require(loads.get() == 2, "The load is retried after the back-off");
+    }
+
+    private static void conversionChecksVertexValuesAndLightsMissingNormals() {
+        var mesh = new PreviewMesh(new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0}, new int[] {0, 1, 2},
+                List.of(new PreviewMesh.Part(0, 0, 3)));
+        var bound = List.of(new MeshAppearance.Surface(0, 0, true, true, false));
+        var texture = List.of(new MeshAppearance.Texture(1, 1, new int[] {-1}));
+        var lit = WorldTileCreatures.convert(preview(7, 0L, 0L, new MeshAppearance(mesh, new float[6], bound, texture)),
+                Cancellation.NONE);
+        float[] v = lit.model().vertices();
+        require(v[3] == 0 && v[4] == 0 && v[5] == 1, "Missing normals light the model as facing up");
+        // Preview meshes already bound their values; convert repeats the objects file's vertex
+        // check per model, and the bridge test below covers a bad vertex reaching the file check.
+    }
+
+    /** Buildings survive every kind of creature problem on a tile that has buildings. */
+    static final class BridgeAssembly {
+        static void run() {
+            java.util.function.Consumer<WorldStreamTileWriter.Exterior.Builder> buildings = builder -> {
+                builder.image(1, 1, ByteBuffer.allocate(4));
+                builder.model();
+                builder.mesh(FloatBuffer.wrap(new float[24]), IntBuffer.wrap(new int[] {0, 1, 2}), new int[] {0, 3, 0});
+                builder.placement(0, 0, 0, 0, 1, 1, 0);
+                builder.placement(0, 5, 0, 0, 1, 1, 0);
+            };
+            var good = WorldStreamSourceBridge.assemble(buildings, false, "b", (builder, tile, token) ->
+                    creatures(t -> index(List.of(WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0))))
+                            .append(builder, 0, tile, token), TILE, Cancellation.NONE);
+            require(good.exterior().placements() == 3 && good.placements() == 2 && good.creatures().drawn() == 1,
+                    "Buildings and creatures share one copy; only buildings count as buildings");
+            // A bad vertex added past convert's checks fails the file check at build: buildings stay.
+            var invalid = WorldStreamSourceBridge.assemble(buildings, false, "b", (builder, tile, token) -> {
+                builder.image(1, 1, ByteBuffer.allocate(4));
+                builder.model();
+                float[] bad = new float[24];
+                bad[0] = Float.NaN;
+                builder.mesh(FloatBuffer.wrap(bad), IntBuffer.wrap(new int[] {0, 1, 2}), new int[] {0, 3, 1});
+                builder.placement(1, 0, 0, 0, 1, -1, 0);
+                return WorldTileCreatures.Summary.NONE;
+            }, TILE, Cancellation.NONE);
+            requireBuildings(invalid, "invalid", "A creature set failing the file checks keeps the buildings");
+            var closedSource = creatures(t -> index(List.of(WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0))));
+            closedSource.close();
+            var closed = WorldStreamSourceBridge.assemble(buildings, false, "b",
+                    (builder, tile, token) -> closedSource.append(builder, 0, tile, token), TILE, Cancellation.NONE);
+            requireBuildings(closed, "closed", "A closed creature source keeps the buildings");
+            var canceledPreview = WorldStreamSourceBridge.assemble(buildings, false, "b", (builder, tile, token) ->
+                    new WorldTileCreatures(t -> index(List.of(WorldSpawnOverlayTest.spawn(1, 1, -100, -100, 10.0))),
+                            () -> "r1", (npc, t) -> qualified(7, null), (display, t) -> {
+                                var future = new java.util.concurrent.CompletableFuture<DisplayModelTypes.Preview>();
+                                future.cancel(false);
+                                return future.join();
+                            }).append(builder, 0, tile, token), TILE, Cancellation.NONE);
+            require(canceledPreview.exterior().placements() == 2 && !canceledPreview.failed()
+                            && canceledPreview.creatures().count(WorldTileCreatures.Count.FAILED) == 1,
+                    "A canceled preview future keeps the buildings");
+            var foreign = WorldStreamSourceBridge.assemble(buildings, false, "b", (builder, tile, token) -> {
+                builder.model();
+                throw new CancellationException("component retired");
+            }, TILE, Cancellation.NONE);
+            requireBuildings(foreign, "canceled outside", "A cancellation that is not the tile's keeps the buildings");
+            var thrown = WorldStreamSourceBridge.assemble(buildings, false, "b", (builder, tile, token) -> {
+                builder.model();
+                throw new IllegalStateException("authored");
+            }, TILE, Cancellation.NONE);
+            requireBuildings(thrown, "failed", "A thrown creature failure keeps the buildings");
+            var own = new Cancellation();
+            try {
+                WorldStreamSourceBridge.assemble(buildings, false, "b", (builder, tile, token) -> {
+                    own.cancel();
+                    throw new CancellationException("tile canceled");
+                }, TILE, own);
+                require(false, "The tile's own cancellation propagates");
+            } catch (CancellationException expected) {
+                // Preempted by terrain.
+            }
+            var none = WorldStreamSourceBridge.assemble(null, true, "refused", (builder, tile, token) -> {
+                throw new IllegalStateException("authored");
+            }, TILE, Cancellation.NONE);
+            require(none.exterior() == null && none.failed() && none.note().equals("refused"),
+                    "Without buildings a creature failure delivers nothing and keeps the building note");
+        }
+
+        private static WorldTileCreatures creatures(WorldSpawnOverlay.Loader loader) {
+            return new WorldTileCreatures(loader, () -> "r1", (npc, token) -> qualified(7, null),
+                    (display, token) -> preview(display, 0L, 0L, appearance(true)));
+        }
+
+        private static void requireBuildings(WorldStreamSourceBridge.ExteriorCopy copy, String note, String message) {
+            require(copy.exterior() != null && copy.exterior().placements() == 2 && copy.placements() == 2
+                    && !copy.failed() && copy.creatures().drawn() == 0
+                    && copy.creatures().note() != null && copy.creatures().note().contains(note),
+                    message + ": " + (copy.creatures().note()));
+        }
     }
 
     static WorldSpawns.Index index(List<Map<String, Object>> rows) {

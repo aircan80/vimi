@@ -53,6 +53,9 @@ final class WorldTileCreatures implements AutoCloseable {
 
     static final int MODEL_CACHE = 32, CHOICE_CACHE = 4096;
 
+    /** Back-off before a failed spawn index load is tried again within one revision. */
+    static final long INDEX_RETRY_NANOS = 60_000_000_000L;
+
     /** Exactly one bucket per considered spawn point of the tile. */
     enum Count {
         DRAWN("drawn"),
@@ -182,10 +185,19 @@ final class WorldTileCreatures implements AutoCloseable {
     private final Map<Long, Converted> models = lru(MODEL_CACHE);
     private Object cachedRevision;
     private CompletableFuture<WorldSpawns.Index> index;
+    private long indexFailedAt;
+    private final java.util.function.LongSupplier clock;
     private Cancellation indexLoad;
     private boolean closed;
 
     WorldTileCreatures(WorldSpawnOverlay.Loader loader, Supplier<Object> revision, Chooser chooser, Previews previews) {
+        this(loader, revision, chooser, previews, System::nanoTime);
+    }
+
+    /** Tests supply the clock that times the index back-off. */
+    WorldTileCreatures(WorldSpawnOverlay.Loader loader, Supplier<Object> revision, Chooser chooser, Previews previews,
+            java.util.function.LongSupplier clock) {
+        this.clock = Objects.requireNonNull(clock);
         this.loader = Objects.requireNonNull(loader);
         this.revision = Objects.requireNonNull(revision);
         this.chooser = Objects.requireNonNull(chooser);
@@ -273,7 +285,8 @@ final class WorldTileCreatures implements AutoCloseable {
         try {
             spawns = index(token);
         } catch (CancellationException canceled) {
-            throw canceled;
+            if (token.isCanceled()) throw canceled;
+            return Summary.failed("creature source closed or retired");
         } catch (RuntimeException failed) {
             token.check();
             return Summary.failed("spawn source failed: " + failed.getClass().getSimpleName());
@@ -288,11 +301,19 @@ final class WorldTileCreatures implements AutoCloseable {
         for (var spawn : nearby.placed()) {
             token.check();
             if (WorldBookmarks.tileIndex(spawn.x()) != tile.x() || WorldBookmarks.tileIndex(spawn.y()) != tile.y()) continue;
+            // Once nothing more can be placed, the rest is capped without any lookup.
+            if (placements == TILE_PLACEMENTS || builder.placementRoom() == 0 || builder.drawRoom() == 0) {
+                counts[Count.CAPPED.ordinal()]++;
+                continue;
+            }
             Chosen chosen;
             try {
                 chosen = chosen(spawn.npcId(), token);
             } catch (CancellationException canceled) {
-                throw canceled;
+                // Only this tile's cancellation propagates; a component's own is a failed lookup.
+                if (token.isCanceled()) throw canceled;
+                counts[Count.FAILED.ordinal()]++;
+                continue;
             } catch (Exception failed) {
                 token.check();
                 counts[Count.FAILED.ordinal()]++;
@@ -324,6 +345,7 @@ final class WorldTileCreatures implements AutoCloseable {
                 }
                 var m = converted.model();
                 if (added.size() == TILE_MODELS
+                        || m.ranges().length / 3 > builder.drawRoom()
                         || !builder.fits(m.images().size(), m.pixels(), 1, m.vertexCount(), m.indices().length,
                                 m.ranges().length / 3)) {
                     counts[Count.CAPPED.ordinal()]++;
@@ -332,8 +354,7 @@ final class WorldTileCreatures implements AutoCloseable {
                 model = add(builder, m);
                 added.put(display, model);
             }
-            if (placements == TILE_PLACEMENTS || builder.placementRoom() == 0
-                    || builder.drawCost(model) > builder.drawRoom()) {
+            if (builder.drawCost(model) > builder.drawRoom()) {
                 counts[Count.CAPPED.ordinal()]++;
                 continue;
             }
@@ -366,7 +387,7 @@ final class WorldTileCreatures implements AutoCloseable {
         var chosen = chooser.choose(npcId, token);
         token.check();
         synchronized (this) {
-            choices.put(npcId, chosen);
+            if (!closed) choices.put(npcId, chosen);
         }
         return chosen;
     }
@@ -375,17 +396,14 @@ final class WorldTileCreatures implements AutoCloseable {
         Converted converted;
         try {
             converted = convert(previews.preview(display, token), token);
-        } catch (CancellationException canceled) {
-            throw canceled;
         } catch (Exception failed) {
+            // Only this tile's cancellation propagates; a closed or retired component is a failure.
             token.check();
-            var cause = failed.getCause() instanceof CancellationException c ? c : null;
-            if (cause != null) throw cause;
             // Not cached: a failed read may succeed on the next tile.
             return Converted.refused(Count.FAILED, failed.getClass().getSimpleName());
         }
         synchronized (this) {
-            models.put(display, converted);
+            if (!closed) models.put(display, converted);
         }
         return converted;
     }
@@ -454,13 +472,18 @@ final class WorldTileCreatures implements AutoCloseable {
                     if (mapped == null) {
                         mapped = remap.size();
                         remap.put(vertex, mapped);
-                        vertices.add(positions[vertex * 3]);
-                        vertices.add(positions[vertex * 3 + 1]);
-                        vertices.add(positions[vertex * 3 + 2]);
-                        for (int axis = 0; axis < 3; axis++)
-                            vertices.add(normals.length == 0 ? 0f : normals[vertex * 3 + axis]);
-                        vertices.add(uv[vertex * 2]);
-                        vertices.add(uv[vertex * 2 + 1]);
+                        float[] values = {positions[vertex * 3], positions[vertex * 3 + 1], positions[vertex * 3 + 2],
+                            normals.length == 0 ? 0f : normals[vertex * 3],
+                            normals.length == 0 ? 0f : normals[vertex * 3 + 1],
+                            // Without recorded normals the model is lit as if facing up.
+                            normals.length == 0 ? 1f : normals[vertex * 3 + 2],
+                            uv[vertex * 2], uv[vertex * 2 + 1]};
+                        for (float value : values) {
+                            // The objects file's own vertex check, applied per model, not per tile.
+                            if (!Float.isFinite(value) || Math.abs(value) > 1_000_000)
+                                return Converted.refused(Count.MODEL_UNAVAILABLE, "vertex value outside the objects profile");
+                            vertices.add(value);
+                        }
                     }
                     indices.add(mapped);
                 }
@@ -474,9 +497,12 @@ final class WorldTileCreatures implements AutoCloseable {
             }
             Integer slot = imageSlots.get(surface.textureIndex());
             if (slot == null) {
+                var image = reduce(textures.get(surface.textureIndex()), token);
+                if (image.width() < 1 || image.height() < 1)
+                    return Converted.refused(Count.MODEL_UNAVAILABLE, "texture has no pixels");
                 slot = images.size();
                 imageSlots.put(surface.textureIndex(), slot);
-                images.add(reduce(textures.get(surface.textureIndex()), token));
+                images.add(image);
             }
             ranges.add(first);
             ranges.add(count);
@@ -495,6 +521,7 @@ final class WorldTileCreatures implements AutoCloseable {
         int width = texture.width(), height = texture.height();
         int w = Math.min(IMAGE_SIDE, Integer.highestOneBit(width));
         int h = Math.min(IMAGE_SIDE, Integer.highestOneBit(height));
+        if (w < 1 || h < 1) return new Image(Math.max(w, 0), Math.max(h, 0), new byte[0]);
         int[] argb = texture.argb();
         var rgba = new byte[w * h * 4];
         for (int y = 0; y < h; y++) {
@@ -528,8 +555,10 @@ final class WorldTileCreatures implements AutoCloseable {
         synchronized (this) {
             if (closed) throw new CancellationException("Creature models closed");
             var now = revision.get();
+            // A failed load is reused within its revision until the back-off ends, so a broken
+            // source costs one load per minute, not one per tile.
             if (index == null || !Objects.equals(now, cachedRevision)
-                    || index.isCompletedExceptionally()) {
+                    || index.isCompletedExceptionally() && clock.getAsLong() - indexFailedAt >= INDEX_RETRY_NANOS) {
                 if (indexLoad != null) indexLoad.cancel();
                 if (!Objects.equals(now, cachedRevision)) {
                     choices.clear();
@@ -544,6 +573,9 @@ final class WorldTileCreatures implements AutoCloseable {
                     try {
                         started.complete(Objects.requireNonNull(loader.load(load)));
                     } catch (Throwable failed) {
+                        synchronized (WorldTileCreatures.this) {
+                            indexFailedAt = clock.getAsLong();
+                        }
                         started.completeExceptionally(failed);
                     }
                 });

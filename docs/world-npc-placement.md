@@ -111,22 +111,36 @@ terrain-matching fog, opaque texture). A spawn is drawn only when all of these h
 | Budget | at most 8 models, 32 placements and 16 preview loads per tile, at most 32,768 vertices per model, and the shared objects file profile left over after buildings (64 placements, 24 models, 64 images, 1 Mi pixels, 4,096 draws per tile) | over the tile budget |
 
 Selection goes nearest to the tile centre first, so it never depends on the camera. Models
-are added whole or not at all. Buildings keep their budget first, and a creature failure
-never costs a tile its buildings or terrain. Each placement uses the recorded point as the
+are added whole or not at all. Once a tile has no placement or draw room left, the remaining
+spawns are counted as over budget without any lookup. Buildings keep their budget first. A
+creature problem never costs a tile its buildings or terrain:
+
+- a thrown failure, a closed or retired creature source, or a canceled component future (any
+  cancellation that is not the tile's own) is reported as a creature failure;
+- a creature set that fails the objects file checks at build time is dropped, and the buildings
+  are rebuilt alone.
+
+Only the tile's own cancellation (terrain preemption) propagates. Each placement uses the recorded point as the
 model origin. Its scale is `CreatureDisplayInfo.CreatureModelScale × CreatureModelData.ModelScale`
 when both are recorded once (`CreatureModelPolicy.scale`), and 1 otherwise. A server-side
 creature scale is not client data and is not applied. The source records no facing, so every
 model faces native north (M2 +X to native +X, the identity heading). Textures are box-filtered
 to power-of-two sides of at most 128 px and drawn opaque. Vertices are compacted to the drawn
-triangles.
+triangles. A vertex value outside the objects file profile refuses that model, not the tile.
+Without recorded normals the model is lit as if facing up.
 
 The World status line adds, for example, `; 7 static creature models on 2 tiles (rest pose,
 facing north); spawns not drawn: 12 no single qualified model, 3 character appearance not
 evaluated`. The spawn index, choices (≤ 4,096) and converted models (≤ 32) are cached per
 source revision (Polestar selection plus workspace revision). The index loads once, on its
-own daemon thread, and preempted object work waits for it without cancelling it. Creatures are
-independent of the **NPC spawns** marker toggle. They need exteriors on and can be turned off
-alone with `-Dvimi.world.creatures=false`.
+own daemon thread, and preempted object work waits for it without cancelling it. A failed load
+is reused for one minute within its revision, so a broken source does not cost one load per
+tile. Creatures are independent of the **NPC spawns** marker toggle.
+
+Creatures are **opt-in** until they are measured on real data: start the GUI with
+`-Dvimi.world.creatures=true` (exteriors must also be on). While they are on, a tile's
+buildings are delivered only after its creature work ends: the first spawn index load, choice
+lookups and up to 16 preview loads.
 
 ## Limitations
 
@@ -141,6 +155,8 @@ alone with `-Dvimi.world.creatures=false`.
 - A tile's objects are prepared once per residency. A tile that was already resident when the
   spawn source or creature data changed keeps its objects until it streams out and back in.
 - The marker overlay and the creature source each load their own copy of the spawn index.
+- With creatures on, building delivery waits for each tile's creature work. There is no time
+  or lookup budget per tile yet.
 - How many spawns qualify, and how long preparation takes, on a real client is **not yet
   measured**.
 - Game objects (`kind=object`) are not shown. Phase, patrol paths, respawn and faction
