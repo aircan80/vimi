@@ -283,6 +283,13 @@ class HotfixRowDecoderTest {
                 "TRAILING_BYTES:28",
                 assertThrows(HotfixRowDecoder.Invalid.class, () -> decode(layout, 9, unexplained))
                         .detail());
+        // The key block plus one more byte is not the recognized block.
+        var keyPlusOne = ByteBuffer.allocate(1 + 29).order(ByteOrder.LITTLE_ENDIAN);
+        keyPlusOne.put((byte) 5).putInt(0xDF2F53CF).rewind();
+        assertEquals(
+                "TRAILING_BYTES:29",
+                assertThrows(HotfixRowDecoder.Invalid.class, () -> decode(layout, 9, keyPlusOne))
+                        .detail());
         var shortKey = ByteBuffer.allocate(1 + 8).order(ByteOrder.LITTLE_ENDIAN);
         shortKey.put((byte) 5).putInt(0xDF2F53CF).rewind();
         assertEquals(

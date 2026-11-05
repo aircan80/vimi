@@ -30,6 +30,13 @@ public final class ClientHotfixDetailsTest {
                                     "private-input", "private-identity", "policy-v1", 10, 9, 0, 0, 0, 0, 1, 0,
                                     unresolved)));
                         }
+                        if (id != null && (id == 993 || id == 992)) {
+                            var undecoded = new HotfixViewInfo.RowSource(HotfixViewInfo.Origin.UNRESOLVED,
+                                    1, 70, 5, 1, "VALID", id == 993 ? "OPTIONAL_KEY_DATA" : "TRAILING_BYTES:28");
+                            return CompletableFuture.completedFuture(Optional.of(new HotfixViewInfo(
+                                    "private-input", "private-identity", "policy-v1", 10, 9, 0, 0, 0, 0, 1, 0,
+                                    undecoded)));
+                        }
                         if (id != null && (id == 995 || id == 994)) {
                             String reason = id == 995 ? HotfixViewInfo.TABLE_BUDGET : HotfixViewInfo.RETAINED_BUDGET;
                             var base = new HotfixViewInfo.RowSource(HotfixViewInfo.Origin.BASE,
@@ -77,9 +84,12 @@ public final class ClientHotfixDetailsTest {
                 "INVALID cache records are explained as hidden by the cache");
         check(ClientHotfixDetails.row(tables, "Item", 996, "Item", "70707", Cancellation.NONE)
                 .join().contains("unresolved"), "Other unresolved records stay unresolved");
-        check(ClientHotfixDetails.undecoded("OPTIONAL_KEY_DATA").contains("text key that is not applied"),
+        check(ClientHotfixDetails.row(tables, "BroadcastText", 993, "Text", "70707", Cancellation.NONE).join()
+                        .equals("Text: local hotfix cache row carries a key that is not applied; not shown, no stale"
+                                + " base substitution"),
                 "Optional key data has its own reason");
-        check(ClientHotfixDetails.undecoded("TRAILING_BYTES:28").contains("has 28 bytes its layout does not describe"),
+        check(ClientHotfixDetails.row(tables, "BroadcastText", 992, "Text", "70707", Cancellation.NONE).join()
+                        .contains("has 28 bytes its layout does not describe"),
                 "Trailing bytes state their count");
         check(ClientHotfixDetails.undecoded("TRAILING_BYTES:<script>").contains("unresolved"),
                 "Only a fixed-format count is ever shown");

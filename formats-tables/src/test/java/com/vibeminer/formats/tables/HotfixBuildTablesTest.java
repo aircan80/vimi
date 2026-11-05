@@ -1111,6 +1111,41 @@ class HotfixBuildTablesTest {
     }
 
     @Test
+    void undecodableRowsReportTheirReasonThroughHotfixInfo() {
+        var keyed = ByteBuffer.allocate(4 + 28).order(ByteOrder.LITTLE_ENDIAN);
+        keyed.putInt(42).putInt(0xDF2F53CF);
+        keyed.put(new byte[24]);
+        var padded = ByteBuffer.allocate(4 + 3).order(ByteOrder.LITTLE_ENDIAN).putInt(43);
+        try (var tables =
+                numbers(
+                        0x11223344L,
+                        entry(0x11223344L, 1, 20, 1, keyed.array()),
+                        entry(0x11223344L, 1, 21, 1, padded.array()))) {
+            for (long id : new long[] {20, 21}) {
+                assertEquals(
+                        TableTypes.RowOutcome.UNKNOWN,
+                        tables.get(TableTypes.Ref.id(100), id, P, Cancellation.NONE)
+                                .join()
+                                .outcome());
+            }
+            var keyRow =
+                    tables.hotfixInfo(TableTypes.Ref.id(100), 20L, P, Cancellation.NONE)
+                            .join()
+                            .orElseThrow()
+                            .row();
+            assertEquals(HotfixViewInfo.Origin.UNRESOLVED, keyRow.origin());
+            assertEquals("OPTIONAL_KEY_DATA", keyRow.reason());
+            assertEquals(
+                    "TRAILING_BYTES:3",
+                    tables.hotfixInfo(TableTypes.Ref.id(100), 21L, P, Cancellation.NONE)
+                            .join()
+                            .orElseThrow()
+                            .row()
+                            .reason());
+        }
+    }
+
+    @Test
     void replacementFilteringGetAndDenseCursorAgreeWithoutStaleBaseRows() {
         try (var tables =
                 numbers(

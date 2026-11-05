@@ -194,7 +194,7 @@ final class ClientHotfixDetails {
     /** Fixed text for a cache record that could not be shown; never includes payload bytes. */
     static String undecoded(String reason) {
         if ("OPTIONAL_KEY_DATA".equals(reason))
-            return "local hotfix cache row carries a text key that is not applied; not shown, no stale base"
+            return "local hotfix cache row carries a key that is not applied; not shown, no stale base"
                     + " substitution";
         if (reason != null && reason.matches("TRAILING_BYTES:[0-9]{1,6}"))
             return "local hotfix cache row has " + reason.substring("TRAILING_BYTES:".length())
