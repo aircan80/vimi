@@ -157,6 +157,7 @@ jobs:
             questie/build/test-results/
             concepts-effects/build/reports/
             concepts-effects/build/test-results/
+            gui/build/reports/jvm-crash/
           if-no-files-found: warn
           retention-days: 7
 
