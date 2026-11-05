@@ -252,7 +252,7 @@ public final class WorldAudioPlaybackTest {
             reads.incrementAndGet();
             return FILES.file(id, token);
         };
-        var playback = new WorldAudioPlayback(() -> false, format -> {
+        var playback = new WorldAudioPlayback(() -> 0, format -> {
             lines.incrementAndGet();
             throw new javax.sound.sampled.LineUnavailableException("no mixer");
         }, (bytes, canceled) -> {
@@ -275,7 +275,7 @@ public final class WorldAudioPlaybackTest {
         playback.closeAsync().get(10, TimeUnit.SECONDS);
 
         // The probe can pass while opening the real format fails: report once, do not retry.
-        var failing = new WorldAudioPlayback(() -> true, format -> {
+        var failing = new WorldAudioPlayback(() -> 2, format -> {
             lines.incrementAndGet();
             throw new javax.sound.sampled.LineUnavailableException("busy");
         }, (bytes, canceled) -> {
@@ -426,21 +426,21 @@ public final class WorldAudioPlaybackTest {
                 if (channels == 1) monoOnly.add(format);
             }
         var windows = mixer(directSound);
-        if (!WorldAudioPlayback.probe(windows::isFormatSupported))
+        if (AudioOutput.channels(windows::isFormatSupported) != 2)
             throw new AssertionError("Probe must match DirectSound's concrete mixer formats");
         var linux = mixer(List.of(new javax.sound.sampled.AudioFormat(
                 signed, any, 16, unset, unset, any, true)));
-        if (!WorldAudioPlayback.probe(linux::isFormatSupported))
+        if (AudioOutput.channels(linux::isFormatSupported) != 2)
             throw new AssertionError("Probe must match mixers that leave channels unspecified");
         var mono = mixer(monoOnly);
         if (mono.isFormatSupported(new javax.sound.sampled.AudioFormat(signed, any, 16, 2, 4, any,
                 true)))
             throw new AssertionError("A mono-only mixer must reject a stereo format");
-        if (!WorldAudioPlayback.probe(mono::isFormatSupported))
+        if (AudioOutput.channels(mono::isFormatSupported) != 1)
             throw new AssertionError("Probe must match a mono-only mixer");
         var eightBit = mixer(List.of(new javax.sound.sampled.AudioFormat(
                 signed, any, 8, unset, unset, any, true)));
-        if (WorldAudioPlayback.probe(eightBit::isFormatSupported))
+        if (AudioOutput.channels(eightBit::isFormatSupported) != 0)
             throw new AssertionError("Probe must still require 16-bit output");
     }
 
@@ -451,8 +451,107 @@ public final class WorldAudioPlaybackTest {
                 formats.toArray(javax.sound.sampled.AudioFormat[]::new), unset, unset);
     }
 
+    private static short sample(byte[] block, int index) {
+        return (short) (block[2 * index] << 8 | block[2 * index + 1] & 0xff);
+    }
+
+    /** (L + R) / 2 per frame, truncated toward zero, never overflowing 16 bits. */
+    private static void downmixAveragesStereoFrames() {
+        short[][] frames = {{1000, 3000}, {100, 51}, {-100, -51}, {Short.MAX_VALUE, Short.MAX_VALUE},
+                {Short.MIN_VALUE, Short.MIN_VALUE}, {Short.MAX_VALUE, Short.MIN_VALUE}, {-1, 0}};
+        int[] expected = {2000, 75, -75, Short.MAX_VALUE, Short.MIN_VALUE, 0, 0};
+        byte[] block = new byte[frames.length * 4 + 3]; // a trailing partial frame is dropped
+        for (int i = 0; i < frames.length; i++)
+            for (int c = 0; c < 2; c++) {
+                block[4 * i + 2 * c] = (byte) (frames[i][c] >> 8);
+                block[4 * i + 2 * c + 1] = (byte) frames[i][c];
+            }
+        int count = AudioOutput.downmix(block, block.length);
+        if (count != frames.length * 2) throw new AssertionError("Mono byte count " + count);
+        for (int i = 0; i < expected.length; i++)
+            if (sample(block, i) != expected[i])
+                throw new AssertionError("Downmix frame " + i + ": " + sample(block, i));
+    }
+
+    /** Authored stereo 8 kHz stream: left 0x4000, right 0x2000 in every frame. */
+    private static final class StereoPcm extends FakePcm {
+        StereoPcm(long frames) { super(frames); }
+
+        @Override public int channels() { return 2; }
+
+        @Override
+        public int read(byte[] buffer, int offset, int length, BooleanSupplier canceled) {
+            if (sent >= frames) return -1;
+            int count = (int) Math.min(length / 4, frames - sent);
+            for (int i = 0; i < count; i++) {
+                int at = offset + 4 * i;
+                buffer[at] = 0x40;
+                buffer[at + 1] = 0;
+                buffer[at + 2] = 0x20;
+                buffer[at + 3] = 0;
+            }
+            sent += count;
+            return count * 4;
+        }
+    }
+
+    /**
+     * Plays one authored stereo track to its end on a device with the given mixer formats, and
+     * checks the opened line's channels, every written sample and the full-volume peak.
+     */
+    private static void playsStereoTrackToTheEnd(javax.sound.sampled.DataLine.Info mixer,
+            int lineChannels, int peak) throws Exception {
+        long frames = 8000 * 2; // longer than the fade-in, so the end is at full volume
+        var device = new Device();
+        var formats = new ConcurrentLinkedQueue<javax.sound.sampled.AudioFormat>();
+        var statuses = new ConcurrentLinkedQueue<WorldAudioPlayback.Status>();
+        var playback = new WorldAudioPlayback(
+                () -> AudioOutput.channels(mixer::isFormatSupported), format -> {
+                    if (!mixer.isFormatSupported(format))
+                        throw new javax.sound.sampled.LineUnavailableException("unsupported");
+                    formats.add(format);
+                    return device.line();
+                }, (bytes, canceled) -> new StereoPcm(frames), statuses::add);
+        playback.music.volume(1);
+        playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 100, MAX_SILENCE), FILES);
+        playback.music.enabled(true);
+        await(() -> statuses.stream().anyMatch(s -> s.message().startsWith("Recorded silence")),
+                "stereo track did not play to its end");
+        if (formats.size() != 1 || formats.peek().getChannels() != lineChannels)
+            throw new AssertionError("Line channels " + formats);
+        if (device.frames.get() != frames * lineChannels)
+            throw new AssertionError("Samples written " + device.frames.get());
+        if (device.last != peak) throw new AssertionError("Full-volume peak " + device.last);
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+    }
+
+    private static final int MAX_SILENCE = WorldAudioPlayback.MAX_SILENCE_MILLIS;
+
+    /**
+     * A mono-only device plays a stereo track through a mono line, downmixed and faded in; a
+     * stereo device keeps the stereo line and both channels.
+     */
+    private static void monoOnlyDevicesPlayDownmixedStereoAndStereoDevicesAreUnchanged()
+            throws Exception {
+        var signed = javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED;
+        float any = javax.sound.sampled.AudioSystem.NOT_SPECIFIED;
+        var mono = new java.util.ArrayList<javax.sound.sampled.AudioFormat>();
+        var both = new java.util.ArrayList<javax.sound.sampled.AudioFormat>();
+        for (int channels : new int[] {1, 2})
+            for (boolean bigEndian : new boolean[] {false, true}) {
+                var format = new javax.sound.sampled.AudioFormat(signed, any, 16, channels,
+                        2 * channels, any, bigEndian);
+                both.add(format);
+                if (channels == 1) mono.add(format);
+            }
+        playsStereoTrackToTheEnd(mixer(mono), 1, 0x3000);
+        playsStereoTrackToTheEnd(mixer(both), 2, 0x4000);
+    }
+
     public static void main(String[] args) throws Exception {
         probeMatchesWindowsLinuxAndMonoMixerFormats();
+        downmixAveragesStereoFrames();
+        monoOnlyDevicesPlayDownmixedStereoAndStereoDevicesAreUnchanged();
         gainRampsPerFrame();
         fadesKeepKitsAndCloseOwnedResources();
         ambienceLoopsFromMemoryAndMusicWaitsRecordedSilence();
@@ -462,6 +561,6 @@ public final class WorldAudioPlaybackTest {
         statusTextNamesNoLocalPaths();
         System.out.println("World audio playback: fades, kit continuity, ambience loops,"
                 + " recorded silence, mute, missing sources, missing device, dead lines,"
-                + " path-free status and owned close passed");
+                + " path-free status, mono downmix and owned close passed");
     }
 }
