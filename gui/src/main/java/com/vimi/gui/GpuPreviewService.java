@@ -171,11 +171,28 @@ final class GpuPreviewService {
                 com.vibeminer.access.Cancellation cancellation) throws IOException;
     }
 
-    /** Small metadata handed to the view: the live session and its inspection camera. */
+    /**
+     * Small metadata handed to the view: the live session, its inspection camera and the detached
+     * recorded group/floor/entrance outline.
+     */
     record GlobalOpened(com.vibeminer.rendering.bgfx.WorldGlobalTransport.Session session,
-            com.vibeminer.rendering.bgfx.WorldGlobalTransport.Camera initial) {}
+            com.vibeminer.rendering.bgfx.WorldGlobalTransport.Camera initial,
+            GlobalInteriorOutline outline) {
+        GlobalOpened {
+            java.util.Objects.requireNonNull(outline);
+        }
+    }
 
     private record Global(GlobalPreparer preparer, Consumer<GlobalOpened> opened) {}
+
+    /** Detached, descriptive only: an unreadable outline never blocks the qualified render. */
+    private static GlobalInteriorOutline outline(WorldGlobalSourceBridge.Prepared prepared) {
+        try {
+            return GlobalInteriorOutline.of(prepared.facts().groups(), prepared.bounds());
+        } catch (RuntimeException unreadable) {
+            return GlobalInteriorOutline.unreadable();
+        }
+    }
 
     private record Streaming(WorldStreamTransport.Spec spec,
             Consumer<WorldStreamTransport.Session> opened) {}
@@ -710,6 +727,7 @@ final class GpuPreviewService {
             if (request.stopping) return;
             var initial = com.vibeminer.rendering.bgfx.WorldGlobalTransport.Camera.inspecting(
                     prepared.bounds());
+            var outline = outline(prepared);
             owned = prepared.move();
             // MOVE transferred the file; Source payload/credit retires independently.
             var source = prepared;
@@ -721,7 +739,7 @@ final class GpuPreviewService {
                     parent, owned.input(), null, globalStarter);
             if (!request.stopping) {
                 try {
-                    request.global.opened().accept(new GlobalOpened(session, initial));
+                    request.global.opened().accept(new GlobalOpened(session, initial, outline));
                 } catch (RuntimeException | Error ignored) {
                     /* Observational view delivery cannot interrupt native ownership/cleanup. */
                 }

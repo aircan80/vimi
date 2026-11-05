@@ -23,7 +23,41 @@ picture. The profile is:
 - at most 8 groups, 64 batches, 24 materials, 18 BC1/BC3 images and 32768 vertices.
 
 Not drawn yet: doodads, liquids, portals/culling, lighting/vertex colors, NPCs, collision or
-navigation. #184 covers floor, group and entrance navigation.
+navigation. #184 covers floor, group and entrance navigation; its first slice is below.
+
+## Group navigation (#184, first slice)
+
+The interior window has a side panel listing the WMO's recorded groups in file order:
+
+- **Name.** Read from the root MOGN block at the group's recorded MOGP name offset. The name must
+  be NUL-terminated printable ASCII of at most 255 bytes within the block. Otherwise the group says
+  "name not recorded"; a recorded empty name says "unnamed". Names are never derived from paths or
+  ordinals. `WmoFormats` retains MOGN only when it is at most 16 KiB and fits the root fact budget,
+  so a root that qualified before names were read still qualifies. The MOGN budget is claimed after
+  every other root declaration.
+- **Flags.** The raw MOGP flags in hex, with the commonly documented bits named (BSP, vertex
+  colors, outdoor, exterior lit, lights, doodads, liquid, indoor). Other bits stay raw.
+- **Jump.** Selecting a group (click or Enter) puts the camera at the centre of the group's
+  recorded MOGP box, mirrored into the mesh's native space and clipped to the drawn scene bounds.
+  Qualification checks every group vertex against the MOGP box (within 0.001), and the scene box is
+  the bounding box of all drawn vertices. "Overview" restores the
+  initial framing. A jump only replaces the view's latest camera, so the transport protocol is
+  unchanged: one coalesced latest CAM.
+- **Floors.** Reported as not linked. No qualified UiMap/WMO-group floor source is read yet, and
+  floors are never inferred from height or group order.
+- **Entrance.** Reported as unknown, because no entrance source is read for the interior yet.
+- **Failures.** After a frame-poll failure, failure or close, the list is disabled so a jump
+  cannot hide the status message. An unreadable outline says so instead of listing nothing.
+
+The outline is built on the service lifecycle lane from the detached `WorldGlobalScenes.Facts`,
+before MOVE, and handed to the view in `GlobalOpened`. An unreadable outline says so in the list
+and never blocks the render. Tests:
+
+- `WmoFormatsTest`: MOGN offsets, termination, limits and budget order.
+- `WorldGlobalAssetFactoryTest`: a recorded name is read at the name offset, absent names stay
+  null, and native bounds are mirrored.
+- `:gui:globalInteriorOutlineTest`: labels, flags, clipping, the centre camera, entry targets,
+  the unreadable fallback, and unknown entrance and floors.
 
 ## Components
 

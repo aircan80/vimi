@@ -692,3 +692,11 @@ tasks.register('gpuPreviewGlobalTest', JavaExec) {
     mainClass = 'com.vimi.gui.GpuPreviewGlobalTest'
 }
 check.dependsOn gpuPreviewGlobalTest
+
+// Recorded global interior groups, framing and unknown entrance/floors; no data or display.
+tasks.register('globalInteriorOutlineTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.GlobalInteriorOutlineTest'
+}
+check.dependsOn globalInteriorOutlineTest
