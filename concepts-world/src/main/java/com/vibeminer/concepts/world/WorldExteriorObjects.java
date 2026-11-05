@@ -31,8 +31,8 @@ import java.util.Objects;
  * on obj0 source order, never on a camera or on neighboring tiles. There is no packet, child,
  * renderer or GUI wiring in this slice, and no claim of client lighting or material parity.
  */
-final class WorldExteriorObjects {
-    static final String RECIPE = "BASIC_EXTERIOR_V1";
+public final class WorldExteriorObjects {
+    public static final String RECIPE = "BASIC_EXTERIOR_V1";
     static final int MAX_PLACEMENTS = 64, MAX_ROOTS = 24, MAX_GROUPS = 256, MAX_IMAGES = 64;
     static final int MAX_VERTICES = 98_304, MAX_INDICES = 294_912;
     static final int MAX_RANGES = 1024, MAX_MESHES = 256, MAX_PIXELS = 1 << 20;
@@ -65,7 +65,7 @@ final class WorldExteriorObjects {
      * texture1 FileDataID that an otherwise drawable batch needed lands in one IMAGE bucket.
      * Doodads (MDDF) are not in this slice and are counted, not drawn.
      */
-    enum Count {
+    public enum Count {
         PLACEMENT_DRAWN,
         PLACEMENT_SHARED_DUPLICATE,
         PLACEMENT_UNSUPPORTED,
@@ -97,7 +97,7 @@ final class WorldExteriorObjects {
     }
 
     /** One drawn placement. Model matrices are built later from these doubles, never here. */
-    record Placement(
+    public record Placement(
             int ordinal,
             long uniqueId,
             long rootId,
@@ -113,10 +113,10 @@ final class WorldExteriorObjects {
             double sin) {}
 
     /** Index range into one mesh, drawn with one decoded image (index into images()). */
-    record DrawRange(int firstIndex, int indexCount, int image, int material) {}
+    public record DrawRange(int firstIndex, int indexCount, int image, int material) {}
 
     /** One exterior LOD0 group of a root, in local WMO coordinates. */
-    static final class Mesh {
+    public static final class Mesh {
         private final int groupOrdinal;
         private final long groupId, groupFlags;
         private final float[] vertices;
@@ -138,44 +138,44 @@ final class WorldExteriorObjects {
             this.ranges = List.copyOf(ranges);
         }
 
-        int groupOrdinal() {
+        public int groupOrdinal() {
             return groupOrdinal;
         }
 
-        long groupId() {
+        public long groupId() {
             return groupId;
         }
 
-        long groupFlags() {
+        public long groupFlags() {
             return groupFlags;
         }
 
-        int vertexCount() {
+        public int vertexCount() {
             return vertices.length / VERTEX_FLOATS;
         }
 
-        FloatBuffer vertices() {
+        public FloatBuffer vertices() {
             return FloatBuffer.wrap(vertices).asReadOnlyBuffer();
         }
 
-        IntBuffer indices() {
+        public IntBuffer indices() {
             return IntBuffer.wrap(indices).asReadOnlyBuffer();
         }
 
-        List<DrawRange> ranges() {
+        public List<DrawRange> ranges() {
             return ranges;
         }
     }
 
     /** Shared per-root geometry; several placements may reference one model. */
-    record Model(long rootId, List<Mesh> meshes) {
-        Model {
+    public record Model(long rootId, List<Mesh> meshes) {
+        public Model {
             meshes = List.copyOf(meshes);
         }
     }
 
     /** Decoded opaque RGBA8 (alpha forced to 255 for blend mode 0). */
-    static final class Image {
+    public static final class Image {
         private final long id;
         private final int width, height, mipLevel;
         private final byte[] rgba;
@@ -188,29 +188,29 @@ final class WorldExteriorObjects {
             this.rgba = rgba;
         }
 
-        long id() {
+        public long id() {
             return id;
         }
 
-        int width() {
+        public int width() {
             return width;
         }
 
-        int height() {
+        public int height() {
             return height;
         }
 
-        int mipLevel() {
+        public int mipLevel() {
             return mipLevel;
         }
 
-        ByteBuffer rgba() {
+        public ByteBuffer rgba() {
             return ByteBuffer.wrap(rgba).asReadOnlyBuffer();
         }
     }
 
     /** Immutable neutral per-tile set. Close only retires access; it holds no native resource. */
-    static final class TileObjects implements AutoCloseable {
+    public static final class TileObjects implements AutoCloseable {
         private final long mapId;
         private final int tileX, tileY;
         private final List<Model> models;
@@ -269,62 +269,62 @@ final class WorldExteriorObjects {
             }
         }
 
-        String recipe() {
+        public String recipe() {
             check();
             return RECIPE;
         }
 
-        long mapId() {
+        public long mapId() {
             check();
             return mapId;
         }
 
-        int tileX() {
+        public int tileX() {
             check();
             return tileX;
         }
 
-        int tileY() {
+        public int tileY() {
             check();
             return tileY;
         }
 
-        List<Model> models() {
+        public List<Model> models() {
             check();
             return models;
         }
 
-        List<Placement> placements() {
+        public List<Placement> placements() {
             check();
             return placements;
         }
 
-        List<Image> images() {
+        public List<Image> images() {
             check();
             return images;
         }
 
-        int count(Count count) {
+        public int count(Count count) {
             check();
             return counts[count.ordinal()];
         }
 
-        int vertices() {
+        public int vertices() {
             check();
             return vertices;
         }
 
-        int indices() {
+        public int indices() {
             check();
             return indices;
         }
 
-        int ranges() {
+        public int ranges() {
             check();
             return ranges;
         }
 
-        int pixels() {
+        public int pixels() {
             check();
             return pixels;
         }

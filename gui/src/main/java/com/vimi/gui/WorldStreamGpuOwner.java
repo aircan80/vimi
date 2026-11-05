@@ -8,6 +8,9 @@ import java.util.concurrent.CompletableFuture;
 
 /** Small application-arbiter adapter; readiness and actual ownership drain stay separate. */
 final class WorldStreamGpuOwner {
+    /** BASIC_EXTERIOR_V1 outdoor buildings; {@code -Dvimi.world.exteriors=false} disables them. */
+    static final boolean EXTERIORS = !"false".equals(System.getProperty("vimi.world.exteriors"));
+
     private final Object owner = new Object();
     private final GpuPreviewService service;
     private final CompletableFuture<WorldStreamTransport.Session> opened = new CompletableFuture<>();
@@ -17,7 +20,8 @@ final class WorldStreamGpuOwner {
     WorldStreamGpuOwner(GpuPreviewService service, String scopeSha256) {
         this.service = Objects.requireNonNull(service);
         lifetime = service.openStreaming(owner,
-                new WorldStreamTransport.Spec(scopeSha256, 1, WorldStreamTransport.Backend.DEFAULT),
+                new WorldStreamTransport.Spec(scopeSha256, 1, WorldStreamTransport.Backend.DEFAULT,
+                        EXTERIORS),
                 opened::complete,
                 status -> {
                     if (status.state() == GpuPreviewService.State.FAILED) {

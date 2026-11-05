@@ -24,13 +24,23 @@ final class WorldStreamPackedTile implements AutoCloseable {
 
         ByteBuffer geometry, atlas;
 
+        /** Optional exterior objects to upload after terrain, or null. */
+        WorldStreamPackedObjects objects;
+
+        /** -1 outside the exterior profile; else 0 none, 1 decoded, 2 failed (terrain kept). */
+        final int objectsState;
+
         private Source(
                 WorldStreamTileFile.Header header,
                 int triangles,
                 int waterTriangles,
                 ByteBuffer geometry,
-                ByteBuffer atlas) {
+                ByteBuffer atlas,
+                WorldStreamPackedObjects objects,
+                int objectsState) {
             this.header = header;
+            this.objects = objects;
+            this.objectsState = objectsState;
             this.triangles = triangles;
             this.waterTriangles = waterTriangles;
             this.geometry = geometry;
@@ -39,11 +49,16 @@ final class WorldStreamPackedTile implements AutoCloseable {
 
         long payloadBytes() {
             return (geometry == null ? 0 : geometry.capacity())
-                    + (long) (atlas == null ? 0 : atlas.capacity());
+                    + (long) (atlas == null ? 0 : atlas.capacity())
+                    + (objects == null ? 0 : objects.payloadBytes());
         }
 
         @Override
         public void close() {
+            if (objects != null) {
+                objects.close();
+                objects = null;
+            }
             if (geometry != null) {
                 MemoryUtil.memFree(geometry);
                 geometry = null;
@@ -63,8 +78,39 @@ final class WorldStreamPackedTile implements AutoCloseable {
 
     static WorldStreamPackedTile prepare(
             WorldStreamTileFile.Payload input, BooleanSupplier canceled) {
-        Objects.requireNonNull(input);
-        Objects.requireNonNull(canceled);
+        return prepare(input, null, -1, canceled);
+    }
+
+    /**
+     * Takes ownership of optional packed objects (closed on any failure). objectsState follows
+     * {@link Source#objectsState}; state 1 requires objects.
+     */
+    static WorldStreamPackedTile prepare(
+            WorldStreamTileFile.Payload input,
+            WorldStreamPackedObjects objects,
+            int objectsState,
+            BooleanSupplier canceled) {
+        try {
+            Objects.requireNonNull(input);
+            Objects.requireNonNull(canceled);
+            if (objectsState < -1 || objectsState > 2 || (objectsState == 1) != (objects != null)) {
+                throw new IllegalArgumentException("Packed objects state");
+            }
+            var result = prepareTerrain(input, objects, objectsState, canceled);
+            objects = null;
+            return result;
+        } finally {
+            if (objects != null) {
+                objects.close();
+            }
+        }
+    }
+
+    private static WorldStreamPackedTile prepareTerrain(
+            WorldStreamTileFile.Payload input,
+            WorldStreamPackedObjects objects,
+            int objectsState,
+            BooleanSupplier canceled) {
         ByteBuffer geometry = null, atlas = null;
         try (input) {
             check(canceled);
@@ -144,7 +190,9 @@ final class WorldStreamPackedTile implements AutoCloseable {
                                     tile.triangleCount(),
                                     waterTriangles,
                                     geometry,
-                                    atlas));
+                                    atlas,
+                                    objects,
+                                    objectsState));
             geometry = null;
             atlas = null;
             return result;
@@ -156,6 +204,20 @@ final class WorldStreamPackedTile implements AutoCloseable {
                 MemoryUtil.memFree(atlas);
             }
         }
+    }
+
+    synchronized WorldStreamTileFile.Header header() {
+        if (owned == null) {
+            throw new IllegalStateException("Packed input consumed or closed");
+        }
+        return owned.header;
+    }
+
+    synchronized int objectsState() {
+        if (owned == null) {
+            throw new IllegalStateException("Packed input consumed or closed");
+        }
+        return owned.objectsState;
     }
 
     synchronized Source take() {

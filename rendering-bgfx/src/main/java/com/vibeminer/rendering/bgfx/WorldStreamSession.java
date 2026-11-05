@@ -96,7 +96,10 @@ final class WorldStreamSession {
         Thread.ofVirtual().name("world-v2-independent-watchdog").start(() -> watch(terminate));
         try (var owner = new WorldStreamNativeOwner(session, frames, backend)) {
             try {
-                send("SESSION TERRAIN_BASIC_V1");
+                send(
+                        session.exteriorObjects()
+                                ? "SESSION TERRAIN_EXTERIOR_V1"
+                                : "SESSION TERRAIN_BASIC_V1");
                 advertiseCredit();
                 while (!closing.get()) {
                     if (mailbox.closing() || status.failure() != null) {
@@ -319,28 +322,67 @@ final class WorldStreamSession {
 
     private Decoded decodeOffer(WorldStreamControl.Offer offer) {
         try {
-            var expected =
-                    new WorldStreamTileFile.Expected(
-                            session.nonce(),
-                            session.scope(),
-                            offer.transaction(),
-                            offer.lease(),
-                            offer.length(),
-                            offer.sha256());
-            var payload =
-                    WorldStreamTileFile.read(
-                            directory.resolve("tile-" + offer.transaction() + ".wst"),
-                            expected,
-                            decoderCanceled::get);
-            var header = payload.header();
-            return new Decoded(
-                    WorldStreamPackedTile.prepare(payload, decoderCanceled::get),
-                    header,
-                    null,
-                    null);
+            var tile = decodeTile(session, directory, offer, decoderCanceled::get);
+            return new Decoded(tile, tile.header(), null, null);
         } catch (Throwable error) {
             return new Decoded(null, null, null, error);
         }
+    }
+
+    /**
+     * Decoder-worker read of one offered tile. A terrain packet failure rejects the tile. A named
+     * objects file is optional: any objects failure other than cancellation leaves the terrain
+     * decoded with objects state 2, so the tile still stages and commits without buildings.
+     */
+    static WorldStreamPackedTile decodeTile(
+            WorldStreamEnvelope.Session session,
+            Path directory,
+            WorldStreamControl.Offer offer,
+            java.util.function.BooleanSupplier canceled)
+            throws IOException {
+        var expected =
+                new WorldStreamTileFile.Expected(
+                        session.nonce(),
+                        session.scope(),
+                        offer.transaction(),
+                        offer.lease(),
+                        offer.length(),
+                        offer.sha256());
+        var payload =
+                WorldStreamTileFile.read(
+                        directory.resolve("tile-" + offer.transaction() + ".wst"),
+                        expected,
+                        canceled);
+        var header = payload.header();
+        if (header.objects() != null && !session.exteriorObjects()) {
+            payload.close();
+            throw new IOException("Tile names objects outside the session profile");
+        }
+        WorldStreamPackedObjects objects = null;
+        int state = session.exteriorObjects() ? 0 : -1;
+        if (header.objects() != null) {
+            try {
+                var data =
+                        WorldStreamObjectsFile.read(
+                                directory.resolve(
+                                        WorldStreamObjectsFile.basename(offer.transaction())),
+                                WorldStreamObjectsFile.Identity.of(header),
+                                header.objects(),
+                                canceled);
+                objects = WorldStreamPackedObjects.pack(data, canceled);
+                state = 1;
+            } catch (java.util.concurrent.CancellationException stopped) {
+                payload.close();
+                throw stopped;
+            } catch (IOException | RuntimeException failed) {
+                if (canceled.getAsBoolean()) {
+                    payload.close();
+                    throw new java.util.concurrent.CancellationException();
+                }
+                state = 2;
+            }
+        }
+        return WorldStreamPackedTile.prepare(payload, objects, state, canceled);
     }
 
     private Decoded decodeCommit(WorldStreamControl.Commit command) {
@@ -510,7 +552,8 @@ final class WorldStreamSession {
                                     ? 1
                                     : 2)
                             + " "
-                            + covered);
+                            + covered
+                            + (upload.objectsState() < 0 ? "" : " " + upload.objectsState()));
         }
     }
 

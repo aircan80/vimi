@@ -91,11 +91,11 @@ lags terrain. It runs after terrain on the same lane and stays cancelable betwee
 
 ## Delivery
 
-1. Source: new `WorldStreamScopes` use profile with the bounds above, a multi-placement,
+1. Source (done: `world-outdoor-exterior-source-checkpoint.md`): new `WorldStreamScopes` use profile with the bounds above, a multi-placement,
    multi-group exterior factory and an immutable neutral per-tile object set, with
    synthetic chunk-stream tests (malformed, unsupported flags, interior groups, blend
    modes, caps and deterministic omission order).
-2. Packet and child: an immutable per-tile objects file written next to the tile packet and
+2. Packet and child (done: `world-outdoor-exterior-packet-checkpoint.md`): an immutable per-tile objects file written next to the tile packet and
    named in the reserved tile-header range under a new session profile, so it shares the
    slot's OFFER/COMMIT/CANCEL/retirement lifetime. The child decodes it on the existing
    decoder worker, uploads in bounded steps and drops it with the slot generation. Object

@@ -22,6 +22,7 @@ final class WorldStreamParentState {
                 committed,
                 credited;
         int outcome, coverage;
+        boolean objectsOffered;
         Resident resident;
 
         private Ticket(Object owner, WorldStreamState.Lease lease, long transaction, int x, int y) {
@@ -38,7 +39,11 @@ final class WorldStreamParentState {
         final WorldStreamState.Lease lease;
         final int x, y, outcome, coverage;
 
-        private Resident(Ticket ticket) {
+        /** -1 outside the exterior profile; else 0 none, 1 drawn, 2 failed (terrain kept). */
+        final int objects;
+
+        private Resident(Ticket ticket, int objects) {
+            this.objects = objects;
             owner = ticket.owner;
             lease = ticket.lease;
             x = ticket.x;
@@ -128,7 +133,13 @@ final class WorldStreamParentState {
 
     synchronized WorldStreamControl.Offer offer(
             Ticket value, int length, String sha, int outcome, int coverage) {
+        return offer(value, length, sha, outcome, coverage, false);
+    }
+
+    synchronized WorldStreamControl.Offer offer(
+            Ticket value, int length, String sha, int outcome, int coverage, boolean objects) {
         requireTicket(value);
+        require(!objects || session.exteriorObjects(), "Objects outside session profile");
         require(
                 value.producerDrained
                         && !value.cancelRequested
@@ -143,6 +154,7 @@ final class WorldStreamParentState {
                         session.nonce(), value.transaction, value.lease, length, sha);
         value.outcome = outcome;
         value.coverage = coverage;
+        value.objectsOffered = objects;
         value.offered = true;
         return command;
     }
@@ -252,8 +264,11 @@ final class WorldStreamParentState {
             return Change.IGNORED;
         }
         require(!closed, "Status after terminal");
-        if (message instanceof WorldStreamStatus.Session) {
+        if (message instanceof WorldStreamStatus.Session value) {
             require(!hello, "Duplicate session");
+            require(
+                    value.exteriorObjects() == session.exteriorObjects(),
+                    "Session profile differs");
             hello = true;
             return Change.SESSION;
         }
@@ -319,9 +334,14 @@ final class WorldStreamParentState {
                             && !ticket.rejected
                             && !ticket.canceled
                             && ticket.outcome == value.outcome()
-                            && ticket.coverage == value.coverage(),
+                            && ticket.coverage == value.coverage()
+                            && (session.exteriorObjects()
+                                    ? ticket.objectsOffered
+                                            ? value.objects() == 1 || value.objects() == 2
+                                            : value.objects() == 0
+                                    : value.objects() == -1),
                     "Unmatched staged payload");
-            ticket.resident = new Resident(ticket);
+            ticket.resident = new Resident(ticket, value.objects());
             return Change.STAGED;
         }
         if (message instanceof WorldStreamStatus.Committed value) {

@@ -20,7 +20,16 @@ final class WorldStreamEnvelope {
     private static final byte[] SESSION_MAGIC = "VIMIWSS2".getBytes(StandardCharsets.US_ASCII);
     private static final byte[] COMMIT_MAGIC = "VIMIWSC2".getBytes(StandardCharsets.US_ASCII);
 
-    record Session(WorldStreamState.Nonce nonce, String scope, long policy) {
+    /**
+     * The fourth profile word is 1 for terrain only and 2 for BASIC_EXTERIOR_V1 sessions, whose
+     * tile headers may name a per-tile objects file and whose STAGED status reports its outcome.
+     */
+    record Session(
+            WorldStreamState.Nonce nonce, String scope, long policy, boolean exteriorObjects) {
+        Session(WorldStreamState.Nonce nonce, String scope, long policy) {
+            this(nonce, scope, policy, false);
+        }
+
         Session {
             Objects.requireNonNull(nonce);
             if (scope == null || !scope.matches("[0-9a-f]{64}") || policy <= 0) {
@@ -81,7 +90,7 @@ final class WorldStreamEnvelope {
         out.put(SESSION_MAGIC).putInt(2).putInt(BYTES);
         nonce(out, session.nonce());
         out.put(HexFormat.of().parseHex(session.scope()));
-        out.putInt(1).putInt(1).putInt(1).putInt(1);
+        out.putInt(1).putInt(1).putInt(1).putInt(session.exteriorObjects() ? 2 : 1);
         out.putLong(session.policy()).putInt(800).putInt(500).putInt(10).putInt(9);
         out.putInt(MAX_PACKET_BYTES);
         return out.array();
@@ -94,8 +103,10 @@ final class WorldStreamEnvelope {
             byte[] scope = new byte[32];
             in.get(scope);
             require(
-                    in.getInt() == 1 && in.getInt() == 1 && in.getInt() == 1 && in.getInt() == 1,
+                    in.getInt() == 1 && in.getInt() == 1 && in.getInt() == 1,
                     "Unsupported session profile");
+            int objects = in.getInt();
+            require(objects == 1 || objects == 2, "Unsupported session profile");
             long policy = in.getLong();
             require(
                     in.getInt() == 800
@@ -105,7 +116,7 @@ final class WorldStreamEnvelope {
                             && in.getInt() == MAX_PACKET_BYTES,
                     "Invalid session caps");
             zero(in, BYTES);
-            return new Session(nonce, HexFormat.of().formatHex(scope), policy);
+            return new Session(nonce, HexFormat.of().formatHex(scope), policy, objects == 2);
         } catch (IllegalArgumentException error) {
             throw new Invalid("Invalid session fields");
         }
