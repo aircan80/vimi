@@ -431,8 +431,8 @@ class WorldExteriorObjectsTest {
                         Modf.of(ROOT, 1, 0x8),
                         Modf.of(ROOT, 2, 0x9), // 0x1 unsupported
                         Modf.of(ROOT, 3, 0x4), // name-table reference
-                        new Modf(ROOT, 4, 0x8, 1, 2, 3, 5, 0, 0, 1024), // pitch
-                        new Modf(ROOT, 5, 0x8, 1, 2, 3, 0, 0, 5, 1024), // roll
+                        new Modf(ROOT, 4, 0x8, 1, 2, 3, 5, 0, 0, 1024), // pitch: drawn (#268)
+                        new Modf(ROOT, 5, 0x8, 1, 2, 3, 0, 0, 5, 1024), // roll: drawn (#268)
                         new Modf(ROOT, 6, 0xc, 1, 2, 3, 0, 0, 0, 0), // scaled to zero
                         new Modf(ROOT, 7, 0x8, 1, 2, 3, 0, 0, 0, 0), // raw scale ignored
                         Modf.of(ROOT, 8, 0x8),
@@ -445,8 +445,8 @@ class WorldExteriorObjectsTest {
                 var set = f.run()) {
             assertEquals(
                     Map.of(
-                            WorldExteriorObjects.Count.PLACEMENT_DRAWN, 3,
-                            WorldExteriorObjects.Count.PLACEMENT_UNSUPPORTED, 7,
+                            WorldExteriorObjects.Count.PLACEMENT_DRAWN, 5,
+                            WorldExteriorObjects.Count.PLACEMENT_UNSUPPORTED, 5,
                             WorldExteriorObjects.Count.PLACEMENT_SHARED_DUPLICATE, 1,
                             WorldExteriorObjects.Count.PLACEMENT_CONFLICTING, 2,
                             WorldExteriorObjects.Count.ROOT_DRAWN, 1,
@@ -456,11 +456,11 @@ class WorldExteriorObjectsTest {
                     counts(set));
             assertPlacementsAccounted(set, records.size());
             assertEquals(
-                    List.of(0, 6, 7),
+                    List.of(0, 3, 4, 6, 7),
                     set.placements().stream()
                             .map(WorldExteriorObjects.Placement::ordinal)
                             .toList());
-            assertEquals(1.0, set.placements().get(1).scale(), 0);
+            assertEquals(1.0, set.placements().get(3).scale(), 0);
         }
     }
 
@@ -1687,6 +1687,94 @@ class WorldExteriorObjectsTest {
     }
 
     @Test
+    void tiltedBuildingsFollowThePinnedPlacementMatrixAndCarryTheirSetDoodads() {
+        // MODF pitch (rotation x) and roll (rotation z) use the MDDF construction: the wowdev
+        // ADT/v18 placement matrix is the oracle, as for MDDF. A set doodad at a local offset
+        // lands where the full building matrix puts it, not where the heading alone would.
+        var tilted =
+                new Modf(ROOT, 1, 0x8, 1234.5f, 87.25f, 2345.75f, 17.18f, 1.41f, -22.42f, 1024);
+        var steep = new Modf(ROOT, 2, 0xc, 500, 40, 600, 37.85f, 56.82f, -5.54f, 1536);
+        var defs = List.of(new Modd(0, 3, -2, 5, new double[] {0, 0, 0, 1}, 1));
+        var chunks = doodadChunks(new int[][] {{0, 1}}, new long[] {MODEL}, defs);
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(
+                    ROOT, root(1, new long[] {GROUP}, List.of(new Material(0, IMAGE, 0)), chunks));
+            try (var set = run(f, obj0(List.of(tilted, steep), List.of()))) {
+                assertEquals(2, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                assertEquals(0, set.count(WorldExteriorObjects.Count.PLACEMENT_UNSUPPORTED));
+                assertEquals(2, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                var buildings =
+                        set.placements().stream()
+                                .filter(p -> p.kind() == WorldExteriorObjects.Kind.BUILDING)
+                                .toList();
+                var doodads =
+                        set.placements().stream()
+                                .filter(p -> p.kind() == WorldExteriorObjects.Kind.SET_DOODAD)
+                                .toList();
+                for (int i = 0; i < 2; i++) {
+                    var r = i == 0 ? tilted : steep;
+                    var oracle =
+                            GlMat4.adtPlacement(
+                                    r.x(),
+                                    r.y(),
+                                    r.z(),
+                                    r.pitch(),
+                                    r.heading(),
+                                    r.roll(),
+                                    r.flags() == 0xc ? r.scale() / 1024.0 : 1.0);
+                    assertMapsLike(oracle, buildings.get(i));
+                    var expected = oracle.apply(3, -2, 5);
+                    var doodad = doodads.get(i);
+                    assertEquals(expected[0], doodad.x(), 1e-6);
+                    assertEquals(expected[1], doodad.y(), 1e-6);
+                    assertEquals(expected[2], doodad.z(), 1e-6);
+                }
+            }
+        }
+    }
+
+    @Test
+    void flag0x80BuildingsTakeTheirDoodadSetsFromMwdrAndMwds() {
+        // MODF 0x80: doodadSet 1 names MWDR entry 1 = MWDS[1..2] = sets {2, 1}; set 0 is kept.
+        // A second building names MWDR entry 5, which is not recorded: set 0 only, reported.
+        var defs =
+                List.of(
+                        new Modd(0, 0, 0, 0, new double[] {0, 0, 0, 1}, 1),
+                        new Modd(0, 1, 0, 0, new double[] {0, 0, 0, 1}, 1),
+                        new Modd(0, 2, 0, 0, new double[] {0, 0, 0, 1}, 1),
+                        new Modd(0, 3, 0, 0, new double[] {0, 0, 0, 1}, 1));
+        var chunks =
+                doodadChunks(
+                        new int[][] {{0, 1}, {1, 1}, {2, 1}, {3, 1}}, new long[] {MODEL}, defs);
+        var mwdr = buffer(16).putInt(0).putInt(0).putInt(1).putInt(2).array();
+        var mwds = buffer(6).putShort((short) 3).putShort((short) 2).putShort((short) 1).array();
+        var listed = new Modf(ROOT, 1, 0x88, 100, 20, 300, 0, 90, 0, 1024);
+        var missing = new Modf(ROOT, 2, 0x88, 50, 5, 60, 0, 180, 0, 1024);
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(
+                    ROOT, root(1, new long[] {GROUP}, List.of(new Material(0, IMAGE, 0)), chunks));
+            byte[] objects =
+                    join(
+                            obj0(List.of(listed, missing), List.of(), 1, 5),
+                            chunk("MWDR", mwdr),
+                            chunk("MWDS", mwds));
+            try (var set = run(f, objects)) {
+                assertEquals(2, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                assertEquals(4, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.SET_UNSUPPORTED));
+                var sets =
+                        set.placements().stream()
+                                .filter(p -> p.kind() == WorldExteriorObjects.Kind.SET_DOODAD)
+                                .map(p -> p.uniqueId() + ":" + p.doodadSet())
+                                .toList();
+                assertEquals(List.of("1:0", "1:2", "1:1", "2:0"), sets);
+            }
+        }
+    }
+
+    @Test
     void aGroupFileOverOneMebibyteIsReadAndDrawn() {
         // The BASIC_EXTERIOR read profile follows WmoGroupSpans.MAX_BYTES (8 MiB): a group padded
         // past the old 1 MiB cap with an unparsed chunk still draws.
@@ -1756,6 +1844,62 @@ class WorldExteriorObjectsTest {
                 assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_CAPPED));
                 assertEquals(1, set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED));
                 assertTrue(set.models().isEmpty());
+            }
+        }
+    }
+
+    @Test
+    void mwdsEdgeRangesAreRefusedWholeAndListedSetsAreDeduplicated() {
+        // Four MODS sets, one definition each. MWDR entries: 0 = [1, 0] (begin > end),
+        // 1 = [0, 9] (end past MWDS), 2 = [0, 1] (lists set 7, past MODS), 3 = [2, 4] (lists
+        // sets 0, 2 and 2 again). MWDS = [3, 7, 0, 2, 2].
+        var defs = new ArrayList<Modd>();
+        for (int i = 0; i < 4; i++) {
+            defs.add(new Modd(0, i, 0, 0, new double[] {0, 0, 0, 1}, 1));
+        }
+        var chunks =
+                doodadChunks(
+                        new int[][] {{0, 1}, {1, 1}, {2, 1}, {3, 1}}, new long[] {MODEL}, defs);
+        var mwdr =
+                buffer(32)
+                        .putInt(1)
+                        .putInt(0)
+                        .putInt(0)
+                        .putInt(9)
+                        .putInt(0)
+                        .putInt(1)
+                        .putInt(2)
+                        .putInt(4)
+                        .array();
+        var mwds = buffer(10);
+        for (int id : new int[] {3, 7, 0, 2, 2}) {
+            mwds.putShort((short) id);
+        }
+        int[] entries = {0, 1, 2, 3};
+        var records = new ArrayList<Modf>();
+        for (int i = 0; i < entries.length; i++) {
+            records.add(new Modf(ROOT, 1 + i, 0x88, 100 + 10 * i, 20, 300, 0, 90, 0, 1024));
+        }
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(
+                    ROOT, root(1, new long[] {GROUP}, List.of(new Material(0, IMAGE, 0)), chunks));
+            byte[] objects =
+                    join(
+                            obj0(records, List.of(), entries),
+                            chunk("MWDR", mwdr),
+                            chunk("MWDS", mwds.array()));
+            try (var set = run(f, objects)) {
+                assertEquals(4, set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN));
+                // The first three ranges are refused whole (all-or-nothing): set 0 only.
+                assertEquals(3, set.count(WorldExteriorObjects.Count.SET_UNSUPPORTED));
+                var sets =
+                        set.placements().stream()
+                                .filter(p -> p.kind() == WorldExteriorObjects.Kind.SET_DOODAD)
+                                .map(p -> p.uniqueId() + ":" + p.doodadSet())
+                                .toList();
+                // The fourth lists 0 (already drawn) and 2 twice: sets 0 and 2, each once.
+                assertEquals(List.of("1:0", "2:0", "3:0", "4:0", "4:2"), sets);
             }
         }
     }
