@@ -297,6 +297,23 @@ final class SpellTextTest {
     }
 
     @Test
+    void expressionsRefuseHugeOperandsAndPercentageOnlyAmounts() {
+        var huge = new SpellText.Values(Map.of(100L, Map.of(0, amount("2000000000"))), Map.of());
+        assertEquals("?", SpellText.project(100, "${$s1}", huge, List.of()).display());
+        var percent = new SpellText.Amount(new BigDecimal("5"), List.of(), null, true, null);
+        var values = new SpellText.Values(Map.of(100L, Map.of(0, percent)), Map.of());
+        var result = SpellText.project(100, "${$s1*2}%", values, List.of());
+        assertEquals("?%", result.display());
+        assertTrue(result.substitutions().getFirst().issue().contains("plain percentage"));
+        var exact = SpellText.project(100, "${10/4}.2", huge, List.of());
+        assertEquals("2.50", exact.display());
+        var repeating = SpellText.project(100, "${10000000/3}.9", huge, List.of());
+        assertEquals(
+                "The expression result needs rounding",
+                repeating.substitutions().getFirst().issue());
+    }
+
+    @Test
     void arithmeticExpressionsOverFixedAmountsAreEvaluated() {
         var values =
                 new SpellText.Values(
@@ -330,8 +347,7 @@ final class SpellTextTest {
         assertEquals("${$m1/-1000}", lasts.substitutions().getFirst().token());
         var odd = SpellText.project(100, "Odd ${$s2/7}.1 rate.", values, List.of());
         assertEquals(
-                "The expression result needs rounding to 1 decimal place(s)",
-                odd.substitutions().getFirst().issue());
+                "The expression result needs rounding", odd.substitutions().getFirst().issue());
         var scaled =
                 SpellText.project(
                         100,
@@ -353,7 +369,10 @@ final class SpellTextTest {
                         "${999999999*999999999}",
                         "${$s99}",
                         "${$12345678901s1}",
-                        "${1e9}")) {
+                        "${1e9}",
+                        "${999999999999}",
+                        "${10000000/3}.9",
+                        "${1/3*3}")) {
             assertEquals(
                     "?", SpellText.project(100, hostile, values, List.of()).display(), hostile);
         }

@@ -1,7 +1,6 @@
 package com.vibeminer.concepts.effects;
 
 import java.math.BigDecimal;
-import java.math.MathContext;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -204,7 +203,13 @@ final class Arithmetic {
                     if (divisor.signum() == 0) {
                         throw new Failure("The expression divides by zero");
                     }
-                    value = bounded(value.divide(divisor, MathContext.DECIMAL64));
+                    try {
+                        // Exact: a quotient that does not terminate is never rounded into a
+                        // value that looks exact.
+                        value = bounded(value.divide(divisor));
+                    } catch (ArithmeticException repeating) {
+                        throw new Failure("The expression result needs rounding");
+                    }
                 } else {
                     return value;
                 }
@@ -230,7 +235,7 @@ final class Arithmetic {
             }
             var term = terms.get(at++);
             if (term instanceof Number number) {
-                return number.value();
+                return bounded(number.value());
             }
             if (term instanceof Amount amount) {
                 long spell = amount.operand().spell() == null ? self : amount.operand().spell();
@@ -239,6 +244,12 @@ final class Arithmetic {
                     throw new Failure("Effect amount is unavailable for " + amount.raw());
                 }
                 sources.addAll(found.sources());
+                if (found.percentageOnly()) {
+                    // Such an amount is fixed only where it is shown with a literal %; the
+                    // evaluator does not track that, so it refuses the operand.
+                    throw new Failure(
+                            amount.raw() + ": this amount is shown only as a plain percentage");
+                }
                 if (found.issue() != null || found.base() == null) {
                     throw new Failure(
                             amount.raw()
@@ -247,7 +258,7 @@ final class Arithmetic {
                                             ? "Effect base amount is unreadable"
                                             : found.issue()));
                 }
-                return found.base();
+                return bounded(found.base());
             }
             throw new Failure("The expression is not supported arithmetic");
         }
