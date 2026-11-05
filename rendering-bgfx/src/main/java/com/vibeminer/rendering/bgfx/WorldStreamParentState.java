@@ -318,10 +318,11 @@ final class WorldStreamParentState {
     }
 
     /**
-     * Records the terminal FAILED outcome of an admitted resident whose objects file the parent
-     * could not write; nothing was sent for it.
+     * Records the terminal outcome of an admitted resident whose objects file the parent could not
+     * write; nothing was sent for it. A resident retired since admission is DROPPED, like every
+     * other retired path; otherwise FAILED. Returns the recorded outcome.
      */
-    synchronized void lateObjectsFailed(Resident member) {
+    synchronized WorldStreamStatus.LateOutcome lateObjectsFailed(Resident member) {
         require(
                 member != null
                         && member.owner == owner
@@ -329,7 +330,12 @@ final class WorldStreamParentState {
                         && !member.lateSent
                         && member.late == null,
                 "Late objects failure without admission");
-        member.late = WorldStreamStatus.LateOutcome.FAILED;
+        member.late =
+                generations[member.lease.slot()] != member.lease.generation()
+                                || !active.contains(member)
+                        ? WorldStreamStatus.LateOutcome.DROPPED
+                        : WorldStreamStatus.LateOutcome.FAILED;
+        return member.late;
     }
 
     /**

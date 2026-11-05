@@ -184,12 +184,24 @@ class WorldStreamLateObjectsParentTest {
         var state = ready(true);
         var resident = resident(state, 7, 19, List.of(), new WorldStreamState.Lease(1, 1, 2));
         assertTrue(state.admitLateObjects(resident));
-        state.lateObjectsFailed(resident);
+        assertSame(WorldStreamStatus.LateOutcome.FAILED, state.lateObjectsFailed(resident));
         assertSame(WorldStreamStatus.LateOutcome.FAILED, resident.late);
         assertFalse(state.lateObjectsPending());
         assertThrows(IllegalArgumentException.class, () -> state.admitLateObjects(resident));
         assertThrows(IllegalStateException.class, () -> state.lateObjects(resident, 4096, SHA));
         assertThrows(IllegalStateException.class, () -> state.lateObjectsFailed(resident));
+    }
+
+    @Test
+    void writeFailureAfterRetirementIsDropped() {
+        var state = ready(true);
+        var first = resident(state, 7, 19, List.of(), new WorldStreamState.Lease(1, 1, 2));
+        var second = resident(state, 7, 20, List.of(first), new WorldStreamState.Lease(2, 1, 3));
+        assertTrue(state.admitLateObjects(first));
+        commit(state, List.of(second));
+        assertSame(WorldStreamStatus.LateOutcome.DROPPED, state.lateObjectsFailed(first));
+        assertSame(WorldStreamStatus.LateOutcome.DROPPED, first.late);
+        assertThrows(IllegalArgumentException.class, () -> state.admitLateObjects(first));
     }
 
     @Test

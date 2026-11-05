@@ -548,7 +548,8 @@ public final class WorldStreamTransport {
 
         /**
          * Test probe only: runs on the objects worker, under the session lock, after the stop check
-         * and just before the OBJECTS command is enqueued.
+         * and just before the OBJECTS command is enqueued. It must never block or take another
+         * lock.
          */
         volatile java.util.function.Consumer<WorldStreamLaunchOwner.Handle> beforeObjectsEnqueue;
 
@@ -914,11 +915,12 @@ public final class WorldStreamTransport {
                         written = true;
                     } catch (IOException | RuntimeException failed) {
                         // The writer removes its own partial file. Only these objects fail, and
-                        // the resident records it like a child FAILED (its one request is spent).
+                        // the resident records it like a child FAILED, or DROPPED once retired.
                         synchronized (lock) {
                             if (!stop.getAsBoolean()) {
-                                state.lateObjectsFailed(metadata);
-                                outcome = ObjectsOutcome.FAILED;
+                                outcome =
+                                        ObjectsOutcome.valueOf(
+                                                state.lateObjectsFailed(metadata).name());
                             }
                         }
                     }
