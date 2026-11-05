@@ -7,6 +7,7 @@ import com.vibeminer.concepts.locations.MapRoles;
 import javafx.application.Platform;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.CheckBox;
+import javafx.scene.control.ChoiceBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ProgressIndicator;
 import javafx.scene.control.Tooltip;
@@ -36,6 +37,30 @@ import java.util.function.Supplier;
  */
 final class MapRoleOverlay implements AutoCloseable {
     static final int LIMIT = 2048;
+    /** Hover reach in pixels, the hit grid's cell size, and the most NPCs one hover lists. */
+    static final double RADIUS = 6, CELL = 16;
+    static final int HOVER_LIMIT = 5;
+
+    /** Questie {@code friendlyToFaction} filter; "both" NPCs show for either faction. */
+    enum Faction {
+        ALL("All factions"),
+        ALLIANCE("Alliance"),
+        HORDE("Horde");
+
+        final String label;
+
+        Faction(String label) {
+            this.label = label;
+        }
+
+        @Override
+        public String toString() {
+            return label;
+        }
+    }
+
+    /** One drawn marker at its canvas position. */
+    record Hit(MapRoles.Marker marker, double x, double y) {}
 
     /** Local prepared-source reads and selected-build resolution; must not download or prepare. */
     @FunctionalInterface
@@ -44,6 +69,9 @@ final class MapRoleOverlay implements AutoCloseable {
     }
 
     private final Map<MapRoles.Layer, CheckBox> toggles = new EnumMap<>(MapRoles.Layer.class);
+    private final ChoiceBox<Faction> faction = new ChoiceBox<>();
+    /** Drawn markers bucketed by canvas cell, so a hover checks only nearby cells. */
+    private HitGrid grid = HitGrid.EMPTY;
     private final Label status = new Label("Map overlays off");
     private final ProgressIndicator activity = new ProgressIndicator(-1);
     private final FlowPane controls = new FlowPane(8, 4);
@@ -83,6 +111,14 @@ final class MapRoleOverlay implements AutoCloseable {
             toggles.put(layer, toggle);
             controls.getChildren().add(toggle);
         }
+        faction.getItems().setAll(Faction.values());
+        faction.setValue(Faction.ALL);
+        faction.setId("maps-role-faction");
+        faction.setAccessibleText("Show role NPCs friendly to this faction");
+        faction.valueProperty().addListener((o, before, after) -> {
+            if (!closed && !layers().isEmpty()) redraw.run();
+        });
+        controls.getChildren().add(faction);
         activity.setPrefSize(18, 18);
         activity.setMaxSize(18, 18);
         activity.setAccessibleText("Placing map overlay markers");
@@ -114,6 +150,108 @@ final class MapRoleOverlay implements AutoCloseable {
         return drawn;
     }
 
+    ChoiceBox<Faction> faction() {
+        return faction;
+    }
+
+    /** Whether an NPC recorded as {@code friendly} shows under {@code filter}. */
+    static boolean visible(MapRoles.Friendly friendly, Faction filter) {
+        return switch (filter) {
+            case ALL -> true;
+            case ALLIANCE -> friendly == MapRoles.Friendly.ALLIANCE
+                    || friendly == MapRoles.Friendly.BOTH;
+            case HORDE -> friendly == MapRoles.Friendly.HORDE || friendly == MapRoles.Friendly.BOTH;
+        };
+    }
+
+    /**
+     * Drawn markers within {@link #RADIUS} of a canvas point, nearest first, one per NPC, at most
+     * {@link #HOVER_LIMIT}. Only the nine grid cells around the point are examined.
+     */
+    List<MapRoles.Marker> hits(double x, double y) {
+        return grid.near(x, y);
+    }
+
+    /** Drawn marker positions in CELL-sized buckets; immutable once built. */
+    static final class HitGrid {
+        static final HitGrid EMPTY = new HitGrid(List.of());
+        private final Map<Long, List<Hit>> buckets = new java.util.HashMap<>();
+
+        HitGrid(List<Hit> hits) {
+            for (var hit : hits)
+                buckets.computeIfAbsent(cell((long) Math.floor(hit.x() / CELL), (long) Math.floor(hit.y() / CELL)),
+                        k -> new java.util.ArrayList<>()).add(hit);
+        }
+
+        /** Within RADIUS, nearest first, one per NPC, at most HOVER_LIMIT; nine cells examined. */
+        List<MapRoles.Marker> near(double x, double y) {
+            if (buckets.isEmpty()) return List.of();
+            long cx = (long) Math.floor(x / CELL), cy = (long) Math.floor(y / CELL);
+            var near = new java.util.ArrayList<Hit>();
+            for (long dx = -1; dx <= 1; dx++)
+                for (long dy = -1; dy <= 1; dy++)
+                    for (var hit : buckets.getOrDefault(cell(cx + dx, cy + dy), List.of()))
+                        if (Math.hypot(hit.x() - x, hit.y() - y) <= RADIUS) near.add(hit);
+            near.sort(java.util.Comparator.comparingDouble(h -> Math.hypot(h.x() - x, h.y() - y)));
+            var result = new java.util.ArrayList<MapRoles.Marker>();
+            var seen = new java.util.HashSet<Long>();
+            for (var hit : near)
+                if (seen.add(hit.marker().npc().id()) && result.size() < HOVER_LIMIT) result.add(hit.marker());
+            return result;
+        }
+    }
+
+    /** Hover text for the markers under a canvas point, or null when there are none. */
+    String hoverText(double x, double y) {
+        var markers = hits(x, y);
+        return markers.isEmpty() || placement == null ? null : details(markers, placement.catalog());
+    }
+
+    private static long cell(long cx, long cy) {
+        return (cx << 32) ^ (cy & 0xffffffffL);
+    }
+
+    /** Recorded facts for hovered markers; no local paths or derived claims. */
+    static String details(List<MapRoles.Marker> markers, MapRoles.Catalog catalog) {
+        var text = new StringBuilder();
+        for (var marker : markers) {
+            var npc = marker.npc();
+            if (!text.isEmpty()) text.append("\n\n");
+            text.append(npc.name() == null || npc.name().isBlank() ? "NPC " + npc.id() : npc.name());
+            if (npc.subname() != null && !npc.subname().isBlank())
+                text.append(" <").append(npc.subname()).append(">");
+            text.append("\nNPC ").append(npc.id()).append(" · ");
+            var roles = new java.util.ArrayList<String>();
+            for (var layer : MapRoles.Layer.values())
+                if (npc.layers().contains(layer)) roles.add(singular(layer));
+            text.append(String.join(", ", roles));
+            text.append("\nFaction: ").append(switch (npc.friendly()) {
+                case ALLIANCE -> "Alliance";
+                case HORDE -> "Horde";
+                case BOTH -> "Alliance and Horde";
+                case UNKNOWN -> "not recorded";
+            });
+            var at = marker.location().coordinates().getFirst();
+            text.append("\nRecorded at ").append(at.map().kind() == LocationTypes.MapKind.AREA ? "AreaID " : "UiMap ")
+                    .append(at.map().id()).append(", ")
+                    .append(String.format(java.util.Locale.ROOT, "%.1f, %.1f", at.x(), at.y()));
+            if (at.units() == LocationTypes.Units.PERCENT) text.append(" %");
+        }
+        if (markers.size() == HOVER_LIMIT) text.append("\n\nMore markers may overlap here.");
+        return text.append("\n\nSource: QuestieDB ")
+                .append(catalog.releaseTag() == null ? "untagged" : catalog.releaseTag())
+                .append(" ").append(catalog.source().product()).toString();
+    }
+
+    static String singular(MapRoles.Layer layer) {
+        return switch (layer) {
+            case QUEST_GIVER -> "Quest giver";
+            case VENDOR -> "Vendor";
+            case TRAINER -> "Trainer";
+            case FLIGHT_MASTER -> "Flight master";
+        };
+    }
+
     Set<MapRoles.Layer> layers() {
         var result = EnumSet.noneOf(MapRoles.Layer.class);
         toggles.forEach((layer, toggle) -> {
@@ -142,6 +280,7 @@ final class MapRoleOverlay implements AutoCloseable {
      */
     void paint(GraphicsContext g, double[] box, Long uiMapId) {
         drawn = List.of();
+        grid = HitGrid.EMPTY;
         var layers = layers();
         if (closed || layers.isEmpty()) return;
         Object current = key.get();
@@ -153,14 +292,22 @@ final class MapRoleOverlay implements AutoCloseable {
             if (failure != null) status.setText(failure);
             return;
         }
+        var filter = faction.getValue() == null ? Faction.ALL : faction.getValue();
         if (uiMapId == null) {
-            status.setText(summary(placement, null, layers, List.of()));
+            status.setText(summary(placement, null, layers, List.of(), filter, 0));
             return;
         }
-        var markers = placement.markers(uiMapId, layers);
-        drawn = markers.size() > LIMIT ? markers.subList(0, LIMIT) : markers;
+        var markers = new java.util.ArrayList<MapRoles.Marker>();
+        int unrecorded = 0;
+        for (var marker : placement.markers(uiMapId, layers)) {
+            if (visible(marker.npc().friendly(), filter)) markers.add(marker);
+            else if (marker.npc().friendly() == MapRoles.Friendly.UNKNOWN) unrecorded++;
+        }
+        drawn = markers.size() > LIMIT ? List.copyOf(markers.subList(0, LIMIT)) : List.copyOf(markers);
+        var hits = new java.util.ArrayList<Hit>(drawn.size());
         for (var marker : drawn) {
             double x = box[0] + marker.x() * box[2], y = box[1] + marker.y() * box[3];
+            hits.add(new Hit(marker, x, y));
             var color = color(primary(marker.npc().layers(), layers));
             g.setFill(color);
             g.setStroke(Color.rgb(12, 16, 14, .9));
@@ -168,7 +315,8 @@ final class MapRoleOverlay implements AutoCloseable {
             g.fillOval(x - 4, y - 4, 8, 8);
             g.strokeOval(x - 4, y - 4, 8, 8);
         }
-        status.setText(summary(placement, uiMapId, layers, markers));
+        grid = new HitGrid(hits);
+        status.setText(summary(placement, uiMapId, layers, markers, filter, unrecorded));
     }
 
     /** Latest request wins: at most one placement runs; a newer key waits for it to drain. */
@@ -244,6 +392,12 @@ final class MapRoleOverlay implements AutoCloseable {
 
     static String summary(MapRoles.Placement placement, Long uiMapId, Set<MapRoles.Layer> layers,
             List<MapRoles.Marker> markers) {
+        return summary(placement, uiMapId, layers, markers, Faction.ALL, 0);
+    }
+
+    /** {@code markers} are those shown after the faction filter; {@code unrecorded} were hidden. */
+    static String summary(MapRoles.Placement placement, Long uiMapId, Set<MapRoles.Layer> layers,
+            List<MapRoles.Marker> markers, Faction filter, int unrecorded) {
         var catalog = placement.catalog();
         var text = new StringBuilder("Overlays · QuestieDB ")
                 .append(catalog.releaseTag() == null ? "untagged" : catalog.releaseTag())
@@ -275,7 +429,13 @@ final class MapRoleOverlay implements AutoCloseable {
         if (catalog.state() == LocationTypes.State.PARTIAL || !placement.issues().isEmpty())
             text.append(" · partial: ").append(placement.issues().isEmpty()
                     ? "source coverage incomplete" : placement.issues().getFirst());
-        return text.append(" · faction, phase and quest availability not evaluated").toString();
+        if (filter == Faction.ALL)
+            return text.append(" · faction, phase and quest availability not evaluated").toString();
+        text.append(" · ").append(filter.label).append("-friendly NPCs (recorded Questie faction)");
+        if (unrecorded > 0)
+            text.append(" · ").append(unrecorded)
+                    .append(" positions with no recorded faction hidden");
+        return text.append(" · phase and quest availability not evaluated").toString();
     }
 
     private static String rootMessage(Throwable error) {
@@ -306,6 +466,7 @@ final class MapRoleOverlay implements AutoCloseable {
         loading = null;
         placement = null;
         drawn = List.of();
+        grid = HitGrid.EMPTY;
         worker.shutdown();
         cancellation.shutdown();
     }

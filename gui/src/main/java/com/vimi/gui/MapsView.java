@@ -81,6 +81,8 @@ final class MapsView extends BorderPane implements AutoCloseable {
     private boolean setting;
     private double dragX, dragY;
     private MapRoleOverlay roles;
+    /** Role marker details under the pointer; shown and moved by hand, not installed. */
+    private final javafx.scene.control.Tooltip roleTip = new javafx.scene.control.Tooltip();
     private final VBox footer = new VBox(8);
 
     MapsView(Supplier<BuildLocationMaps> maps, LongSupplier revision) {
@@ -136,7 +138,17 @@ final class MapsView extends BorderPane implements AutoCloseable {
                     Math.clamp(view.zoom() * (e.getDeltaY() > 0 ? 1.2 : 1 / 1.2), 1, 32)));
             draw(); e.consume();
         });
-        canvas.setOnMousePressed(e -> { dragX = e.getX(); dragY = e.getY(); });
+        canvas.setOnMousePressed(e -> { dragX = e.getX(); dragY = e.getY(); roleTip.hide(); });
+        roleTip.setWrapText(true);
+        roleTip.setMaxWidth(360);
+        canvas.setOnMouseMoved(e -> {
+            String text = roles == null ? null : roles.hoverText(e.getX(), e.getY());
+            if (text == null) { roleTip.hide(); return; }
+            roleTip.setText(text);
+            if (!roleTip.isShowing()) roleTip.show(canvas, e.getScreenX() + 14, e.getScreenY() + 14);
+            else { roleTip.setAnchorX(e.getScreenX() + 14); roleTip.setAnchorY(e.getScreenY() + 14); }
+        });
+        canvas.setOnMouseExited(e -> roleTip.hide());
         canvas.setOnMouseDragged(e -> {
             if (!currentGraph() || history == null) return;
             var view = history.current().view();

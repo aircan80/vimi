@@ -164,6 +164,19 @@ public final class MapsBrowserUiTest {
                 int y = (int) (canvas.getHeight() / 2 - h / 2 + marker.y() * h);
                 var center = image.getPixelReader().getColor(x, y);
                 require(center.getGreen() > center.getBlue(), "vendor marker painted over artwork: " + center);
+                // Hover over the marker lists its recorded facts; away from it shows nothing.
+                var hover = view.roles().hoverText(x, y);
+                require(hover != null && hover.startsWith("NPC 2\nNPC 2 · Vendor")
+                        && hover.contains("Faction: not recorded"), "hover details: " + hover);
+                require(view.roles().hoverText(x + 40, y + 40) == null, "no hover away from markers");
+                // A faction filter redraws without reloading; NPCs with no recorded faction hide.
+                view.roles().faction().setValue(MapRoleOverlay.Faction.ALLIANCE);
+                require(view.roles().drawn().isEmpty(), "unrecorded faction hidden for Alliance");
+                var filtered = view.roles().status().getText();
+                require(filtered.contains("1 positions with no recorded faction hidden"), filtered);
+                require(view.roles().hoverText(x, y) == null, "hidden markers are not hovered");
+                view.roles().faction().setValue(MapRoleOverlay.Faction.ALL);
+                require(view.roles().drawn().size() == 1 && roleLoads.get() == 1, "filter never reloads");
                 view.roles().toggle(com.vibeminer.concepts.locations.MapRoles.Layer.QUEST_GIVER).setSelected(true);
                 require(view.roles().drawn().size() == 2, "quest giver joins without reloading");
                 require(roleLoads.get() == 1, "one placement per source key");
