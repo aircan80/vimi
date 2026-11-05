@@ -89,6 +89,9 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final StackPane viewport = new StackPane(image);
     private final WorldMinimap minimap = new WorldMinimap();
     private WorldSpawnOverlay spawns;
+    private WorldSpawnOverlay.Picked inspectedSpawn;
+    private String inspectedMap;
+    private long inspectedRequest;
     private final TerrainGpuPreview gpu;
     private final GpuPreviewService gpuService;
     private WorldStreamSourceController streaming;
@@ -2555,7 +2558,16 @@ final class WorldView extends BorderPane implements AutoCloseable {
             var picked = local == null ? java.util.Optional.<WorldSpawnOverlay.Picked>empty()
                     : spawns.pick(local.getX(), local.getY());
             if (picked.isPresent()) {
-                inspection.setText(WorldPick.describeSpawn(picked.get().spawn(), picked.get().npc(), map.name()));
+                var spawn = picked.get();
+                var models = spawns.models();
+                boolean resolving = models.isPresent() && spawn.model() == null;
+                inspection.setText(WorldPick.describeSpawn(spawn.spawn(), spawn.npc(), map.name(), spawn.model(), resolving));
+                if (resolving) {
+                    inspectedSpawn = spawn;
+                    inspectedMap = map.name();
+                    inspectedRequest = request;
+                    models.get().prioritize(spawn.spawn().npcId());
+                }
                 return;
             }
         }
@@ -2612,6 +2624,15 @@ final class WorldView extends BorderPane implements AutoCloseable {
         if (spawns != null || closed) throw new IllegalStateException("Spawn overlay already attached");
         spawns = java.util.Objects.requireNonNull(overlay);
         viewport.getChildren().add(viewport.getChildren().indexOf(image) + 1, overlay);
+        // A clicked marker whose model outcome was still resolving is re-described once it arrives.
+        overlay.models().ifPresent(models -> models.listen(npcId -> {
+            var pending = inspectedSpawn;
+            if (closed || pending == null || pending.spawn().npcId() != npcId) return;
+            inspectedSpawn = null;
+            if (inspectedRequest != pickGeneration) return;
+            models.cached(npcId).ifPresent(model -> inspection.setText(
+                    WorldPick.describeSpawn(pending.spawn(), pending.npc(), inspectedMap, model, false)));
+        }));
         overlay.bind(() -> {
             if (closed || !active || !explorer || camera == null || inventory == null
                     || !(image.getImage() instanceof javafx.scene.image.Image frame)) return null;
