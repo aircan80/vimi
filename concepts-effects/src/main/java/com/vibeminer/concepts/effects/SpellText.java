@@ -105,7 +105,14 @@ final class SpellText {
         }
     }
 
-    private sealed interface Part permits Literal, Token, Forms, Unknown, Markup {}
+    private sealed interface Part permits Literal, Token, Forms, Unknown, Markup, Expression {}
+
+    /**
+     * {@code ${...}} with an optional {@code .N} decimal suffix. Only numbers, {@code + - * /},
+     * parentheses and effect amount tokens ({@code $s1}, {@code $m2}, {@code $123s1}) are
+     * evaluated; anything else leaves the whole expression unknown.
+     */
+    private record Expression(String raw, String body, Integer decimals) implements Part {}
 
     private record Literal(String text) implements Part {}
 
@@ -149,6 +156,22 @@ final class SpellText {
         }
         var cross = new LinkedHashSet<Long>();
         for (var part : parts) {
+            if (part instanceof Expression expression) {
+                var operands = Arithmetic.operands(expression.body());
+                if (operands != null) {
+                    for (var operand : operands) {
+                        long spell = operand.spell() == null ? self : operand.spell();
+                        if (spell != self) {
+                            if (!cross.contains(spell) && cross.size() >= CROSS_SPELLS) {
+                                continue;
+                            }
+                            cross.add(spell);
+                        }
+                        amounts.add(spell);
+                    }
+                }
+                continue;
+            }
             if (part instanceof Token token) {
                 long spell = token.spell() == null ? self : token.spell();
                 if (spell != self) {
@@ -239,6 +262,54 @@ final class SpellText {
                     if (markup.issue() != null && !allIssues.contains(markup.issue())) {
                         allIssues.add(markup.issue());
                     }
+                }
+                case Expression expression -> {
+                    var evaluation =
+                            Arithmetic.evaluate(expression.body(), spell, values.amounts());
+                    String value = null;
+                    String issue = evaluation.issue();
+                    BigDecimal number = evaluation.value();
+                    if (number != null) {
+                        if (number.signum() < 0) {
+                            issue = "Negative expression results are not shown";
+                        } else if (expression.decimals() == null) {
+                            var whole = number.stripTrailingZeros();
+                            if (whole.scale() > 0) {
+                                issue =
+                                        "The expression result is not a whole number and no"
+                                                + " decimal places are given";
+                            } else {
+                                value = whole.setScale(0).toPlainString();
+                            }
+                        } else {
+                            try {
+                                value =
+                                        number.setScale(
+                                                        expression.decimals(),
+                                                        RoundingMode.UNNECESSARY)
+                                                .toPlainString();
+                            } catch (ArithmeticException inexact) {
+                                issue =
+                                        "The expression result needs rounding to "
+                                                + expression.decimals()
+                                                + " decimal place(s)";
+                            }
+                        }
+                    }
+                    if (value == null) {
+                        resolved = false;
+                        number = null;
+                    }
+                    sawNumber = true;
+                    lastNumber = number;
+                    display.append(value == null ? "?" : value);
+                    substitutions.add(
+                            new SpellTexts.Substitution(
+                                    expression.raw(),
+                                    null,
+                                    value,
+                                    evaluation.sources(),
+                                    value == null ? issue : null));
                 }
                 case Unknown unknown -> {
                     resolved = false;
@@ -507,12 +578,22 @@ final class SpellText {
         char c = raw.charAt(i);
         if (c == '{') {
             int end = balanced(raw, i, '{', '}');
-            return end < 0
-                    ? null
-                    : new Found(
-                            new Unknown(
-                                    raw.substring(at, end), "Client expressions are not evaluated"),
-                            end);
+            if (end < 0) {
+                return null;
+            }
+            Integer decimals = null;
+            int stop = end;
+            if (end + 1 < raw.length()
+                    && raw.charAt(end) == '.'
+                    && Character.isDigit(raw.charAt(end + 1))
+                    && (end + 2 >= raw.length() || !Character.isDigit(raw.charAt(end + 2)))) {
+                decimals = raw.charAt(end + 1) - '0';
+                stop = end + 2;
+            }
+            return new Found(
+                    new Expression(
+                            raw.substring(at, stop), raw.substring(i + 1, end - 1), decimals),
+                    stop);
         }
         if (c == '?') {
             int end = conditional(raw, i + 1);
