@@ -409,30 +409,50 @@ public final class WorldAudioPlaybackTest {
      * The device probe must match how real mixers advertise formats. Windows DirectSound lists
      * concrete channel counts and frame sizes with only the rate unspecified; Linux mixers list
      * unspecified channels. {@code AudioFormat.matches} wildcards only the advertised side, so a
-     * probe with unspecified channels or frame size matches nothing on Windows.
+     * probe with unspecified channels or frame size matches nothing on Windows. A mono-only device
+     * matches only a mono probe.
      */
-    private static void probeMatchesWindowsAndLinuxMixerFormats() {
+    private static void probeMatchesWindowsLinuxAndMonoMixerFormats() {
         var signed = javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED;
         float any = javax.sound.sampled.AudioSystem.NOT_SPECIFIED;
         int unset = javax.sound.sampled.AudioSystem.NOT_SPECIFIED;
         var directSound = new java.util.ArrayList<javax.sound.sampled.AudioFormat>();
+        var monoOnly = new java.util.ArrayList<javax.sound.sampled.AudioFormat>();
         for (int channels : new int[] {1, 2})
-            for (boolean bigEndian : new boolean[] {false, true})
-                directSound.add(new javax.sound.sampled.AudioFormat(signed, any, 16, channels,
-                        2 * channels, any, bigEndian));
-        var windows = new javax.sound.sampled.DataLine.Info(SourceDataLine.class,
-                directSound.toArray(javax.sound.sampled.AudioFormat[]::new), unset, unset);
-        if (!windows.isFormatSupported(WorldAudioPlayback.PROBE))
+            for (boolean bigEndian : new boolean[] {false, true}) {
+                var format = new javax.sound.sampled.AudioFormat(signed, any, 16, channels,
+                        2 * channels, any, bigEndian);
+                directSound.add(format);
+                if (channels == 1) monoOnly.add(format);
+            }
+        var windows = mixer(directSound);
+        if (!WorldAudioPlayback.probe(windows::isFormatSupported))
             throw new AssertionError("Probe must match DirectSound's concrete mixer formats");
-        var linux = new javax.sound.sampled.DataLine.Info(SourceDataLine.class,
-                new javax.sound.sampled.AudioFormat[] {new javax.sound.sampled.AudioFormat(
-                        signed, any, 16, unset, unset, any, true)}, unset, unset);
-        if (!linux.isFormatSupported(WorldAudioPlayback.PROBE))
+        var linux = mixer(List.of(new javax.sound.sampled.AudioFormat(
+                signed, any, 16, unset, unset, any, true)));
+        if (!WorldAudioPlayback.probe(linux::isFormatSupported))
             throw new AssertionError("Probe must match mixers that leave channels unspecified");
+        var mono = mixer(monoOnly);
+        if (mono.isFormatSupported(new javax.sound.sampled.AudioFormat(signed, any, 16, 2, 4, any,
+                true)))
+            throw new AssertionError("A mono-only mixer must reject a stereo format");
+        if (!WorldAudioPlayback.probe(mono::isFormatSupported))
+            throw new AssertionError("Probe must match a mono-only mixer");
+        var eightBit = mixer(List.of(new javax.sound.sampled.AudioFormat(
+                signed, any, 8, unset, unset, any, true)));
+        if (WorldAudioPlayback.probe(eightBit::isFormatSupported))
+            throw new AssertionError("Probe must still require 16-bit output");
+    }
+
+    private static javax.sound.sampled.DataLine.Info mixer(
+            List<javax.sound.sampled.AudioFormat> formats) {
+        int unset = javax.sound.sampled.AudioSystem.NOT_SPECIFIED;
+        return new javax.sound.sampled.DataLine.Info(SourceDataLine.class,
+                formats.toArray(javax.sound.sampled.AudioFormat[]::new), unset, unset);
     }
 
     public static void main(String[] args) throws Exception {
-        probeMatchesWindowsAndLinuxMixerFormats();
+        probeMatchesWindowsLinuxAndMonoMixerFormats();
         gainRampsPerFrame();
         fadesKeepKitsAndCloseOwnedResources();
         ambienceLoopsFromMemoryAndMusicWaitsRecordedSilence();

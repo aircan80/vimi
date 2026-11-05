@@ -6,11 +6,13 @@ import com.vibeminer.formats.audio.AudioStreamDecoder;
 import com.vibeminer.formats.audio.PcmStream;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioSystem;
@@ -28,17 +30,26 @@ final class WorldAudioPlayback implements AutoCloseable {
     static final String OUTPUT_UNAVAILABLE = "Audio output is unavailable on this machine.",
             OUTPUT_STOPPED = "Audio output stopped accepting audio.";
     /**
-     * A common line format, used only to check that an output device exists before decoding.
-     * Channels and frame size must be concrete: {@code AudioFormat.matches} treats unspecified
-     * values as wildcards only on the mixer's side, and Windows DirectSound advertises concrete
-     * channel counts, so an unspecified probe matched no Windows device. Only the rate is left
-     * open, which every mixer leaves unspecified too.
+     * Common line formats, used only to check that an output device exists before decoding: 16-bit
+     * stereo, or 16-bit mono for a mono-only device. Channels and frame size must be concrete:
+     * {@code AudioFormat.matches} treats unspecified values as wildcards only on the mixer's side,
+     * and Windows DirectSound advertises concrete channel counts, so an unspecified probe matched
+     * no Windows device. Only the rate is left open, which every mixer leaves unspecified too.
      */
-    static final AudioFormat PROBE = new AudioFormat(AudioFormat.Encoding.PCM_SIGNED,
-            AudioSystem.NOT_SPECIFIED, 16, 2, 4, AudioSystem.NOT_SPECIFIED, true);
+    static final List<AudioFormat> PROBES = List.of(
+            new AudioFormat(AudioFormat.Encoding.PCM_SIGNED, AudioSystem.NOT_SPECIFIED, 16, 2, 4,
+                    AudioSystem.NOT_SPECIFIED, true),
+            new AudioFormat(AudioFormat.Encoding.PCM_SIGNED, AudioSystem.NOT_SPECIFIED, 16, 1, 2,
+                    AudioSystem.NOT_SPECIFIED, true));
+
+    /** True when the device accepts any probe format. */
+    static boolean probe(Predicate<AudioFormat> supported) {
+        return PROBES.stream().anyMatch(supported);
+    }
 
     static boolean outputSupported() {
-        return AudioSystem.isLineSupported(new DataLine.Info(SourceDataLine.class, PROBE));
+        return probe(format -> AudioSystem.isLineSupported(
+                new DataLine.Info(SourceDataLine.class, format)));
     }
 
     @FunctionalInterface
