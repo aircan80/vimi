@@ -192,7 +192,8 @@ public final class WorldAudioPlaybackTest {
 
         playback.music.track(track(WorldAreaAudio.Kind.MUSIC, 200, 300), FILES);
         playback.music.enabled(true);
-        await(() -> opens.get() >= 3, "music did not repeat after silence");
+        // Wait on the recorded times: the counter is bumped before the time is queued.
+        await(() -> openTimes.size() >= 3, "music did not repeat after silence");
         var times = openTimes.toArray(Long[]::new);
         long gap = TimeUnit.NANOSECONDS.toMillis(times[2] - times[1]);
         if (gap < 300) throw new AssertionError("Recorded silence was not observed: " + gap);
