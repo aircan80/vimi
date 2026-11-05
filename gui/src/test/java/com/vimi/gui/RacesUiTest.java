@@ -1093,6 +1093,18 @@ public final class RacesUiTest {
                                                                                                     + " records."),
                                                                                 "Voice retirement"
                                                                                     + " explicit");
+                                                                        require(
+                                                                                labels(panel)
+                                                                                        .stream()
+                                                                                        .noneMatch(
+                                                                                                text ->
+                                                                                                        text
+                                                                                                                .startsWith(
+                                                                                                                        "Source:")),
+                                                                                "Retired voice"
+                                                                                    + " clears its"
+                                                                                    + " source"
+                                                                                    + " chain");
                                                                         panel.close();
                                                                         voiceRetirementChecks
                                                                                 .complete(null);
@@ -1179,7 +1191,7 @@ public final class RacesUiTest {
                                 new com.vibeminer.concepts.races.RaceVoiceTypes.Refusal(
                                         "Authored link #9",
                                         "Authored reason; no recording.")),
-                        List.of(),
+                        List.of("Authored voice note."),
                         null));
         Platform.runLater(
                 () -> {
@@ -1197,9 +1209,12 @@ public final class RacesUiTest {
                         require(
                                 labels(panel)
                                         .contains(
-                                                "Not playable (1):\nAuthored link #9 —"
+                                                "Not playable (1 listed):\nAuthored link #9 —"
                                                         + " Authored reason; no recording."),
                                 "Refused voice links show their reasons");
+                        require(
+                                labels(panel).contains("Authored voice note."),
+                                "Voice record notes are shown");
                         panel.lookupAll(".button").stream()
                                 .filter(
                                         node ->

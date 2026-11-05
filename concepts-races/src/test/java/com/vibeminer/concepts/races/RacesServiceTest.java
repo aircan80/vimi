@@ -180,7 +180,9 @@ final class RacesServiceTest {
                                 row(8, "999", "3", "0", "0", "106"),
                                 row(9, "77", "3", "0", "0", "107"),
                                 row(10, "50", "3", "0", "0", "108"),
-                                row(11, "305", "3", "2", "0", "0")),
+                                row(11, "305", "3", "2", "0", "0"),
+                                row(12, "329", "4", "0", "0", "109"),
+                                row(13, "329", "4", "5", "0", "109")),
                         "3ECA1BE0"),
                 table(
                         203,
@@ -194,7 +196,8 @@ final class RacesServiceTest {
                                 row(14, "104", "204"),
                                 row(15, "104", "0"),
                                 row(16, "105", "205"),
-                                row(17, "108", "208")),
+                                row(17, "108", "208"),
+                                row(18, "109", "209")),
                         "8F82FF7D"));
     }
 
@@ -238,8 +241,33 @@ final class RacesServiceTest {
     @Test
     void voicesShowRecordedSourceChainAndRefuseUnrecordedOrAmbiguousLinks() {
         var tables = open(voiceFixture());
-        var service = new RacesService(tables);
+        var memory = new com.vibeminer.files.MemoryFiles();
+        for (long fid : new long[] {204, 205}) {
+            memory.add(
+                    BUILD,
+                    "enUS",
+                    new com.vibeminer.files.FileTypes.BuildFile(
+                            fid,
+                            null,
+                            com.vibeminer.files.FileTypes.FilePathSource.NONE,
+                            32L,
+                            Long.toString(fid).repeat(11).substring(0, 32),
+                            com.vibeminer.files.FileTypes.FileFormat.UNKNOWN,
+                            com.vibeminer.files.FileTypes.FileFormatSource.NONE,
+                            com.vibeminer.files.FileTypes.FileStorage.STORED,
+                            false),
+                    new byte[32],
+                    List.of());
+        }
+        var files = memory.forBuild(BUILD, "enUS", Cancellation.NONE).join().files();
+        var service =
+                new RacesService(tables, files, new com.vibeminer.generated.MemoryGeneratedStore());
         try {
+            var admitted = service.voice(3, 2, 0, 14, Cancellation.NONE).join();
+            assertEquals(
+                    "Voice preview requires bounded Ogg Vorbis input",
+                    admitted.message(),
+                    "An admitted clip reaches the decoder");
             var single = service.voices(3, 2, 0, Cancellation.NONE).join();
             assertEquals(
                     List.of(14L),
@@ -270,8 +298,8 @@ final class RacesServiceTest {
                     single.issues().stream()
                             .anyMatch(issue -> issue.startsWith("1 recorded voice links use")));
             assertEquals(
-                    RaceTypes.State.UNAVAILABLE,
-                    service.voice(3, 2, 0, 15, Cancellation.NONE).join().state());
+                    "Selected voice clip is unavailable.",
+                    service.voice(3, 2, 0, 15, Cancellation.NONE).join().message());
 
             var ambiguous = service.voices(3, 1, 0, Cancellation.NONE).join();
             assertEquals(List.of(), ambiguous.clips());
@@ -285,13 +313,21 @@ final class RacesServiceTest {
                     "No reviewed voice clips are readable for this race and voice.",
                     ambiguous.message());
             assertEquals(
-                    RaceTypes.State.UNAVAILABLE,
-                    service.voice(3, 1, 0, 16, Cancellation.NONE).join().state());
+                    "Selected voice clip is unavailable.",
+                    service.voice(3, 1, 0, 16, Cancellation.NONE).join().message(),
+                    "An ambiguous clip is refused before its readable file is opened");
+            var repeated = service.voices(4, 5, 0, Cancellation.NONE).join();
+            assertEquals(List.of(), repeated.refusals());
+            assertEquals(
+                    "EmotesText #329 JOKE → EmotesTextSound #13 (race 4, sex 0, class 5)"
+                            + " → SoundKit #109 → SoundKitEntry #18 → FileDataID 209",
+                    repeated.clips().getFirst().chain());
             for (var refusal : ambiguous.refusals()) {
                 assertFalse(refusal.link().contains("/") || refusal.reason().contains("/"));
             }
         } finally {
             service.closeAsync().join();
+            files.close();
             tables.closeAsync().join();
         }
     }

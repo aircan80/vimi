@@ -147,8 +147,19 @@ final class RaceVoices {
                 long kit = kits.first();
                 var mapping =
                         kitLinks.stream()
-                                .min(java.util.Comparator.comparingLong(Db2Types.Row::id))
+                                .min(
+                                        java.util.Comparator.comparing(
+                                                        (Db2Types.Row row) ->
+                                                                mappings.number(row, "ClassID")
+                                                                        == 0)
+                                                .thenComparingLong(Db2Types.Row::id))
                                 .orElseThrow();
+                if (kitLinks.size() > 1) {
+                    note(
+                            issues,
+                            "Some voice clips have repeated links to the same SoundKit; the most"
+                                    + " specific link is shown.");
+                }
                 var source =
                         new RaceVoiceTypes.Source(
                                 name,
@@ -185,7 +196,7 @@ final class RaceVoices {
                     continue;
                 }
                 if (page.nextAfter() != null) {
-                    note(issues, "Voice entry display is bounded to128 clips per kit.");
+                    note(issues, "Voice entry display is bounded to 128 clips per kit.");
                 }
                 for (var entry : page.rows()) {
                     var row = entry.row();
@@ -203,7 +214,7 @@ final class RaceVoices {
                                 new RaceVoiceTypes.Clip(row.id(), emote, action, kit, fid, source));
                     }
                     if (clips.size() >= 256) {
-                        note(issues, "Voice display is bounded to256 clips.");
+                        note(issues, "Voice display is bounded to 256 clips.");
                         break;
                     }
                 }
@@ -260,7 +271,9 @@ final class RaceVoices {
         if (refusals.size() < MAX_REFUSALS) {
             refusals.add(new RaceVoiceTypes.Refusal(link, reason));
         } else {
-            note(issues, "Refused voice link display is bounded to" + MAX_REFUSALS + " links.");
+            note(
+                    issues,
+                    "Refused voice links beyond the first " + MAX_REFUSALS + " are not listed.");
         }
     }
 
