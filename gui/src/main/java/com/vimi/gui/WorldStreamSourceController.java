@@ -161,7 +161,8 @@ final class WorldStreamSourceController {
         final Cancellation cancellation = new Cancellation();
         CompletableFuture<WorldStreamSourceBridge.ExteriorCopy> prepared;
         CompletableFuture<WorldStreamTransport.ObjectsOutcome> attached;
-        int placements;
+        WorldStreamSourceBridge.ExteriorSummary summary =
+                WorldStreamSourceBridge.ExteriorSummary.NONE;
 
         Exterior(Entry entry) {
             this.entry = entry;
@@ -850,7 +851,7 @@ final class WorldStreamSourceController {
                 if (copy.exterior() == null || copy.failed()) exteriorTried.add(work.entry);
                 return;
             }
-            work.placements = copy.placements();
+            work.summary = copy.summary();
             work.attached = session.attachObjects(work.entry.resident(), copy.exterior());
             work.attached.whenComplete((ignored, failure) -> kick());
             return;
@@ -865,7 +866,7 @@ final class WorldStreamSourceController {
         exteriorTried.add(work.entry);
         try {
             switch (work.attached.join()) {
-                case ATTACHED -> work.entry.source().exteriorAttached(work.placements);
+                case ATTACHED -> work.entry.source().exteriorAttached(work.summary);
                 case FAILED -> work.entry.source().exteriorFailedLate();
                 case DROPPED -> {}
             }
@@ -887,16 +888,42 @@ final class WorldStreamSourceController {
         catch(RuntimeException failed) { return false; }
     }
 
+    /**
+     * Drawn BASIC exterior objects and, when any were not drawn, what was omitted. Counts are the
+     * attached tiles' source records; nothing omitted is drawn approximately.
+     */
+    static String objectsDetail(WorldStreamSourceBridge.ExteriorSummary s, int tiles) {
+        var text = new StringBuilder("; ").append(s.buildings()).append(" BASIC exterior buildings");
+        if (s.doodads() > 0) text.append(" and ").append(s.doodads()).append(" doodads");
+        text.append(" on ").append(tiles);
+        if (s.omitted() > 0) {
+            var parts = new java.util.ArrayList<String>();
+            if (s.buildingsOmitted() > 0) parts.add(plural(s.buildingsOmitted(), "building"));
+            if (s.doodadsOmitted() > 0) {
+                parts.add(plural(s.doodadsOmitted(), "doodad")
+                        + (s.tilted() > 0 ? " (" + s.tilted() + " tilted)" : ""));
+            }
+            if (s.surfacesOmitted() > 0) parts.add(plural(s.surfacesOmitted(), "surface"));
+            text.append(" (not drawn: ").append(String.join(", ", parts)).append(')');
+        }
+        return text.toString();
+    }
+
+    private static String plural(int count, String noun) {
+        return count + " " + noun + (count == 1 ? "" : "s");
+    }
+
     private String readyDetail() {
         int textured = 0, partial = 0, height = 0, watered = 0;
-        int buildingTiles = 0, buildings = 0, buildingFailures = 0;
+        int buildingTiles = 0, buildingFailures = 0;
+        var objects = WorldStreamSourceBridge.ExteriorSummary.NONE;
         String reason = "";
         for (var entry : current) {
             if (entry.source().waterCells() > 0) watered++;
             switch (entry.resident().exteriorObjects()) {
                 case DRAWN -> {
                     buildingTiles++;
-                    buildings += entry.source().exteriorPlacements();
+                    objects = objects.plus(entry.source().exteriorSummary());
                 }
                 case FAILED -> buildingFailures++;
                 default -> {
@@ -926,9 +953,7 @@ final class WorldStreamSourceController {
                 + " height fallback"
                 + (reason.isEmpty() ? "" : "; " + reason)
                 + (watered == 0 ? "" : "; static diagnostic water on " + watered)
-                + (buildingTiles == 0
-                        ? ""
-                        : "; " + buildings + " BASIC exterior buildings on " + buildingTiles)
+                + (buildingTiles == 0 ? "" : objectsDetail(objects, buildingTiles))
                 + (buildingFailures == 0 ? "" : "; building objects failed on " + buildingFailures)
                 + (exterior == null ? "" : "; loading buildings")
                 + (water != null && waterTables != null && waterTables.isDone() && !waterReady()

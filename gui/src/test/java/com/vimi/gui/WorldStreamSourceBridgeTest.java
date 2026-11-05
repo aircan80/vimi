@@ -32,6 +32,30 @@ public final class WorldStreamSourceBridgeTest {
         stickySourceCleanupHealthIsFatalBeforeFileMove();
         exteriorsAreOnByDefault();
         terrainProducerNeverWaitsForObjects();
+        objectsStatusShowsDrawnAndOmittedCounts();
+    }
+
+    private static void objectsStatusShowsDrawnAndOmittedCounts() {
+        var none = WorldStreamSourceBridge.ExteriorSummary.NONE;
+        check(WorldStreamSourceController.objectsDetail(
+                        new WorldStreamSourceBridge.ExteriorSummary(3, 0, 0, 0, 0, 0), 3)
+                        .equals("; 3 BASIC exterior buildings on 3"),
+                "Buildings only, nothing omitted");
+        var a = new WorldStreamSourceBridge.ExteriorSummary(6, 1, 9, 4, 2, 3);
+        var b = new WorldStreamSourceBridge.ExteriorSummary(2, 0, 1, 0, 0, 0);
+        var sum = none.plus(a).plus(b);
+        check(sum.equals(new WorldStreamSourceBridge.ExteriorSummary(8, 1, 10, 4, 2, 3)),
+                "Per-tile summaries add up: " + sum);
+        check(WorldStreamSourceController.objectsDetail(sum, 2).equals(
+                        "; 8 BASIC exterior buildings and 10 doodads on 2"
+                                + " (not drawn: 1 building, 4 doodads (2 tilted), 3 surfaces)"),
+                "Omissions are listed: " + WorldStreamSourceController.objectsDetail(sum, 2));
+        var capped = b.capped(1, 1);
+        check(capped.buildings() == 1 && capped.buildingsOmitted() == 1
+                        && capped.doodads() == 0 && capped.doodadsOmitted() == 1,
+                "The bridge's own draw-budget cap moves records to omitted");
+        var legacy = new WorldStreamSourceBridge.ExteriorCopy(null, 5, false, "");
+        check(legacy.summary().buildings() == 5, "A placements-only copy counts buildings");
     }
 
     private static void exteriorsAreOnByDefault() {
@@ -74,10 +98,11 @@ public final class WorldStreamSourceBridgeTest {
                         check(names.noneMatch(name -> name.toString().endsWith(".wso")),
                                 "The terrain packet carries no objects file");
                     }
-                    check(resident.exteriorPlacements() == 0 && !resident.exteriorFailed(),
+                    check(resident.exteriorSummary().buildings() == 0 && !resident.exteriorFailed(),
                             "No buildings until late objects attach");
-                    resident.exteriorAttached(6);
-                    check(resident.exteriorPlacements() == 6, "Late attach is recorded");
+                    var summary = new WorldStreamSourceBridge.ExteriorSummary(6, 1, 9, 4, 2, 3);
+                    resident.exteriorAttached(summary);
+                    check(resident.exteriorSummary().equals(summary), "Late attach is recorded");
                     resident.exteriorFailedLate();
                     check(resident.exteriorFailed(), "Late failure is recorded");
                 }
