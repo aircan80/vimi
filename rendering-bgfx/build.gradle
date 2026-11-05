@@ -383,7 +383,7 @@ tasks.register('nativeGpuWorldStreamObjectsProof', JavaExec) {
 
 // Isolated candidate recipe: eight test-resource blobs, hardware proof remains separate.
 tasks.register('verifyGlobalCandidateShaders', Exec) {
-    commandLine 'python3', rootProject.file('scripts/rendering/compile_bgfx_world_global_candidate.py'), '--include-dx11', '--verify'
+    commandLine pythonExecutable.get(), rootProject.file('scripts/rendering/compile_bgfx_world_global_candidate.py').absolutePath, '--include-dx11', '--verify'
     inputs.dir('src/main/shaders/world-global')
     inputs.dir('src/test/resources/com/vibeminer/rendering/bgfx/shaders/global-candidate')
 }
