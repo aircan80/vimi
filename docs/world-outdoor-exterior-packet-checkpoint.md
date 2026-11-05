@@ -16,6 +16,17 @@ profile the producer never starts object preparation, so terrain stages and comm
 before #217 (`WorldStreamSourceBridgeTest` holds an injected object preparer blocked and still
 gets the terrain packet).
 
+Measured on real data (private headless Vulkan run through `WorldStreamSourceController` with the
+real child, Azeroth 3x3 around 32,32, of which 7 tiles are available; local-only, warm private
+cache, no network; two runs each):
+
+| | First tile resident | All 7 tiles ready |
+| --- | --- | --- |
+| `-Dvimi.world.exteriors=true` (#217 default) | 2.1 / 2.2 s | 9.3 / 9.1 s |
+| default (exteriors off) | 1.4 / 1.0 s | 4.8 / 3.8 s |
+
+On a cold cache the opt-in cost is larger (0.4 to 21 s of object preparation per tile).
+
 Turning exteriors back on by default needs a decoupled delivery: terrain committed first, and
 the objects file delivered later for the same tile and slot generation, attached only if the
 generation still matches. That needs a new control message and child slot state, an upload into
