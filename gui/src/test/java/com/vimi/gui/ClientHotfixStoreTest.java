@@ -48,9 +48,10 @@ public final class ClientHotfixStoreTest {
         failedWatchRemovesABindingTheNewBuildDidNotHaveBefore();
         sameBuildWatchesAreKeptAndDowngradeLeftoversGo();
         onlyTheMarkedWatchOfAPartialMoveIsRemoved();
+        markersApplyOnlyToTheExactLeftoverWatchRecord();
         followPromptsAreOfferedOncePerMoveAndSession();
         System.out.println(
-                "CLIENT_HOTFIX_STORE_PASS authoredScenarios=17 noNetwork=true noGameAssets=true");
+                "CLIENT_HOTFIX_STORE_PASS authoredScenarios=18 noNetwork=true noGameAssets=true");
     }
 
     private static byte[] cache(int build, int value) {
@@ -1002,6 +1003,88 @@ public final class ClientHotfixStoreTest {
                             SCOPE, ClientHotfixStore.RefreshOutcome.SUPERSEDED,
                             NEXT, ClientHotfixStore.RefreshOutcome.UNCHANGED)),
                     "a broken leftover binding affects only its own report: " + results);
+        } finally {
+            remove(root);
+        }
+    }
+
+    private static void markersApplyOnlyToTheExactLeftoverWatchRecord() throws Exception {
+        var eu98 = new ClientHotfixStore.Scope(new BuildRef("wow", "11".repeat(16), "12".repeat(16), "eu"),
+                "enUS", "1.60.1.70698");
+        var eu99 = new ClientHotfixStore.Scope(new BuildRef("wow", "13".repeat(16), "14".repeat(16), "eu"),
+                "enUS", "1.60.1.70699");
+        var eu100 = new ClientHotfixStore.Scope(new BuildRef("wow", "15".repeat(16), "16".repeat(16), "eu"),
+                "enUS", "1.60.1.70700");
+        // A deliberate move into a scope that still carries a pending leftover marker.
+        Path root = Files.createTempDirectory("client-hotfix-follow-rewatch-marker-").toRealPath();
+        Path first = root.resolve("First.bin"), second = root.resolve("Second.bin");
+        var unwatch = new AtomicBoolean(true);
+        rewrite(first, cache(70699, 1), 1);
+        rewrite(second, cache(70698, 2), 2);
+        try (var store = failing(root.resolve("store"), new AtomicBoolean(), unwatch, new AtomicBoolean())) {
+            store.importCache(eu99, first, true, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            rewrite(first, cache(70700, 3), 3);
+            var moved = store.follow(eu99, eu100, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            check(!moved.oldWatchCleared() && moved.leftoverMarked(), "EU 99 is marked superseded by EU 100");
+            unwatch.set(false);
+            store.importCache(eu98, second, true, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            rewrite(second, cache(70699, 4), 4);
+            var deliberate = store.follow(eu98, eu99, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            check(deliberate.oldWatchCleared(), "EU 98 moved to EU 99");
+            var results = refresh(store);
+            check(outcomes(results).equals(java.util.Map.of(
+                            eu99, ClientHotfixStore.RefreshOutcome.UNCHANGED,
+                            eu100, ClientHotfixStore.RefreshOutcome.UNCHANGED)),
+                    "the deliberate EU 99 watch survives the earlier marker: " + results);
+            check(watched(store, eu99) && watched(store, eu100) && !watched(store, eu98), "both kept");
+        } finally {
+            remove(root);
+        }
+        // The marker cannot be written: the notice says the old check stays, and it does stay.
+        root = Files.createTempDirectory("client-hotfix-follow-unmarked-").toRealPath();
+        Path original = root.resolve("DBCache.bin");
+        var mark = new AtomicBoolean(true);
+        rewrite(original, cache(70707, 1), 1);
+        try (var store = new ClientHotfixStore(root.resolve("store"), new ClientHotfixStore.Probe() {
+            @Override
+            public void beforeFollowUnwatch() {
+                throw new IllegalStateException("authored unwatch failure");
+            }
+
+            @Override
+            public void beforeMarkLeftover() {
+                if (mark.get()) throw new IllegalStateException("authored marker failure");
+            }
+        })) {
+            store.importCache(SCOPE, original, true, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            rewrite(original, cache(70800, 2), 2);
+            var moved = store.follow(SCOPE, NEXT, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            check(!moved.oldWatchCleared() && !moved.leftoverMarked(), "neither removed nor marked");
+            String text = ClientHotfixDetails.followOutcome(follow(), moved, null);
+            check(text.contains("Remove it manually") && !text.contains("next Refresh sources removes"),
+                    "the notice does not promise a cleanup: " + text);
+            var results = refresh(store);
+            check(outcomes(results).get(SCOPE) == ClientHotfixStore.RefreshOutcome.CLIENT_BUILD_CHANGED
+                            && watched(store, SCOPE),
+                    "an unmarked leftover is an ordinary watch: " + results);
+        } finally {
+            remove(root);
+        }
+        // An orphan marker (its watch removed outside the store) is swept by refresh.
+        root = Files.createTempDirectory("client-hotfix-follow-orphan-").toRealPath();
+        original = root.resolve("DBCache.bin");
+        var failUnwatch = new AtomicBoolean(true);
+        rewrite(original, cache(70707, 1), 1);
+        Path storage = root.resolve("store");
+        try (var store = failing(storage, new AtomicBoolean(), failUnwatch, new AtomicBoolean())) {
+            store.importCache(SCOPE, original, true, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            rewrite(original, cache(70800, 2), 2);
+            store.follow(SCOPE, NEXT, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            Path marker = storage.resolve("watches").resolve(SCOPE.key() + ".superseded");
+            check(Files.exists(marker), "marker written");
+            Files.delete(storage.resolve("watches").resolve(SCOPE.key() + ".watch"));
+            refresh(store);
+            check(!Files.exists(marker), "the orphan marker is swept");
         } finally {
             remove(root);
         }

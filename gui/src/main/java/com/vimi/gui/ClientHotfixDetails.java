@@ -142,8 +142,10 @@ final class ClientHotfixDetails {
                         + " same contents; that other file is no longer checked.");
             if (!result.oldWatchCleared())
                 notes.add("Build " + n + " now uses the cache and is checked on Refresh sources. Build " + m
-                        + " still has a leftover check; the next Refresh sources removes it while the file"
-                        + " belongs to build " + n + ".");
+                        + (result.leftoverMarked()
+                                ? " still has a leftover check; the next Refresh sources removes it."
+                                : " is still checked too: the old check remains. Remove it manually (untick"
+                                        + " \"Check on Refresh sources\" for build " + m + ") or apply again."));
             return notes.isEmpty() ? null : String.join(" ", notes);
         }
         if (incomplete(error) != null)

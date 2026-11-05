@@ -87,10 +87,29 @@ final class ClientHotfixStore implements AutoCloseable {
      * sources (a later apply of the same pair retries only that removal).
      */
     record FollowResult(
-            Summary summary, boolean bindingChanged, boolean oldWatchCleared, boolean replacedOtherWatch) {
+            Summary summary,
+            boolean bindingChanged,
+            boolean oldWatchCleared,
+            boolean replacedOtherWatch,
+            boolean leftoverMarked) {
         FollowResult(Summary summary, boolean bindingChanged, boolean oldWatchCleared) {
-            this(summary, bindingChanged, oldWatchCleared, false);
+            this(summary, bindingChanged, oldWatchCleared, false, false);
         }
+    }
+
+    /** What happened to the old build's watch at the end of a move. */
+    private enum OldWatch {
+        CLEARED,
+        /** Kept, with a marker so the next Refresh sources removes it. */
+        MARKED,
+        /** Kept, and the marker could not be written either: it stays until removed by hand. */
+        KEPT
+    }
+
+    private static FollowResult followed(
+            Summary summary, boolean changed, OldWatch old, boolean replacedOtherWatch) {
+        return new FollowResult(
+                summary, changed, old == OldWatch.CLEARED, replacedOtherWatch, old == OldWatch.MARKED);
     }
 
     /**
@@ -310,7 +329,7 @@ final class ClientHotfixStore implements AutoCloseable {
                 probe.beforeFollowWatch();
                 writeWatch(to, imported.input(), imported.source(), token);
             }
-            return new FollowResult(imported.summary(), false, clearOldWatch(from, to, token), replaced);
+            return followed(imported.summary(), false, clearOldWatch(from, to, token), replaced);
         }
         try {
             probe.beforeFollowWatch();
@@ -329,27 +348,27 @@ final class ClientHotfixStore implements AutoCloseable {
             }
             throw failure;
         }
-        return new FollowResult(imported.summary(), imported.changed(), clearOldWatch(from, to, token));
+        return followed(imported.summary(), imported.changed(), clearOldWatch(from, to, token), false);
     }
 
     /** False when the old watch stays; the binding and new watch are already durable. */
-    private boolean clearOldWatch(Scope from, Scope to, Cancellation token) {
+    private OldWatch clearOldWatch(Scope from, Scope to, Cancellation token) {
         try {
             probe.beforeFollowUnwatch();
             deleteWatch(from, token);
-            return true;
+            return OldWatch.CLEARED;
         } catch (IOException | RuntimeException failure) {
             // Includes cancellation: the new build is already bound and watched, so the move is
-            // reported as done with the old check left behind. Mark exactly that old watch as
-            // superseded by exactly the target watch, so Refresh sources removes it and nothing
+            // reported as done with the old check left behind. Mark exactly that old watch record
+            // as superseded by exactly the target watch, so Refresh sources removes it and nothing
             // else; if even the marker cannot be written, the old watch stays an ordinary watch.
             try {
                 probe.beforeMarkLeftover();
                 writeLeftoverMarker(from, to);
+                return OldWatch.MARKED;
             } catch (IOException | RuntimeException unmarked) {
-                // Reported as a leftover check either way.
+                return OldWatch.KEPT;
             }
-            return false;
         }
     }
 
@@ -1082,6 +1101,9 @@ final class ClientHotfixStore implements AutoCloseable {
                         fileIdentity(source),
                         "");
         writeAtomic(watch(scope), text.getBytes(StandardCharsets.UTF_8), token);
+        // A newly written watch is deliberate: an earlier "superseded" marker for this scope no
+        // longer describes it.
+        deleteLeftoverMarker(scope);
     }
 
     private void deleteWatch(Scope scope, Cancellation token) throws IOException {
@@ -1100,9 +1122,34 @@ final class ClientHotfixStore implements AutoCloseable {
         return directory.resolve("watches").resolve(scope.key() + ".superseded");
     }
 
+    /** Names the exact old watch record (by digest) and the exact watch it moved to. */
     private void writeLeftoverMarker(Scope from, Scope to) throws IOException {
-        String text = String.join("\n", "vimi-client-hotfix-superseded-v1", from.key(), to.key(), "");
+        byte[] record = readPrivate(watch(from));
+        if (record == null) throw new IOException("The old watch is already gone");
+        String text = String.join(
+                "\n", "vimi-client-hotfix-superseded-v1", from.key(), to.key(), sha(record), "");
         writeAtomic(leftoverMarker(from), text.getBytes(StandardCharsets.UTF_8), Cancellation.NONE);
+    }
+
+    /** Removes markers whose old watch is gone; refresh drops mismatched ones per watch. */
+    private void sweepOrphanMarkers() {
+        try (var stream =
+                Files.newDirectoryStream(directory.resolve("watches"), "*.superseded")) {
+            for (Path marker : stream) {
+                String name = marker.getFileName().toString();
+                String key = name.substring(0, name.length() - ".superseded".length());
+                if (Files.exists(marker.resolveSibling(key + ".watch"), LinkOption.NOFOLLOW_LINKS))
+                    continue;
+                try {
+                    regular(marker);
+                    Files.delete(marker);
+                } catch (IOException | RuntimeException ignored) {
+                    // Retried on the next refresh.
+                }
+            }
+        } catch (IOException | RuntimeException ignored) {
+            // Sweeping is housekeeping; it never fails a refresh.
+        }
     }
 
     private void deleteLeftoverMarker(Scope scope) throws IOException {
@@ -1126,11 +1173,16 @@ final class ClientHotfixStore implements AutoCloseable {
         try {
             byte[] bytes = readPrivate(marker);
             var lines = bytes == null ? new String[0] : new String(bytes, StandardCharsets.UTF_8).split("\n", -1);
-            if (lines.length != 4
+            byte[] record = readPrivate(watchFile);
+            if (lines.length != 5
                     || !lines[0].equals("vimi-client-hotfix-superseded-v1")
                     || !lines[1].equals(key)
                     || !lines[2].matches("[0-9a-f]{64}")
-                    || !lines[3].isEmpty()) throw new IOException("Leftover marker is invalid");
+                    || record == null
+                    // Only the exact watch record the move left behind; a rewritten watch is
+                    // deliberate and is never removed by an older marker.
+                    || !lines[3].equals(sha(record))
+                    || !lines[4].isEmpty()) throw new IOException("Leftover marker does not apply");
             target = lines[2];
         } catch (IOException | RuntimeException invalid) {
             try {
@@ -1224,6 +1276,7 @@ final class ClientHotfixStore implements AutoCloseable {
             }
         }
         files.sort(null);
+        sweepOrphanMarkers();
         var results = new java.util.ArrayList<RefreshResult>();
         // On cancellation, stop and return what was already checked: those bindings are
         // durable, and the caller still reports the run as canceled from its own token.
