@@ -69,6 +69,15 @@ public interface BuildWorld extends AutoCloseable {
         return CompletableFuture.completedFuture(false);
     }
 
+    /**
+     * Optional recorded dungeon and raid links (area and entrance on the parent map); custom
+     * providers state that they have none.
+     */
+    default CompletableFuture<WorldInstanceLinks> instanceLinks(Cancellation token) {
+        return CompletableFuture.completedFuture(
+                WorldInstanceLinks.unavailable("Instance links are unavailable for this source"));
+    }
+
     /** Optional actual-source global scene capability; custom providers perform no fallback IO. */
     default java.util.Optional<WorldGlobalScenes> globalScenes() {
         return java.util.Optional.empty();

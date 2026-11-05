@@ -530,6 +530,14 @@ tasks.register('worldAudioPlaybackTest', JavaExec) {
 }
 tasks.named('check') { dependsOn tasks.named('worldAudioPlaybackTest') }
 
+// Inline instance switch ordering: drain, audio handover, cancel and refusal; no display or GPU.
+tasks.register('worldInstanceSwitchTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldInstanceSwitchTest'
+}
+check.dependsOn worldInstanceSwitchTest
+
 // Authored physical terrain coordinates and deterministic keyboard/timer events; requires a display.
 tasks.register('worldNavigationUiTest', JavaExec) {
     dependsOn testClasses
@@ -726,6 +734,12 @@ tasks.register('worldBookmarkStoreTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldBookmarkStoreTest'
 }
 check.dependsOn worldBookmarkStoreTest
+// Authored instance entrances, ADT instance round trip and GPU refusals; requires a desktop display.
+tasks.register('worldInstanceUiTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldInstanceUiTest'
+}
 // Authored World coordinate travel and bookmark jumps; requires a desktop display.
 tasks.register('worldTravelUiTest', JavaExec) {
     dependsOn testClasses
