@@ -20,6 +20,8 @@ final class WorldControlMailbox {
     private final WorldStreamState.Nonce nonce;
     private final ArrayDeque<WorldStreamControl.Command> transactions = new ArrayDeque<>(4);
     private WorldStreamControl.Camera camera;
+    // Separate one-deep lane: a late objects command never queues behind or ahead of tiles.
+    private WorldStreamControl.LateObjects objects;
     private long revision, policy;
     private int width, height;
     private boolean close, failed;
@@ -36,6 +38,7 @@ final class WorldControlMailbox {
         if (command instanceof WorldStreamControl.Close) {
             close = true;
             camera = null;
+            objects = null;
             transactions.clear();
             return Result.ACCEPTED;
         }
@@ -56,15 +59,33 @@ final class WorldControlMailbox {
             camera = update;
             return Result.ACCEPTED;
         }
+        if (command instanceof WorldStreamControl.LateObjects late) {
+            if (objects != null) {
+                return overflow();
+            }
+            objects = late;
+            return Result.ACCEPTED;
+        }
         if (transactions.size() == TRANSACTIONS) {
-            failed = true;
-            close = true;
-            camera = null;
-            transactions.clear();
-            return Result.OVERFLOW;
+            return overflow();
         }
         transactions.addLast(command);
         return Result.ACCEPTED;
+    }
+
+    private Result overflow() {
+        failed = true;
+        close = true;
+        camera = null;
+        objects = null;
+        transactions.clear();
+        return Result.OVERFLOW;
+    }
+
+    synchronized WorldStreamControl.LateObjects takeObjects() {
+        var result = objects;
+        objects = null;
+        return result;
     }
 
     synchronized WorldStreamControl.Camera takeCamera() {
