@@ -27,6 +27,9 @@ public interface BuildService {
     default WorldBookmarkStore worldBookmarks() { return null; }
     default ClientHotfixStore hotfixImports() { return null; }
 
+    /** Builds this library has prepared before, with the source they were prepared from. */
+    default List<PreparationHistory.Receipt> preparedReceipts() { return List.of(); }
+
     default BuildDownloads downloads() { return null; }
 
     default BuildComparisons comparisons() { return null; }

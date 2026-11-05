@@ -40,8 +40,12 @@ public final class ClientHotfixStoreTest {
         metadataCallbacksAndCleanupFailuresDoNotLeakAcceptedOwners();
         watchedRefreshDetectsAndAppliesOnlyNewerSameBuildCaches();
         watchesAreOptInAndClearedByPlainImportUnwatchAndDisable();
+        confirmedBuildFollowMovesTheWatchAndKeepsTheOldImport();
+        buildFollowMatchesOnePreparedBuildOrAsks();
+        followFailuresAfterTheBindStateExactlyWhatChanged();
+        followPromptsAreOfferedOncePerMoveAndSession();
         System.out.println(
-                "CLIENT_HOTFIX_STORE_PASS authoredScenarios=8 noNetwork=true noGameAssets=true");
+                "CLIENT_HOTFIX_STORE_PASS authoredScenarios=12 noNetwork=true noGameAssets=true");
     }
 
     private static byte[] cache(int build, int value) {
@@ -623,6 +627,254 @@ public final class ClientHotfixStoreTest {
         } finally {
             remove(root);
         }
+    }
+
+    private static final ClientHotfixStore.Scope NEXT =
+            new ClientHotfixStore.Scope(
+                    new BuildRef("wow", "03".repeat(16), "04".repeat(16), "us"),
+                    "enUS",
+                    "1.60.1.70800");
+
+    private static void confirmedBuildFollowMovesTheWatchAndKeepsTheOldImport() throws Exception {
+        Path root = Files.createTempDirectory("client-hotfix-follow-").toRealPath();
+        Path original = root.resolve("DBCache.bin"), storage = root.resolve("store");
+        rewrite(original, cache(70707, 1), 1);
+        try (var store = new ClientHotfixStore(storage)) {
+            var old = store.importCache(SCOPE, original, true, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            rewrite(original, cache(70800, 2), 2);
+            var moved = only(refresh(store), ClientHotfixStore.RefreshOutcome.CLIENT_BUILD_CHANGED,
+                    "client update");
+            check(moved.clientBuild() == 70800, "declared build reported");
+            check(store.open(NEXT, Cancellation.NONE).get(3, TimeUnit.SECONDS) == null,
+                    "nothing is bound before the user confirms");
+
+            var wrong = new ClientHotfixStore.Scope(NEXT.build(), "enUS", "1.60.1.70801");
+            check(fails(store.follow(SCOPE, wrong, Cancellation.NONE)) != null,
+                    "a build the cache does not declare is refused");
+            check(store.open(wrong, Cancellation.NONE).get(3, TimeUnit.SECONDS) == null,
+                    "refused follow binds nothing");
+            check(boundPayload(store)[0] == 1, "refused follow keeps the old binding");
+            only(refresh(store), ClientHotfixStore.RefreshOutcome.CLIENT_BUILD_CHANGED,
+                    "refused follow keeps the old watch");
+
+            var followed = store.follow(SCOPE, NEXT, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            check(followed.summary().build() == 70800
+                            && followed.summary().version().equals(NEXT.version())
+                            && followed.bindingChanged() && followed.oldWatchCleared(),
+                    "new scope summary");
+            try (var snapshot = store.open(NEXT, Cancellation.NONE).get(3, TimeUnit.SECONDS)) {
+                check(payload(snapshot)[0] == 2 && snapshot.watched(), "new build bound and watched");
+            }
+            try (var snapshot = store.open(SCOPE, Cancellation.NONE).get(3, TimeUnit.SECONDS)) {
+                check(snapshot.index().sha256().equals(old.sha256()) && !snapshot.watched(),
+                        "old build keeps its import without the watch");
+            }
+            var after = refresh(store);
+            check(after.size() == 1 && after.getFirst().scope().equals(NEXT)
+                            && after.getFirst().outcome() == ClientHotfixStore.RefreshOutcome.UNCHANGED,
+                    "refresh now checks the new build only");
+            var again = store.follow(SCOPE, NEXT, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            check(!again.bindingChanged() && again.oldWatchCleared()
+                            && again.summary().sha256().equals(followed.summary().sha256()),
+                    "applying an applied move again changes nothing");
+            var unrelated = new ClientHotfixStore.Scope(NEXT.build(), "enUS", "1.60.1.70900");
+            check(fails(store.follow(SCOPE, unrelated, Cancellation.NONE)) != null,
+                    "an unwatched build cannot be followed to an unbound build");
+            try {
+                store.follow(SCOPE, new ClientHotfixStore.Scope(NEXT.build(), "deDE", NEXT.version()),
+                        Cancellation.NONE);
+                throw new AssertionError("another locale was accepted");
+            } catch (IllegalArgumentException expected) {
+                // Locale and product never change on a follow.
+            }
+        } finally {
+            remove(root);
+        }
+    }
+
+    /** Store whose follow steps fail on demand. */
+    private static ClientHotfixStore failing(Path storage, AtomicBoolean watch, AtomicBoolean unwatch,
+            AtomicBoolean restore) {
+        return new ClientHotfixStore(storage, new ClientHotfixStore.Probe() {
+            @Override
+            public void beforeFollowWatch() {
+                if (watch.get()) throw new IllegalStateException("authored watch failure");
+            }
+
+            @Override
+            public void beforeFollowUnwatch() {
+                if (unwatch.get()) throw new IllegalStateException("authored unwatch failure");
+            }
+
+            @Override
+            public void beforeFollowRestore() {
+                if (restore.get()) throw new IllegalStateException("authored restore failure");
+            }
+        });
+    }
+
+    private static boolean watched(ClientHotfixStore store, ClientHotfixStore.Scope scope) throws Exception {
+        try (var snapshot = store.open(scope, Cancellation.NONE).get(3, TimeUnit.SECONDS)) {
+            return snapshot != null && snapshot.watched();
+        }
+    }
+
+    private static void followFailuresAfterTheBindStateExactlyWhatChanged() throws Exception {
+        Path root = Files.createTempDirectory("client-hotfix-follow-fail-").toRealPath();
+        Path original = root.resolve("DBCache.bin"), other = root.resolve("Other.bin");
+        var watch = new AtomicBoolean(true);
+        var unwatch = new AtomicBoolean();
+        var restore = new AtomicBoolean();
+        rewrite(original, cache(70707, 1), 1);
+        rewrite(other, cache(70800, 9), 9);
+        try (var store = failing(root.resolve("store"), watch, unwatch, restore)) {
+            store.importCache(SCOPE, original, true, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            var earlier = store.importCache(NEXT, other, false, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            rewrite(original, cache(70800, 2), 2);
+
+            // The watch for N fails after N was bound: N's earlier binding is restored.
+            var failure = fails(store.follow(SCOPE, NEXT, Cancellation.NONE));
+            check(ClientHotfixDetails.followOutcome(follow(), null, failure).contains("Nothing changed"),
+                    "a restored failure says nothing changed");
+            check(!ClientHotfixDetails.followChangedBinding(null, failure), "no reopen when nothing changed");
+            try (var snapshot = store.open(NEXT, Cancellation.NONE).get(3, TimeUnit.SECONDS)) {
+                check(snapshot.index().sha256().equals(earlier.sha256()) && !snapshot.watched(),
+                        "N keeps its earlier import");
+            }
+            check(watched(store, SCOPE), "the old build keeps its watch");
+
+            // The watch fails and so does the restore: the state left behind is named.
+            restore.set(true);
+            failure = fails(store.follow(SCOPE, NEXT, Cancellation.NONE));
+            check(ClientHotfixDetails.followChangedBinding(null, failure)
+                            && ClientHotfixDetails.followBoundSha(null, failure) != null,
+                    "an unrestored bind is reported as changed, with its digest, so N reopens");
+            String text = ClientHotfixDetails.followOutcome(follow(), null, failure);
+            check(text.contains("now uses the cache, but it is not checked") && !text.contains("Nothing changed"),
+                    "the notice states N changed and is unwatched: " + text);
+            check(boundPayload(store, NEXT)[0] == 2 && !watched(store, NEXT) && watched(store, SCOPE),
+                    "N bound without watch; the old build keeps its watch");
+
+            // The old watch cannot be removed: success with a stated leftover check.
+            watch.set(false);
+            restore.set(false);
+            unwatch.set(true);
+            var partial = store.follow(SCOPE, NEXT, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            check(!partial.oldWatchCleared() && watched(store, NEXT) && watched(store, SCOPE),
+                    "both builds are checked when the old watch stays");
+            check(ClientHotfixDetails.followOutcome(follow(), partial, null).contains("is still checked too"),
+                    "the notice names the leftover check");
+
+            // Applying the same move again only removes the leftover check.
+            unwatch.set(false);
+            var cleaned = store.follow(SCOPE, NEXT, Cancellation.NONE).get(3, TimeUnit.SECONDS);
+            check(!cleaned.bindingChanged() && cleaned.oldWatchCleared() && !watched(store, SCOPE)
+                            && watched(store, NEXT),
+                    "a repeated apply clears only the old watch");
+            check(ClientHotfixDetails.followOutcome(follow(), cleaned, null) == null, "plain success is silent");
+            check(store.occupied(NEXT, Cancellation.NONE).get(3, TimeUnit.SECONDS)
+                            && !store.occupied(new ClientHotfixStore.Scope(NEXT.build(), "enUS", "1.60.1.70900"),
+                                    Cancellation.NONE).get(3, TimeUnit.SECONDS),
+                    "occupied reports an existing import or watch");
+        } finally {
+            remove(root);
+        }
+    }
+
+    private static byte[] boundPayload(ClientHotfixStore store, ClientHotfixStore.Scope scope) throws Exception {
+        try (var snapshot = store.open(scope, Cancellation.NONE).get(3, TimeUnit.SECONDS)) {
+            return payload(snapshot);
+        }
+    }
+
+    private static ClientHotfixDetails.BuildFollow follow() {
+        return new ClientHotfixDetails.BuildFollow(SCOPE, NEXT, 70800, "prompt");
+    }
+
+    private static void followPromptsAreOfferedOncePerMoveAndSession() {
+        var ready = BuildPreparation.Ready.TABLES_READY;
+        var next = info("1.60.1.70800", "03".repeat(16), "us");
+        var later = info("1.60.1.70900", "0b".repeat(16), "us");
+        var receipts = java.util.List.of(receipt(next, "04".repeat(16), "us", "enUS", ready),
+                receipt(later, "0c".repeat(16), "us", "enUS", ready));
+        var builds = java.util.List.of(next, later);
+        var moved = java.util.List.of(new ClientHotfixStore.RefreshResult(SCOPE,
+                ClientHotfixStore.RefreshOutcome.CLIENT_BUILD_CHANGED, null, 70800, null));
+        var follows = new ClientHotfixFollows();
+        var first = follows.offer(moved, builds, receipts);
+        check(first.size() == 1, "first refresh prompts");
+        check(follows.offer(moved, builds, receipts).isEmpty(), "a second refresh while the prompt is open adds none");
+        follows.finished(first.getFirst(), false);
+        var retry = follows.offer(moved, builds, receipts);
+        check(retry.size() == 1, "a failed apply that changed nothing may be offered again");
+        follows.declined(retry.getFirst());
+        check(follows.offer(moved, builds, receipts).isEmpty(), "Keep suppresses the move for the session");
+        var newer = java.util.List.of(new ClientHotfixStore.RefreshResult(SCOPE,
+                ClientHotfixStore.RefreshOutcome.CLIENT_BUILD_CHANGED, null, 70900, null));
+        var n1 = follows.offer(newer, builds, receipts);
+        check(n1.size() == 1 && n1.getFirst().build() == 70900, "build N+1 prompts again");
+        follows.finished(n1.getFirst(), true);
+        check(follows.offer(newer, builds, receipts).isEmpty(), "an applied move is not offered again");
+    }
+
+    private static BuildInfo info(String version, String config, String region) {
+        return new BuildInfo("wow", "Retail", version, region, config, BuildInfo.BuildSource.CURRENT,
+                true, null, 0, "wow:" + config + ":" + region, null, null, java.util.List.of());
+    }
+
+    private static PreparationHistory.Receipt receipt(BuildInfo info, String cdn, String region,
+            String locale, BuildPreparation.Ready ready) {
+        return new PreparationHistory.Receipt(info.identity(), info.product(), info.config(), cdn, region,
+                locale, ready.name());
+    }
+
+    private static void buildFollowMatchesOnePreparedBuildOrAsks() {
+        var moved = new ClientHotfixStore.RefreshResult(SCOPE,
+                ClientHotfixStore.RefreshOutcome.CLIENT_BUILD_CHANGED, null, 70800, null);
+        var next = info("1.60.1.70800", "03".repeat(16), "us");
+        var nextEu = info("1.60.1.70800", "05".repeat(16), "eu");
+        var older = info("1.60.1.70790", "06".repeat(16), "us");
+        var ready = BuildPreparation.Ready.TABLES_READY;
+        var follow = ClientHotfixDetails.buildFollow(moved, java.util.List.of(next, older),
+                java.util.List.of(receipt(next, "04".repeat(16), "us", "enUS", ready),
+                        receipt(older, "07".repeat(16), "us", "enUS", ready))).orElseThrow();
+        check(follow.to().equals(NEXT) && follow.from().equals(SCOPE), "exact prepared scope");
+        check(follow.prompt().equals("Client updated to build 70800. Apply this cache to build 70800?"),
+                "owner wording: " + follow.prompt());
+        check(ClientHotfixDetails.buildFollow(moved, java.util.List.of(next, nextEu),
+                java.util.List.of(receipt(next, "04".repeat(16), "us", "enUS", ready),
+                        receipt(nextEu, "08".repeat(16), "eu", "enUS", ready))).orElseThrow().to().equals(NEXT),
+                "same region preferred");
+        check(ClientHotfixDetails.buildFollow(moved, java.util.List.of(nextEu),
+                java.util.List.of(receipt(nextEu, "08".repeat(16), "eu", "enUS", ready))).isPresent(),
+                "a single other-region build is still offered");
+        var twoUs = info("1.60.1.70800", "09".repeat(16), "us");
+        check(ClientHotfixDetails.buildFollow(moved, java.util.List.of(next, twoUs, nextEu),
+                java.util.List.of(receipt(next, "04".repeat(16), "us", "enUS", ready),
+                        receipt(twoUs, "0a".repeat(16), "us", "enUS", ready),
+                        receipt(nextEu, "08".repeat(16), "eu", "enUS", ready))).isEmpty(),
+                "two same-region matches are not guessed even beside another region");
+        check(ClientHotfixDetails.buildFollow(moved, java.util.List.of(next),
+                java.util.List.of(receipt(next, "04".repeat(16), "us", "ENUS", ready))).isEmpty(),
+                "a non-canonical receipt locale is compared canonically and never crashes");
+        check(ClientHotfixDetails.buildFollow(moved, java.util.List.of(next, twoUs),
+                java.util.List.of(receipt(next, "04".repeat(16), "us", "enUS", ready),
+                        receipt(twoUs, "0a".repeat(16), "us", "enUS", ready))).isEmpty(),
+                "ambiguous builds are not guessed");
+        check(ClientHotfixDetails.buildFollow(moved, java.util.List.of(next),
+                java.util.List.of(receipt(next, "04".repeat(16), "us", "enUS",
+                        BuildPreparation.Ready.FILES_READY))).isEmpty(), "unprepared build is not offered");
+        check(ClientHotfixDetails.buildFollow(moved, java.util.List.of(next),
+                java.util.List.of(receipt(next, "04".repeat(16), "us", "deDE", ready))).isEmpty(),
+                "another locale is not offered");
+        check(ClientHotfixDetails.buildFollow(moved, java.util.List.of(older),
+                java.util.List.of(receipt(older, "07".repeat(16), "us", "enUS", ready))).isEmpty(),
+                "a build without that number is not offered");
+        var unchanged = new ClientHotfixStore.RefreshResult(SCOPE,
+                ClientHotfixStore.RefreshOutcome.UNCHANGED, null, 70707, null);
+        check(ClientHotfixDetails.buildFollow(unchanged, java.util.List.of(next),
+                java.util.List.of(receipt(next, "04".repeat(16), "us", "enUS", ready))).isEmpty(),
+                "only a client build change prompts");
     }
 
     private static void watchesAreOptInAndClearedByPlainImportUnwatchAndDisable()
