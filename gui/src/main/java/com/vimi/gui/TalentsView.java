@@ -53,7 +53,8 @@ final class TalentsView extends BorderPane implements AutoCloseable {
     private final VBox content = new VBox(18), selection = new VBox(8), evidence = new VBox(12);
     private final HBox treePanels = new HBox(16);
     private final Label status = text("Loading talent tables…", "muted"),
-            classTitle = text("Talents", "h1");
+            classTitle = text("Talents", "h1"),
+            buildLabel = text("", "muted");
     private final AsyncIconRequests icons;
     private final ProgressIndicator activity = spinner("Loading records", 18);
     private final java.util.concurrent.ThreadPoolExecutor iconWorker =
@@ -141,6 +142,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                 (id, token) -> nativeWork(job).icon(id, token));
         sourceTables = () -> nativeWork(job).tablesHandle();
         sourceVersion = job.build().version();
+        buildLabel.setText(TalentSourceDetails.buildLabel(sourceVersion));
     }
 
     TalentsView(
@@ -197,7 +199,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
         VBox.setVgrow(classes, Priority.ALWAYS);
         setLeft(sidebar);
         content.setPadding(new Insets(24));
-        HBox heading = new HBox(16, classTitle, space(), text("CLASSIC TALENT REFERENCE", "badge"));
+        HBox heading = new HBox(16, classTitle, space(), buildLabel, text("CLASSIC TALENT REFERENCE", "badge"));
         heading.setAlignment(Pos.CENTER_LEFT);
         Button reload = new Button("Reload");
         reload.setOnAction(
@@ -228,8 +230,9 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                         heading,
                         state,
                         text(
-                                "Rank badges show recorded maximum ranks. This view does not"
-                                        + " allocate character talent points.",
+                                "Badges show each talent's recorded maximum rank (Max N), not"
+                                        + " spent points. This view does not allocate character"
+                                        + " talent points.",
                                 "muted"));
         header.setPadding(new Insets(24));
         content.setPadding(new Insets(0, 24, 24, 24));
@@ -348,7 +351,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
         waitingIcons.clear();
         for (var target : pendingIcons) {
             target.setAccessibleText("Talent icon unavailable after source change");
-            target.getChildren().setAll(text("—", "talent-placeholder"));
+            target.getChildren().setAll(missingArt());
         }
         pendingIcons.clear();
         treePanels
@@ -451,8 +454,8 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                 if (prerequisite != null) drawEdge(canvas, prerequisite, talent);
             }
         for (var talent : tree.talents()) {
-            StackPane graphic = new StackPane(text("?", "talent-placeholder"));
-            graphic.setAccessibleText("Talent icon unavailable");
+            StackPane graphic = new StackPane(missingArt());
+            graphic.setAccessibleText(TalentSourceDetails.missingIconText(talent));
             graphic.setMinSize(ICON, ICON);
             graphic.setMaxSize(ICON, ICON);
             Button node = new Button();
@@ -465,14 +468,11 @@ final class TalentsView extends BorderPane implements AutoCloseable {
             node.setLayoutX(PADDING + talent.column() * PITCH);
             node.setLayoutY(PADDING + talent.row() * PITCH);
             node.setAccessibleText(
-                    talent.name() + ", " + talent.maxRanks() + " ranks, " + tree.name());
-            Tooltip.install(
-                    node,
-                    new Tooltip(
-                            talent.name()
-                                    + "\n"
-                                    + talent.maxRanks()
-                                    + " ranks\nSelect for source details"));
+                    talent.name() + ", maximum " + talent.maxRanks() + " ranks, " + tree.name());
+            var hover = new Tooltip(TalentSourceDetails.hoverText(tree, talent, byId));
+            hover.setWrapText(true);
+            hover.setMaxWidth(340);
+            Tooltip.install(node, hover);
             node.setOnAction(event -> select(tree, talent, byId, node));
             node.setOnKeyPressed(
                     event -> {
@@ -519,9 +519,11 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                     });
             nodeButtons.put(talent.id(), node);
             canvas.getChildren().add(node);
-            Label rank = text(Integer.toString(talent.maxRanks()), "talent-rank");
+            Label rank = text("Max " + talent.maxRanks(), "talent-rank");
+            rank.setWrapText(false);
             rank.setMouseTransparent(true);
-            rank.setLayoutX(node.getLayoutX() + 29);
+            rank.setAccessibleText("Maximum rank " + talent.maxRanks());
+            rank.setLayoutX(node.getLayoutX() + 12);
             rank.setLayoutY(node.getLayoutY() + 33);
             canvas.getChildren().add(rank);
             if (talent.iconFileDataId() != null)
@@ -585,7 +587,8 @@ final class TalentsView extends BorderPane implements AutoCloseable {
             Button button) {
         nodeButtons.values().forEach(node -> node.getStyleClass().remove("talent-selected"));
         button.getStyleClass().add("talent-selected");
-        StackPane art = new StackPane(text("?", "talent-placeholder"));
+        StackPane art = new StackPane(missingArt());
+        art.setAccessibleText(TalentSourceDetails.missingIconText(talent));
         art.setMinSize(ICON, ICON);
         art.setPrefSize(ICON, ICON);
         art.setMaxSize(ICON, ICON);
@@ -597,30 +600,41 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                         title,
                         text(tree.name(), "talent-tooltip-context"),
                         text("Rank 1/" + talent.maxRanks(), "wow-line"));
+        String points = TalentSourceDetails.pointRequirement(tree, talent);
+        if (points != null) selection.getChildren().add(text(points, "wow-line"));
         for (var edge : talent.prerequisites())
             selection
                     .getChildren()
-                    .add(
-                            text(
-                                    "Requires "
-                                            + (byId.containsKey(edge.talentId())
-                                                    ? byId.get(edge.talentId()).name()
-                                                    : "unavailable talent #" + edge.talentId())
-                                            + (edge.rankIndex() == null
-                                                    ? ""
-                                                    : " · rank " + (edge.rankIndex() + 1)),
-                                    "wow-line"));
+                    .add(text(TalentSourceDetails.prerequisite(edge, byId), "wow-line"));
         var description = text("Loading description…", "wow-level");
         var descriptionActivity = spinner("Loading talent description", 18);
         descriptionActivity.setId("talent-description-activity");
         descriptionActivity.setVisible(false);
         descriptionActivity.setManaged(false);
         selection.getChildren().add(new HBox(8, descriptionActivity, description));
+        Label nextRank = null;
+        if (talent.rankSpells().size() > 1) {
+            nextRank = text("Loading next rank…", "wow-level");
+            nextRank.setId("talent-next-rank");
+            selection.getChildren().addAll(text("Next rank:", "wow-line"), nextRank);
+        } else if (talent.maxRanks() > 1) {
+            selection
+                    .getChildren()
+                    .add(
+                            text(
+                                    "One spell is recorded for all "
+                                            + talent.maxRanks()
+                                            + " ranks; values are shown as recorded, not per"
+                                            + " rank.",
+                                    "talent-tooltip-context"));
+        }
         evidence.getChildren()
                 .setAll(
                         text(
                                 "Previewing the first recorded rank, not character talent points.",
                                 "muted"));
+        if (!sourceVersion.isEmpty())
+            evidence.getChildren().add(text(TalentSourceDetails.buildLabel(sourceVersion), "muted"));
         var sourceDetails =
                 new TitledPane(
                         "Source details",
@@ -633,7 +647,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
         evidence.getChildren().add(sourceDetails);
         var facts = (VBox) sourceDetails.getContent();
         var iconSource = text(talent.iconFileDataId() == null
-                ? TalentSourceDetails.missingIconReference()
+                ? TalentSourceDetails.missingIconReference(talent)
                 : "Icon: loading FileDataID " + talent.iconFileDataId() + "…", "muted");
         iconSource.setId("talent-source-icon");
         var descriptionSource = text(talent.description() == null || talent.description().isBlank()
@@ -672,6 +686,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
         descriptionToken = new Cancellation();
         long preview = ++descriptionGeneration;
         long workspace = generation;
+        if (nextRank != null) describeRank(talent.rankSpells().get(1), nextRank, preview, workspace);
         if (talent.description() == null
                 || talent.description().isBlank()
                 || talent.description().length() > 16384) {
@@ -839,8 +854,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                                                 target.setAccessibleText(
                                                         "Talent icon unavailable after source"
                                                             + " change");
-                                                target.getChildren()
-                                                        .setAll(text("—", "talent-placeholder"));
+                                                target.getChildren().setAll(missingArt());
                                                 return;
                                             }
                                             sourceStatus.accept(error != null || loadedIcon == null
@@ -848,9 +862,12 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                                                     : loadedIcon.explanation());
                                             var pixels = loadedIcon == null ? null : loadedIcon.pixels();
                                             if (error != null || pixels == null) {
-                                                target.setAccessibleText("Talent icon unavailable");
-                                                target.getChildren()
-                                                        .setAll(text("—", "talent-placeholder"));
+                                                String why = error != null || loadedIcon == null
+                                                        ? "request or processing failed"
+                                                        : loadedIcon.explanation().lines().findFirst().orElse("");
+                                                target.setAccessibleText("Talent icon unavailable: " + why);
+                                                target.getChildren().setAll(missingArt());
+                                                Tooltip.install(target, new Tooltip(why));
                                                 return;
                                             }
                                             var bitmap =
@@ -872,6 +889,44 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                                             view.setPreserveRatio(true);
                                             target.setAccessibleText("Talent icon");
                                             target.getChildren().setAll(view);
+                                        }));
+    }
+
+    /** Neutral artwork for a talent whose icon is unavailable; never a glyph that reads as data. */
+    private static Node missingArt() {
+        Region art = new Region();
+        art.getStyleClass().add("talent-icon-missing");
+        art.setMinSize(ICON - 8, ICON - 8);
+        art.setPrefSize(ICON - 8, ICON - 8);
+        art.setMaxSize(ICON - 8, ICON - 8);
+        art.setMouseTransparent(true);
+        return art;
+    }
+
+    /** Loads another rank's description into {@code target}; stale answers are ignored. */
+    private void describeRank(long spell, Label target, long preview, long workspace) {
+        var handle = boundHandle;
+        if (handle == null) {
+            target.setText("Next rank description is unavailable.");
+            return;
+        }
+        request(() -> handle.description(spell, descriptionToken))
+                .whenComplete(
+                        (result, error) ->
+                                Platform.runLater(
+                                        () -> {
+                                            if (preview != descriptionGeneration || stale(workspace))
+                                                return;
+                                            target.setText(
+                                                    error != null
+                                                                    || result == null
+                                                                    || result.display() == null
+                                                                    || result.display().isBlank()
+                                                            ? "Next rank description is"
+                                                                    + " unavailable (spell "
+                                                                    + spell
+                                                                    + ")."
+                                                            : result.display());
                                         }));
     }
 
