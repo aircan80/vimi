@@ -277,11 +277,20 @@ header columns and saved row count. Inventory does not read row segments.
 A stored table's segments, manifest, layout, alias and node reach the store as one
 put (`GeneratedCommitGroup`), so normally as one durable commit: one pack sync and
 one index transaction. Manifest readback reads the collected objects before that
-commit (an object the store already holds is read from the store). A put larger
-than 16 MiB commits its earlier objects first; a store keeps at most an ordered
-prefix of a put after a crash or cancellation, and the node comes after everything
-it references, so a node never points at missing objects. `TableCommitCrashTest`
-kills or fails the writer at each step of that commit.
+commit (an object the store already holds is read from the store). The put can
+still split into several commits: past 16 MiB or 128 objects per group, past the
+`GeneratedTables` instance's collected-bytes budget (64 MiB across all tables it
+is storing), at PackGeneratedStore's 16 MiB part bound, when the store's pending
+batch is full, or at a pack rollover. Every split keeps put order, so a crash or
+cancellation leaves at most an ordered prefix, and the node comes after everything
+it references. The pack stores put with `putUnlessRefused`: if verification
+refuses any object, nothing of that put is stored, and later parts are not sent.
+
+The source owner (and its work slot) closes before the node is published, so
+before the commit; the collected-bytes budget, not the scheduler, bounds memory
+held by uncommitted groups. `TableCommitCrashTest` kills or fails the writer at
+each step of one commit; `TableSplitCommitCrashTest` forces each kind of split on
+a real library and kills between split commits, and refuses objects.
 
 Native capture normalizes a null issue list to an explicit empty list only after
 validating the graph-bound receipt. Direct parser reads, ordinary generated reads
