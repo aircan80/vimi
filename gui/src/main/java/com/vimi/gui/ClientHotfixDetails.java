@@ -33,7 +33,7 @@ final class ClientHotfixDetails {
     /** Fixed-vocabulary refresh summary; never includes paths, payloads or provider text. */
     static String refreshSummary(List<ClientHotfixStore.RefreshResult> results) {
         if (results.isEmpty()) return "No client caches are marked for checking";
-        int updated = 0, unchanged = 0, moved = 0, missing = 0, failed = 0;
+        int updated = 0, unchanged = 0, moved = 0, missing = 0, failed = 0, superseded = 0;
         for (var result : results) {
             switch (result.outcome()) {
                 case UPDATED -> updated++;
@@ -41,6 +41,7 @@ final class ClientHotfixDetails {
                 case CLIENT_BUILD_CHANGED -> moved++;
                 case MISSING -> missing++;
                 case FAILED -> failed++;
+                case SUPERSEDED -> superseded++;
             }
         }
         var parts = new java.util.ArrayList<String>();
@@ -50,6 +51,8 @@ final class ClientHotfixDetails {
         if (moved > 0) parts.add(moved + " now for another client build; existing import kept");
         if (missing > 0) parts.add(missing + " not found; existing import kept");
         if (failed > 0) parts.add(failed + " could not be verified; existing import kept");
+        if (superseded > 0) parts.add(superseded + " leftover check" + (superseded == 1 ? "" : "s")
+                + " removed (moved to another build earlier; imports kept)");
         return String.join(" · ", parts);
     }
 
@@ -133,9 +136,17 @@ final class ClientHotfixDetails {
     static String followOutcome(BuildFollow follow, ClientHotfixStore.FollowResult result, Throwable error) {
         String n = follow.to().version(), m = follow.from().version();
         if (result != null) {
-            return result.oldWatchCleared() ? null
-                    : "Build " + n + " now uses the cache and is checked on Refresh sources. Build " + m
-                            + " is still checked too; applying again removes that check.";
+            var notes = new java.util.ArrayList<String>();
+            if (result.replacedOtherWatch())
+                notes.add("Build " + n + " now checks the followed file instead of another file with the"
+                        + " same contents; that other file is no longer checked.");
+            if (!result.oldWatchCleared())
+                notes.add("Build " + n + " now uses the cache and is checked on Refresh sources. Build " + m
+                        + (result.leftoverMarked()
+                                ? " still has a leftover check; the next Refresh sources removes it."
+                                : " is still checked too: the old check remains. Remove it manually (untick"
+                                        + " \"Check on Refresh sources\" for build " + m + ") or apply again."));
+            return notes.isEmpty() ? null : String.join(" ", notes);
         }
         if (incomplete(error) != null)
             return "Build " + n + " now uses the cache, but it is not checked on Refresh sources. Import it"

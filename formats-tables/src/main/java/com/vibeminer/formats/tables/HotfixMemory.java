@@ -18,6 +18,9 @@ public final class HotfixMemory {
     private static final Cleaner CLEANER = Cleaner.create();
 
     private final long tableBytes, totalBytes;
+    // Private monitor: outside code that locks the public PROCESS instance cannot contend with or
+    // deadlock against the accountant.
+    private final Object lock = new Object();
     private long reserved, generation;
 
     public HotfixMemory(long tableBytes, long totalBytes) {
@@ -39,34 +42,49 @@ public final class HotfixMemory {
     }
 
     /** Bytes currently charged by retained views. */
-    public synchronized long reserved() {
-        return reserved;
+    public long reserved() {
+        synchronized (lock) {
+            return reserved;
+        }
     }
 
-    synchronized long available() {
-        return totalBytes - reserved;
+    long available() {
+        synchronized (lock) {
+            return totalBytes - reserved;
+        }
+    }
+
+    /** The monitor guarding this accountant and every handle charge drawn from it. */
+    Object lock() {
+        return lock;
     }
 
     /** Advances on every release, so a refused view retries only once memory was freed. */
-    synchronized long generation() {
-        return generation;
+    long generation() {
+        synchronized (lock) {
+            return generation;
+        }
     }
 
-    synchronized boolean reserve(long bytes) {
-        if (bytes < 0 || bytes > totalBytes - reserved) {
-            return false;
+    boolean reserve(long bytes) {
+        synchronized (lock) {
+            if (bytes < 0 || bytes > totalBytes - reserved) {
+                return false;
+            }
+            reserved += bytes;
+            return true;
         }
-        reserved += bytes;
-        return true;
     }
 
-    synchronized void release(long bytes) {
-        if (bytes < 0 || bytes > reserved) {
-            throw new IllegalStateException("Hotfix memory release exceeds reservation");
-        }
-        reserved -= bytes;
-        if (bytes > 0) {
-            generation++;
+    void release(long bytes) {
+        synchronized (lock) {
+            if (bytes < 0 || bytes > reserved) {
+                throw new IllegalStateException("Hotfix memory release exceeds reservation");
+            }
+            reserved -= bytes;
+            if (bytes > 0) {
+                generation++;
+            }
         }
     }
 
@@ -77,7 +95,9 @@ public final class HotfixMemory {
         return charge;
     }
 
-    /** Guarded by the accountant's monitor only, so no lock order exists between the two. */
+    /**
+     * Guarded by the accountant's private monitor only, so no lock order exists between the two.
+     */
     static final class Charge {
         private final HotfixMemory memory;
         private long held;
@@ -87,7 +107,7 @@ public final class HotfixMemory {
         }
 
         boolean reserve(long bytes) {
-            synchronized (memory) {
+            synchronized (memory.lock) {
                 if (!memory.reserve(bytes)) {
                     return false;
                 }
@@ -97,7 +117,7 @@ public final class HotfixMemory {
         }
 
         void release(long bytes) {
-            synchronized (memory) {
+            synchronized (memory.lock) {
                 if (bytes > held) {
                     throw new IllegalStateException("Hotfix handle release exceeds its charge");
                 }
@@ -107,7 +127,7 @@ public final class HotfixMemory {
         }
 
         void releaseAll() {
-            synchronized (memory) {
+            synchronized (memory.lock) {
                 long all = held;
                 held = 0;
                 memory.release(all);
