@@ -1203,6 +1203,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         active = false;
         // An entry still waiting for the open world to drain must not open the interior, take
         // the GPU or play instance audio in a hidden tab: cancel it. An open interior stays.
+        // Before cancelRequests: a canceled entry resumes the world, and cancelRequests then
+        // suspends what that resume restarted (spawns, timer) for the hidden tab.
         instances.cancelEntry();
         cancelRequests();
     }
@@ -1682,6 +1684,8 @@ final class WorldView extends BorderPane implements AutoCloseable {
         content.setCenter(viewport);
         boolean adtInstance = instanceReturn != null && inventory != null
                 && inventory.map().id() == instanceMap;
+        // An entry abandoned while it showed "Cancel" (selectMap, invalidate, close) resets here.
+        leaveInstance.setText("Leave instance");
         leaveInstance.setVisible(adtInstance);
         leaveInstance.setManaged(adtInstance);
         refreshEntrances();

@@ -196,6 +196,8 @@ public final class WorldInstanceUiTest {
         enterHeld(view);
         view.deactivate();
         require(phase(view) == WorldInstanceSwitch.Phase.OPEN_WORLD, "Hidden view cancels the entry");
+        invoke(view, "showExplorerLayout");
+        require(leave.getText().equals("Leave instance"), "An abandoned entry's Cancel label resets");
         pending.complete(null);
         await(() -> true, () -> {
             require(content.getCenter() == viewport, "No interior opened in the hidden view");
