@@ -28,6 +28,14 @@ public final class WorldStreamNativeProof {
     private static long camera = 1, sequence;
     private static int framesDuringUploads;
 
+    /**
+     * Packed input of one fixture tile: 65536 terrain triangles without water plus the atlas mip
+     * chain (4,543,828 bytes). The worst case with water is
+     * WorldStreamPackedTile.MAX_PAYLOAD_BYTES.
+     */
+    static final long TERRAIN_FIXTURE_BYTES =
+            65536L * WorldStreamPackedTile.INSTANCE_BYTES + WorldStreamAtlasMips.CHAIN_BYTES;
+
     private WorldStreamNativeProof() {}
 
     private static void require(boolean value, String message) {
@@ -381,9 +389,10 @@ public final class WorldStreamNativeProof {
                                     && stats.upload().liveUploadBytes() == 0,
                             "Inputs not drained");
                     require(
-                            stats.upload().peakUploadBytes()
-                                    <= WorldStreamPackedTile.MAX_PAYLOAD_BYTES,
-                            "Producer buffer bound");
+                            stats.upload().peakUploadBytes() == TERRAIN_FIXTURE_BYTES
+                                    && stats.upload().peakUploadBytes()
+                                            <= WorldStreamPackedTile.MAX_PAYLOAD_BYTES,
+                            "Producer buffer bound " + stats.upload().peakUploadBytes());
                     require(ProcessHandle.current().pid() == pid, "Unexpected process replacement");
                 }
                 long drawnCamera = ++camera;
@@ -439,8 +448,7 @@ public final class WorldStreamNativeProof {
                 var closingUpload = owner.begin(closingInput);
                 owner.step(closingUpload);
                 require(
-                        closingUpload.retainedInputBytes()
-                                == (3L << 20) + WorldStreamAtlasMips.CHAIN_BYTES,
+                        closingUpload.retainedInputBytes() == TERRAIN_FIXTURE_BYTES,
                         "Closing upload owner");
                 owner.submit(command(++camera, 800, 500, 2));
                 owner.close();

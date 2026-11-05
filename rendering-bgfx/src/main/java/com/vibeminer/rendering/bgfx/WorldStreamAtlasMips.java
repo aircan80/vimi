@@ -93,7 +93,8 @@ final class WorldStreamAtlasMips {
                     chain.put(out, (byte) ((r + weight / 2) / weight));
                     chain.put(out + 1, (byte) ((g + weight / 2) / weight));
                     chain.put(out + 2, (byte) ((b + weight / 2) / weight));
-                    chain.put(out + 3, (byte) ((weight + 2) / 4));
+                    // Ceiling: any covered child keeps alpha above 0, so push never overwrites it.
+                    chain.put(out + 3, (byte) ((weight + 3) / 4));
                 }
             }
         }

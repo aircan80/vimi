@@ -182,7 +182,8 @@ final class WorldStreamPackedTile implements AutoCloseable {
                 if (pixels.remaining() != WorldStreamTileFile.ATLAS_BYTES) {
                     throw new IllegalArgumentException("Packed atlas size");
                 }
-                // Level 0 is the qualified atlas; the worker adds the filtered mip chain.
+                // Level 0 starts as the qualified atlas. The worker adds the filtered mip chain and
+                // fills the RGB of uncovered (alpha 0) texels, at every level, with nearby ground.
                 atlas = MemoryUtil.memAlloc(WorldStreamAtlasMips.CHAIN_BYTES);
                 for (int at = 0; at < pixels.remaining(); at += 64 << 10) {
                     check(canceled);

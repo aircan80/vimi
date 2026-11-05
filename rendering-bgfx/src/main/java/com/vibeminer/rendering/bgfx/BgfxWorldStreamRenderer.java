@@ -363,6 +363,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     caps.homogeneousDepth(),
                     org.lwjgl.bgfx.BGFX.bgfx_is_texture_valid(
                             0, false, 1, BGFX_TEXTURE_FORMAT_D32F, BGFX_TEXTURE_RT));
+            if (!org.lwjgl.bgfx.BGFX.bgfx_is_texture_valid(
+                    0, true, 1, BGFX_TEXTURE_FORMAT_RGBA8, BGFX_TEXTURE_NONE)) {
+                throw new IOException("World terrain needs mipmapped RGBA8 textures");
+            }
             String profile = BgfxModelRenderer.shaderProfile(caps.rendererType());
             for (int i = 0; i < slots.length; i++) {
                 slots[i] = new Slot();

@@ -57,14 +57,16 @@ final class WorldStreamPackedTileTest {
         try (var source = packed.take()) {
             packed.close();
             assertThrows(IllegalStateException.class, input::tile);
-            assertEquals((3L << 20) + 1_398_100, source.payloadBytes());
+            assertEquals(WorldStreamNativeProof.TERRAIN_FIXTURE_BYTES, source.payloadBytes());
+            assertEquals(4_543_828, WorldStreamNativeProof.TERRAIN_FIXTURE_BYTES);
+            assertEquals(5_330_260, WorldStreamPackedTile.MAX_PAYLOAD_BYTES);
             assertTrue(source.payloadBytes() <= WorldStreamPackedTile.MAX_PAYLOAD_BYTES);
             assertEquals(3 << 20, source.geometry.capacity());
             assertEquals(WorldStreamAtlasMips.CHAIN_BYTES, source.atlas.capacity());
             assertEquals(0, source.atlas.position());
             assertEquals(WorldStreamAtlasMips.CHAIN_BYTES, source.atlas.limit());
             assertEquals(17, source.atlas.get(0));
-            // Level 0 is the qualified atlas byte for byte; the chain follows it.
+            // A fully covered level 0 is the qualified atlas byte for byte; the chain follows it.
             var atlas = WorldStreamTileFileTest.atlas();
             for (int at = 0; at < WorldStreamTileFile.ATLAS_BYTES; at++) {
                 if (atlas.get(at) != source.atlas.get(at)) {
