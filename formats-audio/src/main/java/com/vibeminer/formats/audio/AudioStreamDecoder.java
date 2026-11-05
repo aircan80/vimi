@@ -95,9 +95,17 @@ public final class AudioStreamDecoder {
         }
         if (end - 32 >= floor && ascii(encoded, end - 32, "APETAGEX")) {
             // The size counts the items and the footer; a flagged header adds 32 bytes before them.
+            // A corrupt size must not cut audio, so the items have to fill the declared size
+            // exactly,
+            // and a flagged header has to be where the size puts it.
             long size = littleEndian(encoded, end - 20);
-            long length = size + ((littleEndian(encoded, end - 12) & 0x8000_0000L) != 0 ? 32 : 0);
-            if (size >= 32 && length <= end - floor) {
+            boolean header = (littleEndian(encoded, end - 12) & 0x8000_0000L) != 0;
+            long length = size + (header ? 32 : 0);
+            if (size >= 32
+                    && length <= end - floor
+                    && (!header || ascii(encoded, (int) (end - length), "APETAGEX"))
+                    && apeItemsEnd(encoded, (int) (end - size), littleEndian(encoded, end - 16))
+                            == end - 32) {
                 return (int) (end - length);
             }
         }
@@ -121,6 +129,31 @@ public final class AudioStreamDecoder {
             }
         }
         return -1;
+    }
+
+    /**
+     * End of {@code count} APEv2 items starting at offset, or -1 if they are malformed. Each item
+     * is a value size, flags, a key of 2 to 255 printable ASCII characters ending in 0, and the
+     * value.
+     */
+    private static long apeItemsEnd(byte[] encoded, int offset, long count) {
+        long at = offset;
+        for (long item = 0; item < count; item++) {
+            if (at > encoded.length - 8) {
+                return -1;
+            }
+            long value = littleEndian(encoded, (int) at);
+            int key = (int) at + 8;
+            int nul = key;
+            while (nul < encoded.length && encoded[nul] >= 0x20 && encoded[nul] <= 0x7e) {
+                nul++;
+            }
+            if (nul >= encoded.length || encoded[nul] != 0 || nul - key < 2 || nul - key > 255) {
+                return -1;
+            }
+            at = nul + 1 + value;
+        }
+        return at;
     }
 
     /** Whole length of an ID3v2 tag whose header is at offset, or -1 without a valid header. */

@@ -157,13 +157,21 @@ final class AudioStreamDecoderTest {
     }
 
     private static byte[] apev2() {
+        return apev2(true, 0);
+    }
+
+    /** An APEv2 tag; {@code overstated} bytes are added to the size its blocks declare. */
+    private static byte[] apev2(boolean header, int overstated) {
         var item = new ByteArrayOutputStream();
         item.writeBytes(le(SYNC_TEXT.length));
         item.writeBytes(le(0));
         item.writeBytes("Album\0".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
         item.writeBytes(SYNC_TEXT);
-        int size = item.size() + 32;
-        return concat(apeBlock(size, 0xa000_0000), item.toByteArray(), apeBlock(size, 0x8000_0000));
+        int size = item.size() + 32 + overstated;
+        return concat(
+                header ? apeBlock(size, 0xa000_0000) : new byte[0],
+                item.toByteArray(),
+                apeBlock(size, header ? 0x8000_0000 : 0));
     }
 
     private static byte[] apeBlock(int size, int flags) {
@@ -197,12 +205,26 @@ final class AudioStreamDecoderTest {
                         "ID3v2.3", id3v2(3, false, UTF16_ALBUM),
                         "ID3v2.4 with footer", id3v2(4, true, UTF16_ALBUM),
                         "APEv2", apev2(),
+                        "APEv2 without header", apev2(false, 0),
                         "ID3v2.3, APEv2 and ID3v1",
                                 concat(id3v2(3, false, UTF16_ALBUM), apev2(), id3v1()));
         for (var trailer : trailers.entrySet()) {
             byte[] tagged = concat(audio, trailer.getValue());
             assertArrayEquals(expected, decode(tagged), trailer.getKey());
             assertEquals(audio.length, AudioStreamDecoder.mpegEnd(tagged, 20), trailer.getKey());
+        }
+    }
+
+    /** A trailing tag whose declared size reaches into the audio must not cut any of it. */
+    @Test
+    void keepsAudioWhenAnApeFooterOverstatesItsSize() throws IOException {
+        byte[] audio = fixture("authored-tone.mp3");
+        for (boolean header : new boolean[] {true, false}) {
+            byte[] tagged = concat(audio, apev2(header, 1000));
+            assertEquals(
+                    tagged.length,
+                    AudioStreamDecoder.mpegEnd(tagged, 20),
+                    header ? "with header" : "without header");
         }
     }
 
