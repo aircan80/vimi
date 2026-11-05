@@ -39,12 +39,14 @@ import java.util.function.BooleanSupplier;
  */
 final class WorldStreamObjectsFile {
     static final int VERSION = 2, HEADER_BYTES = 256, MAX_BYTES = 16 << 20;
-    // Buildings (24 roots, 256 meshes, 1,024 ranges, 64 placements, 64 images, 98,304 vertices,
-    // 294,912 indices, 1 Mi pixels) plus BASIC doodads (48 models and meshes, 512 ranges and
-    // placements, 64 images, 65,536 vertices, 196,608 indices, 512 Ki pixels).
-    static final int MAX_MODELS = 72, MAX_MESHES = 304, MAX_RANGES = 1536, MAX_PLACEMENTS = 576;
-    static final int MAX_IMAGES = 128, MAX_VERTICES = 163_840, MAX_INDICES = 491_520;
-    static final int MAX_PIXELS = 3 << 19, MAX_IMAGE_SIDE = 256, MAX_MESH_VERTICES = 65_536;
+    // Opaque buildings (24 roots, 256 meshes, 1,024 ranges, 64 placements, 64 images, 98,304
+    // vertices, 294,912 indices, 1 Mi pixels), plus cutout and blended building surfaces (256
+    // ranges, 32 images, 32,768 vertices, 98,304 indices, 256 Ki pixels), plus BASIC doodads (48
+    // models and meshes, 512 ranges and placements, 64 images, 65,536 vertices, 196,608 indices,
+    // 512 Ki pixels). Creature models share whatever room remains.
+    static final int MAX_MODELS = 72, MAX_MESHES = 304, MAX_RANGES = 1792, MAX_PLACEMENTS = 576;
+    static final int MAX_IMAGES = 160, MAX_VERTICES = 196_608, MAX_INDICES = 589_824;
+    static final int MAX_PIXELS = 7 << 18, MAX_IMAGE_SIDE = 256, MAX_MESH_VERTICES = 65_536;
 
     /** Range material classes: depth-writing opaque, alpha-tested cutout, sorted alpha blend. */
     static final int OPAQUE = 0, CUTOUT = 1, BLENDED = 2;

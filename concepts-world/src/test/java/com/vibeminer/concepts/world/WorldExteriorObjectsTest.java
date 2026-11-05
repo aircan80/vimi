@@ -317,15 +317,16 @@ class WorldExteriorObjectsTest {
                 var mesh = model.meshes().getFirst();
                 assertEquals(0, mesh.groupOrdinal());
                 assertEquals(GROUP, mesh.groupId());
-                // The alpha-key batch is a cutout range with its own alpha-keeping image.
+                // Opaque ranges come first, exactly as the opaque-only profile resolved them;
+                // the alpha-key batch follows as a cutout range with its own alpha-keeping image.
                 assertEquals(
                         List.of(
                                 new WorldExteriorObjects.DrawRange(
                                         0, 3, 0, 0, WorldExteriorObjects.OPAQUE),
                                 new WorldExteriorObjects.DrawRange(
-                                        3, 3, 1, 1, WorldExteriorObjects.CUTOUT),
+                                        3, 3, 1, 2, WorldExteriorObjects.OPAQUE),
                                 new WorldExteriorObjects.DrawRange(
-                                        6, 3, 2, 2, WorldExteriorObjects.OPAQUE)),
+                                        6, 3, 2, 1, WorldExteriorObjects.CUTOUT)),
                         mesh.ranges());
                 assertEquals(9, mesh.indices().remaining());
                 assertTrue(mesh.vertices().isReadOnly());
@@ -340,7 +341,8 @@ class WorldExteriorObjectsTest {
                 assertEquals(255, red.rgba().get(0) & 255);
                 assertEquals(255, red.rgba().get(3) & 255);
                 // The same source is decoded again for the cutout range (alpha not forced).
-                assertEquals(IMAGE, set.images().get(1).id());
+                assertEquals(IMAGE2, set.images().get(1).id());
+                assertEquals(IMAGE, set.images().get(2).id());
                 assertEquals(
                         Map.of(
                                 WorldExteriorObjects.Count.PLACEMENT_DRAWN, 2,
@@ -1413,6 +1415,82 @@ class WorldExteriorObjectsTest {
                 f.files.sources.put(4L, obj0(List.of(), List.of(Mddf.of(MODEL, 2, 0x40))));
                 var refusal = assertThrows(WorldTerrainStreaming.Refusal.class, f::run);
                 assertEquals("SOURCE_BINDING", refusal.site(), "id " + id);
+            }
+        }
+    }
+
+    @Test
+    void anUnreadableCutoutOrBlendedImageOmitsOnlyItsSurfaces() {
+        for (int blend : new int[] {1, 2}) {
+            try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), shortRead(IMAGE2))) {
+                f.files.sources.put(
+                        ROOT,
+                        root(
+                                1,
+                                new long[] {GROUP},
+                                List.of(
+                                        new Material(0, IMAGE, 0),
+                                        new Material(blend, IMAGE2, 0))));
+                f.files.sources.put(
+                        GROUP,
+                        group(EXT, 3, 2, List.of(new Batch(0, 3, 0, 0), new Batch(3, 3, 0, 1))));
+                // The opaque-only profile drew this building; an unreadable cutout or blended
+                // texture must not cost it.
+                try (var set = f.run()) {
+                    assertEquals(
+                            Map.of(
+                                    WorldExteriorObjects.Count.PLACEMENT_DRAWN, 1,
+                                    WorldExteriorObjects.Count.ROOT_DRAWN, 1,
+                                    WorldExteriorObjects.Count.GROUP_DRAWN, 1,
+                                    WorldExteriorObjects.Count.BATCH_DRAWN, 1,
+                                    WorldExteriorObjects.Count.BATCH_UNREADABLE, 1,
+                                    WorldExteriorObjects.Count.IMAGE_DECODED, 1,
+                                    WorldExteriorObjects.Count.IMAGE_UNAVAILABLE, 1),
+                            counts(set),
+                            "blend " + blend);
+                    assertEquals(
+                            List.of(
+                                    new WorldExteriorObjects.DrawRange(
+                                            0, 3, 0, 0, WorldExteriorObjects.OPAQUE)),
+                            set.models().getFirst().meshes().getFirst().ranges());
+                }
+            }
+        }
+        // The opaque-only profile's own reads keep failing the whole set, as before.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)), shortRead(IMAGE))) {
+            var refusal = assertThrows(WorldTerrainStreaming.Refusal.class, f::run);
+            assertEquals("SOURCE_INPUT", refusal.site());
+        }
+    }
+
+    @Test
+    void cutoutAndBlendedSurfacesNeverCapTheOpaqueBudget() {
+        // A root whose opaque geometry exactly fills the vertex cap, plus a cutout batch in a
+        // second group: the opaque outcome is unchanged and the cutout draws from its own budget
+        // or is capped there, never capping the root.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            int vertices = 16_384;
+            var groups = new long[6];
+            for (int g = 0; g < 6; g++) {
+                groups[g] = GROUP + 10 + g;
+                f.files.sources.put(
+                        groups[g], group(EXT, vertices, 1, List.of(new Batch(0, 3, 0, 0))));
+            }
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            7,
+                            java.util.stream.LongStream.concat(
+                                            java.util.Arrays.stream(groups),
+                                            java.util.stream.LongStream.of(GROUP + 20))
+                                    .toArray(),
+                            List.of(new Material(0, IMAGE, 0), new Material(1, IMAGE2, 0))));
+            f.files.sources.put(GROUP + 20, group(EXT, 3, 1, List.of(new Batch(0, 3, 0, 1))));
+            try (var set = f.run()) {
+                assertEquals(1, set.count(WorldExteriorObjects.Count.ROOT_DRAWN));
+                assertEquals(7, set.count(WorldExteriorObjects.Count.GROUP_DRAWN));
+                assertEquals(1, set.count(WorldExteriorObjects.Count.BATCH_CUTOUT));
+                assertEquals(16_384 * 6 + 3, set.vertices());
             }
         }
     }

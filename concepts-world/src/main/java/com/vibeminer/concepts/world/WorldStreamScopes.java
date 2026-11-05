@@ -439,16 +439,17 @@ final class WorldStreamScopes {
         BASIC_WMO(11, 1, 1 << 10, 1, 32 << 10, 6, 64 << 10),
         LIQUID_INSPECTION(11, 0, 0, 0, 0, 0, 0),
         /**
-         * Per-tile outdoor exterior set: WDT, OBJ0, the capped derived WMO reads and the capped
-         * BASIC doodad reads (M2 models, their first SKIN and their images).
+         * Per-tile outdoor exterior set: WDT, OBJ0, the capped derived WMO reads (64 opaque and 32
+         * cutout or blended images) and the capped BASIC doodad reads (M2 models, their first SKIN
+         * and their images).
          */
         BASIC_EXTERIOR(
-                2 + 24 + 256 + 64 + 48 + 48 + 64,
+                2 + 24 + 256 + 64 + 32 + 48 + 48 + 64,
                 24,
                 1 << 20,
                 256,
                 1 << 20,
-                64,
+                64 + 32,
                 1 << 20,
                 48,
                 2 << 20,

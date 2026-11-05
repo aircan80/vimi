@@ -51,6 +51,15 @@ public final class WorldExteriorObjects {
     static final int MAX_DOODAD_VERTICES = 65_536, MAX_DOODAD_INDICES = 196_608;
     static final int MAX_DOODAD_RANGES = 512, MAX_DOODAD_PIXELS = 1 << 19;
 
+    /**
+     * Cutout and blended building surfaces have their own budget on top of the opaque building
+     * caps, so admitting them never caps, displaces or fails a surface the opaque profile draws.
+     */
+    static final int MAX_MATERIAL_IMAGES = 32, MAX_MATERIAL_PIXELS = 1 << 18;
+
+    static final int MAX_MATERIAL_VERTICES = 32_768, MAX_MATERIAL_INDICES = 98_304;
+    static final int MAX_MATERIAL_RANGES = 256;
+
     /** Per-tile draw budget: the sum over all placements of their model's ranges. */
     static final int MAX_DRAWS = 4096;
 
@@ -99,8 +108,11 @@ public final class WorldExteriorObjects {
      * PLACEMENT bucket. Roots: every distinct root that was read lands in one ROOT bucket (roots
      * never read because of the root cap only cap their placements). Groups and batches count LOD0
      * groups and their batches for roots that were not failed or capped; BATCH_CUTOUT and
-     * BATCH_BLENDED are the subsets of BATCH_DRAWN with those material classes. Images: every
-     * distinct texture1 that an otherwise drawable batch needed lands in one IMAGE bucket.
+     * BATCH_BLENDED are the subsets of BATCH_DRAWN with those material classes. Root caps and the
+     * opaque image budget are decided by opaque batches alone, exactly as the opaque-only profile
+     * did; cutout and blended batches are then added from their own budget. Images: every distinct
+     * texture1 (per alpha treatment) that an otherwise drawable batch needed lands in one IMAGE
+     * bucket.
      *
      * <p>Doodads: every MDDF record lands in exactly one DOODAD bucket. Every MODD entry of a drawn
      * building's selected sets (set 0 and its MODF doodad set) lands in one SET_DOODAD bucket;
@@ -134,6 +146,13 @@ public final class WorldExteriorObjects {
         BATCH_BLENDED,
         BATCH_UNSUPPORTED,
         BATCH_MISSING_IMAGE,
+        /** A cutout or blended batch over the separate material budget. */
+        BATCH_CAPPED,
+        /**
+         * A cutout or blended batch whose image read was refused at SOURCE_INPUT (a partial,
+         * network or store state, or a short read). Only these surfaces are omitted.
+         */
+        BATCH_UNREADABLE,
         IMAGE_DECODED,
         IMAGE_UNAVAILABLE,
         IMAGE_UNDECODABLE,
@@ -411,12 +430,13 @@ public final class WorldExteriorObjects {
             require(
                     this.placements.size() <= MAX_PLACEMENTS + MAX_DOODADS
                             && this.models.size() <= MAX_ROOTS + MAX_MODELS
-                            && this.images.size() <= MAX_IMAGES + MAX_MODEL_IMAGES
-                            && v <= MAX_VERTICES + MAX_DOODAD_VERTICES
-                            && i <= MAX_INDICES + MAX_DOODAD_INDICES
-                            && r <= MAX_RANGES + MAX_DOODAD_RANGES
+                            && this.images.size()
+                                    <= MAX_IMAGES + MAX_MODEL_IMAGES + MAX_MATERIAL_IMAGES
+                            && v <= MAX_VERTICES + MAX_DOODAD_VERTICES + MAX_MATERIAL_VERTICES
+                            && i <= MAX_INDICES + MAX_DOODAD_INDICES + MAX_MATERIAL_INDICES
+                            && r <= MAX_RANGES + MAX_DOODAD_RANGES + MAX_MATERIAL_RANGES
                             && m <= MAX_MESHES + MAX_MODELS
-                            && p <= MAX_PIXELS + MAX_DOODAD_PIXELS,
+                            && p <= MAX_PIXELS + MAX_DOODAD_PIXELS + MAX_MATERIAL_PIXELS,
                     "EXTERIOR_TILE_BOUNDS");
             vertices = v;
             indices = i;
@@ -534,8 +554,13 @@ public final class WorldExteriorObjects {
     /** Image pools with separate read caps, pixel budgets and mip sides. */
     private enum Pool {
         BUILDING,
+        /** Cutout and blended building surfaces. */
+        MATERIAL,
         DOODAD
     }
+
+    /** image() results that are not slots. */
+    private static final int MISSING = -1, UNREADABLE = -2;
 
     private static final class Builder {
         private final WorldStreamScopes.TileAdmission admission;
@@ -546,6 +571,7 @@ public final class WorldExteriorObjects {
         private final List<Image> images = new ArrayList<>();
         private final Map<Long, Integer> imageSlots = new HashMap<>();
         private final Map<Long, Integer> modelImageSlots = new HashMap<>();
+        private final Map<Long, Integer> materialImageSlots = new HashMap<>();
         private final Map<Long, RootState> rootStates = new HashMap<>();
         private final Map<Long, Integer> modelSlots = new HashMap<>();
         private final Map<Long, WmoFormats.Doodads> rootDoodads = new HashMap<>();
@@ -554,6 +580,8 @@ public final class WorldExteriorObjects {
         private int rootsRead, groupsRead, imagesRead, vertices, indices, ranges, pixels;
         private int modelsRead, modelImagesRead, doodadVertices, doodadIndices, doodadRanges;
         private int doodadPixels, doodads, draws;
+        private int materialImagesRead, materialPixels, materialVertices, materialIndices;
+        private int materialRanges;
 
         Builder(WorldStreamScopes.TileAdmission admission) {
             this.admission = admission;
@@ -935,11 +963,21 @@ public final class WorldExteriorObjects {
                     continue;
                 }
                 pending.add(mesh);
-                // Pending meshes hold only compacted candidate indices, so this charge is also
-                // the transient index memory. Meshes cannot exceed MAX_MESHES: one per group read.
-                tentativeVertices += mesh.vertices().length / VERTEX_FLOATS;
-                tentativeIndices += mesh.indices().length;
-                tentativeRanges += mesh.ranges().size();
+                // Caps are decided by opaque candidates alone, exactly as the opaque-only profile
+                // did; cutout and blended candidates draw from their own budget later. Meshes
+                // cannot exceed MAX_MESHES: one per group read.
+                int opaqueIndices = 0, opaqueRanges = 0;
+                for (var range : mesh.ranges()) {
+                    if (range.blend() == OPAQUE) {
+                        opaqueIndices += range.indexCount();
+                        opaqueRanges++;
+                    }
+                }
+                if (opaqueRanges > 0) {
+                    tentativeVertices += mesh.vertices().length / VERTEX_FLOATS;
+                }
+                tentativeIndices += opaqueIndices;
+                tentativeRanges += opaqueRanges;
                 if (tentativeVertices > MAX_VERTICES - vertices
                         || tentativeIndices > MAX_INDICES - indices
                         || tentativeRanges > MAX_RANGES - ranges) {
@@ -950,13 +988,7 @@ public final class WorldExteriorObjects {
             var built = new ArrayList<Mesh>(pending.size());
             for (var mesh : pending) {
                 token.check();
-                var mapped =
-                        resolve(
-                                mesh,
-                                Pool.BUILDING,
-                                local,
-                                Count.BATCH_MISSING_IMAGE,
-                                Count.BATCH_DRAWN);
+                var mapped = resolveBuilding(mesh, local);
                 if (mapped == null) {
                     local[Count.GROUP_EMPTY.ordinal()]++;
                     continue;
@@ -978,16 +1010,88 @@ public final class WorldExteriorObjects {
                 count(Count.ROOT_EMPTY);
                 return RootState.EMPTY;
             }
-            for (var mesh : built) {
-                vertices += mesh.vertexCount();
-                indices += mesh.indices.length;
-                ranges += mesh.ranges.size();
-            }
             rootDoodads.put(rootId, root.doodads());
             modelSlots.put(rootId, models.size());
             models.add(new Model(rootId, false, built));
             count(Count.ROOT_DRAWN);
             return RootState.DRAWN;
+        }
+
+        /**
+         * Opaque ranges first, in recorded order and against the opaque budget, so the opaque
+         * outcome is the opaque-only profile's. Cutout and blended ranges follow, each only if it
+         * fits the material budget; a missing, unreadable or capped one omits only itself. The
+         * mesh's vertices are charged to the opaque budget when an opaque range is kept, and to the
+         * material budget otherwise. Null when nothing is kept.
+         */
+        private Mesh resolveBuilding(PendingMesh mesh, int[] local) {
+            var kept = new ArrayList<DrawRange>();
+            var compact = new int[mesh.indices().length];
+            int used = 0, vertexCount = mesh.vertices().length / VERTEX_FLOATS;
+            for (var range : mesh.ranges()) {
+                if (range.blend() != OPAQUE) {
+                    continue;
+                }
+                int slot = image(range.image(), true, Pool.BUILDING, local);
+                if (slot < 0) {
+                    local[Count.BATCH_MISSING_IMAGE.ordinal()]++;
+                    continue;
+                }
+                System.arraycopy(
+                        mesh.indices(), range.firstIndex(), compact, used, range.indexCount());
+                kept.add(new DrawRange(used, range.indexCount(), slot, range.material(), OPAQUE));
+                used += range.indexCount();
+                local[Count.BATCH_DRAWN.ordinal()]++;
+            }
+            boolean opaqueVertices = !kept.isEmpty();
+            if (opaqueVertices) {
+                vertices += vertexCount;
+                indices += used;
+                ranges += kept.size();
+            }
+            boolean materialVerticesCharged = false;
+            for (var range : mesh.ranges()) {
+                if (range.blend() == OPAQUE) {
+                    continue;
+                }
+                int extraVertices = opaqueVertices || materialVerticesCharged ? 0 : vertexCount;
+                if (extraVertices > MAX_MATERIAL_VERTICES - materialVertices
+                        || range.indexCount() > MAX_MATERIAL_INDICES - materialIndices
+                        || materialRanges >= MAX_MATERIAL_RANGES) {
+                    local[Count.BATCH_CAPPED.ordinal()]++;
+                    continue;
+                }
+                int slot = image(range.image(), false, Pool.MATERIAL, local);
+                if (slot < 0) {
+                    local[
+                            (slot == UNREADABLE
+                                            ? Count.BATCH_UNREADABLE
+                                            : Count.BATCH_MISSING_IMAGE)
+                                    .ordinal()]++;
+                    continue;
+                }
+                materialVertices += extraVertices;
+                materialVerticesCharged |= extraVertices > 0;
+                materialIndices += range.indexCount();
+                materialRanges++;
+                System.arraycopy(
+                        mesh.indices(), range.firstIndex(), compact, used, range.indexCount());
+                kept.add(
+                        new DrawRange(
+                                used, range.indexCount(), slot, range.material(), range.blend()));
+                used += range.indexCount();
+                local[Count.BATCH_DRAWN.ordinal()]++;
+            }
+            if (kept.isEmpty()) {
+                return null;
+            }
+            return new Mesh(
+                    mesh.ordinal(),
+                    mesh.id(),
+                    mesh.flags(),
+                    mesh.vertices(),
+                    Arrays.copyOf(compact, used),
+                    kept);
         }
 
         /** Decodes a pending mesh's images and compacts its kept ranges; null when none kept. */
@@ -1373,27 +1477,39 @@ public final class WorldExteriorObjects {
             return new PendingMesh(0, skinId, 0, vertices, indices, rebased);
         }
 
-        /** Image slot for a texture1 FileDataID, or -1 when it is missing for any reason. */
+        /**
+         * Image slot for a texture1 FileDataID; MISSING when it is missing for any other reason,
+         * UNREADABLE when a material-pool read was refused at SOURCE_INPUT.
+         */
         private int image(long id, boolean opaque, Pool pool, int[] local) {
             // Alpha is forced only for opaque ranges, so one ID may decode twice.
             long key = id * 2 + (opaque ? 0 : 1);
-            var slots = pool == Pool.BUILDING ? imageSlots : modelImageSlots;
+            var slots =
+                    switch (pool) {
+                        case BUILDING -> imageSlots;
+                        case MATERIAL -> materialImageSlots;
+                        case DOODAD -> modelImageSlots;
+                    };
             var known = slots.get(key);
             if (known != null) {
                 return known;
             }
-            int slot = -1;
-            if (pool == Pool.BUILDING
-                    ? imagesRead >= MAX_IMAGES
-                    : modelImagesRead >= MAX_MODEL_IMAGES) {
+            int slot = MISSING;
+            boolean full =
+                    switch (pool) {
+                        case BUILDING -> imagesRead >= MAX_IMAGES;
+                        case MATERIAL -> materialImagesRead >= MAX_MATERIAL_IMAGES;
+                        case DOODAD -> modelImagesRead >= MAX_MODEL_IMAGES;
+                    };
+            if (full) {
                 local[
-                        (pool == Pool.BUILDING ? Count.IMAGE_CAPPED : Count.MODEL_IMAGE_CAPPED)
+                        (pool == Pool.DOODAD ? Count.MODEL_IMAGE_CAPPED : Count.IMAGE_CAPPED)
                                 .ordinal()]++;
             } else {
-                if (pool == Pool.BUILDING) {
-                    imagesRead++;
-                } else {
-                    modelImagesRead++;
+                switch (pool) {
+                    case BUILDING -> imagesRead++;
+                    case MATERIAL -> materialImagesRead++;
+                    case DOODAD -> modelImagesRead++;
                 }
                 slot = decode(id, opaque, pool, local);
             }
@@ -1402,19 +1518,21 @@ public final class WorldExteriorObjects {
         }
 
         private int decode(long id, boolean opaque, Pool pool, int[] local) {
-            boolean building = pool == Pool.BUILDING;
+            boolean building = pool != Pool.DOODAD;
             var unavailable = building ? Count.IMAGE_UNAVAILABLE : Count.MODEL_IMAGE_UNAVAILABLE;
             var undecodable = building ? Count.IMAGE_UNDECODABLE : Count.MODEL_IMAGE_UNDECODABLE;
             var capped = building ? Count.IMAGE_CAPPED : Count.MODEL_IMAGE_CAPPED;
+            boolean[] unreadable = new boolean[1];
             var input =
                     derived(
                             id,
                             building
                                     ? WorldStreamScopes.DerivedKind.WMO_IMAGE
-                                    : WorldStreamScopes.DerivedKind.M2_IMAGE);
+                                    : WorldStreamScopes.DerivedKind.M2_IMAGE,
+                            pool == Pool.MATERIAL ? unreadable : null);
             if (input == null) {
                 local[unavailable.ordinal()]++;
-                return -1;
+                return unreadable[0] ? UNREADABLE : MISSING;
             }
             try (input) {
                 byte[] raw = input.bytes();
@@ -1432,13 +1550,17 @@ public final class WorldExteriorObjects {
                     return -1;
                 }
                 int level =
-                        building
-                                ? mipFor(width, height, MAX_PIXELS - pixels)
-                                : mipFor(
-                                        width,
-                                        height,
-                                        MAX_DOODAD_PIXELS - doodadPixels,
-                                        MODEL_IMAGE_SIDES);
+                        switch (pool) {
+                            case BUILDING -> mipFor(width, height, MAX_PIXELS - pixels);
+                            case MATERIAL ->
+                                    mipFor(width, height, MAX_MATERIAL_PIXELS - materialPixels);
+                            case DOODAD ->
+                                    mipFor(
+                                            width,
+                                            height,
+                                            MAX_DOODAD_PIXELS - doodadPixels,
+                                            MODEL_IMAGE_SIDES);
+                        };
                 if (level < 0) {
                     local[capped.ordinal()]++;
                     return -1;
@@ -1469,10 +1591,10 @@ public final class WorldExteriorObjects {
                         rgba[i] = (byte) 255;
                     }
                 }
-                if (building) {
-                    pixels += w * h;
-                } else {
-                    doodadPixels += w * h;
+                switch (pool) {
+                    case BUILDING -> pixels += w * h;
+                    case MATERIAL -> materialPixels += w * h;
+                    case DOODAD -> doodadPixels += w * h;
                 }
                 images.add(new Image(id, w, h, level, rgba));
                 local[(building ? Count.IMAGE_DECODED : Count.MODEL_IMAGE_DECODED).ordinal()]++;
@@ -1480,13 +1602,19 @@ public final class WorldExteriorObjects {
             }
         }
 
-        /**
-         * Null for an unavailable source (missing, protected or over its cap), and for a doodad
-         * source refused at SOURCE_INPUT (decoration never costs the tile its buildings). Every
-         * other refusal, including any building short read and any changed source, fails the whole
-         * set.
-         */
         private WorldStreamScopes.Input derived(long id, WorldStreamScopes.DerivedKind kind) {
+            return derived(id, kind, null);
+        }
+
+        /**
+         * Null for an unavailable source (missing, protected or over its cap), for a doodad source
+         * refused at SOURCE_INPUT (decoration never costs the tile its buildings), and, when {@code
+         * unreadable} is given, for a cutout or blended building image refused at SOURCE_INPUT
+         * (flagged in unreadable[0]). Every other refusal, including any read the opaque-only
+         * profile made and any changed source, fails the whole set.
+         */
+        private WorldStreamScopes.Input derived(
+                long id, WorldStreamScopes.DerivedKind kind, boolean[] unreadable) {
             if (id <= 0 || id > 0xffff_ffffL) {
                 return null;
             }
@@ -1500,12 +1628,16 @@ public final class WorldExteriorObjects {
                         kind == WorldStreamScopes.DerivedKind.M2_MODEL
                                 || kind == WorldStreamScopes.DerivedKind.M2_SKIN
                                 || kind == WorldStreamScopes.DerivedKind.M2_IMAGE;
-                if (doodad
+                if ((doodad || unreadable != null)
                         && WorldSourceRefusals.Site.SOURCE_INPUT.name().equals(refusal.site())
                         && refusal.getCause() == null
                         && refusal.getSuppressed().length == 0) {
                     token.check();
-                    count(Count.DOODAD_SOURCE_INPUT);
+                    if (doodad) {
+                        count(Count.DOODAD_SOURCE_INPUT);
+                    } else {
+                        unreadable[0] = true;
+                    }
                     return null;
                 }
                 throw refusal;
