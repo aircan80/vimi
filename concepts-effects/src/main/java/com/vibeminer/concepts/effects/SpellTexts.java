@@ -332,10 +332,12 @@ public final class SpellTexts implements AutoCloseable {
                                 "SpellEffect", effect.id(), field, effects.value(effect, field)));
                 var value = effects.number(effect, field);
                 if (field.equals("EffectBonusCoefficient")) {
+                    // Zero adds no spell power. The recorded default of one is inert only for
+                    // aura types reviewed as unable to scale with spell power.
                     fixed &=
                             value != null
                                     && (value.signum() == 0
-                                            || !powerScaled(kind, aura)
+                                            || inertCoefficient(kind, aura)
                                                     && value.compareTo(BigDecimal.ONE) == 0);
                 } else {
                     fixed &= value != null && value.compareTo(BigDecimal.ONE) == 0;
@@ -412,18 +414,27 @@ public final class SpellTexts implements AutoCloseable {
     }
 
     /**
-     * Effects whose amount the client raises by spell power: school damage (2), healing (10), and
-     * periodic damage (3), periodic healing (8), damage shield (15), periodic leech (53), mana
-     * leech (64) and absorb (69) auras.
+     * APPLY_AURA (6) aura types whose amount is a stat, chance, rate, speed or spell modifier and
+     * never gains spell power, so a recorded EffectBonusCoefficient of one is inert: threat (10),
+     * stat (29), speed (31/33), parry/dodge/crit/hit chances (47, 49, 52, 54, 55, 57), cast speed
+     * (65), damage done percent (79), power regeneration (85, 110), attack power (99), flat and
+     * percent spell modifiers (107, 108), healing done percent (136), total stat percent (137),
+     * melee haste (138), mechanic duration (232) and crit percent (290). Every other effect or aura
+     * counts as fixed only with a coefficient of zero.
      */
-    private static boolean powerScaled(BigDecimal kind, BigDecimal aura) {
-        if (kind == null || aura == null) {
-            return true;
-        }
-        int effect = kind.intValue(), type = aura.intValue();
-        return effect == 2
-                || effect == 10
-                || effect == 6 && java.util.Set.of(3, 8, 15, 53, 64, 69).contains(type);
+    static final java.util.Set<Integer> INERT_COEFFICIENT_AURAS =
+            java.util.Set.of(
+                    10, 29, 31, 33, 47, 49, 52, 54, 55, 57, 65, 79, 85, 99, 107, 108, 110, 136, 137,
+                    138, 232, 290);
+
+    private static boolean inertCoefficient(BigDecimal kind, BigDecimal aura) {
+        return kind != null
+                && aura != null
+                && kind.compareTo(BigDecimal.valueOf(6)) == 0
+                && aura.scale() <= 0
+                && aura.signum() >= 0
+                && aura.compareTo(BigDecimal.valueOf(Integer.MAX_VALUE)) <= 0
+                && INERT_COEFFICIENT_AURAS.contains(aura.intValue());
     }
 
     /**
@@ -544,6 +555,14 @@ public final class SpellTexts implements AutoCloseable {
             return new SpellText.Value(
                     null, sources, "Duration requires unsupported context or a valid duration ID");
         }
+        // SPELL_ATTR5_EXTRA_INITIAL_PERIOD (Attributes[5] bit 0x200): the aura also ticks on
+        // application. $o refuses such spells, and any spell whose attribute is unreadable.
+        var attributes = misc.attribute(selected, 5);
+        if (attributes != null) {
+            sources.add(
+                    new Source("SpellMisc", selected.id(), "Attributes[5]", attributes.toString()));
+        }
+        Boolean initialTick = attributes == null ? null : (attributes & 0x200L) != 0;
         var durationRef = TableTypes.Ref.forName("SpellDuration");
         var durationSchema = tables.schema(durationRef, priority, token).join();
         var columns = new Columns(durationSchema);
@@ -590,7 +609,8 @@ public final class SpellTexts implements AutoCloseable {
                 milliseconds.divide(BigDecimal.valueOf(1000)).toBigIntegerExact() + " sec",
                 sources,
                 null,
-                milliseconds.longValueExact());
+                milliseconds.longValueExact(),
+                initialTick);
     }
 
     private static Description unavailable(long spell, String issue) {
@@ -777,6 +797,48 @@ public final class SpellTexts implements AutoCloseable {
                 }
             }
             return true;
+        }
+
+        /**
+         * One verified 32-bit element of the SpellMisc Attributes[17] array, or null when the array
+         * or the row value is not readable as recorded.
+         */
+        Long attribute(Db2Types.Row row, int element) {
+            if (schema.schema() == null) {
+                return null;
+            }
+            var fields =
+                    schema.schema().columns().stream()
+                            .filter(field -> field.name().equals("Attributes"))
+                            .toList();
+            if (fields.size() != 1
+                    || !fields.getFirst().verifiedName()
+                    || fields.getFirst().kind() != TableSchema.ColumnKind.INT
+                    || fields.getFirst().arrayLength() != 17
+                    || !Integer.valueOf(32).equals(fields.getFirst().bits())) {
+                return null;
+            }
+            String name = "Attributes[" + element + "]";
+            int at = -1;
+            for (int i = 0; i < schema.columns().size(); i++) {
+                if (schema.columns().get(i).name().equals(name)) {
+                    if (at >= 0) {
+                        return null;
+                    }
+                    at = i;
+                }
+            }
+            if (at < 0
+                    || !"integer".equals(schema.columns().get(at).kind())
+                    || schema.columns().get(at).interpretation() != null) {
+                return null;
+            }
+            try {
+                String raw = text(row, at);
+                return raw == null ? null : Long.parseLong(raw) & 0xffffffffL;
+            } catch (NumberFormatException failure) {
+                return null;
+            }
         }
 
         String text(Db2Types.Row row, int index) {

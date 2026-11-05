@@ -105,13 +105,25 @@ final class SpellTextsTest {
                             false,
                             null,
                             null));
+            // Array elements X[0..n] form one definition field X of length n, as in real data.
+            var element = java.util.regex.Pattern.compile("(.+)\\[(\\d+)\\]").matcher(field);
+            String fieldName = field;
+            int length = 1;
+            if (element.matches()) {
+                if (!element.group(2).equals("0")) {
+                    continue;
+                }
+                fieldName = element.group(1);
+                String prefix = fieldName + "[";
+                length = (int) names.stream().filter(n -> n.startsWith(prefix)).count();
+            }
             fields.add(
                     new TableSchema.SchemaColumn(
-                            field,
+                            fieldName,
                             kind,
                             text || floating ? null : 32,
                             text || floating ? null : false,
-                            1,
+                            length,
                             null,
                             TableSchema.KeyStorage.NONE,
                             TableSchema.KeyStorage.NONE,
@@ -489,6 +501,123 @@ final class SpellTextsTest {
         }
     }
 
+    private static Db2Types.Row typed(long id, String effect, String aura, String coefficient) {
+        var values = new ArrayList<>(scalar(id, 0, null).values());
+        values.set(FIELDS.indexOf("Effect"), effect);
+        values.set(FIELDS.indexOf("EffectAura"), aura);
+        values.set(FIELDS.indexOf("EffectBasePointsF"), "7");
+        values.set(FIELDS.indexOf("EffectBonusCoefficient"), coefficient);
+        return new Db2Types.Row(id, false, null, values, List.of());
+    }
+
+    @Test
+    void aCoefficientOfOneIsInertOnlyForReviewedAuraTypes() {
+        // Spell power scaled or unreviewed: health leech (9), school damage (2), heal (10), and
+        // periodic damage/heal, mana shield, periodic dummy and heal absorb auras.
+        for (var type :
+                List.of(
+                        List.of("9", "0"),
+                        List.of("2", "0"),
+                        List.of("10", "0"),
+                        List.of("3", "0"),
+                        List.of("6", "3"),
+                        List.of("6", "8"),
+                        List.of("6", "4"),
+                        List.of("6", "97"),
+                        List.of("6", "226"),
+                        List.of("6", "301"))) {
+            var scaled =
+                    scalarPreview(
+                            "Value $s1.",
+                            List.of(typed(101, type.get(0), type.get(1), "1")),
+                            List.of(),
+                            List.of());
+            assertEquals("Value ?.", scaled.display(), type.toString());
+            var unscaled =
+                    scalarPreview(
+                            "Value $s1.",
+                            List.of(typed(101, type.get(0), type.get(1), "0")),
+                            List.of(),
+                            List.of());
+            assertEquals("Value 7.", unscaled.display(), type.toString());
+        }
+        for (int aura : SpellTexts.INERT_COEFFICIENT_AURAS) {
+            assertEquals(
+                    "Value 7.",
+                    scalarPreview(
+                                    "Value $s1.",
+                                    List.of(typed(101, "6", Integer.toString(aura), "1")),
+                                    List.of(),
+                                    List.of())
+                            .display(),
+                    Integer.toString(aura));
+        }
+    }
+
+    @Test
+    void totalPeriodicValueRefusesSpellsThatTickOnApplication() {
+        var tick = new ArrayList<>(scalar(101, 0, null).values());
+        tick.set(FIELDS.indexOf("EffectAura"), "3");
+        tick.set(FIELDS.indexOf("EffectBasePointsF"), "4");
+        tick.set(FIELDS.indexOf("EffectAuraPeriod"), "3000");
+        var misc = miscTable(List.of(row(90, "16929", "0", "1", "0", "0")));
+        var rows = new ArrayList<Db2Types.Row>();
+        for (var row : misc.rows()) {
+            var values = new ArrayList<>(row.values());
+            values.set(6, "512");
+            rows.add(new Db2Types.Row(row.id(), false, null, values, List.of()));
+        }
+        var world =
+                new MemoryTables()
+                        .add(
+                                BUILD,
+                                "enUS",
+                                List.of(
+                                        table(
+                                                1,
+                                                "Spell",
+                                                List.of("Description_lang"),
+                                                List.of(row(16929, "Bleeds $o1 over $d.")),
+                                                TableTypes.State.READY),
+                                        table(
+                                                2,
+                                                "SpellEffect",
+                                                FIELDS,
+                                                List.of(
+                                                        new Db2Types.Row(
+                                                                101, false, null, tick, List.of())),
+                                                TableTypes.State.READY),
+                                        new MemoryTables.FakeTable(
+                                                misc.entry(),
+                                                misc.columns(),
+                                                rows,
+                                                misc.schema(),
+                                                Map.of(),
+                                                true),
+                                        layout(
+                                                table(
+                                                        4,
+                                                        "SpellDuration",
+                                                        List.of(
+                                                                "Duration",
+                                                                "DurationPerLevel",
+                                                                "MaxDuration",
+                                                                "DurationPerResource"),
+                                                        List.of(row(1, "15000", "0", "15000", "0")),
+                                                        TableTypes.State.READY),
+                                                "4FDF0951")));
+        try (var tables = world.forBuild(BUILD, "enUS", Cancellation.NONE).join().tables();
+                var service = new SpellTexts(tables, "1.60.1.70790")) {
+            var result =
+                    service.description(16929, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                            .join();
+            assertEquals("Bleeds ? over 15 sec.", result.display());
+            assertEquals(
+                    "The spell also ticks on application; the total is not computed",
+                    result.substitutions().getFirst().issue());
+        }
+    }
+
     @Test
     void totalPeriodicValueMultipliesAFixedTickByWholeTicks() {
         var tick = new ArrayList<>(scalar(101, 0, null).values());
@@ -529,6 +658,23 @@ final class SpellTextsTest {
                                     Cancellation.NONE)
                             .join();
             assertEquals("Increases armor by 3%.", ranked.display());
+            // The reverse: a cached plain preview never answers a later override request.
+            assertEquals(
+                    "Increases armor by 2%.",
+                    service.description(16929, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                            .join()
+                            .display());
+            assertEquals(
+                    "Increases armor by 4%.",
+                    service.description(
+                                    16929,
+                                    List.of(
+                                            new SpellTexts.EffectOverride(
+                                                    0, new BigDecimal("4"), null, List.of())),
+                                    TableTypes.Priority.INTERACTIVE,
+                                    Cancellation.NONE)
+                            .join()
+                            .display());
             assertTrue(ranked.substitutions().getFirst().sources().contains(source));
             var unknown =
                     service.description(

@@ -55,10 +55,22 @@ final class SpellText {
         }
     }
 
-    /** A resolved value; {@code milliseconds} is set for a fixed duration. */
-    record Value(String text, List<SpellTexts.Source> sources, String issue, Long milliseconds) {
+    /**
+     * A resolved value; {@code milliseconds} is set for a fixed duration, and {@code
+     * extraInitialTick} says whether the spell also ticks on application (null when unknown).
+     */
+    record Value(
+            String text,
+            List<SpellTexts.Source> sources,
+            String issue,
+            Long milliseconds,
+            Boolean extraInitialTick) {
         Value(String text, List<SpellTexts.Source> sources, String issue) {
-            this(text, sources, issue, null);
+            this(text, sources, issue, null, null);
+        }
+
+        Value(String text, List<SpellTexts.Source> sources, String issue, Long milliseconds) {
+            this(text, sources, issue, milliseconds, Boolean.FALSE);
         }
 
         Value {
@@ -327,6 +339,12 @@ final class SpellText {
                                                     + (duration == null || duration.issue() == null
                                                             ? "duration is unavailable"
                                                             : duration.issue());
+                                } else if (duration.extraInitialTick() == null) {
+                                    issue = "Whether the spell ticks on application is unreadable";
+                                } else if (duration.extraInitialTick()) {
+                                    issue =
+                                            "The spell also ticks on application; the total is not"
+                                                    + " computed";
                                 } else if (duration.milliseconds() % period != 0) {
                                     issue = "Duration is not a whole number of ticks";
                                 } else {
