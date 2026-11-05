@@ -1,6 +1,7 @@
 package com.vibeminer.concepts.races;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -1573,5 +1574,59 @@ final class RaceAppearancePlanTest {
                         entry);
         org.junit.jupiter.api.Assertions.assertThrows(
                 RacesService.Projection.class, () -> data.field("GeosetType", true));
+    }
+
+    @Test
+    void aStartingItemRowThatCannotBeReadNowLeavesThePlanUnsettled() {
+        var raw =
+                new MemoryTables()
+                        .add(BUILD, "enUS", orcFixture(3, 105))
+                        .forBuild(BUILD, "enUS", Cancellation.NONE)
+                        .join()
+                        .tables();
+        var unknown = new java.util.concurrent.atomic.AtomicBoolean();
+        var tables =
+                (com.vibeminer.formats.tables.BuildTables)
+                        java.lang.reflect.Proxy.newProxyInstance(
+                                getClass().getClassLoader(),
+                                new Class<?>[] {com.vibeminer.formats.tables.BuildTables.class},
+                                (proxy, method, args) -> {
+                                    if (unknown.get()
+                                            && method.getName().equals("get")
+                                            && TableTypes.Ref.forName("Item").equals(args[0])) {
+                                        return java.util.concurrent.CompletableFuture
+                                                .completedFuture(
+                                                        new TableTypes.RowResult(
+                                                                null,
+                                                                TableTypes.RowOutcome.UNKNOWN,
+                                                                null,
+                                                                null));
+                                    }
+                                    try {
+                                        return method.invoke(raw, args);
+                                    } catch (java.lang.reflect.InvocationTargetException e) {
+                                        throw e.getCause();
+                                    }
+                                });
+        var service = new RacesService(tables);
+        try {
+            var plans =
+                    new RaceAppearancePlan(
+                            service, new RaceMedia(service, tables, null, null), tables);
+            var variant = new RaceMediaTypes.Variant(3, 0, 1, 1, 1);
+            var plan = plans.build(2, 1, variant, Cancellation.NONE, new ArrayList<>());
+            assertEquals(100, plan.items().getFirst().itemId());
+            assertFalse(plans.unsettled());
+            unknown.set(true);
+            var reduced = plans.build(2, 1, variant, Cancellation.NONE, new ArrayList<>());
+            assertTrue(reduced.items().isEmpty());
+            assertTrue(plans.unsettled(), "An UNKNOWN row is asked again, not remembered");
+            unknown.set(false);
+            plans.build(2, 1, variant, Cancellation.NONE, new ArrayList<>());
+            assertFalse(plans.unsettled());
+        } finally {
+            service.closeAsync().join();
+            raw.closeAsync().join();
+        }
     }
 }

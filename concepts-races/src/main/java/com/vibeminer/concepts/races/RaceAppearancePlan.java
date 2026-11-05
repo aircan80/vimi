@@ -49,6 +49,30 @@ final class RaceAppearancePlan {
     private final BuildTables tables;
     private final Map<String, List<Db2Types.Row>> queries = new HashMap<>();
 
+    /**
+     * Whether the last {@link #build} skipped something only because a row or page could not be
+     * read now (an UNKNOWN row, a changed qualifier source or an unreadable page). Such a plan is
+     * correct to show but must be built again for the next request.
+     */
+    private boolean unsettled;
+
+    boolean unsettled() {
+        return unsettled;
+    }
+
+    static final String UNREVIEWED_PAIR =
+            "Static character textures support the narrow Human, Orc, Dwarf, Night Elf and Tauren"
+                    + " model pairs.";
+
+    /** The reviewed race and ChrModel pairs; a pure ID check, so it can refuse before any read. */
+    static boolean reviewedPair(long raceId, long chrModelId) {
+        return raceId == 1 && chrModelId >= 1 && chrModelId <= 2
+                || raceId == 2 && chrModelId >= 3 && chrModelId <= 4
+                || raceId == 3 && chrModelId >= 5 && chrModelId <= 6
+                || raceId == 6 && chrModelId >= 11 && chrModelId <= 12
+                || raceId == 4 && chrModelId >= 7 && chrModelId <= 8;
+    }
+
     RaceAppearancePlan(RacesService owner, RaceMedia media, BuildTables tables) {
         this.owner = owner;
         this.media = media;
@@ -71,17 +95,12 @@ final class RaceAppearancePlan {
             Cancellation token,
             List<String> issues,
             RaceCustomization.Selection sample) {
+        unsettled = false;
         if (sample != null) {
             sample.requireContext(media, raceId, classId, variant.chrModelId());
         }
-        if (!(raceId == 1 && variant.chrModelId() >= 1 && variant.chrModelId() <= 2)
-                && !(raceId == 2 && variant.chrModelId() >= 3 && variant.chrModelId() <= 4)
-                && !(raceId == 3 && variant.chrModelId() >= 5 && variant.chrModelId() <= 6)
-                && !(raceId == 6 && variant.chrModelId() >= 11 && variant.chrModelId() <= 12)
-                && !(raceId == 4 && variant.chrModelId() >= 7 && variant.chrModelId() <= 8)) {
-            throw new RacesService.Projection(
-                    RaceTypes.State.UNSUPPORTED,
-                    "Static character textures support the narrow Human, Orc, Dwarf, Night Elf and Tauren model pairs.");
+        if (!reviewedPair(raceId, variant.chrModelId())) {
+            throw new RacesService.Projection(RaceTypes.State.UNSUPPORTED, UNREVIEWED_PAIR);
         }
         var models = schema("ChrModel", token, issues, "CharComponentTextureLayoutID");
         var model = get(models, variant.chrModelId(), token);
@@ -318,6 +337,7 @@ final class RaceAppearancePlan {
             clothing(
                     raceId, classId, variant.sex(), layout, sections, recipe, items, token, issues);
         } catch (RacesService.Projection unavailable) {
+            unsettled |= unavailable instanceof RacesService.Unreadable;
             note(issues, "Starting clothing is partial: " + unavailable.getMessage());
         }
         recipe.sort(
@@ -588,6 +608,8 @@ final class RaceAppearancePlan {
                             && qualification.outcome() != TableTypes.RowOutcome.ABSENT)
                     || (qualification.outcome() == TableTypes.RowOutcome.FOUND
                             && qualification.row() == null)) {
+                unsettled |=
+                        !sameSource || qualification.outcome() == TableTypes.RowOutcome.UNKNOWN;
                 note(
                         issues,
                         "Some texture qualifiers are unknown, protected or changed; only proven alternatives are used.");
@@ -647,6 +669,7 @@ final class RaceAppearancePlan {
                                 TableTypes.Priority.INTERACTIVE,
                                 token)
                         .join();
+        unsettled |= row.outcome() == TableTypes.RowOutcome.UNKNOWN;
         return row.outcome() == TableTypes.RowOutcome.FOUND && row.row() != null
                 ? row.row().row()
                 : null;
@@ -675,7 +698,11 @@ final class RaceAppearancePlan {
                                 TableTypes.Priority.INTERACTIVE,
                                 token)
                         .join();
-        if (page.state() != TableTypes.PageState.OK || page.nextAfter() != null) {
+        if (page.state() != TableTypes.PageState.OK) {
+            throw new RacesService.Unreadable(
+                    data.name + ": filtered texture relationship is " + page.state());
+        }
+        if (page.nextAfter() != null) {
             throw data.unsupported(
                     "Filtered texture relationship is unavailable or exceeds bounds");
         }
