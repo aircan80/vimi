@@ -18,7 +18,7 @@ class M2IdleAnimationTest {
     private static final int DATA = BONES + 176, EXTRA = DATA + 512;
 
     /** Authored body annex: one global clock, Walk then Stand, two bones with keyed tracks. */
-    private static final class Annex {
+    static final class Annex {
         final ByteBuffer buffer;
         final int base, at;
         int cursor;
@@ -364,5 +364,79 @@ class M2IdleAnimationTest {
                 () ->
                         M2IdleAnimation.read(AssetSource.bytes(extended), model, Cancellation.NONE)
                                 .join());
+    }
+
+    private static byte[] withBoneFiles(byte[] bytes, int... ids) {
+        byte[] extended = java.util.Arrays.copyOf(bytes, bytes.length + 8 + ids.length * 4);
+        var buffer = ByteBuffer.wrap(extended).order(ByteOrder.LITTLE_ENDIAN);
+        buffer.put(bytes.length, "BFID".getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        buffer.putInt(bytes.length + 4, ids.length * 4);
+        for (int i = 0; i < ids.length; i++) {
+            buffer.putInt(bytes.length + 8 + i * 4, ids[i]);
+        }
+        return extended;
+    }
+
+    private static M2IdleAnimation.StandFacts facts(byte[] bytes) {
+        var model = M2ModelReader.read(AssetSource.bytes(bytes)).join();
+        return M2IdleAnimation.assessStand(AssetSource.bytes(bytes), model, Cancellation.NONE)
+                .join();
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {272, 274})
+    void boneFilesRefusePlaybackButStandFactsAreStillReported(int version) {
+        byte[] bytes = withBoneFiles(authored(version, a -> {}), 1001, 1002);
+        var model = M2ModelReader.read(AssetSource.bytes(bytes)).join();
+        assertEquals(java.util.List.of(1001L, 1002L), model.boneFileDataIds());
+        M2ReadersTest.failure("MODEL_UNSUPPORTED", () -> read(bytes));
+        var facts = facts(bytes);
+        assertNull(facts.refusal());
+        assertEquals(1, facts.sequenceIndex());
+        assertEquals(1000, facts.durationMillis());
+        assertEquals(5, facts.keyCount());
+        assertEquals(2, facts.animatedBones());
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {272, 274})
+    void standFactsCarryRefusalsButStructuralErrorsStillFail(int version) {
+        var curve =
+                facts(
+                        withBoneFiles(
+                                authored(
+                                        version, a -> a.buffer.putShort(a.track(0, 16), (short) 2)),
+                                1001));
+        assertEquals(-1, curve.sequenceIndex());
+        assertTrue(curve.refusal().contains("curve interpolation"));
+        var external =
+                facts(
+                        withBoneFiles(
+                                authored(version, a -> a.buffer.putInt(a.sequence(1) + 12, 0)),
+                                1001));
+        assertTrue(external.refusal().contains("external animation file"));
+        byte[] unordered =
+                withBoneFiles(
+                        authored(
+                                version,
+                                a ->
+                                        a.keys(
+                                                0,
+                                                16,
+                                                1,
+                                                -1,
+                                                2,
+                                                1,
+                                                new int[] {500, 100},
+                                                v ->
+                                                        v.putFloat(0)
+                                                                .putFloat(0)
+                                                                .putFloat(0)
+                                                                .putFloat(0)
+                                                                .putFloat(0)
+                                                                .putFloat(0),
+                                                12)),
+                        1001);
+        M2ReadersTest.failure("MODEL_INVALID", () -> facts(unordered));
     }
 }

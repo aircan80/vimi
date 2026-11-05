@@ -70,7 +70,8 @@ screen. Unsupported sources show a one-line reason instead of an inert control; 
 unavailable result shows nothing. Playback evaluates the pose off the FX thread and uses
 the existing software renderer at most every 40 ms, only while the viewport is visible
 and no frame is rendering. The GPU path is closed while playing and resumes when playback
-stops. Races previews are unchanged (character models use external bone files; see below).
+stops. Races previews never offer playback yet; they explain why (see "Races: bone files and
+refusal reporting" below).
 
 ## Actual source evidence
 
@@ -107,6 +108,67 @@ All ten sampled playable-race body models (Human, Orc, Dwarf, Tauren, Night Elf)
 BFID bone files (10–30 each) and are refused. Character idle needs a reviewed meaning of
 those files before Races previews can animate.
 
+## Races: bone files and refusal reporting
+
+Tracks #104. Races previews now say exactly why Stand is not offered for the selected model,
+instead of showing nothing. Playback is still not offered for any race model.
+
+`M2BoneFile` (formats-assets) reads one BFID-declared bone file exactly: `uint32` version 1,
+then `BIDA` (`uint16` model bone indices) and `BOMT` (one 64-byte 4x4 float matrix per index).
+Each chunk must appear exactly once, in either order, and the chunks must fill the file
+exactly. Indices must be unique and inside the model's bones, values must be finite, and every
+matrix must have `(0, 0, 0, 1)` at file positions 3/7/11/15, with translation at 12–14. Other
+versions, unknown chunks and other matrix forms are `MODEL_UNSUPPORTED`. Structural
+disagreement is `MODEL_INVALID`. Limits are 1 MiB and 4,096 entries per file. The reader
+records facts only; it does not say which file applies or how.
+
+`BuildModels.readBoneFile` reads only IDs that the read model declares in BFID, and checks the
+size before it opens anything. `M2IdleAnimation.assessStand` runs every Stand check of the
+mount reader except the external-file gate and returns facts without tracks, so a result
+can never be played back by mistake. `BuildModels.readStandFacts` wraps that check.
+
+`BuildRaces.idle(raceId, chrModelId, token)` is a new default method (UNAVAILABLE). It runs
+on the race worker. It returns `UNSUPPORTED` with every blocking reason, or `UNAVAILABLE` if
+the relationship or the model could not be read. The reasons are:
+
+- an external skeleton (SKID). When the model has no bones of its own, Stand is not read;
+- BFID bone files (at most 64), each read and validated, with counts of the files validated,
+  refused and unreadable. Even when every file validates, Stand is refused: which file the
+  client applies for an appearance, and how its matrices combine with Stand keys, have not
+  been reviewed;
+- a Stand that the mount reader would refuse (alias, `.anim`-resident, curve keys, and so on);
+- otherwise, a Stand that would pass is still refused because race previews do not play it
+  back yet.
+
+Results whose sources were all read are cached per model content key (32 entries) and checked
+against each bone file's content key on reuse. A model that changes during the assessment,
+or a bone file that ends early or changes length (`MODEL_SOURCE_CHANGED`), is reported as
+unreadable and not cached. An UNAVAILABLE result shows its reason in place of the toggle.
+`RaceModelPanel` asks for the assessment after the static surface is shown. The preview then
+shows "Idle animation unavailable: …" in place of the toggle, and the Stand and bone-file
+facts appear under "Model source details".
+
+Actual Forever 1.60.1.70755 enUS, read-only. Missing bone files and models were fetched
+into a private store under `HOME/.cache/vimi-tmp/race-idle-proof/` (`race-idle-net.log`,
+`race-idle-net-v2.log`, `bonefile-net.log`). No game asset is committed. The probe assessed 75
+ChrRaceXChrModel variants before its time limit, and then every playable race again with the
+final code. Every variant was UNSUPPORTED; none was UNAVAILABLE.
+
+- 26 variants declare BFID, 8–30 files each. This includes all playable bodies except those
+  below. Every bone file validated: each held 3–129 affine matrices, and all bone indices were
+  inside the model. The bones are face bones for Human and Night Elf, but Dwarf, Gnome and
+  Tauren bone files cover 115–129 bones. Their Stand is in the model with only step/linear
+  keys, for example Human male sequence 0, 2,667 ms, 6,680 keys on 170 bones.
+- 19 variants name a SKID and store no bones of their own: Blood Elf, Draenei, Dracthyr,
+  Goblin male and others.
+- 30 variants have neither and pass the Stand reader. Most are non-playable rows (Fel Orc,
+  Forest Troll, Vrykul and others), plus Undead male and Worgen. Only the missing race
+  playback refuses them.
+
+A cold assessment took 0.1–1.0 s from local files and up to 4.7 s when files had to be
+fetched. A repeated assessment took 33–56 ms (variant lookup and stat) and did not re-read
+the model.
+
 ## Tests
 
 - `M2IdleAnimationTest`: authored Walk+Stand annex on the 272/274 goldens; keyed and
@@ -118,6 +180,21 @@ those files before Races previews can animate.
 - `DisplayIdleAnimationsTest`: native fixture with an ordinary root and a 0x8 card leaf;
   card members follow the parent, irrelevant flags pass, chain flags and keyed or parent
   billboards are refused, keyless Stand keeps the rest pose.
+- `M2BoneFileTest`: valid files in either chunk order and across several bounded reads;
+  refusal of versions, unknown chunks and non-affine matrices; missing, repeated, partial,
+  mismatched, out-of-range, duplicate, non-finite, truncated, trailing and overrunning data;
+  size and entry limits; short or resized sources (`MODEL_SOURCE_CHANGED`); cancellation.
+- `M2IdleAnimationTest`: BFID refuses playback while `assessStand` still reports the Stand,
+  carries curve and `.anim` refusals, and keeps structural errors fatal.
+- `BuildModelsTest`: declared bone files read, refused and missing through files; an
+  undeclared ID is rejected before any access; oversized files are refused before opening.
+- `RacesServiceTest`: through files, an unreadable bone file is assessed again, a complete
+  result is cached without opening files, and new bone-file or model content invalidates it.
+- `RaceIdleAnimationsTest`: every blocker is reported together, a SKID-only model skips Stand,
+  unreadable sources are not cached, the bone-file budget is enforced, cancellation stops
+  the assessment, and results can only be refusals.
+- `RacesUiTest` (display required): the refusal replaces the toggle and its facts reach the
+  details.
 - `MountsUiTest` (display required, not part of hosted CI): the control appears only for
   a matching animation, playback produces changing frames with an idle status, and an
   unsupported variant hides the control and shows its reason.
@@ -128,7 +205,11 @@ those files before Races previews can animate.
    with bounded per-frame cost; required before many-model World use.
 2. World: animate placed M2 doodads/creatures once they render, sharing one evaluator per
    model and bounding per-frame evaluated vertices.
-3. Characters: qualify BFID bone-file semantics and external skeleton/`.anim` reads, then
-   offer Stand in Races previews.
+3. Characters: first, offer Stand for race models without SKID/BFID (Undead male, Worgen and
+   the NPC race rows). This needs the race
+   surface's vertex lookup and normals bound to `PreviewAnimation` and the bone-flag
+   admission shared with `DisplayIdleAnimations`. Then review how the client selects and
+   applies BFID files (customization choice to bone file, and matrix composition with Stand)
+   before offering Stand for playable bodies. SKID skeleton reading comes after that.
 4. Persist qualified idle data beside the static derivative if cold qualification time
    matters in practice.

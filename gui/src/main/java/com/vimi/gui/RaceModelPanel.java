@@ -42,6 +42,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
     private final java.util.Map<Long, Long> picks = new java.util.TreeMap<>();
     private final java.util.Map<Long, ComboBox<RaceCustomizationTypes.Choice>> pickers = new java.util.HashMap<>();
     private RaceCustomizationTypes.Catalog customization;
+    private RaceMediaTypes.Idle idleFacts;
     private long shownModel = -1, shownClass = -1;
     private boolean updatingChoices, waitingForRequests;
 
@@ -223,6 +224,9 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
         if (shownModel == model.chrModelId() && shownClass == classId && customization != null) {
             state.setText("Preparing selected appearance…");
             viewer.appearanceLoading("Preparing selected textures…");
+            if (idleFacts == null || idleFacts.variant().chrModelId() != model.chrModelId()) {
+                requestIdle(model, request);
+            }
             loadAppearance(model, classId, request);
             return;
         }
@@ -291,6 +295,7 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                             }
                                             activity.setVisible(true);
                                             viewer.setMesh(result.mesh(), result.visibleParts());
+                                            requestIdle(model, request);
                                             shownModel = model.chrModelId();
                                             shownClass = classId;
                                             viewer.appearanceLoading(
@@ -431,7 +436,49 @@ final class RaceModelPanel extends VBox implements AutoCloseable {
                                                 note.getStyleClass().add("muted");
                                                 evidence.getChildren().add(note);
                                             }
+                                            showIdleEvidence();
                                         }));
+    }
+
+    /** Assesses Stand idle for the shown model and states why it is not offered. */
+    private void requestIdle(RaceMediaTypes.Variant model, long request) {
+        idleFacts = null;
+        request(() -> handle.idle(raceId, model.chrModelId(), token))
+                .whenComplete((idle, failure) -> Platform.runLater(() -> {
+                    if (stale(request)) return;
+                    if (failure != null || idle == null) {
+                        viewer.animationUnavailable("Idle animation could not be assessed.");
+                        return;
+                    }
+                    if (idle.variant() == null
+                            || idle.variant().chrModelId() != model.chrModelId()) {
+                        viewer.animationUnavailable(null);
+                        return;
+                    }
+                    if (idle.state() != RaceTypes.State.UNSUPPORTED) {
+                        // Unreadable sources: say why; the next selection asks again.
+                        viewer.animationUnavailable(
+                                "Idle animation could not be assessed: " + idle.message());
+                        return;
+                    }
+                    viewer.animationUnavailable("Idle animation unavailable: " + idle.message());
+                    idleFacts = idle;
+                    showIdleEvidence();
+                }));
+    }
+
+    /** Appends the shown model's idle facts; evidence rebuilds call this again. */
+    private void showIdleEvidence() {
+        if (idleFacts == null || idleFacts.facts().isEmpty()) return;
+        var heading = new Label("Idle animation (Stand)");
+        heading.setId("race-idle-evidence");
+        evidence.getChildren().add(heading);
+        for (String line : idleFacts.facts()) {
+            var note = new Label(line);
+            note.setWrapText(true);
+            note.getStyleClass().add("muted");
+            evidence.getChildren().add(note);
+        }
     }
 
     private void loadCustomizations(RaceMediaTypes.Variant model, long classId, long request) {

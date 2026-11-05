@@ -94,6 +94,16 @@ public interface BuildRaces extends AutoCloseable {
                         "Requested customization is unavailable"));
     }
 
+    /**
+     * Assesses the selected model's Stand idle (ID 0, variation 0) against the reviewed playback
+     * profile, reporting every reason it cannot be offered.
+     */
+    default CompletableFuture<RaceMediaTypes.Idle> idle(
+            long raceId, long chrModelId, Cancellation token) {
+        return CompletableFuture.completedFuture(
+                RaceMediaTypes.Idle.unavailable(null, "Idle assessment unavailable"));
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override

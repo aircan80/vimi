@@ -154,16 +154,63 @@ public final class M2IdleAnimation {
             AssetSource source, M2Types.Model model, Cancellation token) {
         Objects.requireNonNull(model);
         Objects.requireNonNull(token);
-        return AssetTasks.run(() -> readCore(source, model, token));
+        return AssetTasks.run(() -> readCore(source, model, token, true));
     }
 
-    private static Idle readCore(AssetSource source, M2Types.Model model, Cancellation token) {
+    /**
+     * Facts about the model-resident Stand sequence, read with every check of {@link #read} except
+     * the external skeleton and bone-file gate. It never yields tracks, so its result cannot be
+     * evaluated; callers use it to report every reason a model with external files is refused.
+     *
+     * @param refusal null when the model-resident Stand passed; otherwise the unsupported or budget
+     *     reason, in which case the other fields are 0 or -1
+     */
+    public record StandFacts(
+            int sequenceIndex,
+            long durationMillis,
+            int keyCount,
+            int animatedBones,
+            String refusal) {}
+
+    /**
+     * Reads {@link StandFacts} for a parsed chunked model. Structural disagreement still fails with
+     * {@code MODEL_INVALID}; unsupported content and budget refusals are returned as the refusal.
+     */
+    public static CompletableFuture<StandFacts> assessStand(
+            AssetSource source, M2Types.Model model, Cancellation token) {
+        Objects.requireNonNull(model);
+        Objects.requireNonNull(token);
+        return AssetTasks.run(
+                () -> {
+                    try {
+                        var idle = readCore(source, model, token, false);
+                        int animated =
+                                (int) idle.bones().stream().filter(BoneTracks::animated).count();
+                        return new StandFacts(
+                                idle.sequenceIndex(),
+                                idle.durationMillis(),
+                                idle.keyCount(),
+                                animated,
+                                null);
+                    } catch (ModelFormatException refused) {
+                        if (!refused.code().equals("MODEL_UNSUPPORTED")
+                                && !refused.code().equals("MODEL_LIMIT")) {
+                            throw refused;
+                        }
+                        return new StandFacts(-1, 0, 0, 0, refused.getMessage());
+                    }
+                });
+    }
+
+    private static Idle readCore(
+            AssetSource source, M2Types.Model model, Cancellation token, boolean localBonesOnly) {
         token.check();
         if (!model.isChunked() || model.version() != 272 && model.version() != 274) {
             throw error("UNSUPPORTED", "Idle animation requires a chunked 272/274 model.");
         }
-        if (model.skeletonFileDataId() != 0
-                || model.boneFileDataIds().stream().anyMatch(id -> id != 0)) {
+        if (localBonesOnly
+                && (model.skeletonFileDataId() != 0
+                        || model.boneFileDataIds().stream().anyMatch(id -> id != 0))) {
             throw error(
                     "UNSUPPORTED",
                     "The model uses an external skeleton or bone file; idle evaluation reads"
