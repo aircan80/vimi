@@ -491,7 +491,8 @@ public final class HotfixBuildTables implements BuildTables {
                             metadata.schema(),
                             metadata.header(),
                             metadata.raw().flags(),
-                            metadata.raw().idFieldIndex());
+                            metadata.raw().idFieldIndex(),
+                            fittedRawColumns(metadata, priority, token));
         } catch (HotfixRowDecoder.Invalid unsupported) {
             // Selected IDs remain masked UNKNOWN; never fall back to stale base values.
         }
@@ -707,6 +708,61 @@ public final class HotfixBuildTables implements BuildTables {
             next += n;
         }
         return result;
+    }
+
+    /**
+     * Raw-physical columns the hotfix body may decode at their declared width: unverified-name,
+     * non-relation columns whose every readable base value already fits that width, so base and
+     * hotfix rows print the same text for the same value. Any other raw column, an unreadable page
+     * or a table larger than the scan bound keeps the whole table refused.
+     */
+    private Set<Integer> fittedRawColumns(
+            ClientBuildTables.HotfixMetadata metadata,
+            TableTypes.Priority priority,
+            Cancellation token) {
+        var columns = metadata.header().columns();
+        var candidates = new java.util.TreeSet<Integer>();
+        int column = 0;
+        for (var field : metadata.schema().columns()) {
+            for (int element = 0; element < field.arrayLength(); element++, column++) {
+                if (column < columns.size()
+                        && HotfixRowDecoder.rawCandidate(columns.get(column), field)) {
+                    candidates.add(column);
+                }
+            }
+        }
+        if (candidates.isEmpty() || metadata.rows() > options.maxScanRows()) {
+            return Set.of();
+        }
+        var ref = TableTypes.Ref.id(metadata.entry().fileDataId());
+        long after = -1;
+        String identity = null;
+        for (; ; ) {
+            token.check();
+            var page =
+                    await(
+                            base.page(
+                                    new TableTypes.PageRequest(
+                                            ref, after, 1000, List.of(), identity),
+                                    priority,
+                                    token));
+            if (page.state() != TableTypes.PageState.OK) {
+                return Set.of();
+            }
+            identity = page.identity();
+            for (var row : page.rows()) {
+                var values = row.row().values();
+                candidates.removeIf(
+                        c ->
+                                c >= values.size()
+                                        || !HotfixRowDecoder.fitsDeclared(
+                                                values.get(c), columns.get(c).interpretation()));
+            }
+            if (candidates.isEmpty() || page.nextAfter() == null) {
+                return Set.copyOf(candidates);
+            }
+            after = page.nextAfter();
+        }
     }
 
     private List<Db2Types.Row> readBase(

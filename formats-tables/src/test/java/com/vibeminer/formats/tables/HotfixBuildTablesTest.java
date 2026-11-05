@@ -75,7 +75,24 @@ class HotfixBuildTablesTest {
 
     private static BuildTables numbers(
             long hash, Db2ByteSource source, boolean relation, HotfixMemory memory) {
-        byte[] bytes = Db2Fixture.numeric("WDC5", 0, 32, 9, new long[0], true);
+        return numbers(
+                hash,
+                source,
+                memory,
+                9,
+                relation ? "int ID\nint<Numbers::ID> Value" : "int ID\nint Value",
+                "$id,noninline$ID<u32>\nValue<u32>");
+    }
+
+    /** Base row 7 (copied to 8) holds {@code baseValue} in a 32-bit physical Value field. */
+    private static BuildTables numbers(
+            long hash,
+            Db2ByteSource source,
+            HotfixMemory memory,
+            long baseValue,
+            String columns,
+            String fields) {
+        byte[] bytes = Db2Fixture.numeric("WDC5", 0, 32, baseValue, new long[0], true);
         ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(152, (int) hash);
         var files =
                 new MemoryFiles()
@@ -94,10 +111,7 @@ class HotfixBuildTablesTest {
                                         false),
                                 bytes,
                                 List.of());
-        var document =
-                Db2Fixture.definition(
-                        relation ? "int ID\nint<Numbers::ID> Value" : "int ID\nint Value",
-                        "$id,noninline$ID<u32>\nValue<u32>");
+        var document = Db2Fixture.definition(columns, fields);
         String hex = String.format("%08X", hash);
         var definitions =
                 new TableDefinitions(
@@ -628,6 +642,72 @@ class HotfixBuildTablesTest {
             }
             assertEquals(found, bulk.size());
             assertTrue(found > 0, "fixture has base rows");
+        }
+    }
+
+    private static BuildTables rawByte(long baseValue, byte[]... changes) {
+        // An unverified provider name ("?") stored in 32 physical bits but declared u8: base rows
+        // keep the physical integer and the header carries a raw-physical interpretation.
+        return numbers(
+                0x11223344L,
+                cache(changes),
+                new HotfixMemory(64L << 20, 256L << 20),
+                baseValue,
+                "int ID\nint Value?",
+                "$id,noninline$ID<u32>\nValue<u8>");
+    }
+
+    private static byte[] u8(int value) {
+        return new byte[] {(byte) value};
+    }
+
+    @Test
+    void rawUnsignedByteColumnDecodesWhenEveryBaseValueFitsItsDeclaredWidth() {
+        try (var tables =
+                rawByte(
+                        9,
+                        entry(0x11223344L, 1, 7, 1, u8(255)),
+                        entry(0x11223344L, 1, 20, 1, u8(0)))) {
+            var schema = tables.schema(TableTypes.Ref.id(100), P, Cancellation.NONE).join();
+            assertTrue(
+                    schema.columns().get(1).interpretation() != null,
+                    "fixture column is raw-physical in base rows");
+            var replaced = tables.get(TableTypes.Ref.id(100), 7, P, Cancellation.NONE).join();
+            assertEquals(TableTypes.RowOutcome.FOUND, replaced.outcome());
+            assertEquals("255", replaced.row().row().values().get(1));
+            var added = tables.get(TableTypes.Ref.id(100), 20, P, Cancellation.NONE).join();
+            assertEquals("0", added.row().row().values().get(1));
+            assertEquals(
+                    HotfixViewInfo.Origin.HOTFIX,
+                    tables.hotfixInfo(TableTypes.Ref.id(100), 7L, P, Cancellation.NONE)
+                            .join()
+                            .orElseThrow()
+                            .row()
+                            .origin());
+        }
+    }
+
+    @Test
+    void rawColumnWhoseBaseValuesExceedTheDeclaredWidthStaysRefused() {
+        // Like a float stored where the definition declares a small integer: base rows print a
+        // value the declared width cannot hold, so a hotfix decode could not match their text.
+        try (var tables = rawByte(1_050_214_400L, entry(0x11223344L, 1, 7, 1, u8(3)))) {
+            assertEquals(
+                    TableTypes.RowOutcome.UNKNOWN,
+                    tables.get(TableTypes.Ref.id(100), 7, P, Cancellation.NONE).join().outcome());
+            assertEquals(
+                    HotfixViewInfo.Origin.UNRESOLVED,
+                    tables.hotfixInfo(TableTypes.Ref.id(100), 7L, P, Cancellation.NONE)
+                            .join()
+                            .orElseThrow()
+                            .row()
+                            .origin());
+        }
+        try (var tables = rawByte(256, entry(0x11223344L, 1, 7, 1, u8(3)))) {
+            assertEquals(
+                    TableTypes.RowOutcome.UNKNOWN,
+                    tables.get(TableTypes.Ref.id(100), 7, P, Cancellation.NONE).join().outcome(),
+                    "256 is one past the u8 range");
         }
     }
 
