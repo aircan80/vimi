@@ -169,15 +169,28 @@ public final class HotfixBuildTables implements BuildTables {
         return bytes;
     }
 
-    /** Refuses before any eviction when even evicting every unpinned view could not make room. */
-    private void requireRoom(long bytes) {
+    /**
+     * Refuses before any eviction when even evicting every unpinned view could not make room.
+     * {@code generation} is the release generation read before the free memory, so a release that
+     * lands after the check is never missed by the retry rule.
+     */
+    private void requireRoom(long bytes, long generation) {
         if (bytes > memory.tableBytes()) {
-            throw over(HotfixViewInfo.TABLE_BUDGET);
+            throw new OverBudget(HotfixViewInfo.TABLE_BUDGET, generation);
         }
-        long generation = memory.generation();
         if (bytes > memory.available() + ownUnpinnedBytes()) {
             throw new OverBudget(HotfixViewInfo.RETAINED_BUDGET, generation);
         }
+    }
+
+    private void evictOldestUnpinned() {
+        for (var key : views.keySet()) {
+            if (!pinned.contains(key)) {
+                charge.release(views.remove(key).bytes);
+                return;
+            }
+        }
+        throw new IllegalStateException("Hotfix view eviction found only pinned views");
     }
 
     private static final class Job<T> {
@@ -193,11 +206,16 @@ public final class HotfixBuildTables implements BuildTables {
     private final LinkedHashMap<Long, View> views = new LinkedHashMap<>(8, .75f, true);
     private final Set<Long> pinned = new HashSet<>();
     private final Map<Long, Unavailable> unavailable = new HashMap<>();
+    // Base identity each table had when it was last asked for; hotfixInfo reports a refusal only
+    // while it still describes that base.
+    private final Map<Long, String> observed = new HashMap<>();
     // Tables refused during the current operation: one operation never mixes base and overlaid
     // rows of a table, and never recompiles a refused table per read.
     private final Set<Long> operationSkipped = new HashSet<>();
     // Overlay compilations that started decoding; observed by tests only.
     int compiles;
+    // Test seam over the bulk base-ordinal result; production keeps it as is.
+    java.util.function.UnaryOperator<Map<Long, Long>> ordinalsProbe = found -> found;
     private final Set<Job<?>> jobs = new HashSet<>();
     private final ThreadPoolExecutor worker =
             new ThreadPoolExecutor(
@@ -410,13 +428,18 @@ public final class HotfixBuildTables implements BuildTables {
             return null;
         }
         long id = metadata.entry().fileDataId();
+        observed.put(id, metadata.identity());
+        if (operationSkipped.contains(id)) {
+            // Refused earlier in this operation: stay on base rows even if the base or the
+            // memory changed since, so one operation never mixes base and overlaid rows.
+            return null;
+        }
         var skipped = unavailable.get(id);
         if (skipped != null) {
             if (!skipped.identity().equals(metadata.identity())) {
                 // The base changed; an earlier refusal no longer describes this table.
                 unavailable.remove(id);
-            } else if (operationSkipped.contains(id)
-                    || skipped.reason().equals(HotfixViewInfo.TABLE_BUDGET)
+            } else if (skipped.reason().equals(HotfixViewInfo.TABLE_BUDGET)
                     || skipped.reason().equals(HotfixViewInfo.RETAINED_BUDGET)
                             && skipped.generation() == memory.generation()) {
                 // An oversized table stays skipped. A full shared budget is retried only after
@@ -482,7 +505,7 @@ public final class HotfixBuildTables implements BuildTables {
         boolean special = hash == 0xDF2F53CFL || hash == 0x021826BBL;
         // Every non-ignored operation charges at least 384 bytes; check that floor before
         // decoding anything, so a full shared budget costs no decode work.
-        requireRoom((256L << 10) + (special ? 0 : 384L * input.size()));
+        requireRoom((256L << 10) + (special ? 0 : 384L * input.size()), memory.generation());
         compiles++;
         HotfixRowDecoder.Layout layout = null;
         try {
@@ -582,22 +605,19 @@ public final class HotfixBuildTables implements BuildTables {
         var additions = new ArrayList<Db2Types.Row>();
         var additionIndex = new HashMap<Long, Integer>();
         int added = 0, replaced = 0, deleted = 0, protectedRows = 0, unknown = 0;
-        // One base preparation for every changed ID; a failed bulk read falls back to get().
+        // One base preparation for every changed ID. When the base cannot be read, the table is
+        // refused for this operation rather than preparing the base once per changed ID.
         var ordinals =
-                await(base.foundOrdinals(TableTypes.Ref.id(id), changes.keySet(), priority, token));
+                ordinalsProbe.apply(
+                        await(
+                                base.foundOrdinals(
+                                        TableTypes.Ref.id(id), changes.keySet(), priority, token)));
+        if (ordinals == null) {
+            throw over(HotfixViewInfo.BASE_UNAVAILABLE);
+        }
         for (var changed : new TreeMap<>(changes).entrySet()) {
             token.check();
-            Long ordinal;
-            if (ordinals != null) {
-                ordinal = ordinals.get(changed.getKey());
-            } else {
-                var original =
-                        await(base.get(TableTypes.Ref.id(id), changed.getKey(), priority, token));
-                ordinal =
-                        original.outcome() == TableTypes.RowOutcome.FOUND
-                                ? original.row().ordinal()
-                                : null;
-            }
+            Long ordinal = ordinals.get(changed.getKey());
             boolean found = ordinal != null;
             if (found) {
                 if (ordinal < 0 || ordinal >= metadata.rows()) {
@@ -642,20 +662,17 @@ public final class HotfixBuildTables implements BuildTables {
                         unknown,
                         ignored,
                         binding.inputFingerprint());
-        requireRoom(bytes);
-        while (views.size() >= CACHE_TABLES || !charge.reserve(bytes)) {
-            Long victim = null;
-            for (var key : views.keySet()) {
-                if (!pinned.contains(key)) {
-                    victim = key;
-                    break;
-                }
+        // Check, evict and reserve under the accountant's lock: no other handle can take the room
+        // between the check and the reservation, so a refusal never evicts this handle's views
+        // and an accepted view never fails after evicting them.
+        synchronized (memory) {
+            requireRoom(bytes, memory.generation());
+            while (views.size() >= CACHE_TABLES) {
+                evictOldestUnpinned();
             }
-            if (victim == null) {
-                // Another handle took the room after the check above.
-                throw over(HotfixViewInfo.RETAINED_BUDGET);
+            while (!charge.reserve(bytes)) {
+                evictOldestUnpinned();
             }
-            charge.release(views.remove(victim).bytes);
         }
         views.put(id, result);
         pinned.add(id);
@@ -1208,16 +1225,19 @@ public final class HotfixBuildTables implements BuildTables {
     }
 
     private Optional<HotfixViewInfo> unavailableInfo(TableTypes.Ref table, Long rowId) {
-        var skipped =
-                table.fileDataId() != null
-                        ? unavailable.get(table.fileDataId())
-                        : unavailable.values().stream()
-                                .filter(
-                                        u ->
-                                                u.name() != null
-                                                        && u.name().equalsIgnoreCase(table.name()))
-                                .findFirst()
-                                .orElse(null);
+        Unavailable skipped = null;
+        for (var entry : unavailable.entrySet()) {
+            var u = entry.getValue();
+            boolean named =
+                    table.fileDataId() != null
+                            ? table.fileDataId() == entry.getKey()
+                            : u.name() != null && u.name().equalsIgnoreCase(table.name());
+            // Only while the refusal still describes the base the table was last read from.
+            if (named && u.identity().equals(observed.get(entry.getKey()))) {
+                skipped = u;
+                break;
+            }
+        }
         if (skipped == null) {
             return Optional.empty();
         }

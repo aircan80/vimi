@@ -77,6 +77,7 @@ public final class HotfixMemory {
         return charge;
     }
 
+    /** Guarded by the accountant's monitor only, so no lock order exists between the two. */
     static final class Charge {
         private final HotfixMemory memory;
         private long held;
@@ -85,26 +86,32 @@ public final class HotfixMemory {
             this.memory = memory;
         }
 
-        synchronized boolean reserve(long bytes) {
-            if (!memory.reserve(bytes)) {
-                return false;
+        boolean reserve(long bytes) {
+            synchronized (memory) {
+                if (!memory.reserve(bytes)) {
+                    return false;
+                }
+                held += bytes;
+                return true;
             }
-            held += bytes;
-            return true;
         }
 
-        synchronized void release(long bytes) {
-            if (bytes > held) {
-                throw new IllegalStateException("Hotfix handle release exceeds its charge");
+        void release(long bytes) {
+            synchronized (memory) {
+                if (bytes > held) {
+                    throw new IllegalStateException("Hotfix handle release exceeds its charge");
+                }
+                held -= bytes;
+                memory.release(bytes);
             }
-            held -= bytes;
-            memory.release(bytes);
         }
 
-        synchronized void releaseAll() {
-            long all = held;
-            held = 0;
-            memory.release(all);
+        void releaseAll() {
+            synchronized (memory) {
+                long all = held;
+                held = 0;
+                memory.release(all);
+            }
         }
     }
 }

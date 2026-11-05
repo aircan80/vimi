@@ -148,6 +148,16 @@ class HotfixBuildTablesTest {
 
     /** One handle over several authored numeric tables: file 100 + i has hash {@code hashes[i]}. */
     private static BuildTables several(HotfixMemory memory, Db2ByteSource source, long... hashes) {
+        return several(memory, new MemoryGeneratedStore(), false, source, hashes);
+    }
+
+    /** With {@code related}, every table after the first has a Value relation to the first. */
+    private static BuildTables several(
+            HotfixMemory memory,
+            MemoryGeneratedStore store,
+            boolean related,
+            Db2ByteSource source,
+            long... hashes) {
         var files = new MemoryFiles();
         var tables = new java.util.ArrayList<BundledDefinitions.DefinitionTable>();
         var documents = new java.util.HashMap<String, BundledDefinitions.Definition>();
@@ -162,7 +172,7 @@ class HotfixBuildTablesTest {
                             "dbfilesclient/numbers" + i + ".db2",
                             FileTypes.FilePathSource.LISTFILE,
                             (long) bytes.length,
-                            Integer.toString(i + 1).repeat(32),
+                            String.format("%032x", i + 1),
                             FileTypes.FileFormat.DB2,
                             FileTypes.FileFormatSource.EXTENSION,
                             FileTypes.FileStorage.STORED,
@@ -179,7 +189,10 @@ class HotfixBuildTablesTest {
                             Integer.toString(i).repeat(64).substring(0, 64),
                             "authored",
                             Db2Fixture.definition(
-                                    "int ID\nint Value", "$id,noninline$ID<u32>\nValue<u32>")));
+                                    related && i > 0
+                                            ? "int ID\nint<Numbers0::ID> Value"
+                                            : "int ID\nint Value",
+                                    "$id,noninline$ID<u32>\nValue<u32>")));
         }
         var definitions =
                 new TableDefinitions(BundledDefinitions.of(tables, documents), null, null);
@@ -195,10 +208,7 @@ class HotfixBuildTablesTest {
                                         TablesContract.BUILD, "enUS", "1.2.3.4", source, index))
                         .withHotfixMemory(memory);
         return new TablesService(
-                        localInventory(files),
-                        definitions,
-                        new GeneratedTables(new MemoryGeneratedStore()),
-                        options)
+                        localInventory(files), definitions, new GeneratedTables(store), options)
                 .forBuild(TablesContract.BUILD, "enUS", Cancellation.NONE)
                 .join()
                 .tables();
@@ -284,6 +294,168 @@ class HotfixBuildTablesTest {
             other.close();
         }
         assertEquals(0, memory.reserved());
+    }
+
+    private static ClientBuildTables base(BuildTables tables) throws Exception {
+        var field = HotfixBuildTables.class.getDeclaredField("base");
+        field.setAccessible(true);
+        return (ClientBuildTables) field.get(tables);
+    }
+
+    @Test
+    void bulkOrdinalsMatchGetOnTheDirectAndTheStoredPath() throws Exception {
+        long hash = 0x11223344L;
+        var store = new MemoryGeneratedStore();
+        try (var tables =
+                several(
+                        new HotfixMemory(64L << 20, 256L << 20),
+                        store,
+                        false,
+                        rows(hash, 7, 1),
+                        hash)) {
+            var base = base(tables);
+            var ids = List.of(7L, 8L, 9L, 4_000_000_000L);
+            for (var priority :
+                    List.of(TableTypes.Priority.INTERACTIVE, TableTypes.Priority.BACKGROUND)) {
+                int reads = store.reads() + store.rangeReads();
+                var bulk =
+                        base.foundOrdinals(TableTypes.Ref.id(100), ids, priority, Cancellation.NONE)
+                                .join();
+                if (priority == TableTypes.Priority.BACKGROUND) {
+                    assertTrue(
+                            store.reads() + store.rangeReads() > reads,
+                            "background preparation reads the stored graph");
+                }
+                int found = 0;
+                for (long id : ids) {
+                    var row =
+                            base.get(TableTypes.Ref.id(100), id, priority, Cancellation.NONE)
+                                    .join();
+                    if (row.outcome() == TableTypes.RowOutcome.FOUND) {
+                        found++;
+                        assertEquals(row.row().ordinal(), bulk.get(id), priority + " " + id);
+                    } else {
+                        assertFalse(bulk.containsKey(id), priority + " " + id);
+                    }
+                }
+                assertEquals(found, bulk.size());
+                assertTrue(found > 0);
+            }
+        }
+    }
+
+    @Test
+    void damagedStoredGraphIsReportedOnceNotRetriedPerId() throws Exception {
+        long hash = 0x11223344L;
+        var store = new MemoryGeneratedStore();
+        try (var tables =
+                several(
+                        new HotfixMemory(64L << 20, 256L << 20),
+                        store,
+                        false,
+                        rows(hash, 1_000, 200),
+                        hash)) {
+            var base = base(tables);
+            var background = TableTypes.Priority.BACKGROUND;
+            base.get(TableTypes.Ref.id(100), 7, background, Cancellation.NONE).join();
+            assertFalse(store.keys().isEmpty());
+            for (var key : store.keys()) {
+                store.damage(key);
+            }
+            int reads = store.reads() + store.rangeReads();
+            assertEquals(
+                    null,
+                    base.foundOrdinals(
+                                    TableTypes.Ref.id(100),
+                                    java.util.stream.LongStream.range(1_000, 1_200)
+                                            .boxed()
+                                            .toList(),
+                                    background,
+                                    Cancellation.NONE)
+                            .join());
+            assertTrue(
+                    store.reads() + store.rangeReads() - reads < 20,
+                    "200 IDs do not each prepare the damaged table");
+        }
+    }
+
+    @Test
+    void unreadableBaseRefusesTheOverlayForTheOperation() {
+        long hash = 0x11223344L;
+        try (var tables =
+                numbers(
+                        hash,
+                        rows(hash, 1_000, 200),
+                        false,
+                        new HotfixMemory(64L << 20, 256L << 20))) {
+            var hot = (HotfixBuildTables) tables;
+            hot.ordinalsProbe = found -> null;
+            assertEquals(
+                    TableTypes.RowOutcome.ABSENT,
+                    tables.get(TableTypes.Ref.id(100), 1_000, P, Cancellation.NONE)
+                            .join()
+                            .outcome());
+            assertEquals(
+                    HotfixViewInfo.BASE_UNAVAILABLE,
+                    tables.hotfixInfo(TableTypes.Ref.id(100), 7L, P, Cancellation.NONE)
+                            .join()
+                            .orElseThrow()
+                            .unavailable());
+            hot.ordinalsProbe = found -> found;
+            assertEquals(
+                    TableTypes.RowOutcome.FOUND,
+                    tables.get(TableTypes.Ref.id(100), 1_000, P, Cancellation.NONE)
+                            .join()
+                            .outcome(),
+                    "the next operation retries");
+        }
+    }
+
+    @Test
+    void moreThanEightTablesInOneOperationDegradeForThatOperationOnly() throws Exception {
+        long[] hashes = new long[11];
+        var changes = new byte[hashes.length][];
+        for (int i = 0; i < hashes.length; i++) {
+            hashes[i] = 0x10000000L + i;
+            // Every table changes ID 7; tables after the first point it at Numbers0 row 7.
+            changes[i] = entry(hashes[i], 1, i == 0 ? 7 : 50 + i, 1, number(7));
+        }
+        try (var tables =
+                several(
+                        new HotfixMemory(64L << 20, 256L << 20),
+                        new MemoryGeneratedStore(),
+                        true,
+                        cache(changes),
+                        hashes)) {
+            var refs =
+                    tables.referencedBy(
+                                    new TableTypes.ReferencesRequest(TableTypes.Ref.id(100), 7),
+                                    P,
+                                    Cancellation.NONE)
+                            .join();
+            assertEquals(TableTypes.ReferencesOutcome.SEARCHED, refs.outcome());
+            int degraded = 0;
+            for (int i = 1; i < hashes.length; i++) {
+                var info =
+                        tables.hotfixInfo(TableTypes.Ref.id(100 + i), null, P, Cancellation.NONE)
+                                .join();
+                if (info.isPresent()
+                        && HotfixViewInfo.OPERATION_TABLES.equals(info.get().unavailable())) {
+                    degraded++;
+                }
+            }
+            assertTrue(degraded > 0, "tables past the eighth read base rows in that operation");
+            // A later operation is a fresh start: the same table now gets its overlay.
+            assertEquals(
+                    TableTypes.RowOutcome.FOUND,
+                    tables.get(
+                                    TableTypes.Ref.id(100 + hashes.length - 1),
+                                    50 + hashes.length - 1,
+                                    P,
+                                    Cancellation.NONE)
+                            .join()
+                            .outcome());
+        }
     }
 
     @Test

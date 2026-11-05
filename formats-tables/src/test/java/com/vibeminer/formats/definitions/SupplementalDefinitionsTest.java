@@ -30,7 +30,8 @@ class SupplementalDefinitionsTest {
                 TableDefinitions.State.FETCHING_OFF,
                 resolve(original, "1.60.1.70755", "4FDF0951").state());
         var enabled = original.withSupplementalDefinitions();
-        for (String build : List.of("1.60.1.70707", "1.60.1.70753", "1.60.1.70755")) {
+        for (String build :
+                List.of("1.60.1.70707", "1.60.1.70753", "1.60.1.70755", "1.60.1.70790")) {
             for (String layout : new String[] {null, "4FDF0951", "4fdf0951"}) {
                 var result = resolve(enabled, build, layout);
                 assertEquals(TableDefinitions.State.RESOLVED, result.state());
@@ -102,6 +103,7 @@ class SupplementalDefinitionsTest {
             bytes = input.readAllBytes();
         }
         assertTrue(SupplementalDefinitions.verify(bytes).listsBuild("1.60.1.70755", TOKEN));
+        assertTrue(SupplementalDefinitions.verify(bytes).listsBuild("1.60.1.70790", TOKEN));
         assertThrows(
                 DefinitionException.class,
                 () ->

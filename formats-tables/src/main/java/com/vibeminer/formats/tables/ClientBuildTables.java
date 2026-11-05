@@ -1998,9 +1998,10 @@ final class ClientBuildTables implements BuildTables {
 
     /**
      * FOUND ordinals for many IDs under one table preparation, as {@link #get} would report them
-     * one by one. IDs that are not FOUND are absent from the map. Completes with null when the
-     * prepared source fails, so the caller can fall back to {@link #get}, which retries and
-     * classifies damaged sources.
+     * one by one. IDs that are not FOUND are absent from the map. Like {@link #get}, a failing
+     * direct DB2 source is prepared once more; completes with null when the table still cannot be
+     * read (including a damaged generated graph), so the caller can refuse with a reason instead of
+     * preparing once per ID.
      */
     CompletableFuture<Map<Long, Long>> foundOrdinals(
             TableTypes.Ref table,
@@ -2016,33 +2017,45 @@ final class ClientBuildTables implements BuildTables {
         return operation(
                 token,
                 t -> {
-                    try (var p = prepare(table, priority, true, false, t)) {
-                        if (p.direct() == null && p.stored() == null) {
-                            return null;
-                        }
-                        var found = new HashMap<Long, Long>();
-                        for (long id : ids) {
-                            t.check();
-                            var lookup =
-                                    p.direct() != null
-                                            ? p.direct().findWithOrdinal(id, t).join()
-                                            : p.stored().findWithOrdinal(id, t).join();
-                            if (lookup != null && lookup.lookup() instanceof Db2Types.Found) {
-                                found.put(id, lookup.ordinal());
+                    for (int attempt = 0; attempt < 2; attempt++) {
+                        boolean direct = false;
+                        try (var p = prepare(table, priority, attempt == 0, false, t)) {
+                            if (p.direct() == null && p.stored() == null) {
+                                return null;
                             }
+                            direct = p.direct() != null;
+                            var found = new HashMap<Long, Long>();
+                            for (long id : ids) {
+                                t.check();
+                                var lookup =
+                                        direct
+                                                ? p.direct().findWithOrdinal(id, t).join()
+                                                : p.stored().findWithOrdinal(id, t).join();
+                                if (lookup != null && lookup.lookup() instanceof Db2Types.Found) {
+                                    found.put(id, lookup.ordinal());
+                                }
+                            }
+                            return found;
+                        } catch (RuntimeException error) {
+                            Throwable cause = unwrap(error);
+                            if (direct
+                                    && (cause instanceof Db2FormatException
+                                            || cause
+                                                    instanceof
+                                                    com.vibeminer.formats.db2.Db2SourceException)) {
+                                continue;
+                            }
+                            if (cause instanceof Db2FormatException
+                                    || cause instanceof com.vibeminer.formats.db2.Db2SourceException
+                                    || cause
+                                            instanceof
+                                            com.vibeminer.generated.GeneratedStoreException) {
+                                return null;
+                            }
+                            throw error;
                         }
-                        return found;
-                    } catch (RuntimeException error) {
-                        Throwable cause = unwrap(error);
-                        if (cause instanceof Db2FormatException
-                                || cause instanceof com.vibeminer.formats.db2.Db2SourceException
-                                || cause
-                                        instanceof
-                                        com.vibeminer.generated.GeneratedStoreException) {
-                            return null;
-                        }
-                        throw error;
                     }
+                    return null;
                 });
     }
 

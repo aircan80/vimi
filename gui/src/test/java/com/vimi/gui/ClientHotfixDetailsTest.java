@@ -81,6 +81,11 @@ public final class ClientHotfixDetailsTest {
                 .join().contains("not applied to this table (too large)"), "Oversized overlay is visible");
         check(ClientHotfixDetails.row(tables, "ItemSparse", 994, "Item", "70707", Cancellation.NONE)
                 .join().contains("overlay memory busy, showing base rows"), "Busy overlay memory is not called too large");
+        check(ClientHotfixDetails.unavailable(HotfixViewInfo.OPERATION_TABLES).contains("more than 8 tables")
+                && !ClientHotfixDetails.unavailable(HotfixViewInfo.OPERATION_TABLES).contains("memory busy"),
+                "Too many tables in one request has its own reason");
+        check(ClientHotfixDetails.unavailable(HotfixViewInfo.BASE_UNAVAILABLE).contains("base table could not be read"),
+                "Unreadable base has its own reason");
         check(ClientHotfixDetails.row(tables, "Spell", 998, "Description", "70707", Cancellation.NONE)
                 .join().contains("origin not retained"), "Evicted metadata does not imply base origin");
         var header = java.nio.ByteBuffer.allocate(44).order(java.nio.ByteOrder.LITTLE_ENDIAN)
