@@ -241,7 +241,8 @@ final class SpellTextTest {
                         "15 sec",
                         List.of(new SpellTexts.Source("SpellDuration", 1, "Duration", "15000")),
                         null,
-                        15000L));
+                        15000L,
+                        Boolean.FALSE));
         var procs = new java.util.HashMap<Long, SpellText.Value>();
         procs.put(100L, new SpellText.Value("30", List.of(), null));
         var values =
@@ -273,7 +274,8 @@ final class SpellTextTest {
         assertTrue(
                 noDuration.substitutions().getFirst().issue().startsWith("Total periodic value"));
         var partialTick = new java.util.HashMap<Long, SpellText.Value>();
-        partialTick.put(100L, new SpellText.Value("10 sec", List.of(), null, 10000L));
+        partialTick.put(
+                100L, new SpellText.Value("10 sec", List.of(), null, 10000L, Boolean.FALSE));
         assertEquals(
                 "Duration is not a whole number of ticks",
                 SpellText.project(
@@ -287,6 +289,109 @@ final class SpellTextTest {
                         .issue());
         assertEquals(
                 "Chance ?%.", SpellText.project(100, "Chance $h%.", Map.of(), List.of()).display());
+        // A duration whose tick-on-application attribute is unknown never gives a total.
+        var unknownTick = new java.util.HashMap<Long, SpellText.Value>();
+        unknownTick.put(100L, new SpellText.Value("15 sec", List.of(), null, 15000L, null));
+        assertEquals(
+                "Whether the spell ticks on application is unreadable",
+                SpellText.project(
+                                100,
+                                "Total $o1.",
+                                new SpellText.Values(
+                                        Map.of(100L, Map.of(0, periodic)), unknownTick),
+                                List.of())
+                        .substitutions()
+                        .getFirst()
+                        .issue());
+    }
+
+    private static SpellText.Amount context(String value) {
+        return new SpellText.Amount(
+                new BigDecimal(value),
+                List.of(),
+                "Effect requires random, scaling or character context");
+    }
+
+    @Test
+    void expressionsRefuseHugeOperandsAndPercentageOnlyAmounts() {
+        var huge = new SpellText.Values(Map.of(100L, Map.of(0, amount("2000000000"))), Map.of());
+        assertEquals("?", SpellText.project(100, "${$s1}", huge, List.of()).display());
+        var percent = new SpellText.Amount(new BigDecimal("5"), List.of(), null, true, null);
+        var values = new SpellText.Values(Map.of(100L, Map.of(0, percent)), Map.of());
+        var result = SpellText.project(100, "${$s1*2}%", values, List.of());
+        assertEquals("?%", result.display());
+        assertTrue(result.substitutions().getFirst().issue().contains("plain percentage"));
+        var exact = SpellText.project(100, "${10/4}.2", huge, List.of());
+        assertEquals("2.50", exact.display());
+        var repeating = SpellText.project(100, "${10000000/3}.9", huge, List.of());
+        assertEquals(
+                "The expression result needs rounding",
+                repeating.substitutions().getFirst().issue());
+    }
+
+    @Test
+    void arithmeticExpressionsOverFixedAmountsAreEvaluated() {
+        var values =
+                new SpellText.Values(
+                        Map.of(
+                                100L,
+                                Map.of(0, amount("-3000"), 1, amount("15"), 2, amount("5")),
+                                123L,
+                                Map.of(0, amount("40"))),
+                        Map.of());
+        var cases =
+                Map.of(
+                        "Lasts ${$m1/-1000} sec.", "Lasts 3 sec.",
+                        "Gain ${$m2/10} more.", "Gain ? more.",
+                        "Gain ${$m2/10}.1 more.", "Gain 1.5 more.",
+                        "Heal ${$s3*2+(4-1)} now.", "Heal 13 now.",
+                        "Cross ${$123s1/-10} points.", "Cross ? points.",
+                        "Cross ${$123s1/10} points.", "Cross 4 points.",
+                        "Odd ${$s2/7}.1 rate.", "Odd ? rate.",
+                        "Neg ${$s3-10} value.", "Neg ? value.",
+                        "Zero ${$s2/(5-5)} value.", "Zero ? value.",
+                        "Lvl ${$s2*$pl} value.", "Lvl ? value.");
+        cases.forEach(
+                (raw, expected) ->
+                        assertEquals(
+                                expected,
+                                SpellText.project(100, raw, values, List.of()).display(),
+                                raw));
+        var lasts =
+                SpellText.project(100, "Lasts ${$m1/-1000} $lsecond:seconds;.", values, List.of());
+        assertEquals("Lasts 3 seconds.", lasts.display());
+        assertEquals("${$m1/-1000}", lasts.substitutions().getFirst().token());
+        var odd = SpellText.project(100, "Odd ${$s2/7}.1 rate.", values, List.of());
+        assertEquals(
+                "The expression result needs rounding", odd.substitutions().getFirst().issue());
+        var scaled =
+                SpellText.project(
+                        100,
+                        "Hit ${$s1/10}.",
+                        new SpellText.Values(Map.of(100L, Map.of(0, context("40"))), Map.of()),
+                        List.of());
+        assertEquals("Hit ?.", scaled.display());
+        assertTrue(
+                scaled.substitutions()
+                        .getFirst()
+                        .issue()
+                        .contains("random, scaling or character context"));
+        var needs = SpellText.needs(100, "${$m1/-1000} ${$123s1*2} ${$pl*$s1}");
+        assertEquals(java.util.Set.of(100L, 123L), needs.amounts());
+        for (String hostile :
+                List.of(
+                        "${" + "1+".repeat(40) + "1}",
+                        "${((((((((((1))))))))))}",
+                        "${999999999*999999999}",
+                        "${$s99}",
+                        "${$12345678901s1}",
+                        "${1e9}",
+                        "${999999999999}",
+                        "${10000000/3}.9",
+                        "${1/3*3}")) {
+            assertEquals(
+                    "?", SpellText.project(100, hostile, values, List.of()).display(), hostile);
+        }
     }
 
     private static SpellText.Amount context(String value) {

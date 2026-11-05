@@ -764,6 +764,91 @@ final class SpellTextsTest {
     }
 
     @Test
+    void totalPeriodicValueNeedsAReadableAttributesArray() {
+        var tick = new ArrayList<>(scalar(101, 0, null).values());
+        tick.set(FIELDS.indexOf("EffectAura"), "3");
+        tick.set(FIELDS.indexOf("EffectBasePointsF"), "4");
+        tick.set(FIELDS.indexOf("EffectAuraPeriod"), "3000");
+        var misc = miscTable(List.of(row(90, "16929", "0", "1", "0", "0")));
+        // The same rows with an Attributes array that is not one verified 32-bit field.
+        var fields = new ArrayList<TableSchema.SchemaColumn>();
+        for (var field : misc.schema().columns()) {
+            fields.add(
+                    !field.name().equals("Attributes")
+                            ? field
+                            : new TableSchema.SchemaColumn(
+                                    "Attributes",
+                                    TableSchema.ColumnKind.INT,
+                                    16,
+                                    false,
+                                    17,
+                                    null,
+                                    TableSchema.KeyStorage.NONE,
+                                    TableSchema.KeyStorage.NONE,
+                                    true,
+                                    WowLocale.parse("enUS"),
+                                    null,
+                                    null));
+        }
+        var unreadable =
+                new MemoryTables.FakeTable(
+                        misc.entry(),
+                        misc.columns(),
+                        misc.rows(),
+                        new TableSchema(
+                                fields,
+                                misc.schema().layoutHashes(),
+                                misc.schema().match(),
+                                misc.schema().locale(),
+                                null),
+                        Map.of(),
+                        true);
+        var world =
+                new MemoryTables()
+                        .add(
+                                BUILD,
+                                "enUS",
+                                List.of(
+                                        table(
+                                                1,
+                                                "Spell",
+                                                List.of("Description_lang"),
+                                                List.of(row(16929, "Bleeds $o1 over $d.")),
+                                                TableTypes.State.READY),
+                                        table(
+                                                2,
+                                                "SpellEffect",
+                                                FIELDS,
+                                                List.of(
+                                                        new Db2Types.Row(
+                                                                101, false, null, tick, List.of())),
+                                                TableTypes.State.READY),
+                                        unreadable,
+                                        layout(
+                                                table(
+                                                        4,
+                                                        "SpellDuration",
+                                                        List.of(
+                                                                "Duration",
+                                                                "DurationPerLevel",
+                                                                "MaxDuration",
+                                                                "DurationPerResource"),
+                                                        List.of(row(1, "15000", "0", "15000", "0")),
+                                                        TableTypes.State.READY),
+                                                "4FDF0951")));
+        try (var tables = world.forBuild(BUILD, "enUS", Cancellation.NONE).join().tables();
+                var service = new SpellTexts(tables, "1.60.1.70790")) {
+            var result =
+                    service.description(16929, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                            .join();
+            assertEquals("Bleeds ? over 15 sec.", result.display());
+            assertEquals(
+                    "Whether the spell ticks on application is unreadable",
+                    result.substitutions().getFirst().issue());
+        }
+    }
+
+    @Test
     void totalPeriodicValueRefusesSpellsThatTickOnApplication() {
         var tick = new ArrayList<>(scalar(101, 0, null).values());
         tick.set(FIELDS.indexOf("EffectAura"), "3");

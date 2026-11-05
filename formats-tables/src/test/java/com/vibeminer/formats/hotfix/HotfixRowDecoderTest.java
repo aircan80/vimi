@@ -395,6 +395,46 @@ class HotfixRowDecoderTest {
                 () -> new HotfixRowDecoder.Limits(65537, 128, 16384, 131072));
     }
 
+    private static HotfixRowDecoder.Layout wide(int fields) {
+        var columns = new StringBuilder("int ID");
+        var layout = new StringBuilder("$id,noninline$ID<u32>");
+        for (int i = 0; i < fields; i++) {
+            columns.append("\nint C").append(i);
+            layout.append("\nC").append(i).append("<u8>");
+        }
+        return layout(columns.toString(), layout.toString());
+    }
+
+    @Test
+    void wideTablesDecodeUpToTheBaseReadersColumnBound() {
+        assertEquals(
+                new Db2Types.Limits().maxColumns(),
+                HotfixRowDecoder.Limits.MAX_COLUMNS,
+                "the hotfix ceiling is the base reader's flattened-column bound");
+        // PlayerCondition has 224 columns; 223 fields plus the noninline ID.
+        var layout = wide(223);
+        var body = ByteBuffer.allocate(223);
+        for (int i = 0; i < 223; i++) {
+            body.put((byte) (i % 100));
+        }
+        var values = decode(layout, 9, body.flip()).row().values();
+        assertEquals(224, values.size());
+        assertEquals("9", values.get(0));
+        assertEquals("22", values.get(223));
+        // Past the bound (one array flattened to 513 columns plus the ID) is still refused.
+        int over = HotfixRowDecoder.Limits.MAX_COLUMNS + 1;
+        refused(
+                HotfixRowDecoder.Reason.LIMIT,
+                layout("int ID\nint C", "$id,noninline$ID<u32>\nC<u8>[" + over + "]"),
+                9,
+                ByteBuffer.allocate(over));
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        new HotfixRowDecoder.Limits(
+                                65536, HotfixRowDecoder.Limits.MAX_COLUMNS + 1, 16384, 131072));
+    }
+
     @Test
     void realBitpackedNativeRecordDoesNotSupplyHotfixPhysicalWidth() {
         var doc = Db2Fixture.definition("int ID\nint Value", "$id,noninline$ID<u32>\nValue<8>");
