@@ -1856,6 +1856,11 @@ The higher-level generated-record store and network clients are separate work.
 
 ## Remaining parity work
 
+Reviewed for #26 on 2026-11-05; see
+[object-store-storage-review.md](docs/object-store-storage-review.md) for the current
+status of each item, the product issues found and the evidence. C# compatibility is
+not a goal (owner decision, 2026-11-05).
+
 This is not yet full reference parity. See README's Current limits. In particular:
 - Broader platform readiness remains. Bounded maintenance resources/benchmarks (#19)
   use FILE temporary tables, fixed pack-ID bitmaps and 256-row pages; see
