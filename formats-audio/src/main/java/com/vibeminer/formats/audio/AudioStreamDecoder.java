@@ -109,17 +109,9 @@ public final class AudioStreamDecoder {
                 return (int) (end - length);
             }
         }
-        if (end - 10 >= floor && ascii(encoded, end - 10, "3DI")) {
-            int size = syncsafe(encoded, end - 4);
-            if (size >= 0 && size + 20L <= end - floor) {
-                int tag = end - size - 20;
-                if (id3Length(encoded, tag) == size + 20) {
-                    return tag;
-                }
-            }
-        }
-        // An ID3v2 tag without a footer can only be found by its header: one whose declared length
-        // reaches exactly to the end.
+        // A trailing ID3v2 tag is found by its header: one whose declared length, including any
+        // ID3v2.4 footer, reaches exactly to the end. A footer alone proves nothing more, since it
+        // only repeats the header's size.
         for (int tag = end - 10; tag >= floor; tag--) {
             if (encoded[tag] == 'I'
                     && encoded[tag + 3] >= 2
