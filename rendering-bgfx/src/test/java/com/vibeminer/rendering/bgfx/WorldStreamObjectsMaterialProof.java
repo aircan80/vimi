@@ -148,9 +148,9 @@ public final class WorldStreamObjectsMaterialProof {
     /** Three quads at eye depth 5, eye-right [-3,-1], [-0.9,0.9] and [1,3], eye-up [-2,2]. */
     static WorldStreamTileWriter.Exterior quads() {
         var builder = WorldStreamTileWriter.Exterior.builder();
-        builder.image(2, 2, solid(200, 40, 40, 255));
-        builder.image(2, 2, solid(10, 250, 10, 0));
-        builder.image(2, 2, solid(0, 0, 255, 128));
+        builder.image(2, 2, WorldStreamObjectsFileTest.chain(2, 2, solid(200, 40, 40, 255)));
+        builder.image(2, 2, WorldStreamObjectsFileTest.chain(2, 2, solid(10, 250, 10, 0)));
+        builder.image(2, 2, WorldStreamObjectsFileTest.chain(2, 2, solid(0, 0, 255, 128)));
         builder.model();
         double[][] spans = {{-3, -1}, {-.9, .9}, {1, 3}};
         var vertices = FloatBuffer.allocate(12 * 8);

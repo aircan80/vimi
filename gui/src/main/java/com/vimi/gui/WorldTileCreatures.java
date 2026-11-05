@@ -153,7 +153,10 @@ final class WorldTileCreatures implements AutoCloseable {
         DisplayModelTypes.Preview preview(long displayId, Cancellation token) throws Exception;
     }
 
-    /** RGBA8 image with power-of-two sides of at most {@link #IMAGE_SIDE}. */
+    /**
+     * RGBA8 image with power-of-two sides of at most {@link #IMAGE_SIDE}, as its full packed mip
+     * chain ({@link com.vibeminer.rendering.world.ObjectTextureMips}).
+     */
     record Image(int width, int height, byte[] rgba) {}
 
     /**
@@ -171,7 +174,10 @@ final class WorldTileCreatures implements AutoCloseable {
 
         long pixels() {
             long sum = 0;
-            for (var image : images) sum += (long) image.width() * image.height();
+            for (var image : images) {
+                sum += com.vibeminer.rendering.world.ObjectTextureMips.chainPixels(
+                        image.width(), image.height());
+            }
             return sum;
         }
     }
@@ -563,7 +569,11 @@ final class WorldTileCreatures implements AutoCloseable {
                 rgba[at + 3] = (byte) 255;
             }
         }
-        return new Image(w, h, rgba);
+        // Creature textures arrive as one level: the chain is generated (issue #265).
+        var chain = com.vibeminer.rendering.world.ObjectTextureMips.build(w, h, rgba,
+                com.vibeminer.rendering.world.ObjectTextureMips.OPAQUE, (below, lw, lh) -> null,
+                token::isCanceled);
+        return new Image(w, h, chain.rgba());
     }
 
     /** The source revision's spawn index, loaded once on its own daemon thread. */
