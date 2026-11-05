@@ -185,6 +185,10 @@ final class WorldStreamSourceController {
     private final Consumer<Runnable> fxPost;
     private final LongSupplier clock;
     private static final long RETRY_NANOS = 500_000_000L;
+    // Most residents one commit names: the 5 x 5 neighborhood in production.
+    private final int residents;
+    // Source entries: every resident, the staged tile, one pending tile and one retiring.
+    private final int maxEntries;
     private final ExecutorService worker =
             Executors.newSingleThreadExecutor(
                     Thread.ofPlatform().daemon().name("world-source-controller").factory());
@@ -272,6 +276,23 @@ final class WorldStreamSourceController {
             Consumer<Runnable> fxPost,
             LongSupplier clock,
             WorldStreamSourceBridge.ExteriorPreparer exteriorPreparer) {
+        this(request, starter, events, fxPost, clock, exteriorPreparer,
+                WorldStreamTransport.MAX_RESIDENTS);
+    }
+
+    /** Tests may also bound the neighborhood below the protocol's resident limit. */
+    WorldStreamSourceController(
+            Request request,
+            GpuStarter starter,
+            Events events,
+            Consumer<Runnable> fxPost,
+            LongSupplier clock,
+            WorldStreamSourceBridge.ExteriorPreparer exteriorPreparer,
+            int residents) {
+        if (residents < 1 || residents > WorldStreamTransport.MAX_RESIDENTS)
+            throw new IllegalArgumentException("Resident bound");
+        this.residents = residents;
+        maxEntries = residents + 3;
         this.exteriorPreparer = Objects.requireNonNull(exteriorPreparer);
         this.clock = Objects.requireNonNull(clock);
         this.request = Objects.requireNonNull(request);
@@ -304,7 +325,8 @@ final class WorldStreamSourceController {
 
     void neighborhood(List<WorldFormats.Tile> ordered) {
         Objects.requireNonNull(ordered);
-        if (ordered.size() > 9) throw new IllegalArgumentException("Neighborhood bounds");
+        if (ordered.size() > residents)
+            throw new IllegalArgumentException("Neighborhood bounds");
         var copy = List.copyOf(ordered);
         for (int i = 0; i < copy.size(); i++) {
             for (int j = 0; j < i; j++) {
@@ -746,7 +768,7 @@ final class WorldStreamSourceController {
             var latest = camera;
             if (latest == null) return;
             var target = new ArrayList<>(current);
-            if (target.size() == 9) {
+            if (target.size() == residents) {
                 int outgoing = target.size() - 1;
                 for (int i = target.size() - 1; i >= 0; i--) {
                     if (!containsResident(wanted, target.get(i).resident())) {
@@ -786,7 +808,7 @@ final class WorldStreamSourceController {
         }
         boolean needsSource=wanted.stream().anyMatch(tile->!unavailable.containsKey(key(tile))
                 && current.stream().noneMatch(entry->same(tile,entry.resident())));
-        if (entries.size() >= 12 && needsSource) {
+        if (entries.size() >= maxEntries && needsSource) {
             // Any missing center needs a source credit, even if never previously presented.
             boolean missingCenter=!wanted.isEmpty() && current.stream().noneMatch(
                     entry->same(wanted.getFirst(),entry.resident()));
@@ -1121,7 +1143,7 @@ final class WorldStreamSourceController {
                             candidate.height(),()->closing)) {
                 skySuppressed=true;
                 synchronized(lock) {
-                    if(!closing && borrowed==null && queued==null && entries.size()>=12
+                    if(!closing && borrowed==null && queued==null && entries.size()>=maxEntries
                             && !presented.isEmpty() && candidate.content()==currentReceipt) {
                         // Detached old GUI pixels remain a historical raster, not a live Source borrow.
                         // No new receipt/sequence is acknowledged and no new pixels are displayed.

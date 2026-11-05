@@ -1161,6 +1161,11 @@ class WorldTerrainTextureSourceTest {
         }
         files.sources.put(1L, manyWdt(tiles));
         var source = new WorldTerrainTextureSource(files.files(), pool);
+        // Capacity beyond the legacy nine current plus nine pending is held by other borrowers.
+        var others = new ArrayList<TerrainAtlasPool.Reservation>();
+        for (int i = 18; i < TerrainAtlasPool.MAX_ENTRIES; i++) {
+            others.add(pool.reserve().orElseThrow());
+        }
         try (var current =
                         source.read(MAP, tiles.subList(0, 9), Cancellation.NONE, p -> {})
                                 .get(10, TimeUnit.SECONDS);
@@ -1169,7 +1174,7 @@ class WorldTerrainTextureSourceTest {
                                 .get(10, TimeUnit.SECONDS)) {
             assertEquals(9, current.tiles().size());
             assertEquals(9, pending.tiles().size());
-            assertEquals(18, pool.stats().entries());
+            assertEquals(TerrainAtlasPool.MAX_ENTRIES, pool.stats().entries());
             assertEquals(18, pool.stats().leaseClaims());
             assertEquals(18, pool.stats().cachedEntries());
             try (var refused =
@@ -1180,9 +1185,12 @@ class WorldTerrainTextureSourceTest {
                         refused.tiles().getFirst().state());
                 assertTrue(refused.retainAtlas(tiles.getLast().x(), tiles.getLast().y()).isEmpty());
             }
-            assertEquals(18, pool.stats().entries());
+            assertEquals(TerrainAtlasPool.MAX_ENTRIES, pool.stats().entries());
             assertEquals(18, pool.stats().cachedEntries());
         } finally {
+            for (var other : others) {
+                other.close();
+            }
             source.closeAsync().get(5, TimeUnit.SECONDS);
             pool.closeAsync().get(5, TimeUnit.SECONDS);
         }

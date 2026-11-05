@@ -92,7 +92,7 @@ final class WorldStreamParentState {
 
     private final Object owner = new Object();
     private final WorldStreamEnvelope.Session session;
-    private final long[] generations = new long[10];
+    private final long[] generations = new long[WorldStreamState.SLOTS];
     private WorldStreamState.Lease credit;
     private long serial, transaction, content;
     private boolean hello, closed, childGone;
@@ -219,7 +219,7 @@ final class WorldStreamParentState {
     Commit prepareCommit(long policy, List<Resident> ordered) {
         Objects.requireNonNull(ordered);
         int count = ordered.size();
-        require(count >= 0 && count <= 9, "Commit count");
+        require(count >= 0 && count <= WorldStreamState.MAX_ACTIVE, "Commit count");
         var snapshot = new Resident[count];
         // Caller list code must never run under the state monitor.
         for (int i = 0; i < count; i++) {
@@ -380,7 +380,7 @@ final class WorldStreamParentState {
                             && value.lease().generation() == generations[value.lease().slot()] + 1,
                     "Credit order");
             int free = 0;
-            while (free < 10) {
+            while (free < WorldStreamState.SLOTS) {
                 int slot = free;
                 if (active.stream().noneMatch(member -> member.lease.slot() == slot)) {
                     break;

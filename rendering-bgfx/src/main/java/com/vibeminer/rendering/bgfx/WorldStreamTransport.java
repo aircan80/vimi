@@ -15,6 +15,12 @@ import java.util.concurrent.CompletableFuture;
  * and retains its permit until terminatedAndDrained completes successfully.
  */
 public final class WorldStreamTransport {
+    /** Most residents one commit may name: the 5 x 5 neighborhood around the camera tile. */
+    public static final int MAX_RESIDENTS = WorldStreamState.MAX_ACTIVE;
+
+    /** One tile beside the active residents is staged while the next commit is prepared. */
+    public static final int MAX_PREPARED = MAX_RESIDENTS + 1;
+
     public enum Backend {
         DEFAULT,
         VULKAN,
@@ -749,7 +755,7 @@ public final class WorldStreamTransport {
         /** Bounded array snapshot on caller; validation/publication and all IO run off caller. */
         public CompletableFuture<CommitReceipt> commit(long policy, Resident... ordered) {
             Objects.requireNonNull(ordered);
-            if (ordered.length > 9 || policy < descriptor.policy()) {
+            if (ordered.length > MAX_RESIDENTS || policy < descriptor.policy()) {
                 throw new IllegalArgumentException("World commit bounds");
             }
             var snapshot = ordered.clone();

@@ -629,7 +629,7 @@ final class WorldStreamSession {
                 return;
             }
             var decoded = result.commit();
-            List<WorldStreamState.Lease> table = new ArrayList<>(9);
+            List<WorldStreamState.Lease> table = new ArrayList<>(WorldStreamState.MAX_ACTIVE);
             for (var member : decoded.members()) {
                 var lease =
                         state.active().stream()

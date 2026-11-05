@@ -19,13 +19,13 @@ import javax.imageio.ImageIO;
 
 /** Authored real Vulkan/native/mmap proof only. No user data, window, pipe or GUI integration. */
 public final class WorldStreamNativeProof {
-    private static final WorldStreamState.Nonce NONCE = new WorldStreamState.Nonce(123, -456);
-    private static final String SCOPE = "cd".repeat(32);
-    private static final WorldStreamEnvelope.Session SESSION =
+    static final WorldStreamState.Nonce NONCE = new WorldStreamState.Nonce(123, -456);
+    static final String SCOPE = "cd".repeat(32);
+    static final WorldStreamEnvelope.Session SESSION =
             new WorldStreamEnvelope.Session(NONCE, SCOPE, 1);
     private static final TerrainCamera CAMERA = new TerrainCamera(-100, -10, 50, 0, -.6);
     private static final int WIDTH = 256, HEIGHT = 256;
-    private static long camera = 1, sequence;
+    static long camera = 1, sequence;
     private static int framesDuringUploads;
 
     /**
@@ -138,7 +138,7 @@ public final class WorldStreamNativeProof {
         return WorldStreamPackedTile.prepare(input, () -> false);
     }
 
-    private static CompletableFuture<WorldStreamPackedTile> prepare(
+    static CompletableFuture<WorldStreamPackedTile> prepare(
             ExecutorService worker,
             Path path,
             long tx,
@@ -158,12 +158,11 @@ public final class WorldStreamNativeProof {
                 worker);
     }
 
-    private static WorldStreamControl.Camera command(
-            long revision, int width, int height, long policy) {
+    static WorldStreamControl.Camera command(long revision, int width, int height, long policy) {
         return new WorldStreamControl.Camera(NONCE, revision, policy, width, height, CAMERA);
     }
 
-    private static WorldFrameFileV2.Frame read(WorldFrameFileV2 reader, long content, long floor)
+    static WorldFrameFileV2.Frame read(WorldFrameFileV2 reader, long content, long floor)
             throws Exception {
         var frame =
                 reader.readLatest(
@@ -176,7 +175,7 @@ public final class WorldStreamNativeProof {
         return frame;
     }
 
-    private static void upload(
+    static void upload(
             WorldStreamNativeOwner owner,
             WorldStreamPackedTile packed,
             WorldFrameFileV2 reader,
@@ -204,7 +203,7 @@ public final class WorldStreamNativeProof {
         require(upload.successful() != cancel, "Upload terminal state");
     }
 
-    private static WorldFrameFileV2.Frame accepted(
+    static WorldFrameFileV2.Frame accepted(
             WorldStreamNativeOwner owner, WorldFrameFileV2 reader, long content) throws Exception {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
         // Reuse the same camera revision after COMMIT: standing-still content must produce a frame.
@@ -378,12 +377,18 @@ public final class WorldStreamNativeProof {
                     }
                     var stats = owner.stats();
                     require(
-                            stats.dynamicBuffers() == 10
-                                    && stats.backingBuffers() == stats.contextBuffers() + 11,
+                            stats.dynamicBuffers() == BgfxWorldStreamRenderer.SLOT_COUNT
+                                    && stats.backingBuffers()
+                                            == stats.contextBuffers()
+                                                    + BgfxWorldStreamRenderer.SLOT_COUNT
+                                                    + 1,
                             "Fixed native buffer counts " + stats);
                     require(
-                            stats.textures() == stats.contextTextures() + 15,
-                            "Ten atlases plus five fixed target/readbacks");
+                            stats.textures()
+                                    == stats.contextTextures()
+                                            + BgfxWorldStreamRenderer.SLOT_COUNT
+                                            + 5,
+                            "One atlas per slot plus five fixed target/readbacks");
                     require(
                             stats.upload().references() == 0
                                     && stats.upload().liveUploadBytes() == 0,
@@ -481,7 +486,9 @@ public final class WorldStreamNativeProof {
                 var successor =
                         new WorldStreamNativeOwner(
                                 nextSession, nextFrames, BGFX_RENDERER_TYPE_VULKAN)) {
-            require(successor.stats().dynamicBuffers() == 10, "Successor context resources");
+            require(
+                    successor.stats().dynamicBuffers() == BgfxWorldStreamRenderer.SLOT_COUNT,
+                    "Successor context resources");
         }
     }
 }
