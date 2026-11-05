@@ -661,8 +661,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                         objectsReason("build failed", wmoFamily, step, failed)
                                 + " ("
                                 + count
-                                + (count == 1 ? " tile" : " tiles")
-                                + " this session)");
+                                + (count == 1 ? " object build" : " object builds")
+                                + " failed this session)");
                 System.err.flush();
             }
             return 0;
@@ -1412,6 +1412,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      */
     static final class ObjectsFailureLog {
         static final int DISTINCT = 8;
+        // Each remembered reason is cut to this many characters, so the set stays small.
+        static final int MAX_KEY_CHARS = 256;
         private final java.util.Set<String> seen = new java.util.HashSet<>();
         private long count;
 
@@ -1419,6 +1421,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         long admit(String step, Throwable failed) {
             count++;
             String reason = step + ": " + failed.getClass().getName() + ": " + failed.getMessage();
+            if (reason.length() > MAX_KEY_CHARS) {
+                reason = reason.substring(0, MAX_KEY_CHARS);
+            }
             boolean fresh = seen.size() < DISTINCT && seen.add(reason);
             return fresh || count % 64 == 0 ? count : 0;
         }

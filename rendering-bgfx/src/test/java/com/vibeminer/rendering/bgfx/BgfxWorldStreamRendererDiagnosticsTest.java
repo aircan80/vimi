@@ -36,6 +36,15 @@ class BgfxWorldStreamRendererDiagnosticsTest {
     }
 
     @Test
+    void reasonKeysAreTruncated() {
+        var log = new BgfxWorldStreamRenderer.ObjectsFailureLog();
+        String common = "m".repeat(BgfxWorldStreamRenderer.ObjectsFailureLog.MAX_KEY_CHARS);
+        assertEquals(1, log.admit("textures", new IOException(common + "first")));
+        // Differs only past the key bound: the same remembered reason.
+        assertEquals(0, log.admit("textures", new IOException(common + "second")));
+    }
+
+    @Test
     void distinctReasonsAreBounded() {
         var log = new BgfxWorldStreamRenderer.ObjectsFailureLog();
         int written = 0;
