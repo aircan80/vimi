@@ -617,6 +617,10 @@ public final class WorldExteriorObjects {
         private final Map<Long, WmoFormats.Doodads> rootDoodads = new HashMap<>();
         private final Map<Long, RootState> doodadStates = new HashMap<>();
         private final Map<Long, Integer> doodadSlots = new HashMap<>();
+
+        /** Building placements with opaque draws; only these take one of MAX_PLACEMENTS. */
+        private int opaquePlacements;
+
         private int rootsRead, groupsRead, imagesRead, vertices, indices, ranges, pixels;
         private int modelsRead, modelImagesRead, doodadVertices, doodadIndices, doodadRanges;
         private int doodadPixels, doodads, draws;
@@ -677,13 +681,17 @@ public final class WorldExteriorObjects {
         }
 
         /**
-         * When the drawn buildings' full cost exceeds the draw budget, drops cutout and blended
-         * ranges, last root first, until it fits. A building that keeps opaque ranges keeps its
-         * placements: a building the opaque-only profile drew is never capped. A building left with
-         * nothing returns to that profile's outcome: its placements and root count as EMPTY, and
-         * its model and placements are removed.
+         * First caps material-only placements, last first, beyond MAX_PLACEMENTS building
+         * placements. Then, when the drawn buildings' full cost exceeds the draw budget, drops
+         * cutout and blended ranges, last root first, until it fits. A building that keeps opaque
+         * ranges keeps its placements: a building the opaque-only profile drew is never capped. A
+         * building left with nothing returns to that profile's outcome: its placements and root
+         * count as EMPTY, and its model and placements are removed. A material-only building whose
+         * placements were all capped is removed too, its root counted EMPTY. Kept placements keep
+         * their source order; kept models are renumbered in order.
          */
         private void fitMaterialDraws() {
+            capMaterialOnlyPlacements();
             int[] uses = new int[models.size()];
             for (var placement : placements) {
                 uses[placement.model()]++;
@@ -693,9 +701,13 @@ public final class WorldExteriorObjects {
                 total += (long) uses[m] * modelDraws(m);
             }
             boolean[] removed = new boolean[models.size()];
-            for (int m = models.size() - 1; m >= 0 && total > MAX_DRAWS; m--) {
+            for (int m = models.size() - 1; m >= 0; m--) {
                 var model = models.get(m);
-                if (model.doodad() || uses[m] == 0 || admissionDraws(m) == modelDraws(m)) {
+                if (model.doodad() || admissionDraws(m) == modelDraws(m)) {
+                    continue;
+                }
+                boolean unusedMaterialOnly = uses[m] == 0 && admissionDraws(m) == 0;
+                if (!unusedMaterialOnly && (uses[m] == 0 || total <= MAX_DRAWS)) {
                     continue;
                 }
                 var kept = new ArrayList<Mesh>();
@@ -745,6 +757,31 @@ public final class WorldExteriorObjects {
             }
             draws = (int) total;
             removeModels(removed);
+        }
+
+        /** Caps the last material-only placements while building placements exceed the slots. */
+        private void capMaterialOnlyPlacements() {
+            int excess = placements.size() - MAX_PLACEMENTS;
+            if (excess <= 0) {
+                return;
+            }
+            var capped = new boolean[placements.size()];
+            for (int i = placements.size() - 1; i >= 0 && excess > 0; i--) {
+                if (admissionDraws(placements.get(i).model()) == 0) {
+                    capped[i] = true;
+                    excess--;
+                    counts[Count.PLACEMENT_DRAWN.ordinal()]--;
+                    count(Count.PLACEMENT_CAPPED);
+                }
+            }
+            var kept = new ArrayList<Placement>(MAX_PLACEMENTS);
+            for (int i = 0; i < placements.size(); i++) {
+                if (!capped[i]) {
+                    kept.add(placements.get(i));
+                }
+            }
+            placements.clear();
+            placements.addAll(kept);
         }
 
         /** Removes the flagged building models and their placements, renumbering the rest. */
@@ -888,7 +925,9 @@ public final class WorldExteriorObjects {
                     continue;
                 }
                 long rootId = record.reference().value();
-                if (placements.size() >= MAX_PLACEMENTS) {
+                // As in the opaque-only profile, only placements with opaque draws fill the
+                // slots; material-only ones are trimmed in fitMaterialDraws if they overflow.
+                if (opaquePlacements >= MAX_PLACEMENTS) {
                     count(Count.PLACEMENT_CAPPED);
                     continue;
                 }
@@ -914,6 +953,9 @@ public final class WorldExteriorObjects {
                             continue;
                         }
                         draws += cost;
+                        if (cost > 0) {
+                            opaquePlacements++;
+                        }
                         count(Count.PLACEMENT_DRAWN);
                         placements.add(
                                 new Placement(
@@ -1008,10 +1050,23 @@ public final class WorldExteriorObjects {
         /**
          * Each drawn building's set 0 and, when nonzero, its MODF doodad set, in MODD order. A MODD
          * entry is placed in the building's local axes: its position goes through the building
-         * transform and its quaternion composes with the building heading.
+         * transform and its quaternion composes with the building heading. Buildings with opaque
+         * draws go first, then material-only ones, each in placement order, so a building the
+         * opaque-only profile left empty never spends doodad, model or draw budget ahead of one it
+         * drew. Set doodads are appended in this order.
          */
         private void placeSetDoodads() {
-            var buildings = List.copyOf(placements);
+            var buildings = new ArrayList<Placement>(placements.size());
+            for (int pass = 0; pass < 2; pass++) {
+                for (var placement : placements) {
+                    boolean opaque =
+                            placement.kind() == Kind.BUILDING
+                                    && admissionDraws(placement.model()) > 0;
+                    if (opaque == (pass == 0)) {
+                        buildings.add(placement);
+                    }
+                }
+            }
             for (var building : buildings) {
                 token.check();
                 var declared = rootDoodads.get(building.rootId());
