@@ -90,12 +90,21 @@ $dotnetExecutable = (Resolve-Path ..\vibeminer\.local\toolchains\dotnet\dotnet.e
   "-PsqliteLibrary=$sqliteLibrary" "-Pdotnet=$dotnetExecutable"
 ```
 
-The first build downloads dependencies. Record counts and skips. POSIX permission
-cases intentionally skip on Windows; complete the read-only-media criteria using
-an isolated directory with native ACL/media enforcement, with permissions restored
-on every exit. Have the agent prepare that check; do not change profile-wide ACLs.
-Default-name SQLite lookup is not covered by CI's explicit-DLL setup and needs
-separate clean-machine evidence. See [native-sqlite.md](native-sqlite.md).
+The C# harness finds the reference at `..\vibeminer` relative to the `vimi`
+checkout. A worktree in another folder needs a sibling directory junction to it
+(`New-Item -ItemType Junction`); otherwise `buildCsharpInterop` fails with CS0246.
+
+The first build downloads dependencies. Record counts and skips. Only the two
+Unix lock-file mode cases in `WriterLockTest` should skip on Windows.
+`ReadOnlyMediaTest` enforces read-only media with native ACLs: it prepends a deny
+entry for the current user (write, append, attribute, delete) to each file and
+directory of the test's own temporary store, checks that creating a file is
+refused, and restores the original ACLs on every exit. It never touches other
+directories. If a run is killed mid-test, the leftover temporary folder still
+belongs to the user, who can remove the deny entry with `icacls`.
+`SqliteLibraryTest` checks default-name `sqlite3.dll` startup by putting the
+`-PsqliteLibrary` DLL's directory first on a child JVM's `PATH`. That is not a
+pristine-machine installation test. See [native-sqlite.md](native-sqlite.md).
 
 ## Start the agent
 

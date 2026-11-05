@@ -6,15 +6,26 @@ import static com.vibeminer.store.StoreAssertions.key;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.vibeminer.store.StoreTypes.Options;
 import com.vibeminer.store.StoreTypes.PutObject;
 import java.io.IOException;
+import java.nio.file.AccessDeniedException;
+import java.nio.file.FileStore;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.AclEntry;
+import java.nio.file.attribute.AclEntryPermission;
+import java.nio.file.attribute.AclEntryType;
+import java.nio.file.attribute.AclFileAttributeView;
+import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.UserPrincipal;
+import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -123,28 +134,61 @@ final class ReadOnlyMediaTest {
         }
     }
 
-    /** Changes only this test's files and always restores them, including on assumption skips. */
+    /**
+     * Changes only this test's files and always restores them, including on assumption skips. POSIX
+     * file systems get owner read-only modes. Windows (NTFS/ReFS) gets an explicit per-file deny
+     * entry for the current user that blocks writing, creating, deleting and attribute changes
+     * while leaving read, traversal and ACL ownership rights intact.
+     */
     private static final class ReadOnlyPermissions implements AutoCloseable {
+        private static final Set<AclEntryPermission> DENIED_WRITES =
+                EnumSet.of(
+                        AclEntryPermission.WRITE_DATA,
+                        AclEntryPermission.APPEND_DATA,
+                        AclEntryPermission.WRITE_NAMED_ATTRS,
+                        AclEntryPermission.WRITE_ATTRIBUTES,
+                        AclEntryPermission.DELETE,
+                        AclEntryPermission.DELETE_CHILD);
         private final Map<Path, Set<PosixFilePermission>> original = new LinkedHashMap<>();
+        private final Map<Path, List<AclEntry>> originalAcls = new LinkedHashMap<>();
 
         ReadOnlyPermissions(Path root) throws IOException {
-            assumeTrue(Files.getFileStore(root).supportsFileAttributeView("posix"));
+            FileStore store = Files.getFileStore(root);
+            boolean posix = store.supportsFileAttributeView(PosixFileAttributeView.class);
+            assumeTrue(
+                    posix || store.supportsFileAttributeView(AclFileAttributeView.class),
+                    "Requires POSIX permissions or native ACLs");
             try {
+                AclEntry deny = posix ? null : denyWrites(root);
                 try (var paths = Files.walk(root)) {
                     for (Path path : paths.toList()) {
-                        original.put(path, Files.getPosixFilePermissions(path));
-                        Files.setPosixFilePermissions(
-                                path,
-                                Files.isDirectory(path)
-                                        ? Set.of(
-                                                PosixFilePermission.OWNER_READ,
-                                                PosixFilePermission.OWNER_EXECUTE)
-                                        : Set.of(PosixFilePermission.OWNER_READ));
+                        if (posix) {
+                            original.put(path, Files.getPosixFilePermissions(path));
+                            Files.setPosixFilePermissions(
+                                    path,
+                                    Files.isDirectory(path)
+                                            ? Set.of(
+                                                    PosixFilePermission.OWNER_READ,
+                                                    PosixFilePermission.OWNER_EXECUTE)
+                                            : Set.of(PosixFilePermission.OWNER_READ));
+                        } else {
+                            AclFileAttributeView view =
+                                    Files.getFileAttributeView(path, AclFileAttributeView.class);
+                            List<AclEntry> acl = view.getAcl();
+                            originalAcls.put(path, acl);
+                            List<AclEntry> denied = new ArrayList<>(acl.size() + 1);
+                            denied.add(deny);
+                            denied.addAll(acl);
+                            view.setAcl(denied);
+                        }
                     }
                 }
                 assumeTrue(
                         !Files.isWritable(root),
                         "Requires an unprivileged permission-enforcing user");
+                if (!posix) {
+                    assertWriteDenied(root);
+                }
             } catch (IOException | RuntimeException | Error error) {
                 try {
                     close();
@@ -155,10 +199,45 @@ final class ReadOnlyMediaTest {
             }
         }
 
+        private static AclEntry denyWrites(Path root) throws IOException {
+            UserPrincipal user =
+                    root.getFileSystem()
+                            .getUserPrincipalLookupService()
+                            .lookupPrincipalByName(System.getProperty("user.name"));
+            return AclEntry.newBuilder()
+                    .setType(AclEntryType.DENY)
+                    .setPrincipal(user)
+                    .setPermissions(DENIED_WRITES)
+                    .build();
+        }
+
+        /** Proves enforcement directly instead of trusting the access-check helper alone. */
+        private static void assertWriteDenied(Path root) {
+            Path probe = root.resolve("read-only-probe");
+            assertThrows(AccessDeniedException.class, () -> Files.createFile(probe));
+            assertFalse(Files.exists(probe));
+        }
+
         @Override
         public void close() throws IOException {
+            IOException failure = null;
+            for (var entry : originalAcls.entrySet()) {
+                try {
+                    Files.getFileAttributeView(entry.getKey(), AclFileAttributeView.class)
+                            .setAcl(entry.getValue());
+                } catch (IOException restore) {
+                    if (failure == null) {
+                        failure = restore;
+                    } else {
+                        failure.addSuppressed(restore);
+                    }
+                }
+            }
             for (var entry : original.entrySet()) {
                 Files.setPosixFilePermissions(entry.getKey(), entry.getValue());
+            }
+            if (failure != null) {
+                throw failure;
             }
         }
     }

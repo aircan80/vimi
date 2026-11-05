@@ -1975,6 +1975,46 @@ are in docs/maintenance-resources.md. Benchmarks do not execute during check/tes
   and layer 2 object access. Resume Windows checks with `docs/continue-windows.md`
   when the user chooses; no Windows validation is claimed in the meantime.
 
+## Native Windows validation (2026-11-05)
+
+- Validated main `546b928dc5f31ec06698efa91c32d62e5c4638e8` plus this branch's test-only
+  changes on Windows 11 Pro 10.0.26300, x64, in native PowerShell (not WSL). Microsoft
+  OpenJDK 25.0.5.0.2 (x64). SQLite 3.54.1 x64 DLL (version resource 3.54.1, embedded source id
+  `2026-10-16 14:45:20 555e07ef...`, SHA-256
+  `4B59D3CDED9DC1608544160F3B4B10AC974C6AC0D6FFC23064E5F4C8DBD05AEA`), from the existing
+  ignored `.local\sqlite`. .NET SDK 10.0.402 installed with Microsoft's `dotnet-install.ps1`
+  into the sibling reference's `.local\toolchains\dotnet`. Reference
+  `4fd92d2a36add50c9b82e1c92bf72706e8d0df2b` built Release with locked restore, zero
+  warnings/errors.
+- Commands: the focused and full commands in `docs/continue-windows.md`, with
+  `--max-workers=2`; the full run also used `--rerun-tasks --no-build-cache` so every
+  test executed.
+- Baseline main (before the test changes): focused 21 cases, 7 skips; full 72 unit,
+  280 integration, 59 crash and 41 interoperability cases (452), zero failures/errors,
+  7 skips: four POSIX-only `ReadOnlyMediaTest` cases, the Windows default-name
+  `SqliteLibraryTest` case and two Unix lock-mode `WriterLockTest` cases.
+- Test changes: `ReadOnlyMediaTest` now enforces read-only media on Windows with native
+  ACLs. It prepends a current-user deny entry (write/append/attributes/delete) to each
+  file and directory of the test's own temporary store, proves file creation is refused,
+  and restores the original ACLs on every exit. `SqliteLibraryTest` default-name startup
+  now runs on Windows by placing the `-PsqliteLibrary` DLL's directory first on the child
+  JVM's `PATH`. A temporary negative control (not committed) confirmed that default-name
+  startup without that PATH entry fails with the actionable `OBJECT_STORE_NATIVE_LIBRARY`
+  error on this machine.
+- With the changes: full 452 cases, zero failures/errors, 2 skips (the Unix lock-mode
+  cases, which have no Windows meaning). All five read-only-media cases and all five
+  SQLite library probes ran. Formatting, Checkstyle, compiler lint and assembly passed.
+- Covered on Windows: bidirectional Java/C# writer exclusion (`InteropTest`), lock
+  reacquisition, leased pack handles with concurrent writes and deletion
+  (`PackReaderCacheTest`), process-kill crash recovery, clean read-only opens
+  without sidecars, unclean-store and nonempty-WAL refusal on read-only media, and live
+  secondary readers that see commits/deletes and never take writer ownership.
+- No product fix was needed. Not covered: a pristine-machine installation (this is an
+  existing development machine), read-only removable/optical media, and ARM64 Windows.
+  The worktree setup needed a `..\vibeminer` junction; see `docs/continue-windows.md`.
+- Next: hosted Windows CI on the PR confirms the ACL path on a runner; then the PM can
+  update #24/#25/#26. #26's final parity/readiness review is still separate work.
+
 ## Generated store and record files (#36)
 
 - Added `generated-store/`, a separate layer 1 library porting the pinned C#

@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -35,10 +36,19 @@ final class SqliteLibraryTest {
 
     @Test
     void defaultLibraryStartsInFreshProcess() throws Exception {
+        if (!System.getProperty("os.name").startsWith("Windows")) {
+            runChild(null, "success");
+            return;
+        }
+        // Windows ships no sqlite3.dll, so prove default-name startup through the standard DLL
+        // search path by putting only the supplied DLL's directory first on the child's PATH.
+        String configured = System.getProperty("vibeminer.sqlite.library");
+        assumeTrue(configured != null, "Supply -PsqliteLibrary to place sqlite3.dll on PATH");
+        Path library = Path.of(configured).toAbsolutePath();
         assumeTrue(
-                !System.getProperty("os.name").startsWith("Windows"),
-                "Windows CI supplies an explicit DLL rather than installing it on PATH");
-        runChild(null, "success");
+                library.getFileName().toString().equalsIgnoreCase("sqlite3.dll"),
+                "Default-name lookup needs a library named sqlite3.dll");
+        runChild(null, "success", library.getParent());
     }
 
     @Test
@@ -65,6 +75,10 @@ final class SqliteLibraryTest {
     }
 
     private void runChild(String library, String outcome) throws Exception {
+        runChild(library, outcome, null);
+    }
+
+    private void runChild(String library, String outcome, Path searchDirectory) throws Exception {
         Path output = folder.resolve("child-output.txt");
         List<String> command =
                 new ArrayList<>(
@@ -79,11 +93,21 @@ final class SqliteLibraryTest {
         if (library != null) {
             command.add(1, "-Dvibeminer.sqlite.library=" + library);
         }
-        Process child =
+        ProcessBuilder builder =
                 new ProcessBuilder(command)
                         .redirectErrorStream(true)
-                        .redirectOutput(output.toFile())
-                        .start();
+                        .redirectOutput(output.toFile());
+        if (searchDirectory != null) {
+            // Windows environment keys are case-insensitive, so this updates Path as well.
+            String path = builder.environment().get("PATH");
+            builder.environment()
+                    .put(
+                            "PATH",
+                            path == null
+                                    ? searchDirectory.toString()
+                                    : searchDirectory + File.pathSeparator + path);
+        }
+        Process child = builder.start();
         try {
             assertTrue(child.waitFor(30, TimeUnit.SECONDS), "Native dependency probe timed out");
             assertEquals(0, child.exitValue(), Files.readString(output));
