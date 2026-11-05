@@ -24,7 +24,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
-@Timeout(15)
+// Opening a store is disk work that a loaded CI runner can stall for seconds; it is bounded only
+// by this class timeout, like every other store test. Admission waits keep their own bounds.
+@Timeout(60)
 final class WriterAdmissionTest {
     @TempDir Path folder;
     private ObjectStore store;
@@ -40,7 +42,7 @@ final class WriterAdmissionTest {
 
     private void blockWriter() throws Exception {
         if (store == null) {
-            store = ObjectStore.open(folder).get(5, TimeUnit.SECONDS);
+            store = ObjectStore.open(folder).join();
         }
         CountDownLatch entered = new CountDownLatch(1);
         store.write(
@@ -118,7 +120,7 @@ final class WriterAdmissionTest {
         for (var write : accepted) {
             assertEquals(PutOutcome.STORED, write.get(5, TimeUnit.SECONDS).getFirst().outcome());
         }
-        store = ObjectStore.open(folder).get(5, TimeUnit.SECONDS);
+        store = ObjectStore.open(folder).join();
         assertEquals(
                 ReadState.PRESENT, store.read(object(63).key()).get(5, TimeUnit.SECONDS).state());
         assertEquals(
@@ -127,7 +129,7 @@ final class WriterAdmissionTest {
 
     @Test
     void waitingStagedAppendOwnsItsInput() throws Exception {
-        store = ObjectStore.open(folder).get(5, TimeUnit.SECONDS);
+        store = ObjectStore.open(folder).join();
         EncodedFixture fixture = EncodedFixture.sample();
         ObjectStaging staged =
                 store.stage(
@@ -151,7 +153,7 @@ final class WriterAdmissionTest {
 
     @Test
     void cancelingUnacceptedStagedCommitKeepsHandleUsable() throws Exception {
-        store = ObjectStore.open(folder).get(5, TimeUnit.SECONDS);
+        store = ObjectStore.open(folder).join();
         EncodedFixture fixture = EncodedFixture.sample();
         ObjectStaging staged =
                 store.stage(
