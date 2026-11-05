@@ -27,6 +27,9 @@ public final class WorldSpawnModelsTest {
         resolvesOffTheFxSideAndCaches();
         retiredRevisionsNeverPublish();
         failuresAreUnknownAndClicksJumpTheQueue();
+        unobservedRevisionChangesStillRetireResults();
+        offScreenNpcsLeaveTheQueue();
+        productionResolverKeepsTheChoiceWhenNamesFail();
         disclosure();
         System.out.println("World spawn models: off-FX resolution, cache, retirement, failures and disclosure passed");
     }
@@ -149,6 +152,112 @@ public final class WorldSpawnModelsTest {
         require(unopened.choice().state() == State.UNKNOWN && unopened.source().contains("build 1.60.1.70532")
                 && unopened.source().contains(CreatureModelPolicy.POLICY), "No open creature data is unknown: " + unopened);
         models.close();
+    }
+
+    private static void unobservedRevisionChangesStillRetireResults() throws Exception {
+        var fx = new Fx();
+        var revision = new AtomicReference<Object>("r1");
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        var models = new WorldSpawnModels((npc, token) -> {
+            calls.incrementAndGet();
+            if (npc == 1) {
+                entered.countDown();
+                release.await(10, TimeUnit.SECONDS);
+            }
+            return resolved(npc, qualified(npc), null);
+        }, revision::get, fx.posted::add);
+        var notified = new ArrayList<Long>();
+        models.listen(notified::add);
+        models.request(List.of(1L, 2L, 3L));
+        require(entered.await(10, TimeUnit.SECONDS), "Lookup started");
+        // Nobody reads the resolver between the revision change and the late result.
+        revision.set("r2");
+        release.countDown();
+        fx.drain(1);
+        require(notified.isEmpty(), "A late result of a retired revision never notifies");
+        require(fx.posted.poll(200, TimeUnit.MILLISECONDS) == null && calls.get() == 1,
+                "The retired queue is not worked through");
+        require(models.cached(1).isEmpty(), "Nothing from the retired revision is cached");
+        var token = new AtomicReference<Cancellation>();
+        var blocked = new CountDownLatch(1);
+        var refreshed = new WorldSpawnModels((npc, lookup) -> {
+            token.set(lookup);
+            blocked.countDown();
+            return resolved(npc, qualified(npc), null);
+        }, revision::get, fx.posted::add);
+        refreshed.request(List.of(1L));
+        require(blocked.await(10, TimeUnit.SECONDS), "Lookup started");
+        revision.set("r3");
+        refreshed.refresh();
+        require(token.get().isCanceled(), "refresh cancels the running lookup at once");
+        fx.drain(1);
+        models.close();
+        refreshed.close();
+    }
+
+    private static void offScreenNpcsLeaveTheQueue() throws Exception {
+        var fx = new Fx();
+        var gate = new CountDownLatch(1);
+        var order = new ArrayList<Long>();
+        var models = new WorldSpawnModels((npc, token) -> {
+            if (npc == 1) gate.await(10, TimeUnit.SECONDS);
+            synchronized (order) {
+                order.add(npc);
+            }
+            return resolved(npc, qualified(npc), null);
+        }, () -> "r", fx.posted::add);
+        models.request(List.of(1L, 2L, 3L));
+        models.prioritize(9);
+        models.request(List.of(4L, 5L));
+        gate.countDown();
+        fx.drain(4);
+        require(order.equals(List.of(1L, 9L, 4L, 5L)),
+                "A redraw replaces the queue, keeping a waiting click first: " + order);
+        require(fx.posted.poll(200, TimeUnit.MILLISECONDS) == null, "Dropped NPCs are not resolved");
+        models.close();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T> T proxy(Class<T> type, java.lang.reflect.InvocationHandler handler) {
+        return (T) java.lang.reflect.Proxy.newProxyInstance(type.getClassLoader(), new Class<?>[] {type}, handler);
+    }
+
+    private static void productionResolverKeepsTheChoiceWhenNamesFail() throws Exception {
+        var slot = new com.vibeminer.concepts.creatures.CreatureTypes.CreatureDisplaySlot(0, 10, 1,
+                com.vibeminer.concepts.creatures.CreatureTypes.CreatureSlotState.DECLARED);
+        var none = new com.vibeminer.concepts.creatures.CreatureTypes.CreatureDisplaySlot(1, 0, 0,
+                com.vibeminer.concepts.creatures.CreatureTypes.CreatureSlotState.NO_DECLARED_DISPLAY);
+        var chain = new com.vibeminer.concepts.creatures.CreatureTypes.CreatureDisplayChain(slot,
+                com.vibeminer.concepts.creatures.CreatureTypes.CreatureDisplayChainState.METADATA_RESOLVED,
+                null, null, 20L, null, null, 123456L, null, null, null, null, null, null, null);
+        var summary = new com.vibeminer.concepts.creatures.CreatureTypes.CreatureSummary(1, false, null,
+                new com.vibeminer.concepts.creatures.CreatureTypes.CreatureName(
+                        com.vibeminer.concepts.creatures.CreatureTypes.CreatureNameState.VALID, "Wolf", null),
+                List.of(), List.of(slot, none));
+        var found = new com.vibeminer.concepts.creatures.CreatureTypes.CreatureResult(
+                com.vibeminer.concepts.creatures.CreatureTypes.CreatureResultState.FOUND,
+                new com.vibeminer.concepts.creatures.CreatureTypes.CreatureDetail(summary, null, null, List.of(chain)),
+                null, null, null, null);
+        var creatures = proxy(com.vibeminer.concepts.creatures.BuildCreatures.class, (self, method, args) -> {
+            require(method.getName().equals("getData"), "Only the data-only lookup is used: " + method.getName());
+            return java.util.concurrent.CompletableFuture.completedFuture(found);
+        });
+        var files = proxy(com.vibeminer.files.BuildFiles.class, (self, method, args) -> {
+            require(method.getName().equals("listMetadata"), "Only metadata listing is used: " + method.getName());
+            throw new IllegalStateException("names unavailable");
+        });
+        var result = WorldSpawnModels.build(() -> creatures, () -> files, "1.60.1.70532").resolve(1, new Cancellation());
+        require(result.choice().state() == State.QUALIFIED && result.choice().modelFileDataId() == 123456
+                && result.modelPath() == null, "A failed name lookup keeps the qualified choice: " + result);
+        var failing = proxy(com.vibeminer.concepts.creatures.BuildCreatures.class, (self, method, args) ->
+                java.util.concurrent.CompletableFuture.failedFuture(new IllegalStateException("table gone")));
+        var failed = WorldSpawnModels.build(() -> failing, () -> files, "1.60.1.70532").resolve(1, new Cancellation());
+        require(failed.choice().state() == State.UNKNOWN && failed.choice().detail().contains("table gone")
+                && failed.source().contains("build 1.60.1.70532"), "Failures keep the full source: " + failed);
+        var negative = WorldSpawnModels.build(() -> creatures, () -> files, "b").resolve(-1, new Cancellation());
+        require(negative.choice().detail().contains("outside the client creature range"), "Negative IDs are refused");
     }
 
     private static void disclosure() {

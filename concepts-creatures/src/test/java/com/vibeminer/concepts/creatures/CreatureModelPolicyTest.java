@@ -90,6 +90,20 @@ class CreatureModelPolicyTest {
     }
 
     @Test
+    void invalidReferenceBesideValidDisplaysIsNeverAmbiguousOrQualified() {
+        var resolved = chain(4, CreatureDisplayChainState.METADATA_RESOLVED, 8L, 9L);
+        var single = CreatureModelPolicy.choose(found(new int[] {4, -5, 0, 0}, resolved));
+        assertEquals(State.UNRESOLVED, single.state());
+        assertEquals(Reason.INVALID_DISPLAY, single.reason());
+        assertEquals(1, single.displays());
+        assertTrue(single.detail().contains("[-5]"), single.detail());
+        var several = CreatureModelPolicy.choose(found(new int[] {4, 6, -5, 0}, resolved));
+        assertEquals(State.UNRESOLVED, several.state());
+        assertEquals(2, several.displays());
+        assertNull(several.displayId());
+    }
+
+    @Test
     void brokenSingleChainsAreUnresolvedWithTheirStop() {
         record Case(CreatureDisplayChainState state, Long model, Reason reason) {}
         for (var c :

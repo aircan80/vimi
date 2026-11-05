@@ -237,6 +237,7 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
         loading = new Cancellation();
         indexRevision = current;
         index = null;
+        if (models != null) models.refresh();
         ++generation;
         clearCanvas();
         show(true);

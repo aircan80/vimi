@@ -84,7 +84,7 @@ final class WorldSpawnModels implements AutoCloseable {
     private Object cachedRevision;
     private Cancellation token = new Cancellation();
     private long generation;
-    private Long resolving;
+    private Long resolving, urgent;
     private long resolvingGeneration;
     private boolean closed;
 
@@ -104,19 +104,27 @@ final class WorldSpawnModels implements AutoCloseable {
             if (handle == null)
                 return new Resolved(npcId, CreatureModelPolicy.unknown("Creature data is not open for this build"),
                         null, source);
-            if (npcId > 0xffffffffL)
+            if (npcId < 0 || npcId > 0xffffffffL)
                 return new Resolved(npcId, CreatureModelPolicy.unknown("NPC ID is outside the client creature range"),
                         null, source);
-            var choice = CreatureModelPolicy.choose(
-                    handle.getData(npcId, TableTypes.Priority.INTERACTIVE, token).join());
+            CreatureModelPolicy.Choice choice;
+            try {
+                choice = CreatureModelPolicy.choose(
+                        handle.getData(npcId, TableTypes.Priority.INTERACTIVE, token).join());
+            } catch (RuntimeException failure) {
+                token.check();
+                return new Resolved(npcId, CreatureModelPolicy.unknown("Model lookup failed: " + message(failure)),
+                        null, source);
+            }
             token.check();
             return new Resolved(npcId, choice, choice.modelFileDataId() == null ? null
                     : path(files.get(), choice.modelFileDataId(), token), source);
         };
     }
 
+    /** Listfile name, or null when unknown; a failed name lookup never changes the model choice. */
     private static String path(BuildFiles files, long fileDataId, Cancellation token) {
-        if (files == null) return null;
+        if (files == null || fileDataId < 0 || fileDataId > 0xffffffffL) return null;
         try (var cursor = files.listMetadata(
                 new FileTypes.FileFilter(fileDataId, fileDataId, null, null, null, null), token)) {
             for (var file : cursor.next(1, token).join()) {
@@ -124,7 +132,8 @@ final class WorldSpawnModels implements AutoCloseable {
                     return file.path();
             }
             return null;
-        } catch (UnsupportedOperationException unsupported) {
+        } catch (RuntimeException unavailable) {
+            token.check();
             return null;
         }
     }
@@ -140,23 +149,38 @@ final class WorldSpawnModels implements AutoCloseable {
         return Optional.ofNullable(cache.get(npcId));
     }
 
-    /** Queues NPCs without an outcome, up to the queue bound. FX side. */
+    /**
+     * Replaces the queue with the given NPCs (in order) that have no outcome yet, up to the queue
+     * bound, so NPCs no longer drawn are dropped. A clicked NPC that is still waiting stays first.
+     * FX side.
+     */
     void request(Collection<Long> npcIds) {
         sync();
         if (closed) return;
+        var keep = urgent != null && queued.contains(urgent) ? urgent : null;
+        queued.clear();
+        if (keep != null) queued.add(keep);
         for (long id : npcIds) {
             if (queued.size() >= QUEUE) break;
-            boolean running = resolving != null && resolving == id && resolvingGeneration == generation;
-            if (!cache.containsKey(id) && !running) queued.add(id);
+            if (!cache.containsKey(id) && !running(id)) queued.add(id);
         }
         pump();
+    }
+
+    /** Applies a source revision change now: cancels the running lookup and empties the cache. */
+    void refresh() {
+        sync();
+    }
+
+    private boolean running(long id) {
+        return resolving != null && resolving == id && resolvingGeneration == generation;
     }
 
     /** Moves one NPC to the front of the queue, for example a clicked marker. FX side. */
     void prioritize(long npcId) {
         sync();
-        if (closed || cache.containsKey(npcId)
-                || resolving != null && resolving == npcId && resolvingGeneration == generation) return;
+        if (closed || cache.containsKey(npcId) || running(npcId)) return;
+        urgent = npcId;
         var rest = new ArrayList<>(queued);
         rest.remove(npcId);
         queued.clear();
@@ -196,9 +220,11 @@ final class WorldSpawnModels implements AutoCloseable {
         token = new Cancellation();
         cache.clear();
         queued.clear();
+        urgent = null;
     }
 
     private void pump() {
+        sync();
         if (closed || resolving != null || queued.isEmpty()) return;
         var iterator = queued.iterator();
         long id = iterator.next();
@@ -227,6 +253,8 @@ final class WorldSpawnModels implements AutoCloseable {
     private void finish(long id, long request, Resolved result) {
         resolving = null;
         if (closed) return;
+        // A revision change that nobody has observed yet still retires this result.
+        sync();
         if (request == generation && result != null && result.npcId() == id) {
             cache.put(id, result);
             for (var listener : List.copyOf(listeners)) listener.accept(id);

@@ -123,13 +123,27 @@ public final class CreatureModelPolicy {
             return refusal(State.UNKNOWN, Reason.CREATURE_UNREADABLE, "Creature detail missing");
         }
         var declared = new TreeSet<Integer>();
-        boolean invalid = false;
+        var invalid = new TreeSet<Integer>();
         for (var slot : detail.summary().slots()) {
-            if (slot.state() == CreatureSlotState.NO_DECLARED_DISPLAY) {
-                continue;
+            if (slot.state() == CreatureSlotState.DECLARED) {
+                declared.add(slot.displayId());
+            } else if (slot.state() == CreatureSlotState.INVALID_DISPLAY_REFERENCE) {
+                invalid.add(slot.displayId());
             }
-            declared.add(slot.displayId());
-            invalid |= slot.state() == CreatureSlotState.INVALID_DISPLAY_REFERENCE;
+        }
+        // An invalid reference leaves the record's display set unknown, so nothing is claimed.
+        if (!invalid.isEmpty()) {
+            return new Choice(
+                    State.UNRESOLVED,
+                    Reason.INVALID_DISPLAY,
+                    declared.size(),
+                    declared.size() == 1 ? declared.first() : null,
+                    null,
+                    null,
+                    "Display reference(s) "
+                            + invalid
+                            + " are not valid"
+                            + (declared.isEmpty() ? "" : " beside declared displays " + declared));
         }
         if (declared.isEmpty()) {
             return new Choice(
@@ -155,16 +169,6 @@ public final class CreatureModelPolicy {
                             + "; the client chooses one per spawn, so no single model is claimed");
         }
         int displayId = declared.first();
-        if (invalid) {
-            return new Choice(
-                    State.UNRESOLVED,
-                    Reason.INVALID_DISPLAY,
-                    1,
-                    displayId,
-                    null,
-                    null,
-                    "The declared display ID " + displayId + " is not a valid reference");
-        }
         CreatureDisplayChain chain = null;
         for (var candidate : detail.displays()) {
             if (candidate.slot() != null && candidate.slot().displayId() == displayId) {

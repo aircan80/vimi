@@ -73,14 +73,15 @@ source client within the same `major.minor.patch`; both are shown.
 | UNRESOLVED | no display is declared, the single reference is invalid, or its chain stops (display/model record absent, encrypted, unreadable, no model, no model file) |
 | UNKNOWN | the `Creature` record is absent, encrypted or unreadable, creature data is not open, or the lookup failed |
 
-Repeated slots of one display ID count as one display. Display probabilities are not used to pick
+Repeated slots of one display ID count as one display. Any invalid (negative) display reference makes the outcome UNRESOLVED, even beside valid displays, because the record's display set is then not fully known. Display probabilities are not used to pick
 a winner. Every outcome has a stable reason code and a readable detail.
 
 `gui/WorldSpawnModels` resolves on one daemon worker, one NPC at a time, nearest drawn markers
-first and a clicked marker ahead of the queue. FX owns the queue (≤ 512) and an LRU cache
-(≤ 4,096 NPCs). A workspace revision change cancels the running lookup, empties queue and cache,
+first and a clicked marker ahead of the queue. FX owns the queue (≤ 512, replaced by the currently drawn NPCs on
+each redraw so off-screen NPCs are dropped) and an LRU cache (≤ 4,096 NPCs). A workspace revision change cancels the running lookup, empties queue and cache,
 and drops late results. A qualified model's name is a metadata-only listfile lookup
-(`BuildFiles.listMetadata`, no payload read); without a listfile name it says "name unknown".
+(`BuildFiles.listMetadata`, no payload read); without a listfile name, or if that lookup
+fails, it says "name unknown" and the choice is kept.
 
 - The **inspect panel** for a clicked marker adds the outcome: for QUALIFIED the FileDataID, its
   listfile path, the display and CreatureModelData IDs and the source (tables, opened build,

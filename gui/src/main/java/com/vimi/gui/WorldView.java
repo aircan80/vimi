@@ -2628,10 +2628,14 @@ final class WorldView extends BorderPane implements AutoCloseable {
         overlay.models().ifPresent(models -> models.listen(npcId -> {
             var pending = inspectedSpawn;
             if (closed || pending == null || pending.spawn().npcId() != npcId) return;
-            inspectedSpawn = null;
-            if (inspectedRequest != pickGeneration) return;
-            models.cached(npcId).ifPresent(model -> inspection.setText(
-                    WorldPick.describeSpawn(pending.spawn(), pending.npc(), inspectedMap, model, false)));
+            if (inspectedRequest != pickGeneration) {
+                inspectedSpawn = null;
+                return;
+            }
+            models.cached(npcId).ifPresent(model -> {
+                inspectedSpawn = null;
+                inspection.setText(WorldPick.describeSpawn(pending.spawn(), pending.npc(), inspectedMap, model, false));
+            });
         }));
         overlay.bind(() -> {
             if (closed || !active || !explorer || camera == null || inventory == null
