@@ -84,6 +84,24 @@ class WorldInstanceLinksTest {
     }
 
     @Test
+    void entrancesOnMapsMissingFromTheCatalogAreFlaggedNotDropped() {
+        var known = WorldInstanceLinks.qualify(10, "Known", 1L, 0L, 1L, 10.0, 0.0);
+        var orphan = WorldInstanceLinks.qualify(11, "Orphan", 1L, 0L, 7L, 10.0, 0.0);
+        var none = WorldInstanceLinks.qualify(12, "None", 1L, 0L, -1L, 0.0, 0.0);
+        var links =
+                new WorldInstanceLinks(List.of(known, orphan, none), List.of("x"))
+                        .within(java.util.Set.of(1L, 10L, 11L, 12L));
+        assertEquals(known, links.link(10).orElseThrow());
+        assertNull(links.link(11).orElseThrow().entrance());
+        assertTrue(
+                links.link(11).orElseThrow().entranceIssue().contains("map #7 is not in"),
+                links.link(11).orElseThrow().entranceIssue());
+        assertEquals(none, links.link(12).orElseThrow());
+        assertEquals(List.of("x"), links.issues());
+        assertEquals(List.of(known), links.entrancesOn(1, 0, 0));
+    }
+
+    @Test
     void worldServiceReadsMapRowsWithTheVerifiedCorpseArray() {
         try (var service = new WorldService(tables(true), files())) {
             var links = service.instanceLinks(Cancellation.NONE).join();

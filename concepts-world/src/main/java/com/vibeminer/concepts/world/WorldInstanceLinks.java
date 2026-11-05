@@ -88,6 +88,31 @@ public final class WorldInstanceLinks {
         return issues;
     }
 
+    /**
+     * The same links where an entrance on a map missing from {@code mapIds} (the readable World
+     * catalog) is replaced by that stated reason, so it is never silently unlisted.
+     */
+    public WorldInstanceLinks within(java.util.Set<Long> mapIds) {
+        Objects.requireNonNull(mapIds);
+        var checked = new ArrayList<Link>(links.size());
+        for (var link : links) {
+            var entrance = link.entrance();
+            checked.add(
+                    entrance == null || mapIds.contains(entrance.mapId())
+                            ? link
+                            : new Link(
+                                    link.mapId(),
+                                    link.name(),
+                                    link.kind(),
+                                    link.areaId(),
+                                    null,
+                                    "the recorded entrance map #"
+                                            + entrance.mapId()
+                                            + " is not in the readable World catalog"));
+        }
+        return new WorldInstanceLinks(checked, issues);
+    }
+
     public Optional<Link> link(long mapId) {
         return links.stream().filter(l -> l.mapId() == mapId).findFirst();
     }
