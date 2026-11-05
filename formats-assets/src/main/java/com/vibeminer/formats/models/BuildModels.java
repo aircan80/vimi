@@ -223,6 +223,30 @@ public final class BuildModels {
                 });
     }
 
+    /**
+     * Re-reads the model source for its evaluable Stand through {@link M2IdleAnimation#read}, which
+     * refuses external skeletons and bone files.
+     */
+    public CompletableFuture<BuildModelTypes.IdleRead> readIdle(
+            ModelRead read, Cancellation token) {
+        Objects.requireNonNull(read);
+        if (read.state() != ReadState.READ || read.model() == null || read.fileDataId() == null) {
+            throw new IllegalArgumentException("Idle reads require a model read with READ state");
+        }
+        Model model = read.model();
+        return AssetTasks.run(
+                () -> {
+                    token.check();
+                    FileOutcome<M2IdleAnimation.Idle> outcome =
+                            readFile(
+                                    read.fileDataId(),
+                                    source -> M2IdleAnimation.read(source, model, token).join(),
+                                    token);
+                    return new BuildModelTypes.IdleRead(
+                            outcome.state, outcome.value, outcome.code, outcome.message);
+                });
+    }
+
     public CompletableFuture<SkinRead<Skin>> readSkin(
             ModelRead model, int profile, Cancellation token) {
         return readSkinCore(

@@ -118,34 +118,12 @@ final class WorldDiagnostics {
     }
 
     /**
-     * Whether {@code failure} carries nothing but a standard cancellation: exactly the rule of
-     * {@code CleanCancellation.is} (#230). Up to 8 exact {@code CompletionException} or {@code
-     * ExecutionException} wrappers around up to 8 exact {@code CancellationException} links that
-     * end in a cause-free one, with no suppressed failure anywhere. A subclass is rejected before
-     * any of its accessors run. Never throws.
+     * Whether {@code failure} carries nothing but a standard cancellation: exactly {@link
+     * CleanCancellation#is}, the rule the World controller applies (#230). Never throws.
      */
     static boolean cancellation(Throwable failure) {
         try {
-            Throwable at = failure;
-            for (int depth = 0; depth < 8; depth++) {
-                if (at == null
-                        || at.getClass() != CompletionException.class
-                                && at.getClass() != ExecutionException.class) {
-                    break;
-                }
-                if (at.getSuppressed().length != 0) return false;
-                at = at.getCause();
-            }
-            for (int depth = 0; depth < 8; depth++) {
-                if (at == null
-                        || at.getClass() != CancellationException.class
-                        || at.getSuppressed().length != 0) {
-                    return false;
-                }
-                at = at.getCause();
-                if (at == null) return true;
-            }
-            return false;
+            return CleanCancellation.is(failure);
         } catch (Throwable unreadable) {
             return false;
         }

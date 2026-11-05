@@ -163,9 +163,7 @@ final class WorldTextureLoading implements AutoCloseable {
             if (closed || job.canceled) job.releaseResult();
         } catch (RuntimeException error) {
             failure = "Terrain textures unavailable · previous preview retained";
-            if (!(job.canceled || closed)
-                    || error.getClass() != java.util.concurrent.CancellationException.class
-                    || error.getCause() != null || error.getSuppressed().length != 0) {
+            if (!(job.canceled || closed) || !CleanCancellation.is(error)) {
                 retired(job, false, false, error);
             }
         } catch (Error error) {

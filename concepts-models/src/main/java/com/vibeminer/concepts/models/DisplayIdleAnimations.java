@@ -17,15 +17,17 @@ import java.util.List;
  * exactly 0x8 within the inspected bits) is admitted only as a childless leaf without own Stand
  * keys whose vertices are rigidly bound to it; its card follows its evaluated pivot. Flags of bones
  * that move no rendered vertex (attachments, effect emitters) do not matter.
+ *
+ * <p>Public so Races previews admit their Stand through the same bone-flag profile as Mounts.
  */
-final class DisplayIdleAnimations {
-    static final String POLICY = "display-idle-stand-local-v1";
+public final class DisplayIdleAnimations {
+    public static final String POLICY = "display-idle-stand-local-v1";
     private static final long INHERITANCE = 0x7, SPHERICAL = 0x8, CYLINDRICAL = 0x70;
 
     private DisplayIdleAnimations() {}
 
     /** Thrown for a readable source outside the admitted profile. */
-    static final class Unsupported extends RuntimeException {
+    public static final class Unsupported extends RuntimeException {
         @java.io.Serial private static final long serialVersionUID = 1L;
 
         Unsupported(String message) {
@@ -33,7 +35,13 @@ final class DisplayIdleAnimations {
         }
     }
 
-    static PreviewAnimation admit(
+    /**
+     * Binds {@code idle} to the rest surface built from {@code vertexLookup}.
+     *
+     * @throws Unsupported for a readable source outside the admitted profile
+     * @throws IllegalArgumentException when the inputs do not belong together
+     */
+    public static PreviewAnimation admit(
             M2Types.Model model,
             List<Integer> vertexLookup,
             M2IdleAnimation.Idle idle,

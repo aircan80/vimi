@@ -136,6 +136,29 @@ class DisplayIdleAnimationsTest {
     }
 
     @Test
+    void globalClocksLongerThanTheStandBoundAreAdmittedThroughTheReader() throws Exception {
+        var authored = new Authored();
+        var body = authored.fixture.body;
+        int globals = body.position();
+        authored.fixture.declaration(20, 1, globals);
+        body.putInt(1_079_000);
+        authored.translate(0);
+        // The translation track runs on global clock 0 instead of the Stand.
+        body.putShort(authored.bone(0) + TRACK_TRANSLATION + 2, (short) 0);
+        var animation = authored.admit();
+        var parsed = authored.fixture.parse();
+        var rest =
+                DisplayModelService.restSurface(
+                        parsed.model(), parsed.rest().surface(), Cancellation.NONE);
+        float[] before = rest.mesh().positions();
+        // Keys (0,0,0)@0 and (0,0,4)@1000 hold after the last key; the clock wraps at 1,079,000.
+        float[] held = animation.pose(rest.mesh(), 500_000).mesh().positions();
+        float[] wrapped = animation.pose(rest.mesh(), 1_079_500).mesh().positions();
+        assertEquals(before[2] + 4, held[2], 1e-5);
+        assertEquals(before[2] + 2, wrapped[2], 1e-5);
+    }
+
+    @Test
     void flagsOfBonesThatMoveNoVertexAreIrrelevant() throws Exception {
         new Authored().translate(0).flags(2, 0x204).admit();
     }

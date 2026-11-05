@@ -435,7 +435,7 @@ final class WorldStreamSourceController {
                 else step();
             } while (wake.get() && !drained.isDone());
         } catch (Throwable failure) {
-            if (!(closing && cleanCancellation(failure))) {
+            if (!(closing && CleanCancellation.is(failure))) {
                 if (failure instanceof WorldTerrainStreaming.Refusal refusal
                         && refusal.getCause() == null
                         && refusal.getSuppressed().length == 0
@@ -898,7 +898,7 @@ final class WorldStreamSourceController {
             }
         } catch (RuntimeException failed) {
             // A stopping session cancels delivery; anything else fails only these objects.
-            if (!closing && !cleanCancellation(failed)) work.entry.source().exteriorFailedLate();
+            if (!closing && !CleanCancellation.is(failed)) work.entry.source().exteriorFailedLate();
             // Same rule as the guard above: a clean cancellation is routine, anything else is logged.
             if (!closing) WorldDiagnostics.degradedUnlessClean("exterior objects",
                     "World exterior objects delivery failed; tile kept as terrain only", failed);
@@ -1324,19 +1324,6 @@ final class WorldStreamSourceController {
             case "SOURCE_INPUT", "NUMERIC_ROOT", "TERRAIN_PROFILE" -> true;
             default -> false;
         };
-    }
-
-    private static boolean cleanCancellation(Throwable failure) {
-        for (int i = 0; i < 8; i++) {
-            if (failure.getClass() == java.util.concurrent.CancellationException.class)
-                return failure.getCause() == null && failure.getSuppressed().length == 0;
-            if (failure.getClass() != CompletionException.class
-                    && failure.getClass() != java.util.concurrent.ExecutionException.class)
-                return false;
-            if (failure.getSuppressed().length != 0 || failure.getCause() == null) return false;
-            failure = failure.getCause();
-        }
-        return false;
     }
 
     private static boolean containsResident(

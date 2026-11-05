@@ -46,6 +46,11 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
             all = new CheckBox("All recorded surfaces"),
             textures = new CheckBox("Textures");
     private final Label status = new Label("Select a model variant");
+    /** Shown when a prepared idle does not fit the surface on screen; the toggle stays hidden. */
+    static final String MISMATCHED_SURFACE =
+            "Idle animation unavailable: it was prepared for a different surface than the one"
+                    + " shown.";
+
     private final CheckBox idle = new CheckBox("Idle animation");
     private final Label idleStatus = new Label();
     private com.vibeminer.rendering.models.PreviewAnimation animation;
@@ -337,7 +342,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
                 value != null
                         && (appearance != null ? value.matches(appearance) : value.matches(mesh));
         if (!fits) {
-            animationUnavailable(value == null ? message : null);
+            animationUnavailable(value == null ? message : MISMATCHED_SURFACE);
             return;
         }
         boolean replaced = animation != value;
