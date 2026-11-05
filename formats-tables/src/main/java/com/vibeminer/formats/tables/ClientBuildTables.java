@@ -382,6 +382,12 @@ final class ClientBuildTables implements BuildTables {
 
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
 
+    /** Test seam: false re-prepares READY known tables, so tests can compare both passes. */
+    volatile boolean reuseShallowReady = true;
+
+    /** Test seam: observes each table the preload pass prepares in full. */
+    volatile java.util.function.LongConsumer deepPrepared = id -> {};
+
     ClientBuildTables(
             com.vibeminer.files.Files fileSystem,
             BuildFiles files,
@@ -2444,7 +2450,16 @@ final class ClientBuildTables implements BuildTables {
                                     && file.state() == FileTypes.FileEnsureState.CANCELED) {
                                 throw new java.util.concurrent.CancellationException();
                             }
-                            if (file != null
+                            if (known
+                                    && reuseShallowReady
+                                    && options.localDefinitionsOnly()
+                                    && table.state() == TableTypes.State.READY) {
+                                // The shallow pass already opened this table's existing generated
+                                // graph with the same local-only definition lookup a full prepare
+                                // uses, so preparing it again yields the same entry. With fetching
+                                // enabled a full prepare may ask for a newer definition instead.
+                                checked = table;
+                            } else if (file != null
                                     && file.state() != FileTypes.FileEnsureState.STORED
                                     && file.state() != FileTypes.FileEnsureState.ALREADY_STORED
                                     && !(known && TableQueries.isReadable(table.state()))) {
@@ -2471,6 +2486,7 @@ final class ClientBuildTables implements BuildTables {
                                                 null,
                                                 table.contentKey());
                             } else {
+                                deepPrepared.accept(table.fileDataId());
                                 try (var p =
                                         prepare(
                                                 TableTypes.Ref.id(table.fileDataId()),
