@@ -1854,6 +1854,10 @@ The higher-level generated-record store and network clients are separate work.
 
 ## Remaining parity work
 
+Reviewed against the C# reference on 2026-11-05 for #26; see
+[object-store-parity-review.md](docs/object-store-parity-review.md) for the current
+status of each item, newly found gaps and the evidence.
+
 This is not yet full reference parity. See README's Current limits. In particular:
 - Broader platform readiness remains. Bounded maintenance resources/benchmarks (#19)
   use FILE temporary tables, fixed pack-ID bitmaps and 256-row pages; see
