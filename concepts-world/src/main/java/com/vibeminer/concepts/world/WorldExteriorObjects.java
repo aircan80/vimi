@@ -1110,9 +1110,9 @@ public final class WorldExteriorObjects {
          * Each drawn building's set 0 and, when nonzero, its MODF doodad set, in MODD order. A MODD
          * entry is placed in the building's local axes: its position goes through the building
          * transform and its full quaternion composes with the building heading. Buildings with
-         * opaque draws go first, then material-only ones, each in placement order, so a building the
-         * opaque-only profile left empty never spends doodad, model or draw budget ahead of one it
-         * drew. Set doodads are appended in this order.
+         * opaque draws go first, then material-only ones, each in placement order, so a building
+         * the opaque-only profile left empty never spends doodad, model or draw budget ahead of one
+         * it drew. Set doodads are appended in this order.
          */
         private void placeSetDoodads() {
             var buildings = new ArrayList<Placement>(placements.size());
