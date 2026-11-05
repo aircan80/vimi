@@ -654,8 +654,10 @@ final class WorldStreamSourceController {
                     // The revision the refused reservation itself accounts for, not the current
                     // one: a retirement or credit that landed after it was issued (even between
                     // the refusal and this step) must still wake the retry (#283). The
-                    // reservation's own drain and retirement are excluded, so its refusal alone
-                    // never looks like new capacity.
+                    // reservation's own drain and retirement are excluded; its unused-credit
+                    // CREDIT arrives as an ordinary capacity change and deliberately wakes one
+                    // retry per refusal, as before (polling while the geometry lane is busy is
+                    // pre-existing and tracked separately).
                     blockedCapacity = refusedCapacity;
                     synchronized (lock) {
                         blockedPresentation = presentationRevision;
