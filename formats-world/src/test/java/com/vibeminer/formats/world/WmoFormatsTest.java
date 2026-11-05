@@ -283,6 +283,58 @@ class WmoFormatsTest {
     }
 
     @Test
+    void recordedGroupNamesAreReadOnlyAtTerminatedPrintableOffsets() {
+        byte[] block = {0, 0, 'H', 'a', 'l', 'l', 0, 'b', 1, 0, 'o', 'p', 'e', 'n'};
+        var root = WmoFormats.root(join(root(), chunk("MOGN", block)), () -> false);
+        var names = root.groupNames();
+        assertTrue(names.present());
+        assertEquals("", names.name(0).orElseThrow());
+        assertEquals("Hall", names.name(2).orElseThrow());
+        assertEquals("all", names.name(3).orElseThrow());
+        assertFalse(names.name(7).isPresent(), "nonprintable byte");
+        assertFalse(names.name(10).isPresent(), "unterminated at block end");
+        assertFalse(names.name(block.length).isPresent(), "offset outside block");
+        assertFalse(names.name(-1).isPresent());
+        assertFalse(names.name(0xffffffffL).isPresent());
+        assertTrue(
+                root.chunks().stream().anyMatch(c -> c.tag() == tag("MOGN") && c.payloadParsed()));
+        block[2] = 'X';
+        assertEquals("Hall", names.name(2).orElseThrow(), "retained bytes are detached");
+        var tooLong = new byte[WmoFormats.GroupNames.MAX_NAME_BYTES + 2];
+        Arrays.fill(tooLong, (byte) 'a');
+        tooLong[tooLong.length - 1] = 0;
+        assertFalse(WmoFormats.GroupNames.of(tooLong).name(0).isPresent());
+        tooLong[tooLong.length - 2] = 0;
+        assertEquals(
+                WmoFormats.GroupNames.MAX_NAME_BYTES,
+                WmoFormats.GroupNames.of(tooLong).name(0).orElseThrow().length());
+    }
+
+    @Test
+    void missingOversizedOrOverBudgetGroupNamesStayAbsentWithoutDecliningRoot() {
+        assertFalse(WmoFormats.root(root(), () -> false).groupNames().present());
+        assertFalse(WmoFormats.root(root(), () -> false).groupNames().name(0).isPresent());
+        var oversized = new byte[WmoFormats.GroupNames.MAX_BLOCK_BYTES + 1];
+        assertFalse(
+                WmoFormats.root(join(root(), chunk("MOGN", oversized)), () -> false)
+                        .groupNames()
+                        .present());
+        var tight = new WmoFormats.Limits(1 << 20, 1 << 20, 8, 24, 8, 16384, 16384, 64, 1, 4096);
+        var root = WmoFormats.root(join(root(), chunk("MOGN", new byte[4096])), tight, () -> false);
+        assertFalse(root.groupNames().present());
+        assertEquals(1, root.materials().size());
+        assertThrows(
+                IllegalArgumentException.class,
+                () ->
+                        WmoFormats.root(
+                                join(
+                                        root(),
+                                        chunk("MOGN", new byte[1]),
+                                        chunk("MOGN", new byte[1])),
+                                () -> false));
+    }
+
+    @Test
     void badIndicesBatchSpansAndShapeReject() {
         assertThrows(
                 IllegalArgumentException.class,

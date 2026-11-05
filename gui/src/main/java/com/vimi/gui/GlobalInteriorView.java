@@ -8,11 +8,14 @@ import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.scene.Scene;
 import javafx.scene.control.Label;
+import javafx.scene.control.ListCell;
+import javafx.scene.control.ListView;
 import javafx.scene.image.ImageView;
 import javafx.scene.image.PixelFormat;
 import javafx.scene.image.WritableImage;
 import javafx.scene.input.KeyCode;
 import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.Priority;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
@@ -37,11 +40,16 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
     private final Label help =
             new Label("W/A/S/D move · Q/E down/up · arrows or drag to look · Shift faster");
     private final Set<KeyCode> keys = new HashSet<>();
+    /** The empty entry is the overview (initial inspection framing). */
+    private final ListView<java.util.Optional<GlobalInteriorOutline.Group>> groups =
+            new ListView<>();
+    private final Label floors = new Label(GlobalInteriorOutline.FLOORS_UNQUALIFIED);
+    private final Label entrance = new Label(GlobalInteriorOutline.ENTRANCE_UNKNOWN);
     private final ModelPreviewView.LatestDelivery<Delivery> frames =
             new ModelPreviewView.LatestDelivery<>(Platform::runLater, this::present);
     private final AnimationTimer timer;
     private WorldGlobalTransport.Session session;
-    private WorldGlobalTransport.Camera camera;
+    private WorldGlobalTransport.Camera camera, overview;
     private volatile long generation, floor, latestSent;
     private volatile int width, height;
     private volatile boolean polling;
@@ -70,6 +78,7 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
         image.setPreserveRatio(false);
         image.setSmooth(true);
         setCenter(viewport);
+        setRight(navigation());
         viewport.setOnKeyPressed(e -> keys.add(e.getCode()));
         viewport.setOnKeyReleased(e -> keys.remove(e.getCode()));
         // A key released while unfocused would otherwise keep the camera drifting.
@@ -135,6 +144,92 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
                 .exceptionally(ignored -> null);
     }
 
+    private VBox navigation() {
+        groups.setId("global-interior-groups");
+        groups.setPlaceholder(new Label("Groups appear when the interior opens"));
+        groups.setPrefWidth(260);
+        groups.setCellFactory(
+                list ->
+                        new ListCell<>() {
+                            @Override
+                            protected void updateItem(
+                                    java.util.Optional<GlobalInteriorOutline.Group> entry,
+                                    boolean empty) {
+                                super.updateItem(entry, empty);
+                                var group = entry == null ? null : entry.orElse(null);
+                                if (empty || entry == null) {
+                                    setText(null);
+                                    setDisable(false);
+                                } else if (group == null) {
+                                    setText("Overview · whole interior bounds");
+                                    setDisable(false);
+                                } else {
+                                    setText(group.label() + "\n" + group.details());
+                                    setDisable(group.bounds() == null);
+                                }
+                            }
+                        });
+        groups.setOnMouseClicked(e -> jumpToSelection());
+        groups.setOnKeyPressed(
+                e -> {
+                    if (e.getCode() == KeyCode.ENTER) {
+                        jumpToSelection();
+                    }
+                });
+        floors.setId("global-interior-floors");
+        entrance.setId("global-interior-entrance");
+        for (var label : new Label[] {floors, entrance}) {
+            label.setWrapText(true);
+            label.getStyleClass().add("muted");
+        }
+        var heading = new Label("Recorded WMO groups");
+        heading.getStyleClass().add("eyebrow");
+        var hint = new Label("Select a group to move the inspection camera to its bounds.");
+        hint.setWrapText(true);
+        hint.getStyleClass().add("muted");
+        VBox.setVgrow(groups, Priority.ALWAYS);
+        var box = new VBox(6, heading, hint, groups, floors, entrance);
+        box.setPadding(new Insets(12));
+        box.setPrefWidth(280);
+        return box;
+    }
+
+    private void jumpToSelection() {
+        if (groups.getSelectionModel().isEmpty()) {
+            return;
+        }
+        var entry = groups.getSelectionModel().getSelectedItem();
+        if (entry == null) {
+            return;
+        }
+        jumpTo(entry.orElse(null));
+        viewport.requestFocus();
+    }
+
+    /** Replaces the latest camera only; the transport still sends one coalesced latest CAM. */
+    private void jumpTo(GlobalInteriorOutline.Group group) {
+        if (closed || session == null || overview == null) {
+            return;
+        }
+        if (group == null) {
+            camera = overview;
+        } else if (group.bounds() != null) {
+            try {
+                camera = group.camera();
+            } catch (IllegalArgumentException outside) {
+                return;
+            }
+        } else {
+            return;
+        }
+        dirty = true;
+        status.setText(
+                group == null
+                        ? "Overview · inspection camera, not a client entrance"
+                        : group.label() + " · recorded group bounds, not a client entrance or"
+                                + " floor");
+    }
+
     private static final java.util.Map<Long, Stage> OPEN = new java.util.HashMap<>();
 
     /** One window per map; reopening focuses the live one instead of superseding it. */
@@ -148,7 +243,7 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
         var view = new GlobalInteriorView(GpuPreviewService.application(), worlds, mapId, name);
         var stage = new Stage();
         stage.setTitle(name + " · interior");
-        stage.setScene(new Scene(view, 960, 640));
+        stage.setScene(new Scene(view, 1200, 680));
         stage.setOnHidden(
                 e -> {
                     view.close();
@@ -168,6 +263,8 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
             case READY -> status.setText("GPU interior · inspection camera, not a client entrance");
             case FAILED, CLOSED -> {
                 stopPolling();
+                // A jump would no longer reach the renderer and must not hide this message.
+                groups.setDisable(true);
                 status.setText(update.message());
             }
             default -> status.setText(update.message());
@@ -180,6 +277,14 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
         }
         session = opened.session();
         camera = opened.initial();
+        overview = camera;
+        var outline = opened.outline();
+        var items = new java.util.ArrayList<java.util.Optional<GlobalInteriorOutline.Group>>();
+        items.add(java.util.Optional.empty());
+        outline.groups().forEach(group -> items.add(java.util.Optional.of(group)));
+        groups.getItems().setAll(items);
+        floors.setText(outline.floors());
+        entrance.setText(outline.entrance());
         dirty = true;
         polling = true;
         long token = ++generation;

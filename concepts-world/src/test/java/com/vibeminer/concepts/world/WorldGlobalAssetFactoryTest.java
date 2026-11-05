@@ -1,8 +1,10 @@
 package com.vibeminer.concepts.world;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.vibeminer.access.Cancellation;
@@ -273,6 +275,13 @@ class WorldGlobalAssetFactoryTest {
                                 assertEquals(1, m.batches());
                                 assertEquals(16, m.pixels());
                                 assertEquals(List.of(201L), m.root().groups());
+                                var group = m.groups().getFirst();
+                                assertNull(group.name(), "no MOGN block: name stays unknown");
+                                assertFalse(m.root().groupNames().present());
+                                // Recorded MOGP box (-1..2) in the mesh's mirrored native space.
+                                assertArrayEquals(
+                                        new float[] {-2, -2, -1, 1, 1, 2},
+                                        WorldGlobalAssetFactory.nativeBounds(group.header()));
                                 var im = m.images().getFirst();
                                 assertEquals(Blp2Types.Encoding.BC3, im.encoding());
                                 assertEquals(0, im.alphaMin());

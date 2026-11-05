@@ -45,8 +45,10 @@ final class WorldGlobalAssetFactory {
             WmoFormats.RootHeader header,
             List<Material> materials,
             List<Long> groups,
-            List<WmoFormats.Chunk> chunks) {
+            List<WmoFormats.Chunk> chunks,
+            WmoFormats.GroupNames groupNames) {
         RootFacts {
+            Objects.requireNonNull(groupNames);
             materials = List.copyOf(materials);
             groups = List.copyOf(groups);
             chunks = List.copyOf(chunks);
@@ -65,7 +67,31 @@ final class WorldGlobalAssetFactory {
             boolean liquid,
             int liquidBytes,
             String canonicalMeshSha256,
-            WmoFormats.GroupHeader header) {}
+            WmoFormats.GroupHeader header,
+            String name) {}
+
+    /**
+     * The recorded MOGP bounds in the same native space as the copied mesh (x and y mirrored, z
+     * kept), as min xyz then max xyz. Qualification already proved every group vertex is inside.
+     */
+    static float[] nativeBounds(WmoFormats.GroupHeader header) {
+        var lower = header.lower();
+        var upper = header.upper();
+        return new float[] {
+            nativeAxis(0, upper.x()),
+            nativeAxis(1, upper.y()),
+            lower.z(),
+            nativeAxis(0, lower.x()),
+            nativeAxis(1, lower.y()),
+            upper.z()
+        };
+    }
+
+    /** WMO-local to native axis: x and y are mirrored and z is kept; -0 is normalized. */
+    static float nativeAxis(int axis, float value) {
+        float nativeValue = axis == 2 ? value : -value;
+        return nativeValue == 0 ? 0f : nativeValue;
+    }
 
     record ImageFacts(
             long id,
@@ -274,8 +300,7 @@ final class WorldGlobalAssetFactory {
                 for (int axis = 0; axis < 3; axis++) {
                     float value = raw.positions().get(v * 3 + axis);
                     require(Float.isFinite(value) && Math.abs(value) <= 4096);
-                    float nativeValue = axis == 2 ? value : -value;
-                    mesh[target + axis] = nativeValue == 0 ? 0f : nativeValue;
+                    mesh[target + axis] = nativeAxis(axis, value);
                 }
                 for (int axis = 0; axis < 2; axis++) {
                     float uv = raw.uv().get(v * 2 + axis);
@@ -767,7 +792,7 @@ final class WorldGlobalAssetFactory {
             }
             materials.add(new Material(ordinal, id, words));
         }
-        return new RootFacts(h, materials, groups, chunks);
+        return new RootFacts(h, materials, groups, chunks, root.groupNames());
     }
 
     private static GroupFacts qualifyGroup(
@@ -895,7 +920,8 @@ final class WorldGlobalAssetFactory {
                 borrow.liquid() != null,
                 borrow.liquid() == null ? 0 : borrow.liquid().size(),
                 digest.finish(),
-                h);
+                h,
+                root.groupNames().name(h.nameOffset()).orElse(null));
     }
 
     private static ImageFacts inspectImage(
