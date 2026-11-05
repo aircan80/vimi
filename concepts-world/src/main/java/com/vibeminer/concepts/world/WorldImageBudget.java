@@ -1,7 +1,5 @@
 package com.vibeminer.concepts.world;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.List;
 import java.util.Objects;
 
@@ -16,12 +14,14 @@ import java.util.Objects;
  * no room, so a tight budget lowers resolution instead of leaving surfaces without texture.
  */
 public final class WorldImageBudget {
-    /** BLP2 header: mip offsets at 20 and sizes at 84, sixteen 32-bit entries each. */
-    private static final int MIP_OFFSETS = 20, MIP_SIZES = 84, MAX_LEVELS = 16;
+    private static final int MAX_LEVELS = 16;
 
     private WorldImageBudget() {}
 
-    /** One texture to place: its level-0 size, recorded mip count and priority order. */
+    /**
+     * One texture to place: its level-0 size and how many levels it can take. Priority is the order
+     * of the request list, highest first.
+     */
     public record Request(long width, long height, int levels) {
         public Request {
             if (width < 1 || height < 1 || levels < 1 || levels > MAX_LEVELS) {
@@ -74,7 +74,9 @@ public final class WorldImageBudget {
             level[i] = levelFor(r.width(), r.height(), smallest, r.levels());
             long cost = pixels(r.width(), r.height(), level[i]);
             if (total + cost > budget) {
-                level[i] = -1; // lower priority than everything that fit
+                // Its smallest level does not fit beside the higher-priority images already
+                // placed; a later, smaller image may still fit.
+                level[i] = -1;
             } else {
                 total += cost;
             }
@@ -102,20 +104,16 @@ public final class WorldImageBudget {
     }
 
     /**
-     * Mip levels a BLP2 file records: the leading run of levels with a non-zero size whose bytes
-     * lie inside the file, at least one. Zero when the header is too short to say.
+     * Decodable levels from the decoder's own declared mips ({@link
+     * com.vibeminer.formats.images.Blp2Decoder#readMipsSynchronous}): the leading run before the
+     * first compact block level, which the decoder never decodes.
      */
-    public static int recordedLevels(byte[] blp) {
-        Objects.requireNonNull(blp);
-        if (blp.length < MIP_SIZES + 4 * MAX_LEVELS) {
-            return 0;
-        }
-        var header = ByteBuffer.wrap(blp).order(ByteOrder.LITTLE_ENDIAN);
+    public static int recordedLevels(List<com.vibeminer.formats.images.Blp2Types.Mip> mips) {
+        Objects.requireNonNull(mips);
         int levels = 0;
-        for (int i = 0; i < MAX_LEVELS; i++) {
-            long offset = Integer.toUnsignedLong(header.getInt(MIP_OFFSETS + 4 * i));
-            long size = Integer.toUnsignedLong(header.getInt(MIP_SIZES + 4 * i));
-            if (size == 0 || offset == 0 || offset + size > blp.length) {
+        for (var mip : mips) {
+            if (mip.level() != levels
+                    || mip.storage() == com.vibeminer.formats.images.Blp2Types.MipStorage.COMPACT) {
                 break;
             }
             levels++;
