@@ -86,6 +86,10 @@ public final class AudioStreamDecoder {
 
     /** Start of a recognized tag that ends exactly at {@code end} and starts at or after floor. */
     private static int trailingTag(byte[] encoded, int floor, int end) {
+        // ID3v1 has no size or checksum, so "TAG" at the right offset is the only evidence. Audio
+        // that happens to have those bytes there loses at most one final frame (a 1 in 2^24
+        // chance per file). Rejecting blocks that contain frame sync would be no safer: sync-like
+        // bytes in the tag text are exactly what makes the decoder fail.
         if (end - 128 >= floor && ascii(encoded, end - 128, "TAG")) {
             return end - 128;
         }
