@@ -565,6 +565,9 @@ public final class WorldStreamTransport {
         private volatile boolean stderrAttached;
         private final java.util.concurrent.atomic.AtomicLong objectsWriteFailures =
                 new java.util.concurrent.atomic.AtomicLong();
+        private final java.util.concurrent.atomic.AtomicLong rendererObjectsFailures =
+                new java.util.concurrent.atomic.AtomicLong();
+        private final CompletableFuture<String> objectsDiagnostic = new CompletableFuture<>();
 
         private ObjectsOperation objectsOperation;
 
@@ -1627,6 +1630,9 @@ public final class WorldStreamTransport {
                                 current.offerOutstanding = false;
                                 retireReliable();
                             }
+                            if (current.ticket.resident.objects == 2) {
+                                rendererObjectsFailed();
+                            }
                             if (!closing && !handle.stopping() && !current.stop) {
                                 current.result.complete(new Resident(current.ticket.resident));
                             } else {
@@ -1719,6 +1725,7 @@ public final class WorldStreamTransport {
                             handle.closeAsync();
                         }
                         case OBJECTS -> {
+                            var outcome = ((WorldStreamStatus.ObjectsDone) message).outcome();
                             synchronized (lock) {
                                 var operation = objectsOperation;
                                 if (operation == null
@@ -1727,10 +1734,12 @@ public final class WorldStreamTransport {
                                     throw new IllegalStateException(
                                             "Late objects outcome correlation");
                                 }
-                                operation.reply =
-                                        ((WorldStreamStatus.ObjectsDone) message).outcome();
+                                operation.reply = outcome;
                                 retireReliable();
                                 lock.notifyAll();
+                            }
+                            if (outcome == WorldStreamStatus.LateOutcome.FAILED) {
+                                rendererObjectsFailed();
                             }
                         }
                         case CREDIT -> capacityChanged();
@@ -1787,6 +1796,46 @@ public final class WorldStreamTransport {
             return count == 1 || count % 64 == 0;
         }
 
+        /**
+         * The renderer reported a tile's objects as failed (inline or late); terrain is kept. The
+         * first such failure of a session, then every 64th, is logged with the helper's redacted
+         * stderr tail, which holds the renderer's reason (for example an object pass that could not
+         * load its shaders). Otherwise the tail is only logged when the helper ends abnormally.
+         */
+        private void rendererObjectsFailed() {
+            long count = rendererObjectsFailures.incrementAndGet();
+            if (!objectsWriteLogged(count)) {
+                return;
+            }
+            String record =
+                    "World renderer could not draw exterior objects ("
+                            + count
+                            + (count == 1 ? " tile" : " tiles")
+                            + " this session); tiles kept as terrain only"
+                            + stderrSuffix();
+            try {
+                System.getLogger(WorldStreamTransport.class.getName())
+                        .log(System.Logger.Level.WARNING, record);
+            } catch (RuntimeException | Error ignored) {
+                // Diagnostic delivery cannot interrupt objects delivery.
+            } finally {
+                objectsDiagnostic.complete(record);
+            }
+        }
+
+        /** Test observation of the first renderer objects failure record of the session. */
+        CompletableFuture<String> objectsDiagnostic() {
+            return objectsDiagnostic.copy();
+        }
+
+        private String stderrSuffix() {
+            return !stderrAttached
+                    ? "; helper stderr not captured"
+                    : stderrTail.isEmpty()
+                            ? "; helper stderr empty"
+                            : "; helper stderr tail:\n" + stderrTail.snapshot();
+        }
+
         private static String exitSuffix(WorldStreamLaunchOwner.Drain drain) {
             return drain.exitCode().isEmpty() ? "" : " (exit " + drain.exitCode().getAsInt() + ")";
         }
@@ -1819,12 +1868,7 @@ public final class WorldStreamTransport {
                                         WorldStreamLaunchOwner.Handle.detached(cause)
                                                 .getMessage()));
             }
-            text.append(
-                    !stderrAttached
-                            ? "; helper stderr not captured"
-                            : stderrTail.isEmpty()
-                                    ? "; helper stderr empty"
-                                    : "; helper stderr tail:\n" + stderrTail.snapshot());
+            text.append(stderrSuffix());
             String record = text.toString();
             try {
                 System.getLogger(WorldStreamTransport.class.getName())

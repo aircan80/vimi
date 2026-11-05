@@ -411,7 +411,11 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         }
     }
 
-    /** Optional: on failure every tile's objects report failed while terrain stays intact. */
+    /**
+     * Optional: on failure every tile's objects report failed while terrain stays intact. The
+     * reason goes to stderr only, never the protocol; the parent logs the redacted stderr tail with
+     * the first objects failure of the session.
+     */
     private void objectPass(String profile) {
         try {
             if (!org.lwjgl.bgfx.BGFX.bgfx_is_texture_valid(
@@ -428,6 +432,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             wmoMaterial = valid(bgfx_create_uniform("u_wmoMaterial", BGFX_UNIFORM_TYPE_VEC4, 1));
         } catch (IOException | RuntimeException failed) {
             destroyObjectPass();
+            System.err.println("World exterior objects pass unavailable: " + failed);
+            System.err.flush();
         }
     }
 
