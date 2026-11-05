@@ -118,6 +118,8 @@ class WorldStreamLateObjectsTransportTest {
         try (var fixture = new Fixture(directory)) {
             var first = fixture.stage(7, 19);
             fixture.commit(first);
+            // The renderer's reason is on stderr before the failure is reported.
+            fixture.until(() -> !fixture.stderrTail().isEmpty());
             Files.writeString(fixture.control("fail-objects"), "fail");
             assertSame(
                     WorldStreamTransport.ObjectsOutcome.FAILED,
@@ -125,6 +127,15 @@ class WorldStreamLateObjectsTransportTest {
                             .attachObjects(first, WorldStreamObjectsFileTest.small())
                             .get(5, TimeUnit.SECONDS));
             assertSame(WorldStreamTransport.ExteriorObjects.FAILED, first.exteriorObjects());
+            // The first renderer objects failure logs the renderer's redacted reason.
+            String record = fixture.session.objectsDiagnostic().get(5, TimeUnit.SECONDS);
+            assertTrue(
+                    record.startsWith(
+                            "World renderer could not draw exterior objects (1 tile this"
+                                    + " session)"),
+                    record);
+            assertTrue(record.contains("synthetic shader failure at <path>"), record);
+            assertFalse(record.contains("tester"), record);
             // Terrain keeps streaming and committing after the failed objects.
             var second = fixture.stage(7, 20);
             fixture.commit(first, second);
@@ -259,7 +270,6 @@ class WorldStreamLateObjectsTransportTest {
                                                 Child.class.getName(),
                                                 arguments.get(1),
                                                 arguments.get(3))
-                                        .redirectError(ProcessBuilder.Redirect.DISCARD)
                                         .start();
                             });
             session.initialized().get(20, TimeUnit.SECONDS);
@@ -283,6 +293,16 @@ class WorldStreamLateObjectsTransportTest {
                 field.setAccessible(true);
                 var metadata = (WorldStreamParentState.Resident) field.get(resident);
                 return scratch.resolve(WorldStreamObjectsFile.basename(metadata.transaction));
+            } catch (ReflectiveOperationException error) {
+                throw new AssertionError(error);
+            }
+        }
+
+        HelperStderrTail stderrTail() {
+            try {
+                var field = WorldStreamTransport.Session.class.getDeclaredField("stderrTail");
+                field.setAccessible(true);
+                return (HelperStderrTail) field.get(session);
             } catch (ReflectiveOperationException error) {
                 throw new AssertionError(error);
             }
@@ -418,6 +438,11 @@ class WorldStreamLateObjectsTransportTest {
             Map<Integer, Long> transactions = new HashMap<>();
             long[] generations = new long[10];
             long serial = 0;
+            // The renderer's object pass reports why it is unavailable on stderr only.
+            System.err.println(
+                    "World exterior objects pass unavailable: java.io.IOException: synthetic"
+                            + " shader failure at /home/tester/vimi/world-wmo/vs.bin");
+            System.err.flush();
             send("SESSION TERRAIN_EXTERIOR_V1");
             var lease = new WorldStreamState.Lease(0, ++generations[0], ++serial);
             send(credit(lease));
