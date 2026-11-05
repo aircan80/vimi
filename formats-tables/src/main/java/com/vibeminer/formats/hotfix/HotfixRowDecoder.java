@@ -31,12 +31,8 @@ public final class HotfixRowDecoder {
         INLINE_ID,
         TRAILING_BYTES,
         /** Non-finite single; base DB2 rows refuse these too. */
-        FLOAT,
-        /** Negative value in a column the base keeps as a raw physical integer. */
-        RAW_INTEGER
+        FLOAT
     }
-
-    private static final String RAW_PHYSICAL = "raw-physical-integer-v1";
 
     public static final class Invalid extends IllegalArgumentException {
         private static final long serialVersionUID = 1L;
@@ -156,18 +152,14 @@ public final class HotfixRowDecoder {
                             throw invalid(Reason.INLINE_ID);
                         }
                         value = Long.toString(recordId);
-                    } else if (Boolean.TRUE.equals(field.unsigned())) {
-                        value = Long.toUnsignedString(raw);
                     } else {
-                        long signed = bits == 64 ? raw : (raw << (64 - bits)) >> (64 - bits);
-                        // The base row shows such a column's physical integer. A negative
-                        // declared value has no single physical spelling, so it stays unknown.
-                        if (signed < 0
-                                && layout.header().columns().get(values.size()).interpretation()
-                                        != null) {
-                            throw invalid(Reason.RAW_INTEGER);
-                        }
-                        value = Long.toString(signed);
+                        value =
+                                Boolean.TRUE.equals(field.unsigned())
+                                        ? Long.toUnsignedString(raw)
+                                        : Long.toString(
+                                                bits == 64
+                                                        ? raw
+                                                        : (raw << (64 - bits)) >> (64 - bits));
                     }
                 } else if (field.kind() == TableSchema.ColumnKind.FLOAT) {
                     need(input, 4);
@@ -281,7 +273,7 @@ public final class HotfixRowDecoder {
                 if (!name.equals(actual.name())
                         || !kind.equals(actual.kind())
                         || actual.isId() != (field.id() != TableSchema.KeyStorage.NONE)
-                        || !declaredWidth(actual.interpretation(), field)) {
+                        || actual.interpretation() != null) {
                     throw invalid(Reason.COLUMNS);
                 }
             }
@@ -292,22 +284,6 @@ public final class HotfixRowDecoder {
         if (column != header.columns().size()) {
             throw invalid(Reason.COLUMNS);
         }
-    }
-
-    /**
-     * A base column kept as its raw physical integer is still decoded from the hotfix body at the
-     * declared width, provided the interpretation describes exactly that declared field.
-     */
-    private static boolean declaredWidth(
-            Db2Types.Interpretation interpretation, TableSchema.SchemaColumn field) {
-        return interpretation == null
-                || RAW_PHYSICAL.equals(interpretation.policy())
-                        && field.kind() == TableSchema.ColumnKind.INT
-                        && field.id() == TableSchema.KeyStorage.NONE
-                        && Integer.valueOf(interpretation.candidateBits()).equals(field.bits())
-                        && interpretation.candidateUnsigned()
-                                == Boolean.TRUE.equals(field.unsigned())
-                        && interpretation.physicalBits() >= interpretation.candidateBits();
     }
 
     private static boolean hex(String value) {
