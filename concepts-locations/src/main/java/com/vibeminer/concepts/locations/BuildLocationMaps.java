@@ -33,6 +33,18 @@ public interface BuildLocationMaps extends AutoCloseable {
         return CompletableFuture.completedFuture(MapNavigationSourceTypes.Result.unsupported());
     }
 
+    /**
+     * UiMapAssignment rows for {@code worldMapId} that name a WMO group ({@code WMOGroupID != 0}),
+     * as recorded. {@link #resolve} keeps ignoring these rows; matching them to WMO group headers
+     * is the caller's job. The default reports the query unsupported.
+     */
+    default CompletableFuture<MapTypes.WmoGroupAssignments> wmoGroupAssignments(
+            long worldMapId, Cancellation token) {
+        java.util.Objects.requireNonNull(token);
+        return CompletableFuture.completedFuture(
+                MapTypes.WmoGroupAssignments.unsupported(worldMapId));
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override

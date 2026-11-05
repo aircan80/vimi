@@ -1,5 +1,7 @@
 package com.vimi.gui;
 
+import com.vibeminer.access.Cancellation;
+import com.vibeminer.concepts.locations.BuildLocationMaps;
 import com.vibeminer.concepts.world.BuildWorld;
 import com.vibeminer.rendering.bgfx.WorldGlobalTransport;
 
@@ -44,6 +46,12 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
     private final ListView<java.util.Optional<GlobalInteriorOutline.Group>> groups =
             new ListView<>();
     private final Label floors = new Label(GlobalInteriorOutline.FLOORS_UNQUALIFIED);
+    private final ListView<GlobalInteriorFloors.Floor> floorList = new ListView<>();
+    private final Label unlinked = new Label();
+    private final Supplier<BuildLocationMaps> maps;
+    private final long mapId;
+    /** Cancels the off-FX UiMap assignment lookup when the window closes. */
+    private final Cancellation lookup = new Cancellation();
     private final Label entrance = new Label(GlobalInteriorOutline.ENTRANCE_UNKNOWN);
     private final ModelPreviewView.LatestDelivery<Delivery> frames =
             new ModelPreviewView.LatestDelivery<>(Platform::runLater, this::present);
@@ -58,9 +66,15 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
     private boolean dirty, closed;
 
     GlobalInteriorView(
-            GpuPreviewService service, Supplier<BuildWorld> worlds, long mapId, String name) {
+            GpuPreviewService service,
+            Supplier<BuildWorld> worlds,
+            Supplier<BuildLocationMaps> maps,
+            long mapId,
+            String name) {
         this.service = Objects.requireNonNull(service);
         Objects.requireNonNull(worlds);
+        this.maps = maps;
+        this.mapId = mapId;
         setId("global-interior");
         status.setId("global-interior-status");
         status.setWrapText(true);
@@ -182,7 +196,33 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
                 });
         floors.setId("global-interior-floors");
         entrance.setId("global-interior-entrance");
-        for (var label : new Label[] {floors, entrance}) {
+        unlinked.setId("global-interior-unlinked");
+        floorList.setId("global-interior-floor-list");
+        floorList.setPrefHeight(150);
+        floorList.setPlaceholder(new Label("No linked floors"));
+        floorList.setCellFactory(
+                list ->
+                        new ListCell<>() {
+                            @Override
+                            protected void updateItem(
+                                    GlobalInteriorFloors.Floor floor, boolean empty) {
+                                super.updateItem(floor, empty);
+                                setOnMouseClicked(
+                                        empty || floor == null ? null : e -> jumpToFloor(floor));
+                                setText(
+                                        empty || floor == null
+                                                ? null
+                                                : floor.label() + "\n" + floor.details());
+                            }
+                        });
+        floorList.setOnKeyPressed(
+                e -> {
+                    var floor = floorList.getSelectionModel().getSelectedItem();
+                    if (e.getCode() == KeyCode.ENTER && floor != null) {
+                        jumpToFloor(floor);
+                    }
+                });
+        for (var label : new Label[] {floors, unlinked, entrance}) {
             label.setWrapText(true);
             label.getStyleClass().add("muted");
         }
@@ -192,7 +232,9 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
         hint.setWrapText(true);
         hint.getStyleClass().add("muted");
         VBox.setVgrow(groups, Priority.ALWAYS);
-        var box = new VBox(6, heading, hint, groups, floors, entrance);
+        var floorHeading = new Label("Floors / map layers (UiMap)");
+        floorHeading.getStyleClass().add("eyebrow");
+        var box = new VBox(6, heading, hint, groups, floorHeading, floors, floorList, unlinked, entrance);
         box.setPadding(new Insets(12));
         box.setPrefWidth(280);
         return box;
@@ -230,17 +272,88 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
                                 + " floor");
     }
 
+    /**
+     * Frames the floor's exactly linked groups. Replaces the latest camera only, like a group jump.
+     */
+    private void jumpToFloor(GlobalInteriorFloors.Floor floor) {
+        if (closed || session == null || overview == null || groups.isDisabled()) {
+            return;
+        }
+        var target = floor.camera();
+        if (target == null) {
+            status.setText(
+                    floor.name() + " · recorded group bounds are outside the camera range; not moved");
+            return;
+        }
+        camera = target;
+        dirty = true;
+        status.setText(
+                floor.name()
+                        + " · framing its "
+                        + floor.groups().size()
+                        + (floor.groups().size() == 1 ? " linked group" : " linked groups")
+                        + " (UiMap assignment), not a client entrance");
+        viewport.requestFocus();
+    }
+
+    /** Reads and links group-scoped UiMap assignments off FX; the result is published on FX. */
+    private void readFloors(GlobalInteriorOutline outline) {
+        floors.setText(GlobalInteriorFloors.READING);
+        Thread.ofVirtual()
+                .name("global-interior-floors")
+                .start(
+                        () -> {
+                            GlobalInteriorFloors result;
+                            try {
+                                var source = maps == null ? null : maps.get();
+                                result =
+                                        source == null
+                                                ? GlobalInteriorFloors.notLinked(
+                                                        "UiMap tables are not ready for this build")
+                                                : GlobalInteriorFloors.link(
+                                                        outline,
+                                                        source.wmoGroupAssignments(mapId, lookup)
+                                                                .join());
+                            } catch (RuntimeException failed) {
+                                if (lookup.isCanceled()) {
+                                    return;
+                                }
+                                result =
+                                        GlobalInteriorFloors.notLinked(
+                                                "group-scoped UiMap assignments could not be read");
+                            }
+                            var published = result;
+                            Platform.runLater(() -> showFloors(published));
+                        });
+    }
+
+    private void showFloors(GlobalInteriorFloors result) {
+        if (closed) {
+            return;
+        }
+        floors.setText(result.summary());
+        floorList.getItems().setAll(result.floors());
+        unlinked.setText(
+                String.join(
+                        "\n",
+                        result.unlinked().stream().map(GlobalInteriorFloors.Unlinked::text).toList()));
+    }
+
     private static final java.util.Map<Long, Stage> OPEN = new java.util.HashMap<>();
 
     /** One window per map; reopening focuses the live one instead of superseding it. */
-    static Stage open(Supplier<BuildWorld> worlds, long mapId, String name) {
+    static Stage open(
+            Supplier<BuildWorld> worlds,
+            Supplier<BuildLocationMaps> maps,
+            long mapId,
+            String name) {
         var existing = OPEN.get(mapId);
         if (existing != null && existing.isShowing()) {
             existing.toFront();
             existing.requestFocus();
             return existing;
         }
-        var view = new GlobalInteriorView(GpuPreviewService.application(), worlds, mapId, name);
+        var view = new GlobalInteriorView(GpuPreviewService.application(), worlds, maps, mapId, name);
         var stage = new Stage();
         stage.setTitle(name + " · interior");
         stage.setScene(new Scene(view, 1200, 680));
@@ -265,6 +378,7 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
                 stopPolling();
                 // A jump would no longer reach the renderer and must not hide this message.
                 groups.setDisable(true);
+                floorList.setDisable(true);
                 status.setText(update.message());
             }
             default -> status.setText(update.message());
@@ -289,6 +403,7 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
         }
         floors.setText(outline.floors());
         entrance.setText(outline.entrance());
+        readFloors(outline);
         dirty = true;
         polling = true;
         long token = ++generation;
@@ -315,6 +430,7 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
                         () -> {
                             // A later jump must not hide this failure.
                             groups.setDisable(true);
+                            floorList.setDisable(true);
                             status.setText("Interior frames unavailable");
                         });
                 return;
@@ -425,6 +541,8 @@ final class GlobalInteriorView extends BorderPane implements AutoCloseable {
         }
         closed = true;
         stopPolling();
+        // Cancellation callbacks may reach lower services; never run them on FX.
+        Thread.ofVirtual().name("global-interior-floors-cancel").start(lookup::cancel);
         service.closeOwner(owner);
     }
 }

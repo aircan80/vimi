@@ -700,3 +700,11 @@ tasks.register('globalInteriorOutlineTest', JavaExec) {
     mainClass = 'com.vimi.gui.GlobalInteriorOutlineTest'
 }
 check.dependsOn globalInteriorOutlineTest
+
+// Exact UiMapAssignment WMO-group floor links, hierarchy and unlinked reasons; no data or display.
+tasks.register('globalInteriorFloorsTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.GlobalInteriorFloorsTest'
+}
+check.dependsOn globalInteriorFloorsTest

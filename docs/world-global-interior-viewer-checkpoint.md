@@ -43,8 +43,8 @@ The interior window has a side panel listing the WMO's recorded groups in file o
   the bounding box of all drawn vertices. "Overview" restores the
   initial framing. A jump only replaces the view's latest camera, so the transport protocol is
   unchanged: one coalesced latest CAM.
-- **Floors.** Reported as not linked. No qualified UiMap/WMO-group floor source is read yet, and
-  floors are never inferred from height or group order.
+- **Floors.** Linked from group-scoped UiMap assignments; see the second slice below. Floors are
+  never inferred from height or group order.
 - **Entrance.** Reported as unknown, because no entrance source is read for the interior yet.
 - **Failures.** After a frame-poll failure, failure or close, the list is disabled so a jump
   cannot hide the status message. An unreadable outline says so instead of listing nothing.
@@ -58,6 +58,45 @@ and never blocks the render. Tests:
   null, and native bounds are mirrored.
 - `:gui:globalInteriorOutlineTest`: labels, flags, clipping, the centre camera, entry targets,
   the unreadable fallback, and unknown entrance and floors.
+
+## Floor / map-layer navigation (#184, second slice)
+
+Below the group list, the panel lists **floors / map layers**: UiMaps linked to recorded WMO groups
+by exact keys only.
+
+- **Source.** `BuildLocationMaps.wmoGroupAssignments(mapId)` returns every readable
+  UiMapAssignment row of the instance map with `WMOGroupID != 0`, as recorded: the UiMap (name,
+  ParentUiMapID, Type), the WMO group ID, WMODoodadPlacementID and the cell sources, plus the
+  recorded parents' names. `LocationMapsService` reads it from the same cached tables and MapID
+  index as `resolve`. `resolve` keeps its unscoped-only filter (`WMODoodadPlacementID == 0 &&
+  WMOGroupID == 0`), so existing location results are unchanged (tested).
+- **Match.** `GlobalInteriorFloors.link` (pure, off FX) links a row when its placement ID is 0, its
+  UiMap record is readable and exactly one group's MOGP header records the same group ID
+  (`GroupHeader.groupId`, kept as `GlobalInteriorOutline.Group.recordedGroupId`). Groups with
+  group ID 0 never match.
+- **Not linked.** Every other row is counted, with up to 8 example group IDs, under one reason:
+  no recorded group has the ID; more than one group has it (ambiguous); the row also names a WMO
+  placement (not matched yet); the UiMap record is unavailable; or the row's fields could not be
+  read.
+- **Hierarchy.** Each linked UiMap is one entry with its recorded type and parent. A UiMap whose
+  ParentUiMapID is another listed floor is nested under it; parent cycles are listed flat. Floors
+  are ordered by UiMap ID, not by height.
+- **Select.** A floor entry lists its groups in file order. Selecting it frames the union of
+  those groups' usable boxes with the same inspection framing as the overview; it replaces only the
+  latest camera, so the transport protocol is unchanged. Floors whose groups cannot frame a camera
+  say so and do not move it.
+- **Threading.** The lookup runs on a virtual thread after the interior opens (the table read
+  itself on the location-maps worker); only the result is published on FX. Closing the window
+  cancels it off FX.
+- **Entrance.** Still unknown.
+
+Tests: `LocationMapsServiceTest` (group rows per map, placement and missing UiMap kept as recorded,
+unreadable rows counted, `resolve` identical before and after the query, default unsupported) and
+`:gui:globalInteriorFloorsTest` (exact links, hierarchy, dedup, union framing, every unlinked
+reason and cap, nothing inferred, unsupported and unreadable sources, parent cycles).
+
+Not proven yet: no actual-data run checks how many real assignments link, or whether real
+dungeon rows use WMODoodadPlacementID.
 
 ## Components
 

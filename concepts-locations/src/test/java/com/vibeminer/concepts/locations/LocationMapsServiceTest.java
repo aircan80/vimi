@@ -690,6 +690,183 @@ final class LocationMapsServiceTest {
         }
     }
 
+    /** Group-scoped rows on map 1 and elsewhere, beside the unscoped fixture row 500. */
+    private static List<MemoryTables.FakeTable> groupFixture() {
+        var fixture = fixture();
+        replace(
+                fixture,
+                table(
+                        "UiMap",
+                        "DB51D55F",
+                        List.of(
+                                t("Name_lang"),
+                                n("ParentUiMapID"),
+                                n("Type"),
+                                n("System"),
+                                n("VisibilityPlayerConditionID")),
+                        List.of(
+                                row(1411, "Authored zone", "1414", "3", "0", "0"),
+                                row(14, "Unrelated same-number map", "0", "3", "0", "0"),
+                                row(1414, "Authored continent", "0", "2", "0", "0"),
+                                row(2001, "Upper hall", "1411", "4", "0", "0"),
+                                row(2002, "Lower hall", "2001", "4", "0", "0"))));
+        replace(
+                fixture,
+                assignments(
+                        List.of(
+                                row(
+                                        500, "0", "0", "1", "1", "100", "-100", "-1000", "200",
+                                        "100", "1000", "1411", "14", "1", "0", "0"),
+                                // Group-scoped, same region and area as 500: map 1, group 77.
+                                row(
+                                        501, "0", "0", "1", "1", "100", "-100", "-1000", "200",
+                                        "100", "1000", "2001", "0", "1", "0", "77"),
+                                row(
+                                        502, "0", "0", "1", "1", "100", "-100", "-1000", "200",
+                                        "100", "1000", "2002", "0", "1", "0", "78"),
+                                // Placement-scoped, recorded but never matched here.
+                                row(
+                                        503, "0", "0", "1", "1", "100", "-100", "-1000", "200",
+                                        "100", "1000", "2002", "0", "1", "9", "79"),
+                                // Missing UiMap record.
+                                row(
+                                        504, "0", "0", "1", "1", "100", "-100", "-1000", "200",
+                                        "100", "1000", "3000", "0", "1", "0", "80"),
+                                // Another world map.
+                                row(
+                                        505, "0", "0", "1", "1", "100", "-100", "-1000", "200",
+                                        "100", "1000", "2001", "0", "2", "0", "77"))));
+        return fixture;
+    }
+
+    @Test
+    void groupAssignmentsListOnlyRecordedGroupScopedRowsOfTheRequestedMap() {
+        try (var tables = open(groupFixture());
+                var service = new LocationMapsService(tables)) {
+            var result = service.wmoGroupAssignments(1, Cancellation.NONE).join();
+            assertEquals(1, result.worldMapId());
+            assertEquals(
+                    List.of(501L, 502L, 503L, 504L),
+                    result.assignments().stream()
+                            .map(MapTypes.WmoGroupAssignment::assignmentId)
+                            .toList());
+            var upper = result.assignments().getFirst();
+            assertEquals(2001, upper.uiMapId());
+            assertEquals("Upper hall", upper.map().name());
+            assertEquals(1411L, upper.map().parentId());
+            assertEquals(4, upper.map().type());
+            assertEquals(77, upper.wmoGroupId());
+            assertEquals(0, upper.wmoDoodadPlacementId());
+            assertTrue(
+                    upper.sources().stream()
+                            .anyMatch(
+                                    s ->
+                                            s.column().equals("WMOGroupID")
+                                                    && s.value().equals("77")));
+            assertEquals(9, result.assignments().get(2).wmoDoodadPlacementId());
+            assertNull(result.assignments().get(3).map(), "missing UiMap stays recorded as null");
+            assertEquals(
+                    List.of(1411L, 2001L),
+                    result.parents().stream().map(MapTypes.MapInfo::id).toList());
+            assertEquals(0, result.unreadable());
+            assertEquals(MapTypes.State.PARTIAL, result.state(), "missing UiMap is reported");
+            var other = service.wmoGroupAssignments(2, Cancellation.NONE).join();
+            assertEquals(
+                    List.of(505L),
+                    other.assignments().stream().map(a -> a.assignmentId()).toList());
+            var none = service.wmoGroupAssignments(7, Cancellation.NONE).join();
+            assertTrue(none.assignments().isEmpty());
+            assertEquals(MapTypes.State.READY, none.state());
+            assertTrue(none.message().contains("No group-scoped"));
+        }
+    }
+
+    @Test
+    void groupAssignmentQueryLeavesExistingResolutionsIdentical() {
+        // Group-scoped rows were already in the table; the new query must not change resolve().
+        try (var tables = open(groupFixture());
+                var before = new LocationMapsService(tables);
+                var after = new LocationMapsService(tables)) {
+            var expectedWorld = before.resolve(world(), Cancellation.NONE).join();
+            var expectedArea = before.resolve(area(), Cancellation.NONE).join();
+            after.wmoGroupAssignments(1, Cancellation.NONE).join();
+            assertEquals(expectedWorld, after.resolve(world(), Cancellation.NONE).join());
+            assertEquals(expectedArea, after.resolve(area(), Cancellation.NONE).join());
+            assertEquals(
+                    List.of(500L),
+                    expectedWorld.candidates().stream().map(c -> c.assignmentId()).toList(),
+                    "world projection still uses only the unscoped row");
+            assertEquals(
+                    List.of(500L),
+                    expectedArea.candidates().stream().map(c -> c.assignmentId()).toList());
+        }
+        // The unscoped-only filter used by resolve() is unchanged: the plain fixture still yields
+        // the same projection, and group rows add no candidate.
+        try (var tables = open(fixture());
+                var plain = new LocationMapsService(tables);
+                var groups = open(groupFixture());
+                var scoped = new LocationMapsService(groups)) {
+            assertEquals(
+                    plain.resolve(world(), Cancellation.NONE).join().candidates(),
+                    scoped.resolve(world(), Cancellation.NONE).join().candidates());
+            assertEquals(
+                    plain.resolve(area(), Cancellation.NONE).join().candidates(),
+                    scoped.resolve(area(), Cancellation.NONE).join().candidates());
+        }
+    }
+
+    @Test
+    void unreadableGroupAssignmentFieldsAreCountedNeverMatched() {
+        var fixture = groupFixture();
+        replace(
+                fixture,
+                assignments(
+                        List.of(
+                                row(
+                                        510, "0", "0", "1", "1", "100", "-100", "-1000", "200",
+                                        "100", "1000", "2001", "0", "1", "bad", "77"),
+                                row(
+                                        511, "0", "0", "1", "1", "100", "-100", "-1000", "200",
+                                        "100", "1000", "2001", "0", "1", "0", "78"))));
+        try (var tables = open(fixture);
+                var service = new LocationMapsService(tables)) {
+            var result = service.wmoGroupAssignments(1, Cancellation.NONE).join();
+            assertEquals(1, result.unreadable());
+            assertEquals(
+                    List.of(511L),
+                    result.assignments().stream().map(a -> a.assignmentId()).toList());
+            assertEquals(MapTypes.State.PARTIAL, result.state());
+        }
+    }
+
+    @Test
+    void defaultGroupAssignmentQueryIsUnsupported() {
+        BuildLocationMaps minimal =
+                new BuildLocationMaps() {
+                    public java.util.concurrent.CompletableFuture<MapTypes.Resolution> resolve(
+                            LocationTypes.Location location, Cancellation token) {
+                        throw new AssertionError();
+                    }
+
+                    public java.util.concurrent.CompletableFuture<MapTypes.Artwork> artwork(
+                            long uiMapId, Cancellation token) {
+                        throw new AssertionError();
+                    }
+
+                    public java.util.concurrent.CompletableFuture<MapTypes.TileImage> tile(
+                            long uiMapId, long tileRowId, Cancellation token) {
+                        throw new AssertionError();
+                    }
+
+                    public java.util.concurrent.CompletableFuture<Void> closeAsync() {
+                        return java.util.concurrent.CompletableFuture.completedFuture(null);
+                    }
+                };
+        var result = minimal.wmoGroupAssignments(1, Cancellation.NONE).join();
+        assertEquals(MapTypes.State.UNSUPPORTED, result.state());
+        assertTrue(result.assignments().isEmpty());
+    }
+
     @Test
     void cancelledAndClosedMapQueriesDoNotTakeOwnershipOfBorrowedTables() {
         try (var tables = open(fixture())) {

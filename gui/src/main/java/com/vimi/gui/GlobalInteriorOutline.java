@@ -17,16 +17,21 @@ record GlobalInteriorOutline(
     static final String ENTRANCE_UNKNOWN =
             "Entrance: unknown · no entrance source is read for this interior yet";
 
-    /** Floors are never inferred from height; no qualified UiMap/WMO-group link is read yet. */
+    /**
+     * Shown until the group-scoped UiMap assignments are read and matched (see {@link
+     * GlobalInteriorFloors}); floors are never inferred from height or group order.
+     */
     static final String FLOORS_UNQUALIFIED =
             "Floors: not linked · no qualified UiMap/WMO-group floor source for this interior";
 
     /**
      * One recorded WMO group. {@code name} is the MOGN name at the recorded offset, or null when
      * unreadable. {@code bounds} is the recorded MOGP box in native space clipped to the drawn
-     * scene bounds, or null when it cannot frame a camera.
+     * scene bounds, or null when it cannot frame a camera. {@code recordedGroupId} is the group ID
+     * recorded in the MOGP header (the key UiMapAssignment.WMOGroupID refers to); 0 when unset.
      */
-    record Group(int ordinal, long fileId, String name, long flags, float[] bounds) {
+    record Group(
+            int ordinal, long fileId, String name, long flags, long recordedGroupId, float[] bounds) {
         Group {
             bounds = bounds == null ? null : bounds.clone();
         }
@@ -83,6 +88,7 @@ record GlobalInteriorOutline(
                             group.id(),
                             group.recordedName().orElse(null),
                             group.flags(),
+                            group.header().groupId(),
                             clip(group.nativeBounds(), sceneBounds)));
         }
         return new GlobalInteriorOutline(groups, FLOORS_UNQUALIFIED, ENTRANCE_UNKNOWN);

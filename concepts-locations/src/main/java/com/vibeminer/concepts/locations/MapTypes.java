@@ -103,4 +103,65 @@ public final class MapTypes {
             issues = List.copyOf(issues);
         }
     }
+
+    /**
+     * One UiMapAssignment row scoped to a WMO group ({@code WMOGroupID != 0}) on one world map.
+     * {@code map} is null when the referenced UiMap record is unavailable. Values are recorded,
+     * never matched or inferred here.
+     */
+    public record WmoGroupAssignment(
+            long assignmentId,
+            long uiMapId,
+            MapInfo map,
+            long wmoGroupId,
+            long wmoDoodadPlacementId,
+            List<TableSource> sources) {
+        public WmoGroupAssignment {
+            if (wmoGroupId == 0) {
+                throw new IllegalArgumentException("A group assignment needs a WMO group ID");
+            }
+            sources = List.copyOf(sources);
+        }
+    }
+
+    /**
+     * Every readable group-scoped assignment for one world map, with the UiMap records their
+     * parents name (one level). {@code unreadable} counts rows for the map whose group, placement
+     * or UiMap fields could not be read; they are never matched.
+     */
+    public record WmoGroupAssignments(
+            State state,
+            BuildRef build,
+            String locale,
+            long worldMapId,
+            List<WmoGroupAssignment> assignments,
+            List<MapInfo> parents,
+            int unreadable,
+            List<String> issues,
+            String message) {
+        public static final int MAX_ASSIGNMENTS = 1024;
+
+        public WmoGroupAssignments {
+            java.util.Objects.requireNonNull(state);
+            assignments = List.copyOf(assignments);
+            parents = List.copyOf(parents);
+            issues = List.copyOf(issues);
+            if (assignments.size() > MAX_ASSIGNMENTS || unreadable < 0) {
+                throw new IllegalArgumentException("Group assignments exceed their limits");
+            }
+        }
+
+        public static WmoGroupAssignments unsupported(long worldMapId) {
+            return new WmoGroupAssignments(
+                    State.UNSUPPORTED,
+                    null,
+                    null,
+                    worldMapId,
+                    List.of(),
+                    List.of(),
+                    0,
+                    List.of(),
+                    "Group-scoped UiMap assignments are not readable from this source.");
+        }
+    }
 }

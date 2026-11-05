@@ -223,6 +223,104 @@ public final class LocationMapsService implements BuildLocationMaps {
         }
     }
 
+    @Override
+    public CompletableFuture<MapTypes.WmoGroupAssignments> wmoGroupAssignments(
+            long worldMapId, Cancellation token) {
+        if (worldMapId < 0 || worldMapId > 0xffff_ffffL) {
+            throw new IllegalArgumentException("Invalid world map identifier");
+        }
+        return submit(token, request -> groupAssignments(worldMapId, request));
+    }
+
+    /**
+     * Group-scoped rows for one world map, read from the same cached tables and MapID index as
+     * {@link #resolve}; {@code unscoped} still keeps them out of every resolution.
+     */
+    private MapTypes.WmoGroupAssignments groupAssignments(long worldMapId, Cancellation request) {
+        var issues = new ArrayList<String>();
+        var result = new ArrayList<MapTypes.WmoGroupAssignment>();
+        var parents = new java.util.LinkedHashMap<Long, MapTypes.MapInfo>();
+        int unreadable = 0;
+        try {
+            load("UiMap", 8192, request, issues);
+            var assignments = load("UiMapAssignment", 16_384, request, issues);
+            var data = schemas.get("UiMapAssignment");
+            data.reference("AreaID", "AreaTable");
+            data.reference("UiMapID", "UiMap");
+            data.reference("MapID", "Map");
+            var index = assignmentIndex(assignments, data, request);
+            for (var failure : index.mapFailures()) {
+                MapTable.issue(issues, failure);
+            }
+            for (var row : index.byMap().getOrDefault(worldMapId, List.of())) {
+                request.check();
+                long group, placement, uiMap;
+                try {
+                    group = data.number(row, "WMOGroupID");
+                    if (group == 0) {
+                        continue;
+                    }
+                    placement = data.number(row, "WMODoodadPlacementID");
+                    uiMap = data.number(row, "UiMapID");
+                } catch (MapTable.Projection failure) {
+                    unreadable++;
+                    MapTable.issue(issues, failure.getMessage());
+                    continue;
+                }
+                if (group < 0 || group > 0xffff_ffffL || placement < 0 || uiMap < 0) {
+                    unreadable++;
+                    MapTable.issue(issues, "Some group assignment identifiers are out of range.");
+                    continue;
+                }
+                if (result.size() == MapTypes.WmoGroupAssignments.MAX_ASSIGNMENTS) {
+                    MapTable.issue(issues, "Group assignments for this map exceed the list limit.");
+                    unreadable++;
+                    continue;
+                }
+                var info = map(uiMap, issues);
+                if (info != null && info.parentId() != null && info.parentId() != 0) {
+                    var parent = map(info.parentId(), issues);
+                    if (parent != null) {
+                        parents.putIfAbsent(parent.id(), parent);
+                    }
+                }
+                var sources = new ArrayList<MapTypes.TableSource>();
+                for (String field :
+                        List.of("MapID", "UiMapID", "WMODoodadPlacementID", "WMOGroupID")) {
+                    try {
+                        sources.add(data.source(row, field));
+                    } catch (MapTable.Projection failure) {
+                        MapTable.issue(issues, failure.getMessage());
+                    }
+                }
+                result.add(
+                        new MapTypes.WmoGroupAssignment(
+                                row.id(), uiMap, info, group, placement, sources));
+            }
+            return new MapTypes.WmoGroupAssignments(
+                    state(issues),
+                    tables.build(),
+                    tables.locale(),
+                    worldMapId,
+                    result,
+                    List.copyOf(parents.values()),
+                    unreadable,
+                    issues,
+                    result.isEmpty() ? "No group-scoped UiMap assignment names this map." : null);
+        } catch (MapTable.Projection failure) {
+            return new MapTypes.WmoGroupAssignments(
+                    failure.state,
+                    tables.build(),
+                    tables.locale(),
+                    worldMapId,
+                    List.of(),
+                    List.of(),
+                    0,
+                    issues,
+                    failure.getMessage());
+        }
+    }
+
     /**
      * Assignment rows keyed by recorded AreaID and MapID, in table order; built once per row list.
      */
