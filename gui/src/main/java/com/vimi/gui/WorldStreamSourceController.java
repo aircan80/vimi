@@ -244,6 +244,8 @@ final class WorldStreamSourceController {
     private WorldFormats.Tile creditTarget;
     private boolean retryCommit;
     private long commitRetryAt, commitRetryCapacity, commitIssuedCapacity;
+    // Test seam: runs on the worker after a RETRY_LATER commit refusal, before it is recorded.
+    volatile Runnable refusalSeam;
 
     WorldStreamSourceController(
             Request request, GpuStarter starter, Events events, Consumer<Runnable> fxPost) {
@@ -676,6 +678,8 @@ final class WorldStreamSourceController {
                         || refusal.reason()!=WorldStreamTransport.Refusal.RETRY_LATER
                         || refusal.getCause()!=null || refusal.getSuppressed().length!=0) throw failure;
                 commit=null;
+                var seam=refusalSeam;
+                if(seam!=null) seam.run();
                 retryCommit=true;
                 commitRetryAt=clock.getAsLong();
                 // Capacity observed when the refused commit was issued, not now: a retirement that
