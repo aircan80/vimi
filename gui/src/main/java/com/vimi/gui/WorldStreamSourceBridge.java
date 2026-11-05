@@ -117,8 +117,8 @@ final class WorldStreamSourceBridge {
     /**
      * Descriptive drawn and omitted counts of one tile's BASIC_EXTERIOR set, as written. Omitted
      * buildings and doodads are records (MODF, MDDF and selected MODD entries) that are not
-     * drawn for any reason; tilted doodads are the omitted MDDF and MODD doodads with a pitch or
-     * roll (no reviewed convention is applied to them).
+     * drawn for any reason; capped doodads are the omitted doodads that qualified but did not fit
+     * the per-tile doodad, model or draw caps (or the bridge's own draw-budget check).
      * Omitted surfaces are unsupported, image-less, capped or unreadable batches of drawn or
      * empty roots and models; unreadable surfaces are the cutout and blended building batches
      * whose image could not be read now (they never cost the building).
@@ -128,7 +128,7 @@ final class WorldStreamSourceBridge {
             int buildingsOmitted,
             int doodads,
             int doodadsOmitted,
-            int tilted,
+            int doodadsCapped,
             int surfacesOmitted,
             int unreadable) {
         static final ExteriorSummary NONE = new ExteriorSummary(0, 0, 0, 0, 0, 0, 0);
@@ -139,7 +139,7 @@ final class WorldStreamSourceBridge {
                     buildingsOmitted + o.buildingsOmitted,
                     doodads + o.doodads,
                     doodadsOmitted + o.doodadsOmitted,
-                    tilted + o.tilted,
+                    doodadsCapped + o.doodadsCapped,
                     surfacesOmitted + o.surfacesOmitted,
                     unreadable + o.unreadable);
         }
@@ -155,7 +155,7 @@ final class WorldStreamSourceBridge {
                     buildingsOmitted + buildingsCapped,
                     doodads - doodadsCapped,
                     doodadsOmitted + doodadsCapped,
-                    tilted,
+                    this.doodadsCapped + doodadsCapped,
                     surfacesOmitted,
                     unreadable);
         }
@@ -175,20 +175,20 @@ final class WorldStreamSourceBridge {
                             set,
                             WorldExteriorObjects.Count.DOODAD_DRAWN,
                             WorldExteriorObjects.Count.SET_DOODAD_DRAWN);
-            int tilted =
-                    set.count(WorldExteriorObjects.Count.DOODAD_TILTED)
-                            + set.count(WorldExteriorObjects.Count.SET_DOODAD_TILTED);
+            int doodadsCapped =
+                    sum(
+                            set,
+                            WorldExteriorObjects.Count.DOODAD_CAPPED,
+                            WorldExteriorObjects.Count.SET_DOODAD_CAPPED);
             int doodadsOmitted =
-                    tilted
+                    doodadsCapped
                             + sum(
                                     set,
                                     WorldExteriorObjects.Count.DOODAD_UNSUPPORTED,
                                     WorldExteriorObjects.Count.DOODAD_CONFLICTING,
-                                    WorldExteriorObjects.Count.DOODAD_CAPPED,
                                     WorldExteriorObjects.Count.DOODAD_FAILED_MODEL,
                                     WorldExteriorObjects.Count.DOODAD_EMPTY,
                                     WorldExteriorObjects.Count.SET_DOODAD_UNSUPPORTED,
-                                    WorldExteriorObjects.Count.SET_DOODAD_CAPPED,
                                     WorldExteriorObjects.Count.SET_DOODAD_FAILED_MODEL,
                                     WorldExteriorObjects.Count.SET_DOODAD_EMPTY);
             int surfaces =
@@ -205,7 +205,7 @@ final class WorldStreamSourceBridge {
                     buildingsOmitted,
                     doodads,
                     doodadsOmitted,
-                    tilted,
+                    doodadsCapped,
                     surfaces,
                     set.count(WorldExteriorObjects.Count.BATCH_UNREADABLE));
         }
@@ -630,7 +630,7 @@ final class WorldStreamSourceBridge {
     private static String note(ExteriorSummary s) {
         return "exterior buildings drawn=" + s.buildings() + " omitted=" + s.buildingsOmitted()
                 + " doodads drawn=" + s.doodads() + " omitted=" + s.doodadsOmitted()
-                + " (tilted " + s.tilted() + ") surfaces omitted=" + s.surfacesOmitted()
+                + " (capped " + s.doodadsCapped() + ") surfaces omitted=" + s.surfacesOmitted()
                 + " (unreadable " + s.unreadable() + ")";
     }
 

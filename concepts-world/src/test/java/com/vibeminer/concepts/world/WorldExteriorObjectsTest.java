@@ -1074,6 +1074,8 @@ class WorldExteriorObjectsTest {
 
     @Test
     void mddfDoodadsShareOneStaticModelUnderTheReviewedHeadingRule() {
+        // Pitched and rolled records now draw too; their transforms are checked against the
+        // wowdev placement-matrix oracle in mddfPitchRollAndHeadingFollowThePinnedPlacementMatrix.
         var drawn = Mddf.of(MODEL, 1, 0x40);
         var shrub = new Mddf(MODEL, 2, 0x42, 50, 5, 60, 0, 180, 0, 512);
         var doodads =
@@ -1095,10 +1097,9 @@ class WorldExteriorObjectsTest {
             try (var set = run(f, obj0(List.of(), doodads))) {
                 assertEquals(
                         Map.ofEntries(
-                                Map.entry(WorldExteriorObjects.Count.DOODAD_DRAWN, 2),
+                                Map.entry(WorldExteriorObjects.Count.DOODAD_DRAWN, 4),
                                 Map.entry(WorldExteriorObjects.Count.DOODAD_SHARED_DUPLICATE, 1),
                                 Map.entry(WorldExteriorObjects.Count.DOODAD_UNSUPPORTED, 4),
-                                Map.entry(WorldExteriorObjects.Count.DOODAD_TILTED, 2),
                                 Map.entry(WorldExteriorObjects.Count.DOODAD_CONFLICTING, 2),
                                 Map.entry(WorldExteriorObjects.Count.DOODAD_FAILED_MODEL, 1),
                                 Map.entry(WorldExteriorObjects.Count.MODEL_DRAWN, 1),
@@ -1128,7 +1129,7 @@ class WorldExteriorObjectsTest {
                                         0, 3, 0, 0, WorldExteriorObjects.OPAQUE)),
                         mesh.ranges());
                 assertEquals(MODEL_IMAGE, set.images().getFirst().id());
-                assertEquals(2, set.placements().size());
+                assertEquals(4, set.placements().size());
                 for (int i = 0; i < 2; i++) {
                     var p = set.placements().get(i);
                     var r = i == 0 ? drawn : shrub;
@@ -1289,7 +1290,7 @@ class WorldExteriorObjectsTest {
                         new Modd(1, 0, 0, 0, new double[] {0, 0, 0, 1}, 1), // MODI entry 0
                         new Modd(5, 0, 0, 0, new double[] {0, 0, 0, 1}, 1), // outside MODI
                         new Modd(0, 0, 0, 0, new double[] {0, 0, 0, 2}, 1), // not unit
-                        new Modd(0, 0, 0, 0, new double[] {h, 0, 0, h}, 1), // pitched: tilted
+                        new Modd(0, 0, 0, 0, new double[] {h, 0, 0, h}, 1), // pitched: drawn
                         new Modd(0x02000000, 0, 0, 0, new double[] {0, 0, 0, 1}, 1)); // flag 0x2
         var chunks =
                 doodadChunks(new int[][] {{0, 2}, {2, 5}, {4, 1}}, new long[] {MODEL, 0}, defs);
@@ -1308,9 +1309,8 @@ class WorldExteriorObjectsTest {
                                 Map.entry(WorldExteriorObjects.Count.GROUP_DRAWN, 1),
                                 Map.entry(WorldExteriorObjects.Count.BATCH_DRAWN, 1),
                                 Map.entry(WorldExteriorObjects.Count.IMAGE_DECODED, 1),
-                                Map.entry(WorldExteriorObjects.Count.SET_DOODAD_DRAWN, 4),
+                                Map.entry(WorldExteriorObjects.Count.SET_DOODAD_DRAWN, 5),
                                 Map.entry(WorldExteriorObjects.Count.SET_DOODAD_UNSUPPORTED, 4),
-                                Map.entry(WorldExteriorObjects.Count.SET_DOODAD_TILTED, 1),
                                 Map.entry(WorldExteriorObjects.Count.SET_UNSUPPORTED, 1),
                                 Map.entry(WorldExteriorObjects.Count.MODEL_DRAWN, 1),
                                 Map.entry(WorldExteriorObjects.Count.MODEL_BATCH_DRAWN, 1),
@@ -1322,6 +1322,7 @@ class WorldExteriorObjectsTest {
                         List.of(
                                 WorldExteriorObjects.Kind.BUILDING,
                                 WorldExteriorObjects.Kind.BUILDING,
+                                WorldExteriorObjects.Kind.SET_DOODAD,
                                 WorldExteriorObjects.Kind.SET_DOODAD,
                                 WorldExteriorObjects.Kind.SET_DOODAD,
                                 WorldExteriorObjects.Kind.SET_DOODAD,
@@ -1347,11 +1348,263 @@ class WorldExteriorObjectsTest {
                 var r = turned.rotation();
                 assertEquals(heading.m01(), r.m00(), 1e-12);
                 assertEquals(heading.m11(), r.m10(), 1e-12);
-                assertEquals(78, set.placements().get(4).uniqueId());
-                assertEquals(0, set.placements().get(4).ordinal());
-                assertEquals(1, set.placements().get(5).ordinal());
+                var pitched = set.placements().get(4);
+                assertEquals(5, pitched.ordinal());
+                assertEquals(77, pitched.uniqueId());
+                // A quarter turn about local x maps local z to local -y before the heading.
+                assertEquals(-heading.m01(), pitched.rotation().m02(), 1e-12);
+                assertEquals(-heading.m11(), pitched.rotation().m12(), 1e-12);
+                assertEquals(0, pitched.rotation().m22(), 1e-12);
+                assertEquals(78, set.placements().get(5).uniqueId());
+                assertEquals(0, set.placements().get(5).ordinal());
+                assertEquals(1, set.placements().get(6).ordinal());
             }
         }
+    }
+
+    /**
+     * An independent oracle in the style of gl-matrix (column vectors, every call post-multiplies
+     * the current matrix), used to transcribe the wowdev placement-matrix examples step by step.
+     * It never calls {@link WorldExteriorObjects.Rotation}.
+     */
+    private static final class GlMat4 {
+        double[][] m = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}};
+
+        GlMat4 times(double[][] b) {
+            var out = new double[4][4];
+            for (int i = 0; i < 4; i++) {
+                for (int j = 0; j < 4; j++) {
+                    for (int k = 0; k < 4; k++) {
+                        out[i][j] += m[i][k] * b[k][j];
+                    }
+                }
+            }
+            m = out;
+            return this;
+        }
+
+        GlMat4 rotate(char axis, double degrees) {
+            double t = Math.toRadians(degrees), c = Math.cos(t), s = Math.sin(t);
+            return times(
+                    switch (axis) {
+                        case 'x' -> new double[][] {
+                            {1, 0, 0, 0}, {0, c, -s, 0}, {0, s, c, 0}, {0, 0, 0, 1}
+                        };
+                        case 'y' -> new double[][] {
+                            {c, 0, s, 0}, {0, 1, 0, 0}, {-s, 0, c, 0}, {0, 0, 0, 1}
+                        };
+                        default -> new double[][] {
+                            {c, -s, 0, 0}, {s, c, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}
+                        };
+                    });
+        }
+
+        GlMat4 translate(double x, double y, double z) {
+            return times(new double[][] {{1, 0, 0, x}, {0, 1, 0, y}, {0, 0, 1, z}, {0, 0, 0, 1}});
+        }
+
+        GlMat4 scale(double s) {
+            return times(new double[][] {{s, 0, 0, 0}, {0, s, 0, 0}, {0, 0, s, 0}, {0, 0, 0, 1}});
+        }
+
+        /** gl-matrix mat4.fromQuat for a unit quaternion (x, y, z, w). */
+        GlMat4 quat(double x, double y, double z, double w) {
+            return times(
+                    new double[][] {
+                        {1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y), 0},
+                        {2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x), 0},
+                        {2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y), 0},
+                        {0, 0, 0, 1}
+                    });
+        }
+
+        double[] apply(double x, double y, double z) {
+            double[] v = {x, y, z, 1}, out = new double[3];
+            for (int i = 0; i < 3; i++) {
+                for (int k = 0; k < 4; k++) {
+                    out[i] += m[i][k] * v[k];
+                }
+            }
+            return out;
+        }
+
+        /**
+         * wowdev ADT/v18 (rev 37119) "How to compute a matrix to map M2 to world coordinates",
+         * transcribed call by call; MODF uses the same math. Its leading rotateX(90) rotateY(90)
+         * turns the Y-up placement frame (32*TILESIZE - x, y, 32*TILESIZE - z) into the native
+         * terrain axes (32*TILESIZE - z, 32*TILESIZE - x, y).
+         */
+        static GlMat4 adtPlacement(
+                float x, float y, float z, float rx, float ry, float rz, double scale) {
+            double tile = 51200.0 / 3.0;
+            return new GlMat4()
+                    .rotate('x', 90)
+                    .rotate('y', 90)
+                    .translate(tile - x, y, tile - z)
+                    .rotate('y', ry - 270.0)
+                    .rotate('z', -rx)
+                    .rotate('x', rz - 90.0)
+                    .scale(scale);
+        }
+    }
+
+    /** The drawn placement maps local (a, b, c) to its origin plus scale * rotation * local. */
+    private static double[] world(WorldExteriorObjects.Placement p, double a, double b, double c) {
+        var r = p.rotation();
+        double s = p.scale();
+        return new double[] {
+            p.x() + s * (r.m00() * a + r.m01() * b + r.m02() * c),
+            p.y() + s * (r.m10() * a + r.m11() * b + r.m12() * c),
+            p.z() + s * (r.m20() * a + r.m21() * b + r.m22() * c)
+        };
+    }
+
+    private static void assertMapsLike(GlMat4 oracle, WorldExteriorObjects.Placement p) {
+        double[][] locals = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {2.5, -1.25, 4}};
+        for (var v : locals) {
+            var expected = oracle.apply(v[0], v[1], v[2]);
+            var actual = world(p, v[0], v[1], v[2]);
+            for (int i = 0; i < 3; i++) {
+                assertEquals(expected[i], actual[i], 1e-9, "axis " + i + " of local " + List.of(
+                        v[0], v[1], v[2]));
+            }
+        }
+        var r = p.rotation().rowMajor();
+        double det =
+                r[0] * (r[4] * r[8] - r[5] * r[7])
+                        - r[1] * (r[3] * r[8] - r[5] * r[6])
+                        + r[2] * (r[3] * r[7] - r[4] * r[6]);
+        assertEquals(1, det, 1e-12);
+    }
+
+    @Test
+    void mddfPitchRollAndHeadingFollowThePinnedPlacementMatrix() {
+        var tilted = new Mddf(MODEL, 1, 0x240, 1234.5f, 87.25f, 2345.75f, 17.5f, -121.25f, 33, 1536);
+        var wrapped = new Mddf(MODEL, 2, 0x40, 500, 40, 600, -8, 405, -71, 700);
+        var pitched = new Mddf(MODEL, 3, 0x1262, 10, 0, 20, 90, 0, 0, 1024);
+        var rolled = new Mddf(MODEL, 4, 0x240, 10, 0, 20, 0, 0, 90, 1024);
+        var upright = new Mddf(MODEL, 5, 0x240, 10, 0, 20, 0, 63.5f, 0, 1024);
+        var doodads =
+                List.of(
+                        tilted,
+                        wrapped,
+                        pitched,
+                        rolled,
+                        upright,
+                        new Mddf(MODEL, 6, 0x340, 1, 2, 3, 0, 0, 0, 1024), // 0x100 is unpinned
+                        new Mddf(MODEL, 8, 0x200, 1, 2, 3, 0, 0, 0, 1024)); // name reference
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            try (var set = run(f, obj0(List.of(), doodads))) {
+                assertEquals(
+                        Map.ofEntries(
+                                Map.entry(WorldExteriorObjects.Count.DOODAD_DRAWN, 5),
+                                Map.entry(WorldExteriorObjects.Count.DOODAD_UNSUPPORTED, 2),
+                                Map.entry(WorldExteriorObjects.Count.MODEL_DRAWN, 1),
+                                Map.entry(WorldExteriorObjects.Count.MODEL_BATCH_DRAWN, 1),
+                                Map.entry(WorldExteriorObjects.Count.MODEL_IMAGE_DECODED, 1)),
+                        counts(set));
+                var drawn = List.of(tilted, wrapped, pitched, rolled, upright);
+                assertEquals(drawn.size(), set.placements().size());
+                for (int i = 0; i < drawn.size(); i++) {
+                    var r = drawn.get(i);
+                    var p = set.placements().get(i);
+                    assertEquals(r.uid(), p.uniqueId());
+                    assertMapsLike(
+                            GlMat4.adtPlacement(
+                                    r.x(), r.y(), r.z(), r.pitch(), r.heading(), r.roll(),
+                                    r.scale() / 1024.0),
+                            p);
+                }
+                // wowdev's axis table: rotation x turns about the West/East axis (native y), so a
+                // 90 degree pitch at heading 0 lays the model's up axis in the native x-z plane
+                // (along -x); rotation z turns about North/South (native x), laying it in the
+                // y-z plane (along +y).
+                var up = set.placements().get(2).rotation();
+                assertEquals(-1, up.m02(), 1e-12);
+                assertEquals(0, up.m12(), 1e-12);
+                assertEquals(0, up.m22(), 1e-12);
+                var side = set.placements().get(3).rotation();
+                assertEquals(0, side.m02(), 1e-12);
+                assertEquals(1, side.m12(), 1e-12);
+                assertEquals(0, side.m22(), 1e-12);
+                // Zero pitch and roll keep the heading-only profile bit for bit.
+                var heading =
+                        new WorldBasicWmo.Transform(
+                                new WorldPlacements.Vec3(10, 0, 20), 63.5f, 1.0);
+                assertEquals(
+                        WorldExteriorObjects.Rotation.heading(heading.cos(), heading.sin()),
+                        set.placements().get(4).rotation());
+            }
+        }
+    }
+
+    @Test
+    void moddQuaternionsWithPitchRollAndYawComposeLikeThePinnedPlacementMatrix() {
+        // 50 degrees about the axis (1, 2, -0.5), and yaw 30 * pitch 20 * roll 10 as a product.
+        double n = Math.sqrt(1 + 4 + 0.25), half = Math.toRadians(25);
+        double[] axisAngle = {
+            Math.sin(half) / n, 2 * Math.sin(half) / n, -0.5 * Math.sin(half) / n, Math.cos(half)
+        };
+        double[] euler =
+                hamilton(
+                        hamilton(axisQuat(0, 0, 1, 30), axisQuat(0, 1, 0, 20)),
+                        axisQuat(1, 0, 0, 10));
+        var defs =
+                List.of(
+                        new Modd(0, 3, -4, 5, axisAngle, 0.75f),
+                        new Modd(0, -7.5f, 2, 0.5f, euler, 1.25f));
+        var chunks = doodadChunks(new int[][] {{0, 2}}, new long[] {MODEL}, defs);
+        var building = new Modf(ROOT, 77, 0xc, 812.5f, 33, 1290.25f, 0, 37.5f, 0, 2048);
+        try (var f = new Fixture(List.of())) {
+            putModel(f, MODEL, model());
+            f.files.sources.put(
+                    ROOT, root(1, new long[] {GROUP}, List.of(new Material(0, IMAGE, 0)), chunks));
+            try (var set = run(f, obj0(List.of(building), List.of()))) {
+                assertEquals(2, set.count(WorldExteriorObjects.Count.SET_DOODAD_DRAWN));
+                assertEquals(3, set.placements().size());
+                for (int i = 0; i < defs.size(); i++) {
+                    var d = defs.get(i);
+                    // The recorded float components, normalized in double.
+                    double[] q = {
+                        (float) d.q()[0], (float) d.q()[1], (float) d.q()[2], (float) d.q()[3]
+                    };
+                    double norm = Math.sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+                    // wowdev WMO (rev 37115) MODD: building * T(pos) * fromQuat(q) * S(scale).
+                    var oracle =
+                            GlMat4.adtPlacement(
+                                            building.x(),
+                                            building.y(),
+                                            building.z(),
+                                            building.pitch(),
+                                            building.heading(),
+                                            building.roll(),
+                                            2.0)
+                                    .translate(d.x(), d.y(), d.z())
+                                    .quat(q[0] / norm, q[1] / norm, q[2] / norm, q[3] / norm)
+                                    .scale(d.scale());
+                    var p = set.placements().get(1 + i);
+                    assertEquals(WorldExteriorObjects.Kind.SET_DOODAD, p.kind());
+                    assertEquals(i, p.ordinal());
+                    assertMapsLike(oracle, p);
+                }
+            }
+        }
+    }
+
+    private static double[] axisQuat(double x, double y, double z, double degrees) {
+        double h = Math.toRadians(degrees) / 2, s = Math.sin(h);
+        return new double[] {x * s, y * s, z * s, Math.cos(h)};
+    }
+
+    /** Hamilton product a * b of quaternions (x, y, z, w): b is applied first. */
+    private static double[] hamilton(double[] a, double[] b) {
+        return new double[] {
+            a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+            a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+            a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+            a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]
+        };
     }
 
     /** Files whose reads of {@code shortId} end early (a found, unprotected short read). */

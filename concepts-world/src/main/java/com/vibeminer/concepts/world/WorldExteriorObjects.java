@@ -78,8 +78,14 @@ public final class WorldExteriorObjects {
     /** Doodad images: at most 128, falling to 64 near the doodad pixel budget. */
     private static final int[] MODEL_IMAGE_SIDES = {128, 64};
 
-    /** MDDF flags: 0x40 direct FileDataID (required); 0x2, 0x20, 0x1000 carry no transform. */
-    private static final int DOODAD_DIRECT_ID = 0x40, DOODAD_ADMITTED = 0x2 | 0x20 | 0x1000;
+    /**
+     * MDDF flags: 0x40 direct FileDataID (required). 0x2, 0x20, 0x200 and 0x1000 select neither the
+     * reference nor the transform in any reviewed source (wowdev ADT/v18 rev 37119, TrinityCore
+     * ec72c19 adtfile.cpp:149, wow.export 4474fa4 M2Renderer.js:985-1008), so they are admitted
+     * without being interpreted; the meaning of 0x200 itself is not pinned.
+     */
+    private static final int DOODAD_DIRECT_ID = 0x40,
+            DOODAD_ADMITTED = 0x2 | 0x20 | 0x200 | 0x1000;
 
     /** MODD flags: only 0x1 (accepts projected textures) is admitted; it carries no transform. */
     private static final int SET_DOODAD_ADMITTED = 0x1;
@@ -162,10 +168,8 @@ public final class WorldExteriorObjects {
         IMAGE_CAPPED,
         DOODAD_DRAWN,
         DOODAD_SHARED_DUPLICATE,
-        /** Flags, reference kind, zero ID, scale or translation outside the profile. */
+        /** Flags, reference kind, zero ID, scale, rotation or translation outside the profile. */
         DOODAD_UNSUPPORTED,
-        /** Nonzero pitch or roll: only the reviewed heading rule is applied. */
-        DOODAD_TILTED,
         DOODAD_CONFLICTING,
         DOODAD_CAPPED,
         DOODAD_FAILED_MODEL,
@@ -176,8 +180,6 @@ public final class WorldExteriorObjects {
          * or a bad transform.
          */
         SET_DOODAD_UNSUPPORTED,
-        /** A MODD rotation that is not about local z only: no reviewed convention is applied. */
-        SET_DOODAD_TILTED,
         SET_DOODAD_CAPPED,
         SET_DOODAD_FAILED_MODEL,
         SET_DOODAD_EMPTY,
@@ -217,8 +219,10 @@ public final class WorldExteriorObjects {
     }
 
     /**
-     * Row-major 3x3 rotation in native terrain axes (rows are output X, Y, Z). Buildings and MDDF
-     * doodads use the reviewed ADT heading rule; set doodads compose it with their MODD quaternion.
+     * Row-major 3x3 rotation in native terrain axes (rows are output X, Y, Z; columns are raw
+     * model-local x, y, z). Buildings use the reviewed ADT heading rule. MDDF doodads add pitch
+     * and roll ({@link #mddf}); set doodads compose the building heading with their MODD
+     * quaternion.
      */
     public record Rotation(
             double m00,
@@ -232,6 +236,38 @@ public final class WorldExteriorObjects {
             double m22) {
         static Rotation heading(double cos, double sin) {
             return new Rotation(-cos, sin, 0, -sin, -cos, 0, 0, 0, 1);
+        }
+
+        /**
+         * The MDDF rotation in degrees: the heading (rotation y), then pitch (rotation x) about
+         * model-local y, then roll (rotation z) about model-local x, applied to the model first:
+         * {@code heading(y) * Ry(x) * Rx(z)}. This is TrinityCore ec72c19's
+         * {@code Matrix3::fromEulerAnglesZYX(y, x, z)} (ModelInstance.cpp:29, Matrix3.cpp:1664-1681)
+         * in its (z, x, up) placement frame (wmo.h:68), turned 180 degrees about up into the native
+         * axes, which is exactly the heading rule's extra half turn. The wowdev ADT/v18 placement
+         * matrix (rev 37119) gives the same matrix.
+         */
+        static Rotation mddf(double cos, double sin, double pitchDegrees, double rollDegrees) {
+            var heading = heading(cos, sin);
+            if (pitchDegrees == 0 && rollDegrees == 0) {
+                return heading; // bit-identical to the heading-only profile
+            }
+            double p = pitchDegrees * (StrictMath.PI / 180.0);
+            double r = rollDegrees * (StrictMath.PI / 180.0);
+            double cp = StrictMath.cos(p), sp = StrictMath.sin(p);
+            double cr = StrictMath.cos(r), sr = StrictMath.sin(r);
+            var pitch = new Rotation(cp, 0, sp, 0, 1, 0, -sp, 0, cp);
+            var roll = new Rotation(1, 0, 0, 0, cr, -sr, 0, sr, cr);
+            return heading.times(pitch.times(roll));
+        }
+
+        boolean finite() {
+            for (double v : rowMajor()) {
+                if (!Double.isFinite(v)) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         /** Unit quaternion (x, y, z, w) to a rotation matrix; the input is normalized in double. */
@@ -785,7 +821,7 @@ public final class WorldExteriorObjects {
             }
         }
 
-        /** MDDF doodads in obj0 order, under the reviewed heading rule only. */
+        /** MDDF doodads in obj0 order, under the heading rule plus pitch and roll. */
         private void placeDoodads(List<WorldPlacements.Doodad> records) {
             var byUid = new LinkedHashMap<Long, List<WorldPlacements.Doodad>>();
             for (var record : records) {
@@ -816,16 +852,19 @@ public final class WorldExteriorObjects {
                     count(Count.DOODAD_UNSUPPORTED);
                     continue;
                 }
-                if (record.rotation().x() != 0 || record.rotation().z() != 0) {
-                    count(Count.DOODAD_TILTED);
-                    continue;
-                }
                 double scale = record.scale() / 1024.0;
                 var transform =
                         new WorldBasicWmo.Transform(
                                 record.position(), record.rotation().y(), scale);
+                var rotation =
+                        Rotation.mddf(
+                                transform.cos(),
+                                transform.sin(),
+                                record.rotation().x(),
+                                record.rotation().z());
                 if (scale > MAX_SCALE
-                        || !finite(transform.originX(), transform.originY(), transform.originZ())) {
+                        || !finite(transform.originX(), transform.originY(), transform.originZ())
+                        || !rotation.finite()) {
                     count(Count.DOODAD_UNSUPPORTED);
                     continue;
                 }
@@ -842,7 +881,7 @@ public final class WorldExteriorObjects {
                                 scale,
                                 transform.cos(),
                                 transform.sin(),
-                                Rotation.heading(transform.cos(), transform.sin()));
+                                rotation);
                 count(
                         switch (outcome) {
                             case DRAWN -> Count.DOODAD_DRAWN;
@@ -856,7 +895,7 @@ public final class WorldExteriorObjects {
         /**
          * Each drawn building's set 0 and, when nonzero, its MODF doodad set, in MODD order. A MODD
          * entry is placed in the building's local axes: its position goes through the building
-         * transform and its quaternion composes with the building heading.
+         * transform and its full quaternion composes with the building heading.
          */
         private void placeSetDoodads() {
             var buildings = List.copyOf(placements);
@@ -926,18 +965,16 @@ public final class WorldExteriorObjects {
                 count(Count.SET_DOODAD_UNSUPPORTED);
                 return;
             }
-            // Like MDDF: only a rotation about local z (no pitch or roll) is applied.
-            if (qx != 0 || qy != 0) {
-                count(Count.SET_DOODAD_TILTED);
-                return;
-            }
             double x = parent.x(def.x(), def.y()), y = parent.y(def.x(), def.y());
             double z = parent.z(def.z());
             if (!finite(x, y, z)) {
                 count(Count.SET_DOODAD_UNSUPPORTED);
                 return;
             }
-            var rotation = building.rotation().times(Rotation.quaternion(0, 0, qz, qw));
+            // The full MODD quaternion (x, y, z, w) in raw WMO-local axes, applied before the
+            // building transform: building * T(position) * fromQuat(q) * S(scale) (wowdev WMO rev
+            // 37115 MODD placement matrix; wow.export 4474fa4 WMORenderer.js:400-466).
+            var rotation = building.rotation().times(Rotation.quaternion(qx, qy, qz, qw));
             var outcome =
                     doodad(
                             Kind.SET_DOODAD,

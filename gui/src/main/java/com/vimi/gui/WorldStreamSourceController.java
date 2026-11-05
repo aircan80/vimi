@@ -951,7 +951,7 @@ final class WorldStreamSourceController {
             if (s.buildingsOmitted() > 0) parts.add(plural(s.buildingsOmitted(), "building"));
             if (s.doodadsOmitted() > 0) {
                 parts.add(plural(s.doodadsOmitted(), "doodad")
-                        + (s.tilted() > 0 ? " (" + s.tilted() + " tilted)" : ""));
+                        + (s.doodadsCapped() > 0 ? " (" + s.doodadsCapped() + " capped)" : ""));
             }
             if (s.surfacesOmitted() > 0) {
                 parts.add(plural(s.surfacesOmitted(), "surface")
