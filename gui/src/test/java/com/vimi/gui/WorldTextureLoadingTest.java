@@ -88,6 +88,7 @@ public final class WorldTextureLoadingTest {
         idleWaitsProviderAndFxRetirement();
         idleWaitsWorkerFinallyAfterFx();
         idleFailuresDoNotHang();
+        canceledProviderBatchRetiresCleanly();
         System.out.println("WorldTextureLoadingTest PASS: off-owner reads, latest-only work, activity, rejection and late close");
     }
 
@@ -157,6 +158,33 @@ public final class WorldTextureLoadingTest {
                 loader.close();
                 pump(ui);
             }
+        }
+    }
+
+    /**
+     * A retired request whose provider future completes with a plain cancellation reaches the
+     * loader through join, which rethrows it as CancellationException("join") caused by the
+     * original. That is still only cancellation and must not make retirement sticky-failed.
+     */
+    private static void canceledProviderBatchRetiresCleanly() throws Exception {
+        var ui = new ConcurrentLinkedQueue<Runnable>();
+        var result = new CompletableFuture<WorldTerrainTextureSource.BatchResult>();
+        var entered = new CompletableFuture<Void>();
+        var loader = new WorldTextureLoading(ui::add, ignored -> {}, ignored -> {});
+        try {
+            loader.request(source(result, entered), map(1), TILES, scene());
+            entered.get(5, TimeUnit.SECONDS);
+            var idle = loader.whenIdle();
+            loader.hide();
+            result.completeExceptionally(
+                    new java.util.concurrent.CancellationException("Superseded texture batch"));
+            await(ui, idle::isDone, "canceled provider retirement");
+            idle.get(5, TimeUnit.SECONDS);
+            loader.whenIdle().get(5, TimeUnit.SECONDS);
+            require(!loader.hasActiveWork(), "Canceled job retires its descriptor");
+        } finally {
+            loader.close();
+            pump(ui);
         }
     }
 

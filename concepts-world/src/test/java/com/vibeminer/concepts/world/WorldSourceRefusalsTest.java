@@ -2,6 +2,7 @@ package com.vibeminer.concepts.world;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -612,5 +613,153 @@ class WorldSourceRefusalsTest {
                 };
         assertTrue(WorldSourceRefusals.boundary(trap) == trap);
         assertEquals(0, calls.get());
+    }
+
+    /**
+     * Mirrors the files layer: {@code Io.async} stores the thrown failure as-is, so a JDK join on a
+     * canceled future rethrows a fresh {@code CancellationException("join")} caused by it.
+     */
+    static <T> CompletableFuture<T> filesIo(java.util.function.Supplier<T> work) {
+        var answer = new CompletableFuture<T>();
+        try {
+            answer.complete(work.get());
+        } catch (RuntimeException failure) {
+            answer.completeExceptionally(failure);
+        }
+        return answer;
+    }
+
+    /**
+     * ObjectStore.readCore stop, then ListfileStore.nameOf join, then BuildFilesHandle.stat join.
+     */
+    static <T> CompletableFuture<T> canceledStat(CancellationException original) {
+        var read = new CompletableFuture<T>();
+        read.completeExceptionally(original);
+        var nameOf = filesIo(read::join);
+        return filesIo(nameOf::join);
+    }
+
+    private static RuntimeException awaitFailure(CompletableFuture<?> future) {
+        return assertThrows(RuntimeException.class, () -> WorldSourceFutures.await(future));
+    }
+
+    private static CancellationException cancellationChain(int links) {
+        var link = new CancellationException();
+        for (int i = 1; i < links; i++) {
+            var outer = new CancellationException("join");
+            outer.initCause(link);
+            link = outer;
+        }
+        return link;
+    }
+
+    @Test
+    void nestedJoinCancellationFromFilesLayerIsTheOriginalStop() {
+        var original = new CancellationException();
+        var failure = awaitFailure(canceledStat(original));
+        // The exact Windows chain: await wrapper, stat join, nameOf join, original stop.
+        assertEquals(CompletionException.class, failure.getClass());
+        assertEquals("World source await failed", failure.getMessage());
+        var statJoin = failure.getCause();
+        assertEquals(CancellationException.class, statJoin.getClass());
+        assertEquals("join", statJoin.getMessage());
+        var nameJoin = statJoin.getCause();
+        assertEquals(CancellationException.class, nameJoin.getClass());
+        assertEquals("join", nameJoin.getMessage());
+        assertSame(original, nameJoin.getCause());
+
+        assertSame(original, WorldSourceRefusals.boundary(failure));
+        assertSame(original, WorldSourceRefusals.boundary((RuntimeException) statJoin));
+        var plain = new CancellationException();
+        assertSame(plain, WorldSourceRefusals.boundary(plain));
+    }
+
+    @Test
+    void realFailureInsideCancellationChainStaysFatal() {
+        var original = new CancellationException();
+        var middle = new IllegalStateException("cleanup failed");
+        middle.initCause(original);
+        var outer = new CancellationException("join");
+        outer.initCause(middle);
+        assertFatal(new CompletionException("World source await failed", outer));
+
+        var subclass = new CancellationException("provider cancellation") {};
+        subclass.initCause(new CancellationException());
+        var overSubclass = new CancellationException("join");
+        overSubclass.initCause(subclass);
+        assertFatal(overSubclass);
+
+        var endsInFailure = new CancellationException("join");
+        endsInFailure.initCause(new IllegalStateException("not a stop"));
+        assertFatal(endsInFailure);
+    }
+
+    @Test
+    void suppressedFailureOnAnyCancellationLinkStaysFatal() {
+        for (int at = 0; at < 3; at++) {
+            var chain = cancellationChain(3);
+            Throwable link = chain;
+            for (int i = 0; i < at; i++) {
+                link = link.getCause();
+            }
+            link.addSuppressed(new IllegalStateException("auxiliary failure"));
+            assertFatal(chain);
+        }
+        var wrapped = cancellationChain(3);
+        var completion = new CompletionException(wrapped);
+        completion.addSuppressed(new IllegalStateException("auxiliary failure"));
+        assertFatal(completion);
+    }
+
+    @Test
+    void cancellationSubclassInsideChainIsNotInspected() {
+        var calls = new AtomicInteger();
+        var foreign =
+                new CancellationException() {
+                    @Override
+                    public synchronized Throwable getCause() {
+                        calls.incrementAndGet();
+                        throw new AssertionError("arbitrary cause accessor");
+                    }
+
+                    @Override
+                    public String getMessage() {
+                        calls.incrementAndGet();
+                        throw new AssertionError("arbitrary message accessor");
+                    }
+                };
+        var outer = new CancellationException("join");
+        outer.initCause(foreign);
+        assertFatal(outer);
+        assertEquals(0, calls.get());
+    }
+
+    @Test
+    void cancellationCycleAndOverBoundChainStayFatal() {
+        var first = new CancellationException("join");
+        var second = new CancellationException("join");
+        first.initCause(second);
+        second.initCause(first);
+        assertFatal(first);
+
+        var deepest = cancellationChain(8);
+        Throwable origin = deepest;
+        while (origin.getCause() != null) {
+            origin = origin.getCause();
+        }
+        assertSame(origin, WorldSourceRefusals.boundary(deepest));
+        var overBound = new CancellationException("join");
+        overBound.initCause(deepest);
+        assertFatal(overBound);
+        assertFatal(cancellationChain(10_000));
+    }
+
+    private static void assertFatal(RuntimeException failure) {
+        var result = WorldSourceRefusals.boundary(failure);
+        assertFalse(
+                result instanceof CancellationException,
+                "A chain that is not purely cancellation must not become cancellation");
+        assertEquals(IllegalStateException.class, result.getClass());
+        assertSame(failure, result.getCause());
     }
 }

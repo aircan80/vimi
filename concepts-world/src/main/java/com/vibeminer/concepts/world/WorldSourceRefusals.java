@@ -7,6 +7,9 @@ import java.util.concurrent.ExecutionException;
 
 /** Explicit negative source outcomes; generic provider/program failures are never classified. */
 final class WorldSourceRefusals {
+    /** Most nested join links accepted in one cancellation chain; deeper is fatal. */
+    private static final int CANCELLATION_LINKS = 8;
+
     private WorldSourceRefusals() {}
 
     enum Site {
@@ -101,15 +104,8 @@ final class WorldSourceRefusals {
             return refusal;
         }
         if (value instanceof CancellationException canceled) {
-            if (canceled.getClass() != CancellationException.class) {
-                return fatalAuxiliary(failure);
-            }
-            if (!leaf.clean
-                    || canceled.getSuppressed().length != 0
-                    || canceled.getCause() != null) {
-                return fatalAuxiliary(failure);
-            }
-            return canceled;
+            var original = leaf.clean ? cancellationOrigin(canceled) : null;
+            return original != null ? original : fatalAuxiliary(failure);
         }
         if (WorldTerrainTextureSource.ownedSourceChanged(value)) {
             if (!leaf.clean || value.getSuppressed().length != 0 || value.getCause() != null) {
@@ -118,6 +114,31 @@ final class WorldSourceRefusals {
             return at(Site.MATERIAL_BINDING);
         }
         return failure;
+    }
+
+    /**
+     * On current JDKs (25 here) {@code CompletableFuture.join()} and {@code get()} rethrow a stored
+     * cancellation as a new {@code CancellationException} whose cause is the stored one, so each
+     * nested join adds a link. Accepts only a bounded chain of exact {@code CancellationException}
+     * links, none with suppressed failures, that ends in a cause-free link, and returns that
+     * original stop. Such a chain carries nothing but cancellation, so it cannot hide an auxiliary
+     * failure. A subclass is rejected before any of its accessors run; any other cause, a
+     * suppressed failure, a cycle or an over-bound chain returns null.
+     */
+    private static CancellationException cancellationOrigin(CancellationException failure) {
+        Throwable link = failure;
+        for (int depth = 0; depth < CANCELLATION_LINKS; depth++) {
+            if (link.getClass() != CancellationException.class
+                    || link.getSuppressed().length != 0) {
+                return null;
+            }
+            var cause = link.getCause();
+            if (cause == null) {
+                return (CancellationException) link;
+            }
+            link = cause;
+        }
+        return null;
     }
 
     private static IllegalStateException fatalAuxiliary(RuntimeException failure) {

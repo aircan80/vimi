@@ -159,7 +159,38 @@ class WorldTerrainLiquidsTest {
                         };
                     }
                 };
-        final BuildFiles files = base.files();
+
+        /** Next liquid-table stat cancels this stop and fails as the actual files layer does. */
+        volatile Cancellation cancelAtTableStat;
+
+        volatile java.util.concurrent.CancellationException tableStop;
+        final BuildFiles files = canceling(base.files());
+
+        private BuildFiles canceling(BuildFiles actual) {
+            return (BuildFiles)
+                    Proxy.newProxyInstance(
+                            BuildFiles.class.getClassLoader(),
+                            new Class<?>[] {BuildFiles.class},
+                            (proxy, method, args) -> {
+                                var stop = cancelAtTableStat;
+                                if (stop != null
+                                        && (method.getName().equals("stat")
+                                                || method.getName().equals("statContent"))
+                                        && (((FileTypes.FileRef) args[0]).fileDataId() == 1371380
+                                                || ((FileTypes.FileRef) args[0]).fileDataId()
+                                                        == 1132538)) {
+                                    cancelAtTableStat = null;
+                                    stop.cancel();
+                                    return WorldSourceRefusalsTest.canceledStat(tableStop);
+                                }
+                                try {
+                                    return method.invoke(actual, args);
+                                } catch (java.lang.reflect.InvocationTargetException failed) {
+                                    throw failed.getCause();
+                                }
+                            });
+        }
+
         final WorldStreamScopesTest.Tables maps = new WorldStreamScopesTest.Tables(base);
         final WorldStreamScopes scopes;
         final WorldStreamScopes.Scope scope;
@@ -1240,6 +1271,39 @@ class WorldTerrainLiquidsTest {
                 } else {
                     assertTrue(failure instanceof WorldTerrainStreaming.Refusal);
                 }
+            }
+        }
+    }
+
+    @Test
+    void filesLayerJoinCancellationDuringWaterInspectionStaysCancellationAndSourceRecovers()
+            throws Exception {
+        try (var f = new PublicFixture(42)) {
+            var stop = new Cancellation();
+            var original = new java.util.concurrent.CancellationException();
+            f.authored.tableStop = original;
+            f.authored.cancelAtTableStat = stop;
+            var closes = new java.util.concurrent.atomic.AtomicInteger();
+            var failure =
+                    assertThrows(
+                            RuntimeException.class,
+                            () ->
+                                    f.water.prepareAndWrite(
+                                            f.tile,
+                                            stop,
+                                            (b, t) -> (AutoCloseable) closes::incrementAndGet));
+            assertTrue(f.authored.cancelAtTableStat == null, "Liquid table stat was reached");
+            assertEquals(
+                    java.util.concurrent.CancellationException.class,
+                    failure.getClass(),
+                    "A canceled tile is routine, not an auxiliary failure: " + failure);
+            assertTrue(failure.getCause() == null);
+            assertEquals(0, failure.getSuppressed().length);
+            assertEquals(0, closes.get());
+            try (var recovered =
+                    f.water.prepareAndWrite(
+                            f.tile, Cancellation.NONE, (b, t) -> (AutoCloseable) () -> {})) {
+                assertEquals(WorldWaterPreview.State.READY, recovered.facts().state());
             }
         }
     }
