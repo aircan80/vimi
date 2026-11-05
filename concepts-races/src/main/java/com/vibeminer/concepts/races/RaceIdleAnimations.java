@@ -32,7 +32,9 @@ import java.util.function.Supplier;
  * reviewed, so a model declaring any is refused rather than approximated. Results whose sources
  * were all read are cached per model content key and revalidated against each bone file's and the
  * SKIN's content key; a source that could not be read, or that changed during the assessment, is
- * reassessed. At most {@value #MAX_CACHED_ANIMATIONS} prepared animations are kept.
+ * reassessed; that reassessment reuses the model read and its model-resident Stand facts, which
+ * depend only on the model's content. At most {@value #MAX_CACHED_ANIMATIONS} prepared animations
+ * are kept.
  */
 final class RaceIdleAnimations {
     static final int MAX_BONE_FILES = 64;
@@ -53,6 +55,28 @@ final class RaceIdleAnimations {
                     return size() > MAX_CACHED;
                 }
             };
+
+    static final int MAX_CACHED_SOURCES = 4;
+
+    /**
+     * The model read and its model-resident Stand facts, per model content key. Both are pure
+     * functions of the model bytes, so an assessment that must be repeated because a bone file or
+     * SKIN could not be read reuses them and re-reads only those other sources.
+     */
+    private record ModelSources(BuildModelTypes.ModelRead read, BuildModelTypes.StandRead stand) {}
+
+    private final Map<String, ModelSources> sources = RaceMedia.lru(MAX_CACHED_SOURCES);
+
+    /** Drops every cached result and model source; called once the workers have terminated. */
+    void forget() {
+        cached.clear();
+        sources.clear();
+    }
+
+    /** Cached results and model sources, for tests. */
+    int cachedCount() {
+        return cached.size() + sources.size();
+    }
 
     RaceIdleAnimations(RaceMedia media, BuildFiles files) {
         this.media = media;
@@ -90,7 +114,12 @@ final class RaceIdleAnimations {
         }
         cached.remove(key);
         var models = new BuildModels(files);
-        var read = models.readModel(FileTypes.FileRef.id(variant.modelFileDataId()), token).join();
+        var reused = sources.get(key);
+        var read =
+                reused != null
+                        ? reused.read()
+                        : models.readModel(FileTypes.FileRef.id(variant.modelFileDataId()), token)
+                                .join();
         if (read.state() != BuildModelTypes.ReadState.READ || read.model() == null) {
             return RaceMediaTypes.Idle.unavailable(
                     variant,
@@ -124,8 +153,22 @@ final class RaceIdleAnimations {
                                     tracks[0] = idle.idle();
                                     return standOf(idle);
                                 }
-                                : () -> models.readStandFacts(read, token).join(),
+                                : () -> {
+                                    if (reused != null && reused.stand() != null) {
+                                        return reused.stand();
+                                    }
+                                    var stand = models.readStandFacts(read, token).join();
+                                    var state = stand.state();
+                                    if (state == BuildModelTypes.ReadState.READ
+                                            || state == BuildModelTypes.ReadState.REJECTED) {
+                                        sources.put(key, new ModelSources(read, stand));
+                                    }
+                                    return stand;
+                                },
                         token);
+        if (!sources.containsKey(key)) {
+            sources.put(key, new ModelSources(read, null));
+        }
         var reasons = new ArrayList<>(assessed.reasons());
         var facts = new ArrayList<>(assessed.facts());
         boolean complete = assessed.complete();

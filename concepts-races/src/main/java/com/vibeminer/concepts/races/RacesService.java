@@ -27,8 +27,11 @@ public final class RacesService implements BuildRaces {
     private final RaceVoices voices;
     private final RaceAppearance appearance;
     private final RaceIdleAnimations idle;
+    // Voices run beside the projection worker: a first voice catalog scans SoundKitEntry and
+    // must not hold back the selected model's surface and textures.
     private final ThreadPoolExecutor worker = worker("race-projection"),
-            appearanceWorker = worker("race-appearance");
+            appearanceWorker = worker("race-appearance"),
+            voiceWorker = worker("race-voices");
 
     private static ThreadPoolExecutor worker(String name) {
         return new ThreadPoolExecutor(
@@ -84,13 +87,16 @@ public final class RacesService implements BuildRaces {
     @Override
     public CompletableFuture<RaceVoiceTypes.Catalog> voices(
             long raceId, long classId, int sex, Cancellation token) {
-        return submit(token, request -> voices.catalog(raceId, classId, sex, request));
+        return submit(voiceWorker, token, request -> voices.catalog(raceId, classId, sex, request));
     }
 
     @Override
     public CompletableFuture<RaceVoiceTypes.Audio> voice(
             long raceId, long classId, int sex, long entryId, Cancellation token) {
-        return submit(token, request -> voices.audio(raceId, classId, sex, entryId, request));
+        return submit(
+                voiceWorker,
+                token,
+                request -> voices.audio(raceId, classId, sex, entryId, request));
     }
 
     @Override
@@ -99,8 +105,8 @@ public final class RacesService implements BuildRaces {
         return submit(token, request -> appearance.prepare(raceId, classId, modelId, request))
                 .thenCompose(
                         prepared ->
-                                prepared.failure() != null
-                                        ? CompletableFuture.completedFuture(prepared.failure())
+                                prepared.finished() != null
+                                        ? CompletableFuture.completedFuture(prepared.finished())
                                         : submit(
                                                 appearanceWorker,
                                                 token,
@@ -142,8 +148,8 @@ public final class RacesService implements BuildRaces {
                                         new RaceCustomization(media).requested(selection, request)))
                 .thenCompose(
                         prepared ->
-                                prepared.failure() != null
-                                        ? CompletableFuture.completedFuture(prepared.failure())
+                                prepared.finished() != null
+                                        ? CompletableFuture.completedFuture(prepared.finished())
                                         : submit(
                                                 appearanceWorker,
                                                 token,
@@ -552,13 +558,12 @@ public final class RacesService implements BuildRaces {
                                     token)
                             .join();
             if (page.state() != TableTypes.PageState.OK) {
-                throw new Projection(RaceTypes.State.UNAVAILABLE, name + ": " + page.state());
+                throw new Unreadable(name + ": " + page.state());
             }
             if (identity == null) {
                 identity = page.identity();
             } else if (!Objects.equals(identity, page.identity())) {
-                throw new Projection(
-                        RaceTypes.State.UNAVAILABLE, name + " changed during projection.");
+                throw new Unreadable(name + " changed during projection.");
             }
             for (var row : page.rows()) {
                 if (rows.size() >= bound) {
@@ -715,13 +720,22 @@ public final class RacesService implements BuildRaces {
         }
     }
 
-    static final class Projection extends RuntimeException {
+    static class Projection extends RuntimeException {
         private static final long serialVersionUID = 1L;
         final RaceTypes.State state;
 
         Projection(RaceTypes.State state, String message) {
             super(message);
             this.state = state;
+        }
+    }
+
+    /** A page that could not be read now; unlike other refusals, asking again may succeed. */
+    static final class Unreadable extends Projection {
+        private static final long serialVersionUID = 1L;
+
+        Unreadable(String message) {
+            super(RaceTypes.State.UNAVAILABLE, message);
         }
     }
 
@@ -768,6 +782,14 @@ public final class RacesService implements BuildRaces {
         return outer;
     }
 
+    /** Remembered table copies and results of every kind, for tests; read only when idle. */
+    int retained() {
+        return media.retained()
+                + voices.retained()
+                + appearance.rememberedCount()
+                + idle.cachedCount();
+    }
+
     @Override
     public CompletableFuture<Void> closeAsync() {
         synchronized (this) {
@@ -784,11 +806,18 @@ public final class RacesService implements BuildRaces {
             var failure = cancellationFailure;
             worker.shutdown();
             appearanceWorker.shutdown();
+            voiceWorker.shutdown();
             Thread.startVirtualThread(
                     () -> {
                         try {
                             while (!worker.awaitTermination(1, TimeUnit.SECONDS)
-                                    || !appearanceWorker.awaitTermination(1, TimeUnit.SECONDS)) {}
+                                    || !appearanceWorker.awaitTermination(1, TimeUnit.SECONDS)
+                                    || !voiceWorker.awaitTermination(1, TimeUnit.SECONDS)) {}
+                            // A retired handle that is still referenced holds no derived results.
+                            media.forget();
+                            voices.forget();
+                            appearance.forget();
+                            idle.forget();
                             if (failure == null) {
                                 closing.complete(null);
                             } else {

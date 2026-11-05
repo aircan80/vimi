@@ -49,11 +49,12 @@ public final class WorldStreamSourceBridgeTest {
                 "Per-tile summaries add up: " + sum);
         check(WorldStreamSourceController.objectsDetail(sum, 2).equals(
                         "; 8 BASIC exterior buildings and 10 doodads on 2"
-                                + " (not drawn: 1 building, 4 doodads (2 tilted), 3 surfaces (1 unreadable))"),
+                                + " (not drawn: 1 building, 4 doodads (2 capped), 3 surfaces (1 unreadable))"),
                 "Omissions are listed: " + WorldStreamSourceController.objectsDetail(sum, 2));
         var capped = b.capped(1, 1);
         check(capped.buildings() == 1 && capped.buildingsOmitted() == 1
-                        && capped.doodads() == 0 && capped.doodadsOmitted() == 1,
+                        && capped.doodads() == 0 && capped.doodadsOmitted() == 1
+                        && capped.doodadsCapped() == 1,
                 "The bridge's own draw-budget cap moves records to omitted");
         var legacy = new WorldStreamSourceBridge.ExteriorCopy(null, 5, false, "");
         check(legacy.summary().buildings() == 5, "A placements-only copy counts buildings");

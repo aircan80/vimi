@@ -124,6 +124,8 @@ public final class GpuPreviewUiTest {
             appearanceOnlyControlsAndRetry(temporary, ownerStage);
             qualifiedMaterialControls(temporary, ownerStage);
             persistentAppearancePhase(temporary, ownerStage);
+            announcedAppearanceStartsOneRenderer(temporary, ownerStage);
+            rePickKeepsTheRunningRendererUpdated(temporary, ownerStage);
         } finally {
             release.countDown();
             service.closeAsync().get(3, TimeUnit.SECONDS);
@@ -532,6 +534,172 @@ public final class GpuPreviewUiTest {
                         if (selected.get() != null) selected.get().close();
                     });
             service.closeAsync().get(3, TimeUnit.SECONDS);
+        }
+    }
+
+    /**
+     * A static surface whose appearance is announced is drawn in software; the inline renderer
+     * starts once, for the textured scene, or for the surface when the appearance is unavailable.
+     */
+    private static void announcedAppearanceStartsOneRenderer(Path temporary, Stage stage)
+            throws Exception {
+        var scenes = new java.util.concurrent.ConcurrentLinkedQueue<Boolean>();
+        var service =
+                new GpuPreviewService(
+                        temporary,
+                        (file, mesh, appearance, parts) -> {
+                            scenes.add(appearance != null);
+                            Files.writeString(file, "authored");
+                        },
+                        scene -> {
+                            throw new IOException("Authored software-only renderer test");
+                        },
+                        Duration.ofSeconds(2),
+                        Duration.ofMillis(20));
+        var mesh =
+                new PreviewMesh(
+                        new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0},
+                        new int[] {0, 1, 2},
+                        List.of(new PreviewMesh.Part(1, 0, 3)));
+        var appearance =
+                new MeshAppearance(mesh, new float[] {0, 0, 1, 0, 0, 1}, List.of(), List.of());
+        var selected = new java.util.concurrent.atomic.AtomicReference<ModelPreviewView>();
+        var delivered = new java.util.concurrent.atomic.AtomicInteger();
+        try {
+            fx(
+                    () -> {
+                        var view = new ModelPreviewView(service);
+                        stage.setScene(new Scene(view, 640, 560));
+                        view.applyCss();
+                        view.layout();
+                        require(
+                                ((CheckBox) view.lookup("#model-gpu-preview")).isSelected(),
+                                "Inline GPU is preferred");
+                        view.setMesh(mesh, Set.of(1), "Preparing authored textures…");
+                        require(
+                                view.lookup("#model-appearance-activity").isVisible(),
+                                "The announced appearance shows its phase");
+                        selected.set(view);
+                    });
+            waitFor(() -> pixel(selected.get()) != 0, "The static surface is drawn in software");
+            Thread.sleep(150);
+            require(scenes.isEmpty(), "No renderer starts for a surface awaiting its appearance");
+            fx(
+                    () ->
+                            selected.get()
+                                    .presentAppearance(
+                                            appearance,
+                                            Set.of(1),
+                                            accepted -> delivered.incrementAndGet()));
+            waitFor(() -> scenes.size() == 1, "The textured scene starts the renderer");
+            require(scenes.peek(), "The only scene written is the textured one");
+            waitFor(() -> delivered.get() == 1, "The textured frame is delivered");
+            var surface =
+                    new PreviewMesh(
+                            new float[] {0, 0, 0, 2, 0, 0, 0, 2, 0},
+                            new int[] {0, 1, 2},
+                            List.of(new PreviewMesh.Part(1, 0, 3)));
+            fx(
+                    () -> {
+                        selected.get().setMesh(surface, Set.of(1), "Preparing authored textures…");
+                        selected.get().appearanceUnavailable();
+                    });
+            waitFor(() -> scenes.size() == 2, "An unavailable appearance starts the surface");
+            require(!List.copyOf(scenes).get(1), "The static surface scene has no appearance");
+        } finally {
+            fx(
+                    () -> {
+                        if (selected.get() != null) selected.get().close();
+                    });
+            service.closeAsync().get(3, TimeUnit.SECONDS);
+        }
+    }
+
+    /**
+     * After an unavailable appearance starts the renderer for the static surface, a re-picked
+     * appearance that is being prepared must not freeze it: camera requests still reach the
+     * running renderer, and nothing restarts it.
+     */
+    private static void rePickKeepsTheRunningRendererUpdated(Path temporary, Stage stage)
+            throws Exception {
+        var child = new GpuPreviewServiceTest.FakeProcess(true);
+        var frames = new java.util.concurrent.ConcurrentLinkedQueue<GpuPreviewService.Frame>();
+        var launches = new java.util.concurrent.atomic.AtomicInteger();
+        var renderer =
+                new GpuPreviewService(
+                        temporary,
+                        (file, mesh, appearance, parts) -> Files.writeString(file, "authored"),
+                        (scene, mapping) -> {
+                            launches.incrementAndGet();
+                            return child;
+                        },
+                        file ->
+                                new GpuPreviewService.Frames() {
+                                    public GpuPreviewService.Frame readLatest(long after) {
+                                        return frames.poll();
+                                    }
+
+                                    public void close() {}
+                                },
+                        Duration.ofSeconds(3),
+                        Duration.ofMillis(20));
+        var mesh =
+                new PreviewMesh(
+                        new float[] {0, 0, 0, 1, 0, 0, 0, 1, 0},
+                        new int[] {0, 1, 2},
+                        List.of(new PreviewMesh.Part(1, 0, 3)));
+        var selected = new java.util.concurrent.atomic.AtomicReference<ModelPreviewView>();
+        try {
+            fx(
+                    () -> {
+                        var view = new ModelPreviewView(renderer);
+                        stage.setScene(new Scene(view, 640, 560));
+                        view.applyCss();
+                        view.layout();
+                        view.setMesh(mesh, Set.of(1), "Preparing authored textures…");
+                        view.appearanceUnavailable();
+                        selected.set(view);
+                    });
+            require(child.started.await(3, TimeUnit.SECONDS), "The static surface renderer runs");
+            child.send("VIMI_GPU HELLO Vulkan\nVIMI_GPU READY Vulkan\n");
+            String[] first = latestView(child, 0);
+            publish(frames, 1, first, 0xff13579b);
+            waitFor(() -> pixel(selected.get()) == 0xff13579b, "GPU pixels display inline");
+            fx(() -> selected.get().appearanceLoading("Preparing selected textures…"));
+            // Let layout-driven view requests settle; only the key press may follow.
+            Thread.sleep(300);
+            long settled = 0;
+            for (var line : child.controls.toString().split("\n")) {
+                var fields = line.split(" ");
+                if (fields.length == 8 && fields[0].equals("VIEW"))
+                    settled = Math.max(settled, Long.parseLong(fields[1]));
+            }
+            fx(
+                    () ->
+                            selected.get()
+                                    .lookup("#model-preview-viewport")
+                                    .fireEvent(
+                                            new javafx.scene.input.KeyEvent(
+                                                    javafx.scene.input.KeyEvent.KEY_PRESSED,
+                                                    "",
+                                                    "",
+                                                    javafx.scene.input.KeyCode.LEFT,
+                                                    false,
+                                                    false,
+                                                    false,
+                                                    false)));
+            String[] camera = latestView(child, settled);
+            publish(frames, 2, camera, 0xff2468ac);
+            waitFor(
+                    () -> pixel(selected.get()) == 0xff2468ac,
+                    "The camera frame displays while the re-picked appearance is prepared");
+            require(launches.get() == 1, "The running renderer is not restarted");
+        } finally {
+            fx(
+                    () -> {
+                        if (selected.get() != null) selected.get().close();
+                    });
+            renderer.closeAsync().get(3, TimeUnit.SECONDS);
         }
     }
 

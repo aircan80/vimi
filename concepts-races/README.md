@@ -18,8 +18,21 @@ Race portrait atlas extraction and character model rendering are not implemented
 
 The catalog is bounded to 1,024 race rows, 128 classes and 16,384 class-link records;
 ability scans stop at 8,192 rows and each overview displays at most 128 cards.
-Queries use stable generated table identities, cancellation, a single worker and
-32 queued operations. Construction performs no table scans.
+Queries use stable generated table identities, cancellation and bounded workers
+of 32 queued operations each: one for race, model and idle queries, one for
+texture composition and one for voices, so a first voice catalog never holds back
+the selected model. Construction performs no table scans.
+
+Repeated selections are answered from memory for the handle's lifetime: variant
+lists and voice catalogs (derived only from the handle's build-scoped tables), sample
+previews (while the model file keeps its content key) and complete composed
+appearances (while the model and every layer file keep the content keys that named
+their generated derivative; at most 6 results and 160 MiB of texels). Idle results
+follow the rules above; a reassessment reuses the model read and its Stand facts.
+A result whose sources could not be read, including a plan or sample that skipped
+an UNKNOWN row or an unreadable page, is prepared again on the next request.
+Unreviewed race/model pairs are refused before any read. A workspace or source
+change publishes a new handle with empty caches, and closing a handle drops them.
 
 ```sh
 ./gradlew :concepts-races:check

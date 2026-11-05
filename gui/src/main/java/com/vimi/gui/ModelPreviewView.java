@@ -391,7 +391,15 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
     }
 
     void setMesh(PreviewMesh value, Set<Integer> visibleParts) {
-        appearanceUnavailable();
+        setMesh(value, visibleParts, null);
+    }
+
+    /**
+     * Shows a static surface; a non-null message also announces that its textured appearance is
+     * coming, so the inline GPU renderer waits for that scene instead of starting for this one.
+     */
+    void setMesh(PreviewMesh value, Set<Integer> visibleParts, String appearanceMessage) {
+        endAppearance();
         if (animation != null && !animation.matches(value)) resetAnimation(null);
         closeGpu();
         mesh = value;
@@ -405,6 +413,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
         pitch = 0;
         zoom = 1.15;
         all.setSelected(false);
+        if (appearanceMessage != null) appearanceLoading(appearanceMessage);
         request();
     }
 
@@ -414,7 +423,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
 
     void setAppearance(MeshAppearance value, Set<Integer> visibleParts, boolean qualifiedOnly) {
         if (closed) return;
-        if (appearanceTarget != null && appearanceTarget != value) appearanceUnavailable();
+        if (appearanceTarget != null && appearanceTarget != value) endAppearance();
         if (animation != null && !animation.matches(value)) resetAnimation(null);
         var parts = Set.copyOf(visibleParts);
         boolean newScene =
@@ -458,7 +467,19 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
         setAppearance(value, parts);
     }
 
+    /** Ends a pending appearance; a GPU renderer deferred for it starts for the static surface. */
     void appearanceUnavailable() {
+        boolean deferred = gpuDeferred();
+        endAppearance();
+        if (deferred && !closed && mesh != null) request();
+    }
+
+    /** A static surface whose announced appearance has not arrived yet. */
+    private boolean gpuDeferred() {
+        return appearancePending && appearance == null;
+    }
+
+    private void endAppearance() {
         appearanceStage.setText("");
         appearanceActivity.setAccessibleText("");
         appearancePending = false;
@@ -472,7 +493,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
         if (!appearancePending || appearanceTarget == null || appearanceTarget != frameAppearance)
             return;
         var delivered = appearanceDelivery;
-        appearanceUnavailable();
+        endAppearance();
         if (delivered != null) delivered.accept(success);
     }
 
@@ -485,7 +506,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
     }
 
     void clear(String message) {
-        appearanceUnavailable();
+        endAppearance();
         closeGpu();
         gpuButton.setDisable(true);
         renderingActivity.setVisible(false);
@@ -671,6 +692,9 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
 
     private void updateGpu(long revision, int width, int height) {
         if (!viewportActive() || !gpuButton.isSelected() || gpuFailed || mesh == null) return;
+        // One renderer per scene: a static surface awaiting its appearance is drawn in software
+        // until the appearance arrives. A renderer that already runs keeps receiving the view.
+        if (gpuDeferred() && !gpuRequested) return;
         if (!gpuRequested
                 || gpuMesh != mesh
                 || gpuAppearance != appearance
@@ -835,7 +859,7 @@ final class ModelPreviewView extends BorderPane implements AutoCloseable {
 
     @Override
     public void close() {
-        appearanceUnavailable();
+        endAppearance();
         closeGpu();
         closed = true;
         renderingActivity.setVisible(false);
