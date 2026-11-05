@@ -1501,6 +1501,10 @@ class WorldExteriorObjectsTest {
         assertTrue(!WorldExteriorObjects.firstTextureUsesUv0(0x8000 | 31, 3));
         assertTrue(!WorldExteriorObjects.firstTextureUsesUv0(0x8000 | 35, 2));
         assertTrue(!WorldExteriorObjects.firstTextureUsesUv0(0x8000 | 36, 1));
+        // Bits outside the named selection are refused, as M2Combiners.admit refuses them.
+        assertTrue(!WorldExteriorObjects.firstTextureUsesUv0(0x0001, 1));
+        assertTrue(!WorldExteriorObjects.firstTextureUsesUv0(0x0100, 2));
+        assertTrue(!WorldExteriorObjects.firstTextureUsesUv0(0x2000, 1));
         // Real models declare an empty texture-coordinate lookup (unused since Cataclysm); the
         // authored model with its one-entry table cleared still draws.
         var bytes = model();

@@ -118,6 +118,12 @@ that shader is a `Diffuse_T1*` one:
 - a `0x8000` combiner whose `SHADER_ARRAY` vertex shader is `Diffuse_T1*`. `Diffuse_EdgeFade_*`,
   `Color_*` and IDs past the table are refused.
 
+The names come from `M2Combiners.name` in `formats-assets`, the existing reviewed transcription of
+that mapper, so there is one table. A shader ID with bits outside the named selection (`0x40f0`
+with one texture, `0x40ff` with more) is refused, as `M2Combiners.admit` refuses it
+(`M2Combiners.namedBitsOnly`). The vertex shader never depends on those bits. On the probed real
+models only `0x0000`, `0x0010`, `0x8000` and `0x8001` appeared, and all of them pass.
+
 Sources, all in the reference tree's `.local/references/m2-static`: `export-shadermapper.js:9-46`
 (the table) and `:52-90` (the selection), `export-renderer.js:606` (how it is used), and
 `formatlib-m2.cs:282` ("tex_unit_lookup_table unused as of cata"). #229 read that lookup table

@@ -5,6 +5,7 @@ import com.vibeminer.formats.AssetSource;
 import com.vibeminer.formats.images.Blp2Decoder;
 import com.vibeminer.formats.images.Blp2Types;
 import com.vibeminer.formats.images.BlpFormatException;
+import com.vibeminer.formats.models.M2Combiners;
 import com.vibeminer.formats.models.M2ModelReader;
 import com.vibeminer.formats.models.M2SkinReader;
 import com.vibeminer.formats.models.M2Types;
@@ -90,33 +91,22 @@ public final class WorldExteriorObjects {
     private static final int SET_DOODAD_ADMITTED = 0x1;
 
     /**
-     * The M2 vertex shaders (wow.export ShaderMapper {@code SHADER_ARRAY}, by index) whose first
-     * texture coordinate is T1, that is UV0: every {@code Diffuse_T1*} entry. {@code
-     * Diffuse_EdgeFade_*} and {@code Color_*} are not.
-     */
-    private static final boolean[] COMBINER_T1 = {
-        true, true, true, true, true, true, true, true, true, true, true, true, true, true, true,
-        true, true, true, true, false, true, false, true, true, true, false, true, true, true, true,
-        true, false, true, false, false, false
-    };
-
-    /**
-     * Whether texture1 of a batch is sampled with UV0. The vertex shader, chosen from the batch's
-     * shader ID and texture count, selects the coordinates (wow.export ShaderMapper {@code
-     * getVertexShader}); the M2 texture-coordinate lookup table is unused since Cataclysm and is
-     * not read. Sources: the reference tree's {@code
-     * .local/references/m2-static/export-shadermapper.js:9-46,52-90}, {@code
-     * export-renderer.js:606} and {@code formatlib-m2.cs:282}.
+     * Whether texture1 of a batch is sampled with UV0: the batch's shader ID and texture count name
+     * a vertex shader ({@link M2Combiners#name}, the reviewed transcription of wow.export
+     * ShaderMapper {@code getVertexShader} and {@code SHADER_ARRAY}) that is {@code Diffuse_T1*},
+     * and the shader ID sets no bit outside that naming, as {@link M2Combiners#admit} requires. The
+     * M2 texture-coordinate lookup table is unused since Cataclysm and is not read. Sources: the
+     * reference tree's {@code .local/references/m2-static/export-shadermapper.js:9-46,52-90},
+     * {@code export-renderer.js:606} and {@code formatlib-m2.cs:282}.
      */
     static boolean firstTextureUsesUv0(int shaderId, int textureCount) {
-        if ((shaderId & 0x8000) != 0) {
-            int combiner = shaderId & 0x7fff;
-            return combiner < COMBINER_T1.length && COMBINER_T1[combiner];
+        if (shaderId < 0 || shaderId > 0xffff || textureCount < 1) {
+            return false;
         }
-        if ((shaderId & 0x80) != 0) {
-            return false; // Diffuse_Env*: texture1 is environment mapped
-        }
-        return textureCount != 1 || (shaderId & 0x4000) == 0; // not Diffuse_T2
+        var names = M2Combiners.name(textureCount, shaderId);
+        return names != null
+                && M2Combiners.namedBitsOnly(textureCount, shaderId)
+                && names.vertexShader().startsWith("Diffuse_T1");
     }
 
     /** M2 bone flags that billboard (spherical or cylindrical); no view policy here. */
