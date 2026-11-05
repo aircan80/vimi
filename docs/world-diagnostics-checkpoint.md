@@ -56,6 +56,19 @@ rendering.
   first failure and every 64th after, per session. Clean refusals
   (`Source unavailable`, `water refused`) are expected outcomes and are not
   logged.
+- **Unrelated helper stdout.** Only a stdout line that starts with the exact
+  `WS2 ` prefix is protocol, and it is held to the same strict rules as before: a
+  malformed record or a foreign nonce still ends the session. Any other line (for
+  example JVM or JFR startup text) is ignored. It is never decoded, and it ends
+  only at a newline, so nothing inside it can begin a record. The first such line
+  of a session is logged once, redacted; with JFR on, that WARNING appears once
+  per World session. A clean close logs the counts at debug level. The
+  abnormal-end record adds the count and a bounded, redacted tail of these
+  lines. More than 1 MiB of them ends the session with "World renderer flooded
+  stdout". A noise line that contains `WS2 ` or the session's nonce anywhere is a
+  mangled record (a lost prefix byte, a byte-order mark, a spliced write), not
+  noise: it ends the session at once with "Mangled World status", so a lost
+  record cannot stall it silently.
 - **Original cause survives.** `WorldStreamGpuOwner` keeps the cause instead of
   replacing it. A queued request that is blocked because the previous World
   resources did not retire now fails with `RetirementBlocked`, which carries the
@@ -106,8 +119,13 @@ path and not this machine's identity is not recognised.
     paths, account names, UNC hosts and URL user-info.
   - `WorldStreamTransportDiagnosticsTest` covers a helper crash with about 600 KB
     of stderr (exit code, failure, bounded and path-redacted tail), a clean
-    CLOSED with no record,
-    and a no-child start failure.
+    CLOSED with no record, a no-child start failure, JFR-like text interleaved
+    with valid records, a malformed or foreign-nonce record after noise, and a
+    stdout flood.
+  - `WorldStreamStdoutTest` covers near-misses that stay noise, mangled records
+    that fail fast (a spliced byte, a byte-order mark, the prefix or nonce
+    mid-line, after a lone CR or past 256 bytes), another session's nonce, a
+    stream ending inside noise, and the flood cap.
 - `:gui:worldDiagnosticsTest` covers cause-chain bounds, redaction (including
   Unicode line separators, file-system exception paths and the user name),
   pure versus mixed cancellation chains, per-part throttling of degraded-part
@@ -118,9 +136,6 @@ path and not this machine's identity is not recognised.
 
 ## Not in this slice (remaining for #166)
 
-- Protocol stdout still rejects unrelated lines, such as JFR startup output.
-  Fixing that needs a dedicated channel or an explicitly framed protocol, plus
-  tests that tell bounded unrelated output apart from malformed real records.
 - No stalled-frame watchdog yet. It needs rate limits, lifecycle awareness
   (hidden or idle camera must not alarm) and parent/child thread evidence, with
   no perpetual dump loop and no waits on the UI thread.

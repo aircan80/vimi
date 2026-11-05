@@ -122,8 +122,18 @@ public final class HelperStderrTail {
     private final ArrayDeque<byte[]> lines = new ArrayDeque<>(MAX_LINES);
     private final ArrayDeque<Boolean> truncated = new ArrayDeque<>(MAX_LINES);
     private final ByteArrayOutputStream current = new ByteArrayOutputStream(MAX_LINE_CHARS);
+    private final String stream;
     private long omittedLines;
     private boolean currentTruncated;
+
+    public HelperStderrTail() {
+        this("stderr");
+    }
+
+    /** A tail of another helper stream, such as unrelated stdout; {@code stream} labels it. */
+    HelperStderrTail(String stream) {
+        this.stream = java.util.Objects.requireNonNull(stream);
+    }
 
     public synchronized void accept(byte[] bytes, int offset, int length) {
         for (int i = offset; i < offset + length; i++) {
@@ -147,7 +157,11 @@ public final class HelperStderrTail {
     public synchronized String snapshot() {
         var result = new StringBuilder();
         if (omittedLines > 0) {
-            result.append("[").append(omittedLines).append(" earlier stderr lines omitted]\n");
+            result.append("[")
+                    .append(omittedLines)
+                    .append(" earlier ")
+                    .append(stream)
+                    .append(" lines omitted]\n");
         }
         var marks = truncated.iterator();
         for (var line : lines) {
