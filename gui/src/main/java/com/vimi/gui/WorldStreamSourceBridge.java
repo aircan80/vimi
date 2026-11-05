@@ -42,6 +42,18 @@ final class WorldStreamSourceBridge {
             exteriorFailed = true;
         }
 
+        private volatile WorldTileCreatures.Summary creatures = WorldTileCreatures.Summary.NONE;
+
+        /** Records this tile's creature outcome once its late objects ended (descriptive only). */
+        void creatures(WorldTileCreatures.Summary summary) {
+            creatures = Objects.requireNonNull(summary);
+        }
+
+        /** This tile's creature outcome; NONE until its late objects ended. */
+        WorldTileCreatures.Summary creatures() {
+            return creatures;
+        }
+
         /** Descriptive count of static water cells carried by this tile's moved packet. */
         int waterCells() {
             return waterCells;
@@ -103,10 +115,24 @@ final class WorldStreamSourceBridge {
 
     /**
      * Outcome of one tile's BASIC_EXTERIOR preparation, detached from the source: a validated
-     * copy to deliver late, or none ({@code failed} distinguishes a failure from an empty tile).
+     * copy to deliver late, or none ({@code failed} distinguishes a building failure from an empty
+     * tile). {@code placements} counts buildings only; {@code creatures} is the tile's creature
+     * outcome, whose drawn placements share the same copy.
      */
     record ExteriorCopy(
-            WorldStreamTileWriter.Exterior exterior, int placements, boolean failed, String note) {}
+            WorldStreamTileWriter.Exterior exterior,
+            int placements,
+            boolean failed,
+            String note,
+            WorldTileCreatures.Summary creatures) {
+        ExteriorCopy {
+            Objects.requireNonNull(creatures);
+        }
+
+        ExteriorCopy(WorldStreamTileWriter.Exterior exterior, int placements, boolean failed, String note) {
+            this(exterior, placements, failed, note, WorldTileCreatures.Summary.NONE);
+        }
+    }
 
     /**
      * One tile's exterior object source operation. It runs only while the controller has no
@@ -121,38 +147,97 @@ final class WorldStreamSourceBridge {
                 Cancellation cancellation);
     }
 
-    /**
-     * The actual preparer: one serialized BASIC_EXTERIOR source operation outside any terrain
-     * write. The neutral set is copied and closed here. Only cancellation propagates; every other
-     * runtime failure degrades this tile to terrain only.
-     */
+    /** Appends one tile's creatures after its buildings; only cancellation may propagate. */
+    @FunctionalInterface
+    interface CreatureAppender {
+        WorldTileCreatures.Summary append(
+                WorldStreamTileWriter.Exterior.Builder builder,
+                WorldFormats.Tile tile,
+                Cancellation cancellation);
+    }
+
+    /** The actual preparer without creatures. */
     static ExteriorCopy prepareExterior(
             WorldTerrainStreaming source,
             WorldTerrainStreaming.Scope scope,
             WorldFormats.Tile tile,
             Cancellation cancellation) {
-        try (var set = source.prepareExteriorObjects(scope, tile, cancellation)) {
-            int drawn = set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN);
-            int omitted = set.count(WorldExteriorObjects.Count.PLACEMENT_UNSUPPORTED)
-                    + set.count(WorldExteriorObjects.Count.PLACEMENT_CONFLICTING)
-                    + set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED)
-                    + set.count(WorldExteriorObjects.Count.PLACEMENT_FAILED_ROOT)
-                    + set.count(WorldExteriorObjects.Count.PLACEMENT_EMPTY);
-            String note = "exterior placements drawn=" + drawn + " omitted=" + omitted;
-            if (set.placements().isEmpty()) {
-                return new ExteriorCopy(null, 0, false, note);
+        return prepareExterior(source, scope, tile, cancellation, null);
+    }
+
+    /**
+     * The actual preparer: one serialized BASIC_EXTERIOR source operation outside any terrain
+     * write, then (when given) the tile's creatures in the remaining objects budget. The neutral
+     * set is copied and closed here. Only cancellation propagates; every other runtime failure
+     * degrades this tile to terrain only, and a creature failure never costs its buildings.
+     */
+    static ExteriorCopy prepareExterior(
+            WorldTerrainStreaming source,
+            WorldTerrainStreaming.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation cancellation,
+            CreatureAppender creatures) {
+        WorldExteriorObjects.TileObjects set = null;
+        try {
+            boolean failed = false;
+            String note;
+            try {
+                set = source.prepareExteriorObjects(scope, tile, cancellation);
+                int drawn = set.count(WorldExteriorObjects.Count.PLACEMENT_DRAWN);
+                int omitted = set.count(WorldExteriorObjects.Count.PLACEMENT_UNSUPPORTED)
+                        + set.count(WorldExteriorObjects.Count.PLACEMENT_CONFLICTING)
+                        + set.count(WorldExteriorObjects.Count.PLACEMENT_CAPPED)
+                        + set.count(WorldExteriorObjects.Count.PLACEMENT_FAILED_ROOT)
+                        + set.count(WorldExteriorObjects.Count.PLACEMENT_EMPTY);
+                note = "exterior placements drawn=" + drawn + " omitted=" + omitted;
+            } catch (CancellationException canceled) {
+                throw canceled;
+            } catch (WorldTerrainStreaming.Refusal refused) {
+                cancellation.check();
+                failed = true;
+                note = "exterior objects refused: " + refused.site();
+            } catch (RuntimeException failure) {
+                cancellation.check();
+                failed = true;
+                note = "exterior objects failed: " + failure.getClass().getSimpleName();
             }
-            var copy = copy(set, cancellation);
-            return new ExteriorCopy(copy, copy.placements(), false, note);
-        } catch (CancellationException canceled) {
-            throw canceled;
-        } catch (WorldTerrainStreaming.Refusal refused) {
-            cancellation.check();
-            return new ExteriorCopy(null, 0, true, "exterior objects refused: " + refused.site());
-        } catch (RuntimeException failed) {
-            cancellation.check();
-            return new ExteriorCopy(
-                    null, 0, true, "exterior objects failed: " + failed.getClass().getSimpleName());
+            if (creatures == null) {
+                if (failed || set.placements().isEmpty()) return new ExteriorCopy(null, 0, failed, note);
+                var copy = copy(set, cancellation);
+                return new ExteriorCopy(copy, copy.placements(), false, note);
+            }
+            var builder = WorldStreamTileWriter.Exterior.builder();
+            int buildings = 0;
+            if (!failed && !set.placements().isEmpty()) {
+                try {
+                    copyInto(builder, set, cancellation);
+                    buildings = builder.placementCount();
+                } catch (CancellationException canceled) {
+                    throw canceled;
+                } catch (RuntimeException failure) {
+                    cancellation.check();
+                    failed = true;
+                    note = "exterior objects failed: " + failure.getClass().getSimpleName();
+                    builder = WorldStreamTileWriter.Exterior.builder();
+                }
+            }
+            WorldTileCreatures.Summary summary;
+            try {
+                summary = creatures.append(builder, tile, cancellation);
+            } catch (CancellationException canceled) {
+                throw canceled;
+            } catch (RuntimeException failure) {
+                cancellation.check();
+                summary = WorldTileCreatures.Summary.failed(
+                        "creature models failed: " + failure.getClass().getSimpleName());
+                // The builder may hold a partial creature model: rebuild buildings alone.
+                builder = WorldStreamTileWriter.Exterior.builder();
+                if (buildings > 0) copyInto(builder, set, cancellation);
+            }
+            if (builder.placementCount() == 0) return new ExteriorCopy(null, 0, failed, note, summary);
+            return new ExteriorCopy(builder.build(), buildings, failed, note, summary);
+        } finally {
+            if (set != null) set.close();
         }
     }
 
@@ -355,6 +440,14 @@ final class WorldStreamSourceBridge {
     private static WorldStreamTileWriter.Exterior copy(
             WorldExteriorObjects.TileObjects set, Cancellation cancellation) {
         var builder = WorldStreamTileWriter.Exterior.builder();
+        copyInto(builder, set, cancellation);
+        return builder.build();
+    }
+
+    private static void copyInto(
+            WorldStreamTileWriter.Exterior.Builder builder,
+            WorldExteriorObjects.TileObjects set,
+            Cancellation cancellation) {
         for (var image : set.images()) {
             cancellation.check();
             builder.image(image.width(), image.height(), image.rgba());
@@ -391,7 +484,6 @@ final class WorldStreamSourceBridge {
             builder.placement(placement.model(), placement.x(), placement.y(), placement.z(),
                     placement.scale(), placement.cos(), placement.sin());
         }
-        return builder.build();
     }
 
     /** Inert writer result: a detached validated copy; closing it releases nothing. */

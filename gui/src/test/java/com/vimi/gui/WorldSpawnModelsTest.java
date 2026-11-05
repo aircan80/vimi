@@ -91,7 +91,7 @@ public final class WorldSpawnModelsTest {
                 && counts.count(State.UNRESOLVED) == 1 && counts.pending() == 1,
                 "Counts are per marker, with unresolved NPCs pending: " + counts);
         String status = WorldSpawnOverlay.modelSummary(counts);
-        require(status.equals(" · models (not drawn yet): 2 qualified, 1 ambiguous, 1 unresolved (1 display absent), 1 resolving"),
+        require(status.equals(" · models: 2 qualified, 1 ambiguous, 1 unresolved (1 display absent), 1 resolving"),
                 "Status shows per-state and per-reason counts: " + status);
         models.close();
         models.request(List.of(9L));
@@ -267,7 +267,7 @@ public final class WorldSpawnModelsTest {
         String qualified = WorldPick.describeSpawn(spawn, npc, "Eastern Kingdoms",
                 resolved(1, qualified(123456), "creature/wolf/wolf.m2"), false);
         require(qualified.contains("model QUALIFIED: FileDataID 123456 creature/wolf/wolf.m2 · display 10 → CreatureModelData 20")
-                && qualified.contains("source " + SOURCE) && qualified.contains("not drawn yet"),
+                && qualified.contains("source " + SOURCE) && qualified.contains("drawn as a static model only when its preview qualifies"),
                 "Qualified model file, name and source are shown: " + qualified);
         String nameless = WorldPick.describeModel(resolved(1, qualified(99), null));
         require(nameless.contains("FileDataID 99 (name unknown)"), "A missing listfile name is unknown: " + nameless);
@@ -282,7 +282,7 @@ public final class WorldSpawnModelsTest {
         require(!WorldPick.describeSpawn(spawn, npc, null).contains("model"),
                 "Without a resolver no model line is invented");
         require(WorldSpawnOverlay.modelSummary(new WorldSpawnModels.Counts(java.util.Map.of(), 4))
-                        .equals(" · models (not drawn yet): 4 resolving"), "Only pending outcomes");
+                        .equals(" · models: 4 resolving"), "Only pending outcomes");
     }
 
     static void require(boolean condition, String message) {

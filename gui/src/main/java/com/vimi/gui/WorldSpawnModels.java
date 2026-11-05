@@ -25,7 +25,8 @@ import java.util.function.Supplier;
 
 /**
  * Per-NPC creature model choices for drawn spawn markers, resolved from the opened build's client
- * creature tables with {@link CreatureModelPolicy}. Nothing is drawn from these yet.
+ * creature tables with {@link CreatureModelPolicy}. These describe markers; drawing is {@link
+ * WorldTileCreatures}.
  *
  * <p>One daemon worker resolves one NPC at a time; the FX side owns the queue and a bounded cache.
  * A changed source revision cancels the running lookup, empties the queue and the cache, and drops
