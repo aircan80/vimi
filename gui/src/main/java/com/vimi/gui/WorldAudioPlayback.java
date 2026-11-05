@@ -27,10 +27,15 @@ final class WorldAudioPlayback implements AutoCloseable {
     static final int MAX_SILENCE_MILLIS = 600_000, MAX_LOOP_BYTES = 16 << 20;
     static final String OUTPUT_UNAVAILABLE = "Audio output is unavailable on this machine.",
             OUTPUT_STOPPED = "Audio output stopped accepting audio.";
-    /** A common line format, used only to check that an output device exists before decoding. */
+    /**
+     * A common line format, used only to check that an output device exists before decoding.
+     * Channels and frame size must be concrete: {@code AudioFormat.matches} treats unspecified
+     * values as wildcards only on the mixer's side, and Windows DirectSound advertises concrete
+     * channel counts, so an unspecified probe matched no Windows device. Only the rate is left
+     * open, which every mixer leaves unspecified too.
+     */
     static final AudioFormat PROBE = new AudioFormat(AudioFormat.Encoding.PCM_SIGNED,
-            AudioSystem.NOT_SPECIFIED, 16, AudioSystem.NOT_SPECIFIED, AudioSystem.NOT_SPECIFIED,
-            AudioSystem.NOT_SPECIFIED, true);
+            AudioSystem.NOT_SPECIFIED, 16, 2, 4, AudioSystem.NOT_SPECIFIED, true);
 
     static boolean outputSupported() {
         return AudioSystem.isLineSupported(new DataLine.Info(SourceDataLine.class, PROBE));
