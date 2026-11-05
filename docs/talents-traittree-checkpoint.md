@@ -79,6 +79,27 @@ available.
 
 ## Not done here
 
-Point requirements from `TraitCond` tier gates, `TraitNode.Flags` meanings and
-`VisibleSpellID` are not interpreted. Issue #165 (stale-row policy, description
-tokens, rank UI and retry behaviour) is separate work.
+`TraitNode.Flags` meanings and `VisibleSpellID` are not interpreted.
+
+## Tier gates and rank values (#165)
+
+In 1.60.1.70790 every class tree records its tier gates as `TraitCond` rows with
+CondType 0: SpentAmountRequired points of the tree currency spent in a counted
+node group. `TraitNodeGroupXTraitCond` links each condition to the gated group.
+Every counted group lies inside the gated talent's own tree and covers the tiers
+above it. The recorded amounts are 5 points per tier, so the reader shows "Requires N points in
+<Tree> Talents". The layouts `BFDD1994` (TraitCond) and `3F06B639`
+(TraitNodeGroupXTraitCond) are reviewed for this. One condition per tree is
+empty (no group, no amount) and is ignored.
+
+Per-rank values come from `TraitDefinitionEffectPoints` (layout `7E18C372`):
+each row names an effect index, OperationType 0 (set) and a Type 0 `Curve` whose
+`CurvePoint` at x = rank holds that rank's base points. The spell's own
+`EffectBasePointsF` is the value of another rank (for example the last), so it is
+never shown for an effect that has such a row.
+
+With the 70790 client hotfix cache applied, 12 `TraitEdge` rows are replaced by
+cache entries that the overlay cannot decode (a raw-physical `Type` column), so
+they read as UNKNOWN. The class lists that count; the prerequisites are missing
+from the view but are not treated as removed. The other trait tables change only
+outside the class trees.

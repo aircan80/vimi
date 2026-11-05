@@ -620,20 +620,13 @@ final class TalentsView extends BorderPane implements AutoCloseable {
         descriptionActivity.setManaged(false);
         selection.getChildren().add(new HBox(8, descriptionActivity, description));
         Label nextRank = null;
-        if (talent.rankSpells().size() > 1) {
+        if (TalentSourceDetails.distinctNextRank(talent)) {
             nextRank = text("Loading next rank…", "wow-level");
             nextRank.setId("talent-next-rank");
             selection.getChildren().addAll(text("Next rank:", "wow-line"), nextRank);
         } else if (talent.maxRanks() > 1) {
-            selection
-                    .getChildren()
-                    .add(
-                            text(
-                                    "One spell is recorded for all "
-                                            + talent.maxRanks()
-                                            + " ranks; values are shown as recorded, not per"
-                                            + " rank.",
-                                    "talent-tooltip-context"));
+            selection.getChildren().add(text(TalentSourceDetails.sameTextForAllRanks(talent),
+                    "talent-tooltip-context"));
         }
         evidence.getChildren()
                 .setAll(
@@ -693,7 +686,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
         descriptionToken = new Cancellation();
         long preview = ++descriptionGeneration;
         long workspace = generation;
-        if (nextRank != null) describeRank(talent.rankSpells().get(1), nextRank, preview, workspace);
+        if (nextRank != null) describeRank(talent, 2, nextRank, preview, workspace);
         if (talent.description() == null
                 || talent.description().isBlank()
                 || talent.description().length() > 16384) {
@@ -704,7 +697,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
         } else {
             descriptionActivity.setVisible(true);
             descriptionActivity.setManaged(true);
-            request(() -> boundHandle.description(talent.rankSpells().getFirst(), descriptionToken))
+            request(() -> boundHandle.description(talent, 1, descriptionToken))
                     .whenComplete(
                             (result, error) ->
                                     Platform.runLater(
@@ -918,13 +911,14 @@ final class TalentsView extends BorderPane implements AutoCloseable {
     }
 
     /** Loads another rank's description into {@code target}; stale answers are ignored. */
-    private void describeRank(long spell, Label target, long preview, long workspace) {
+    private void describeRank(TalentTypes.Talent talent, int rank, Label target, long preview, long workspace) {
+        long spell = talent.rankSpells().get(Math.min(rank, talent.rankSpells().size()) - 1);
         var handle = boundHandle;
         if (handle == null) {
             target.setText("Next rank description is unavailable.");
             return;
         }
-        request(() -> handle.description(spell, descriptionToken))
+        request(() -> handle.description(talent, rank, descriptionToken))
                 .whenComplete(
                         (result, error) ->
                                 Platform.runLater(

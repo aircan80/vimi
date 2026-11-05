@@ -67,7 +67,7 @@ public final class SpellTexts implements AutoCloseable {
 
     // One budget per relation: a large SpellEffect index must not leave SpellMisc durations
     // permanently over a shared budget.
-    private final RelationIndexes effectIndex, miscIndex;
+    private final RelationIndexes effectIndex, miscIndex, auraOptionsIndex;
     private final Cancellation lifetime = new Cancellation();
     private final Object gate = new Object();
     private final java.util.Set<CompletableFuture<Description>> active = new HashSet<>();
@@ -85,6 +85,7 @@ public final class SpellTexts implements AutoCloseable {
         this.version = version;
         this.effectIndex = new RelationIndexes(tables, relationEntries);
         this.miscIndex = new RelationIndexes(tables, relationEntries);
+        this.auraOptionsIndex = new RelationIndexes(tables, relationEntries);
     }
 
     /**
@@ -106,14 +107,47 @@ public final class SpellTexts implements AutoCloseable {
     }
 
     /**
+     * A recorded replacement for one of the described spell's effect amounts, for example a talent
+     * rank's TraitDefinitionEffectPoints value. Other scaling inputs of the effect still apply.
+     */
+    public record EffectOverride(
+            int effectIndex, BigDecimal value, String issue, List<Source> sources) {
+        public EffectOverride {
+            if (effectIndex < 0 || effectIndex >= EFFECT_SLOTS) {
+                throw new IllegalArgumentException("Unsupported effect index");
+            }
+            if ((value == null) == (issue == null)) {
+                throw new IllegalArgumentException("An override has a value or an issue");
+            }
+            sources = List.copyOf(sources);
+        }
+    }
+
+    /** Effect slots that $s1-$s5 can name. */
+    public static final int EFFECT_SLOTS = SpellText.EFFECT_SLOTS;
+
+    /**
      * At most four accepted previews; callers must keep borrowed tables alive until close drains.
+     */
+    public CompletableFuture<Description> description(
+            long spellId, TableTypes.Priority priority, Cancellation token) {
+        return description(spellId, List.of(), priority, token);
+    }
+
+    /**
+     * A preview whose listed effect amounts are replaced. Such previews are not cached, so a rank's
+     * values never stand in for another rank's.
      */
     @SuppressWarnings("try")
     public CompletableFuture<Description> description(
-            long spellId, TableTypes.Priority priority, Cancellation token) {
+            long spellId,
+            List<EffectOverride> overrides,
+            TableTypes.Priority priority,
+            Cancellation token) {
         if (spellId < 1 || spellId > 0xffffffffL) {
             throw new IllegalArgumentException("Invalid spell ID");
         }
+        var replaced = List.copyOf(overrides);
         Objects.requireNonNull(priority);
         Objects.requireNonNull(token);
         token.check();
@@ -123,7 +157,7 @@ public final class SpellTexts implements AutoCloseable {
                 return CompletableFuture.failedFuture(
                         new IllegalStateException("Spell text handle closed"));
             }
-            var cached = cache.get(spellId);
+            var cached = replaced.isEmpty() ? cache.get(spellId) : null;
             if (cached != null) {
                 return CompletableFuture.completedFuture(cached);
             }
@@ -139,7 +173,7 @@ public final class SpellTexts implements AutoCloseable {
                             try (var caller = token.onCancel(request::cancel);
                                     var own = lifetime.onCancel(request::cancel)) {
                                 request.check();
-                                return resolve(spellId, priority, request);
+                                return resolve(spellId, replaced, priority, request);
                             }
                         })
                 .whenComplete(
@@ -147,6 +181,7 @@ public final class SpellTexts implements AutoCloseable {
                             synchronized (gate) {
                                 active.remove(answer);
                                 if (error == null
+                                        && replaced.isEmpty()
                                         && value.state() != State.UNAVAILABLE
                                         && closing == null) {
                                     if (cache.size() == 128) {
@@ -165,7 +200,11 @@ public final class SpellTexts implements AutoCloseable {
         return answer.copy();
     }
 
-    private Description resolve(long spell, TableTypes.Priority priority, Cancellation token) {
+    private Description resolve(
+            long spell,
+            List<EffectOverride> overrides,
+            TableTypes.Priority priority,
+            Cancellation token) {
         var issues = new ArrayList<String>();
         var schema = tables.schema(TableTypes.Ref.forName("Spell"), priority, token).join();
         var columns = new Columns(schema);
@@ -203,16 +242,21 @@ public final class SpellTexts implements AutoCloseable {
         }
         var amounts = new LinkedHashMap<Long, Map<Integer, SpellText.Amount>>();
         for (long source : needs.amounts()) {
-            amounts.put(source, amounts(source, priority, token, issues));
+            var found = amounts(source, priority, token, issues);
+            amounts.put(source, source == spell ? override(found, overrides) : found);
         }
         var durations = new LinkedHashMap<Long, SpellText.Value>();
         for (long source : needs.durations()) {
             durations.put(source, duration(source, priority, token, issues));
         }
+        var procs = new LinkedHashMap<Long, SpellText.Value>();
+        for (long source : needs.procChances()) {
+            procs.put(source, procChance(source, priority, token, issues));
+        }
         return SpellText.project(
                 spell,
                 raw,
-                new SpellText.Values(amounts, durations),
+                new SpellText.Values(amounts, durations, procs),
                 List.copyOf(new java.util.LinkedHashSet<>(issues)));
     }
 
@@ -271,16 +315,11 @@ public final class SpellTexts implements AutoCloseable {
                             effects.text(effect, 24)));
             var kind = effects.number(effect, "Effect");
             var aura = effects.number(effect, "EffectAura");
-            // Existing talent forms stay unchanged; new scalar cases require a literal % at use.
-            boolean percentageOnly =
-                    (BigDecimal.valueOf(6).equals(kind) && BigDecimal.valueOf(33).equals(aura))
-                            || (BigDecimal.valueOf(3).equals(kind) && BigDecimal.ZERO.equals(aura));
-            boolean fixed =
-                    effects.rawGuardZero(effect)
-                            && BigDecimal.valueOf(6).equals(kind)
-                            && (BigDecimal.valueOf(108).equals(aura)
-                                    || BigDecimal.valueOf(290).equals(aura));
-            fixed |= percentageOnly && effects.rawGuardZero(effect);
+            // Reviewed against Forever 1.60.1.70790 talent spells: an amount is fixed when no
+            // random, level, resource, power or scaling input can change it. A spell power
+            // coefficient only matters for damage, healing and absorb effects; elsewhere the
+            // recorded default of 0 or 1 is inert.
+            boolean fixed = effects.rawGuardZero(effect);
             for (String field : CONTEXT_FLOATS) {
                 sources.add(
                         new Source(
@@ -292,24 +331,32 @@ public final class SpellTexts implements AutoCloseable {
                         new Source(
                                 "SpellEffect", effect.id(), field, effects.value(effect, field)));
                 var value = effects.number(effect, field);
-                BigDecimal expected =
-                        percentageOnly && field.equals("EffectBonusCoefficient")
-                                ? BigDecimal.ZERO
-                                : BigDecimal.ONE;
-                fixed &= value != null && value.compareTo(expected) == 0;
-            }
-            if (percentageOnly) {
-                for (String field :
-                        List.of("EffectAttributes", "EffectAuraPeriod", "EffectTriggerSpell")) {
-                    sources.add(
-                            new Source(
-                                    "SpellEffect",
-                                    effect.id(),
-                                    field,
-                                    effects.value(effect, field)));
-                    fixed &= effects.zero(effect, field);
+                if (field.equals("EffectBonusCoefficient")) {
+                    // Zero adds no spell power. The recorded default of one is inert only for
+                    // aura types reviewed as unable to scale with spell power.
+                    fixed &=
+                            value != null
+                                    && (value.signum() == 0
+                                            || inertCoefficient(kind, aura)
+                                                    && value.compareTo(BigDecimal.ONE) == 0);
+                } else {
+                    fixed &= value != null && value.compareTo(BigDecimal.ONE) == 0;
                 }
             }
+            for (String field : List.of("EffectAttributes", "EffectAuraPeriod")) {
+                sources.add(
+                        new Source(
+                                "SpellEffect", effect.id(), field, effects.value(effect, field)));
+            }
+            fixed &= effects.zero(effect, "EffectAttributes");
+            var period = effects.number(effect, "EffectAuraPeriod");
+            Long periodMilliseconds =
+                    period != null
+                                    && period.scale() <= 0
+                                    && period.signum() > 0
+                                    && period.compareTo(BigDecimal.valueOf(Integer.MAX_VALUE)) <= 0
+                            ? period.longValueExact()
+                            : null;
             var base = effects.number(effect, "EffectBasePointsF");
             var amount =
                     new SpellText.Amount(
@@ -320,7 +367,8 @@ public final class SpellTexts implements AutoCloseable {
                                     : fixed
                                             ? null
                                             : "Effect requires random, scaling or character context",
-                            percentageOnly);
+                            false,
+                            periodMilliseconds);
             if (amounts.putIfAbsent(slot, amount) != null) {
                 ambiguous.add(slot);
             }
@@ -332,6 +380,128 @@ public final class SpellTexts implements AutoCloseable {
                             null, List.of(), "Multiple readable effects match this effect index"));
         }
         return amounts;
+    }
+
+    /**
+     * Replaces the base of overridden effects. The effect's own scaling issue, if any, still
+     * applies; an override for an effect without a readable row stands alone.
+     */
+    private static Map<Integer, SpellText.Amount> override(
+            Map<Integer, SpellText.Amount> found, List<EffectOverride> overrides) {
+        if (overrides.isEmpty()) {
+            return found;
+        }
+        var result = new HashMap<>(found);
+        for (var replacement : overrides) {
+            var original = found.get(replacement.effectIndex());
+            var sources = new ArrayList<>(replacement.sources());
+            String issue = replacement.issue();
+            Long period = null;
+            if (original != null && replacement.value() != null) {
+                sources.addAll(original.sources());
+                period = original.periodMilliseconds();
+                // An unreadable base is what the override supplies; other causes still hold.
+                issue =
+                        "Effect base amount is unreadable".equals(original.issue())
+                                ? null
+                                : original.issue();
+            }
+            result.put(
+                    replacement.effectIndex(),
+                    new SpellText.Amount(replacement.value(), sources, issue, false, period));
+        }
+        return result;
+    }
+
+    /**
+     * APPLY_AURA (6) aura types whose amount is a stat, chance, rate, speed or spell modifier and
+     * never gains spell power, so a recorded EffectBonusCoefficient of one is inert: threat (10),
+     * stat (29), speed (31/33), parry/dodge/crit/hit chances (47, 49, 52, 54, 55, 57), cast speed
+     * (65), damage done percent (79), power regeneration (85, 110), attack power (99), flat and
+     * percent spell modifiers (107, 108), healing done percent (136), total stat percent (137),
+     * melee haste (138), mechanic duration (232) and crit percent (290). Every other effect or aura
+     * counts as fixed only with a coefficient of zero.
+     */
+    static final java.util.Set<Integer> INERT_COEFFICIENT_AURAS =
+            java.util.Set.of(
+                    10, 29, 31, 33, 47, 49, 52, 54, 55, 57, 65, 79, 85, 99, 107, 108, 110, 136, 137,
+                    138, 232, 290);
+
+    private static boolean inertCoefficient(BigDecimal kind, BigDecimal aura) {
+        return kind != null
+                && aura != null
+                && kind.compareTo(BigDecimal.valueOf(6)) == 0
+                && aura.scale() <= 0
+                && aura.signum() >= 0
+                && aura.compareTo(BigDecimal.valueOf(Integer.MAX_VALUE)) <= 0
+                && INERT_COEFFICIENT_AURAS.contains(aura.intValue());
+    }
+
+    /**
+     * {@code $h}: SpellAuraOptions.ProcChance of the spell's single DifficultyID 0 row (layout
+     * 95F4D5E1, verified field names). Chances outside 1-100, or procs per minute, stay unknown.
+     */
+    private SpellText.Value procChance(
+            long spell, TableTypes.Priority priority, Cancellation token, List<String> issues) {
+        var sources = new ArrayList<Source>();
+        var schema =
+                tables.schema(TableTypes.Ref.forName("SpellAuraOptions"), priority, token).join();
+        var options = new Columns(schema);
+        if (!TableQueries.isReadable(schema.table().state()) || !options.auraOptionsProfile()) {
+            return new SpellText.Value(
+                    null,
+                    sources,
+                    "SpellAuraOptions profile is unavailable: " + schema.table().state());
+        }
+        var lookup =
+                auraOptionsIndex
+                        .lookup("SpellAuraOptions", "SpellID", spell, 64, priority, token)
+                        .join();
+        if (lookup.state() != RelationIndexes.State.OK || lookup.matches() > 64) {
+            return new SpellText.Value(
+                    null, sources, "SpellAuraOptions lookup is " + lookup.state());
+        }
+        if (!lookup.complete()) {
+            issues.add("SpellAuraOptions is PARTIAL; proc chance uses readable records only.");
+        }
+        Db2Types.Row selected = null;
+        for (var found : lookup.rows()) {
+            var row = found.row();
+            var difficulty = options.number(row, "DifficultyID");
+            if (difficulty == null || difficulty.signum() != 0) {
+                continue;
+            }
+            if (selected != null) {
+                return new SpellText.Value(
+                        null, sources, "Multiple readable SpellAuraOptions rows match");
+            }
+            selected = row;
+        }
+        if (selected == null) {
+            return new SpellText.Value(null, sources, "SpellAuraOptions records no proc chance");
+        }
+        for (String field :
+                List.of("SpellID", "DifficultyID", "ProcChance", "SpellProcsPerMinuteID")) {
+            sources.add(
+                    new Source(
+                            "SpellAuraOptions",
+                            selected.id(),
+                            field,
+                            options.value(selected, field)));
+        }
+        var chance = options.number(selected, "ProcChance");
+        var perMinute = options.number(selected, "SpellProcsPerMinuteID");
+        if (perMinute == null || perMinute.signum() != 0) {
+            return new SpellText.Value(
+                    null, sources, "The proc rate is per minute and depends on weapon speed");
+        }
+        if (chance == null
+                || chance.scale() > 0
+                || chance.signum() <= 0
+                || chance.compareTo(BigDecimal.valueOf(100)) > 0) {
+            return new SpellText.Value(null, sources, "Recorded proc chance is not 1-100");
+        }
+        return new SpellText.Value(chance.toPlainString(), sources, null);
     }
 
     private SpellText.Value duration(
@@ -385,6 +555,14 @@ public final class SpellTexts implements AutoCloseable {
             return new SpellText.Value(
                     null, sources, "Duration requires unsupported context or a valid duration ID");
         }
+        // SPELL_ATTR5_EXTRA_INITIAL_PERIOD (Attributes[5] bit 0x200): the aura also ticks on
+        // application. $o refuses such spells, and any spell whose attribute is unreadable.
+        var attributes = misc.attribute(selected, 5);
+        if (attributes != null) {
+            sources.add(
+                    new Source("SpellMisc", selected.id(), "Attributes[5]", attributes.toString()));
+        }
+        Boolean initialTick = attributes == null ? null : (attributes & 0x200L) != 0;
         var durationRef = TableTypes.Ref.forName("SpellDuration");
         var durationSchema = tables.schema(durationRef, priority, token).join();
         var columns = new Columns(durationSchema);
@@ -430,7 +608,9 @@ public final class SpellTexts implements AutoCloseable {
         return new SpellText.Value(
                 milliseconds.divide(BigDecimal.valueOf(1000)).toBigIntegerExact() + " sec",
                 sources,
-                null);
+                null,
+                milliseconds.longValueExact(),
+                initialTick);
     }
 
     private static Description unavailable(long spell, String issue) {
@@ -520,6 +700,19 @@ public final class SpellTexts implements AutoCloseable {
                                                     && c.kind() == TableSchema.ColumnKind.FLOAT);
         }
 
+        boolean auraOptionsProfile() {
+            if (!layout("95F4D5E1")) {
+                return false;
+            }
+            for (String name :
+                    List.of("SpellID", "DifficultyID", "ProcChance", "SpellProcsPerMinuteID")) {
+                if (field(name, false) < 0) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         boolean durationProfile() {
             if (!layout("4FDF0951")) {
                 return false;
@@ -604,6 +797,48 @@ public final class SpellTexts implements AutoCloseable {
                 }
             }
             return true;
+        }
+
+        /**
+         * One verified 32-bit element of the SpellMisc Attributes[17] array, or null when the array
+         * or the row value is not readable as recorded.
+         */
+        Long attribute(Db2Types.Row row, int element) {
+            if (schema.schema() == null) {
+                return null;
+            }
+            var fields =
+                    schema.schema().columns().stream()
+                            .filter(field -> field.name().equals("Attributes"))
+                            .toList();
+            if (fields.size() != 1
+                    || !fields.getFirst().verifiedName()
+                    || fields.getFirst().kind() != TableSchema.ColumnKind.INT
+                    || fields.getFirst().arrayLength() != 17
+                    || !Integer.valueOf(32).equals(fields.getFirst().bits())) {
+                return null;
+            }
+            String name = "Attributes[" + element + "]";
+            int at = -1;
+            for (int i = 0; i < schema.columns().size(); i++) {
+                if (schema.columns().get(i).name().equals(name)) {
+                    if (at >= 0) {
+                        return null;
+                    }
+                    at = i;
+                }
+            }
+            if (at < 0
+                    || !"integer".equals(schema.columns().get(at).kind())
+                    || schema.columns().get(at).interpretation() != null) {
+                return null;
+            }
+            try {
+                String raw = text(row, at);
+                return raw == null ? null : Long.parseLong(raw) & 0xffffffffL;
+            } catch (NumberFormatException failure) {
+                return null;
+            }
         }
 
         String text(Db2Types.Row row, int index) {

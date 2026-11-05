@@ -15,6 +15,20 @@ public interface BuildTalents extends AutoCloseable {
                 new UnsupportedOperationException("Spell preview unavailable"));
     }
 
+    /**
+     * The description of one rank of a talent (1-based). Legacy talents use that rank's spell;
+     * readers that record per-rank values (TraitTree talents) apply them. The default uses the
+     * rank's spell, or the last recorded spell.
+     */
+    default CompletableFuture<com.vibeminer.concepts.effects.SpellTexts.Description> description(
+            TalentTypes.Talent talent, int rank, Cancellation token) {
+        if (rank < 1 || rank > talent.maxRanks()) {
+            throw new IllegalArgumentException("Rank is outside the talent's recorded ranks");
+        }
+        var spells = talent.rankSpells();
+        return description(spells.get(Math.min(rank, spells.size()) - 1), token);
+    }
+
     CompletableFuture<Void> closeAsync();
 
     @Override
