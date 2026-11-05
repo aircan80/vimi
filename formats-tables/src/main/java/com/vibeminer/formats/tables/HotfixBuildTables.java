@@ -58,6 +58,10 @@ public final class HotfixBuildTables implements BuildTables {
         final Map<Long, Integer> additionIndex;
         final long bytes;
         final int added, replaced, deleted, protectedRows, unknownRows, ignored;
+        // Non-zero when a raw-column fit scan was inconclusive: the view is rebuilt (and the scan
+        // retried) by the first operation at or after this time, instead of staying cached
+        // without its raw columns until eviction.
+        long rescanAfterNanos;
 
         View(
                 ClientBuildTables.HotfixMetadata metadata,
@@ -220,6 +224,21 @@ public final class HotfixBuildTables implements BuildTables {
     java.util.function.UnaryOperator<Map<Long, Long>> ordinalsProbe = found -> found;
     // Test seam over each base page of the raw-column fit scan; production keeps it as is.
     java.util.function.UnaryOperator<TableTypes.Page> rawScanProbe = page -> page;
+    // Test seam over the base identity re-read after a fit scan; production keeps it as is.
+    java.util.function.UnaryOperator<String> rawScanIdentityProbe = identity -> identity;
+    // Monotonic clock for the inconclusive-scan back-off; replaced by tests only.
+    java.util.function.LongSupplier fitClock = System::nanoTime;
+    // Fit scans that ran to completion or failed; observed by tests only.
+    int fitScans;
+    // Set while compiling when the raw-column fit scan was inconclusive.
+    private boolean fitInconclusive;
+    // Consecutive inconclusive fit scans per table, for the back-off.
+    private final Map<Long, Integer> fitFailures = new HashMap<>();
+
+    /** First wait before re-scanning after an inconclusive fit scan; doubles up to the maximum. */
+    private static final long FIT_RETRY_NANOS = TimeUnit.SECONDS.toNanos(5),
+            FIT_RETRY_MAX_NANOS = TimeUnit.MINUTES.toNanos(5);
+
     private final Set<Job<?>> jobs = new HashSet<>();
     private final ThreadPoolExecutor worker =
             new ThreadPoolExecutor(
@@ -479,7 +498,10 @@ public final class HotfixBuildTables implements BuildTables {
         var cached = views.get(id);
         if (cached != null
                 && cached.metadata.identity().equals(metadata.identity())
-                && Objects.equals(cached.metadata.schema(), metadata.schema())) {
+                && Objects.equals(cached.metadata.schema(), metadata.schema())
+                && !(cached.rescanAfterNanos != 0
+                        && !pinned.contains(id)
+                        && fitClock.getAsLong() - cached.rescanAfterNanos >= 0)) {
             pinned.add(id);
             return cached;
         }
@@ -511,6 +533,7 @@ public final class HotfixBuildTables implements BuildTables {
         // decoding anything, so a full shared budget costs no decode work.
         requireRoom((256L << 10) + (special ? 0 : 384L * input.size()), memory.generation());
         compiles++;
+        fitInconclusive = false;
         HotfixRowDecoder.Layout layout = null;
         try {
             layout =
@@ -678,6 +701,19 @@ public final class HotfixBuildTables implements BuildTables {
                 evictOldestUnpinned();
             }
         }
+        if (fitInconclusive) {
+            int failures = fitFailures.merge(id, 1, Integer::sum);
+            result.rescanAfterNanos =
+                    fitClock.getAsLong()
+                            + Math.min(
+                                    FIT_RETRY_MAX_NANOS,
+                                    FIT_RETRY_NANOS << Math.min(failures - 1, 6));
+            if (result.rescanAfterNanos == 0) {
+                result.rescanAfterNanos = 1;
+            }
+        } else {
+            fitFailures.remove(id);
+        }
         views.put(id, result);
         pinned.add(id);
         return result;
@@ -764,19 +800,23 @@ public final class HotfixBuildTables implements BuildTables {
             return cached;
         }
         Set<Integer> fitted;
+        fitScans++;
         try {
             fitted = scanRawFits(metadata, candidates, priority, token);
         } catch (RuntimeException failure) {
-            if (token.isCanceled()
-                    || failure instanceof java.util.concurrent.CancellationException) {
+            if (token.isCanceled() || isClosed() || cancellation(failure)) {
+                // Closing or cancelling is not a verdict about the base: let it propagate.
                 throw failure;
             }
-            // A damaged or unreadable base proves nothing about its values: refuse the columns,
-            // keep the view, and scan again next time instead of caching a failure.
+            // A damaged or unreadable base proves nothing about its values: refuse the columns
+            // for now, never cache the failure, and re-scan after a back-off.
+            fitInconclusive = true;
             return Set.of();
         }
         if (fitted == null) {
-            // Inconclusive (unreadable page, short scan, base changed): refuse, do not cache.
+            // Inconclusive (unreadable page, short scan, base changed): refuse, do not cache,
+            // and re-scan after a back-off.
+            fitInconclusive = true;
             return Set.of();
         }
         if (rawFits.size() >= CACHE_TABLES * 4) {
@@ -785,6 +825,19 @@ public final class HotfixBuildTables implements BuildTables {
         // Keyed by the base identity, so an evicted view does not rescan an unchanged base.
         rawFits.put(metadata.identity(), fitted);
         return fitted;
+    }
+
+    private synchronized boolean isClosed() {
+        return closed;
+    }
+
+    private static boolean cancellation(Throwable failure) {
+        for (int i = 0; i < 8 && failure != null; i++, failure = failure.getCause()) {
+            if (failure instanceof java.util.concurrent.CancellationException) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private Set<Integer> scanRawFits(
@@ -832,7 +885,7 @@ public final class HotfixBuildTables implements BuildTables {
         var again = await(base.hotfixMetadata(ref, priority, token));
         if (scanned != metadata.rows()
                 || again == null
-                || !again.identity().equals(metadata.identity())) {
+                || !rawScanIdentityProbe.apply(again.identity()).equals(metadata.identity())) {
             return null;
         }
         return Set.copyOf(candidates);
