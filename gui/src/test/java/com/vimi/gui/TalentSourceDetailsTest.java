@@ -52,7 +52,7 @@ public final class TalentSourceDetailsTest {
             com.vibeminer.concepts.talents.TalentTypes.Talent legacy(long id, int row, List<com.vibeminer.concepts.talents.TalentTypes.Prerequisite> needs, String text) {
                 return new com.vibeminer.concepts.talents.TalentTypes.Talent(id, row, 0, List.of(10L + id, 20L + id), 2,
                         needs, "Talent " + id, text, null, com.vibeminer.concepts.talents.TalentTypes.Origin.LEGACY,
-                        "SpellMisc records no DifficultyID 0 icon for spell " + (10 + id) + ".");
+                        "SpellMisc records no DifficultyID 0 icon for spell " + (10 + id) + ".", row == 0 ? null : row * 5);
             }
         };
         var claws = types.legacy(1, 0, List.of(), "Plain text.");
@@ -65,7 +65,13 @@ public final class TalentSourceDetailsTest {
                 && "Requires 10 points in Feral Combat Talents".equals(TalentSourceDetails.pointRequirement(tree, frenzy)),
                 "Legacy tiers use the game point-requirement wording");
         require(TalentSourceDetails.pointRequirement(tree, trait) == null,
-                "TraitTree tier gates are not inferred");
+                "No requirement is shown when none is recorded");
+        var gated = new com.vibeminer.concepts.talents.TalentTypes.Talent(104923, 6, 1, List.of(16814L), 1,
+                List.of(), "Trait", null, null, trait.origin(), null, 30);
+        require("Requires 30 points in Feral Combat Talents".equals(TalentSourceDetails.pointRequirement(tree, gated))
+                && "Requires 30 points in this tree".equals(TalentSourceDetails.pointRequirement(
+                        new com.vibeminer.concepts.talents.TalentTypes.Tree(2, "Talent tree 2", 1, "", List.of(gated)), gated)),
+                "Recorded TraitCond tier gates use the game wording; neutral trees are not named");
         require("Requires 3 points in Talent 1".equals(TalentSourceDetails.prerequisite(frenzy.prerequisites().getFirst(), byId))
                 && "Requires 1 point in unavailable talent #999".equals(TalentSourceDetails.prerequisite(orphan.prerequisites().getFirst(), byId))
                 && "Requires Talent 1".equals(TalentSourceDetails.prerequisite(

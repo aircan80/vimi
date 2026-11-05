@@ -26,15 +26,18 @@ final class TraitTrees {
      * 1.60.1.70707 and 1.60.1.70755 client tables. Other layouts fail explicitly.
      */
     static final Map<String, String> REVIEWED_LAYOUTS =
-            Map.of(
-                    "SkillLineXTraitTree", "853B88D6",
-                    "TraitNode", "A01A518A",
-                    "TraitNodeEntry", "733B015D",
-                    "TraitDefinition", "060A9F4C",
-                    "TraitEdge", "907C9B77",
-                    "TraitNodeXTraitNodeEntry", "802ED455",
-                    "TraitNodeGroup", "ECA626BE",
-                    "TraitNodeGroupXTraitNode", "B9288EB8");
+            Map.ofEntries(
+                    Map.entry("SkillLineXTraitTree", "853B88D6"),
+                    Map.entry("TraitNode", "A01A518A"),
+                    Map.entry("TraitNodeEntry", "733B015D"),
+                    Map.entry("TraitDefinition", "060A9F4C"),
+                    Map.entry("TraitEdge", "907C9B77"),
+                    Map.entry("TraitNodeXTraitNodeEntry", "802ED455"),
+                    Map.entry("TraitNodeGroup", "ECA626BE"),
+                    Map.entry("TraitNodeGroupXTraitNode", "B9288EB8"),
+                    Map.entry("TraitCond", "BFDD1994"),
+                    Map.entry("TraitNodeGroupXTraitCond", "3F06B639"),
+                    Map.entry("TraitDefinitionEffectPoints", "7E18C372"));
 
     static final int GRID = 600,
             TOLERANCE = 60,
@@ -42,7 +45,8 @@ final class TraitTrees {
             MAX_ROWS = 11,
             MAX_TREES = 3,
             MAX_RANKS = 100,
-            MAX_ROWS_PER_TABLE = 50000;
+            MAX_ROWS_PER_TABLE = 50000,
+            MAX_POINT_ROWS = 400000;
 
     private static final List<String> GRAPH_TABLES =
             List.of(
@@ -56,6 +60,19 @@ final class TraitTrees {
     private Boolean selected;
     private boolean loaded;
     private Data classes, nodes, nodeEntries, groups, groupNodes, edges, entries, definitions;
+
+    /** Per-rank effect values: definition to its points rows, curve to its points by rank. */
+    private Map<Long, List<long[]>> definitionPoints;
+
+    private Map<Long, Map<Long, java.math.BigDecimal>> curvePoints;
+    private Set<Long> curvesOfType0;
+
+    /** Optional tier gates: TraitCond rows of the class trees and their gated node groups. */
+    private Data conds, condLinks;
+
+    /** Why tier gates could not be read; null when they were read. */
+    private String condFailure;
+
     private final Map<Long, Long> classTrees = new TreeMap<>();
     private final List<String> issues = new ArrayList<>();
     private Map<Long, Set<Long>> legacyTabSpells;
@@ -208,6 +225,7 @@ final class TraitTrees {
         }
         owner.optionalMetadata(token, classIssues, wanted);
         var prerequisites = prerequisites(treeNodes, built.keySet(), classIssues);
+        var gates = gates(treeId, partition, classIssues);
 
         var finished = new HashMap<Long, TalentTypes.Talent>();
         for (var made : built.values()) {
@@ -253,7 +271,8 @@ final class TraitTrees {
                                     made.overridesSpell,
                                     made.overrideName != null,
                                     made.overrideDescription != null),
-                            icon == null ? owner.iconIssue(made.spell) : null));
+                            icon == null ? owner.iconIssue(made.spell) : null,
+                            gates.get(made.nodeId)));
         }
         var complete = new HashSet<Long>();
         for (var talent : finished.values()) {
@@ -375,7 +394,8 @@ final class TraitTrees {
                 talent.description(),
                 talent.iconFileDataId(),
                 talent.origin(),
-                talent.iconIssue());
+                talent.iconIssue(),
+                talent.requiredTreePoints());
     }
 
     /** Grid index for an offset within tolerance of a 600-unit cell, or null. */
@@ -560,6 +580,220 @@ final class TraitTrees {
         }
         var result = new LinkedHashMap<Long, List<Long>>();
         maximal.forEach((set, group) -> result.put(group, set.stream().sorted().toList()));
+        return result;
+    }
+
+    /**
+     * Rank values for a trait definition's effects. A TraitDefinitionEffectPoints row with
+     * OperationType 0 (set) names a Curve whose point at x = rank is the effect's base points at
+     * that rank. Only exact rank points of Type 0 curves are used; an effect whose value cannot be
+     * read this way is overridden by nothing and keeps the spell's own data, with the reason in the
+     * sources. Read once per handle; failures are retried on the next request.
+     */
+    List<com.vibeminer.concepts.effects.SpellTexts.EffectOverride> rankPoints(
+            long definition, int rank, Cancellation token) {
+        try {
+            loadPoints(token);
+        } catch (RuntimeException failure) {
+            var unknown = new ArrayList<com.vibeminer.concepts.effects.SpellTexts.EffectOverride>();
+            for (int effect = 0;
+                    effect < com.vibeminer.concepts.effects.SpellTexts.EFFECT_SLOTS;
+                    effect++) {
+                unknown.add(
+                        unknownRank(
+                                definition,
+                                effect,
+                                "Talent rank values are unreadable: "
+                                        + TalentsService.cause(failure)));
+            }
+            return unknown;
+        }
+        var result = new ArrayList<com.vibeminer.concepts.effects.SpellTexts.EffectOverride>();
+        for (long[] row : definitionPoints.getOrDefault(definition, List.of())) {
+            long id = row[0], effect = row[1], operation = row[2], curve = row[3];
+            if (effect < 0 || effect >= com.vibeminer.concepts.effects.SpellTexts.EFFECT_SLOTS) {
+                continue;
+            }
+            var points = curvePoints.get(curve);
+            var value = points == null ? null : points.get((long) rank);
+            if (operation != 0 || !curvesOfType0.contains(curve) || value == null) {
+                result.add(
+                        unknownRank(
+                                definition,
+                                (int) effect,
+                                "No reviewed rank " + rank + " value is recorded for this effect"));
+                continue;
+            }
+            result.add(
+                    new com.vibeminer.concepts.effects.SpellTexts.EffectOverride(
+                            (int) effect,
+                            value,
+                            null,
+                            List.of(
+                                    new com.vibeminer.concepts.effects.SpellTexts.Source(
+                                            "TraitDefinitionEffectPoints",
+                                            id,
+                                            "CurveID",
+                                            Long.toString(curve)),
+                                    new com.vibeminer.concepts.effects.SpellTexts.Source(
+                                            "CurvePoint",
+                                            curve,
+                                            "Pos at rank " + rank,
+                                            value.toPlainString()))));
+        }
+        return result;
+    }
+
+    /** A placeholder that keeps an unreadable rank value from showing base points. */
+    private static com.vibeminer.concepts.effects.SpellTexts.EffectOverride unknownRank(
+            long definition, int effect, String why) {
+        return new com.vibeminer.concepts.effects.SpellTexts.EffectOverride(
+                effect,
+                null,
+                why,
+                List.of(
+                        new com.vibeminer.concepts.effects.SpellTexts.Source(
+                                "TraitDefinition", definition, "rank value", "unknown")));
+    }
+
+    private void loadPoints(Cancellation token) {
+        if (definitionPoints != null) {
+            return;
+        }
+        var ignored = new ArrayList<String>();
+        var table = reviewed(owner.schema("TraitDefinitionEffectPoints", token, ignored));
+        for (String field :
+                List.of("TraitDefinitionID", "EffectIndex", "OperationType", "CurveID")) {
+            table.integerField(field, 1);
+        }
+        var byDefinition = new HashMap<Long, List<long[]>>();
+        var curves = new HashSet<Long>();
+        owner.stream(
+                table,
+                MAX_ROWS_PER_TABLE,
+                token,
+                row -> {
+                    long curve = table.number(row, "CurveID");
+                    byDefinition
+                            .computeIfAbsent(
+                                    table.number(row, "TraitDefinitionID"), k -> new ArrayList<>())
+                            .add(
+                                    new long[] {
+                                        row.id(),
+                                        table.number(row, "EffectIndex"),
+                                        table.number(row, "OperationType"),
+                                        curve
+                                    });
+                    curves.add(curve);
+                });
+        var curveTable = owner.schema("Curve", token, ignored);
+        curveTable.integerField("Type", 1);
+        var type0 = new HashSet<Long>();
+        owner.stream(
+                curveTable,
+                MAX_POINT_ROWS,
+                token,
+                row -> {
+                    if (curves.contains(row.id()) && curveTable.number(row, "Type") == 0) {
+                        type0.add(row.id());
+                    }
+                });
+        var pointTable = owner.schema("CurvePoint", token, ignored);
+        pointTable.integerField("CurveID", 1);
+        pointTable.floatField("Pos", 2);
+        var points = new HashMap<Long, Map<Long, java.math.BigDecimal>>();
+        var conflicted = new HashSet<String>();
+        owner.stream(
+                pointTable,
+                MAX_POINT_ROWS,
+                token,
+                row -> {
+                    long curve = pointTable.number(row, "CurveID");
+                    if (!curves.contains(curve)) {
+                        return;
+                    }
+                    var x = pointTable.decimal(row, "Pos[0]");
+                    var y = pointTable.decimal(row, "Pos[1]");
+                    if (x.stripTrailingZeros().scale() > 0 || x.signum() <= 0) {
+                        return;
+                    }
+                    long rank = x.longValue();
+                    var previous = points.computeIfAbsent(curve, k -> new HashMap<>()).put(rank, y);
+                    if (previous != null && previous.compareTo(y) != 0) {
+                        conflicted.add(curve + ":" + rank);
+                    }
+                });
+        for (String key : conflicted) {
+            var parts = key.split(":");
+            points.get(Long.parseLong(parts[0])).remove(Long.parseLong(parts[1]));
+        }
+        curvesOfType0 = type0;
+        curvePoints = points;
+        definitionPoints = byDefinition;
+    }
+
+    /**
+     * Tier gates from TraitCond. A CondType 0 row requires SpentAmountRequired points spent in its
+     * TraitNodeGroupID (the counted group); TraitNodeGroupXTraitCond names the gated group. In the
+     * reviewed Forever data the counted group is always the gated node's own tree (its tiers
+     * above), so the requirement is shown as points in that tree. Any other shape is reported and
+     * not shown. Returns node ID to the largest requirement.
+     */
+    private Map<Long, Integer> gates(
+            long treeId, Map<Long, List<Long>> partition, List<String> classIssues) {
+        if (condFailure != null) {
+            classIssues.add("Tier point requirements are unavailable: " + condFailure);
+            return Map.of();
+        }
+        var treeOf = new HashMap<Long, Long>();
+        partition.forEach((group, members) -> members.forEach(node -> treeOf.put(node, group)));
+        var members = new HashMap<Long, Set<Long>>();
+        for (var link : groupNodes.rows) {
+            members.computeIfAbsent(
+                            groupNodes.number(link, "TraitNodeGroupID"), k -> new HashSet<>())
+                    .add(groupNodes.number(link, "TraitNodeID"));
+        }
+        var byId = new HashMap<Long, Db2Types.Row>();
+        for (var row : conds.rows) {
+            byId.put(row.id(), row);
+        }
+        var result = new HashMap<Long, Integer>();
+        int unsupported = 0;
+        for (var link : condLinks.rows) {
+            var cond = byId.get(condLinks.number(link, "TraitCondID"));
+            if (cond == null || conds.number(cond, "TraitTreeID") != treeId) {
+                continue;
+            }
+            long spend = conds.number(cond, "SpentAmountRequired");
+            long counted = conds.number(cond, "TraitNodeGroupID");
+            long type = conds.number(cond, "CondType");
+            if (type == 0 && spend == 0 && counted == 0) {
+                continue; // An empty condition requires nothing.
+            }
+            var gated = members.getOrDefault(condLinks.number(link, "TraitNodeGroupID"), Set.of());
+            var countedNodes = members.getOrDefault(counted, Set.of());
+            if (type != 0 || spend < 1 || spend > 1000 || countedNodes.isEmpty()) {
+                unsupported++;
+                continue;
+            }
+            for (long node : gated) {
+                Long tree = treeOf.get(node);
+                if (tree == null) {
+                    continue;
+                }
+                if (!partition.get(tree).containsAll(countedNodes)) {
+                    unsupported++;
+                    continue;
+                }
+                result.merge(node, (int) spend, Math::max);
+            }
+        }
+        if (unsupported > 0) {
+            classIssues.add(
+                    unsupported
+                            + " TraitCond tier requirement(s) have an unreviewed form and are not"
+                            + " shown.");
+        }
         return result;
     }
 
@@ -862,6 +1096,58 @@ final class TraitTrees {
         newDefinitions.textField("OverrideName_lang");
         newDefinitions.textField("OverrideDescription_lang");
 
+        Data newConds = null, newCondLinks = null;
+        String newCondFailure = null;
+        try {
+            var condTable = reviewed(owner.schema("TraitCond", token, loadIssues));
+            for (String field :
+                    List.of("CondType", "TraitTreeID", "TraitNodeGroupID", "SpentAmountRequired")) {
+                condTable.integerField(field, 1);
+            }
+            newConds =
+                    retain(
+                            condTable,
+                            token,
+                            row -> treeIds.contains(condTable.number(row, "TraitTreeID")));
+            var condIds = new HashSet<Long>();
+            for (var row : newConds.rows) {
+                condIds.add(row.id());
+            }
+            var linkTable = reviewed(owner.schema("TraitNodeGroupXTraitCond", token, loadIssues));
+            linkTable.integerField("TraitCondID", 1);
+            linkTable.integerField("TraitNodeGroupID", 1);
+            newCondLinks =
+                    retain(
+                            linkTable,
+                            token,
+                            row -> condIds.contains(linkTable.number(row, "TraitCondID")));
+        } catch (RuntimeException failure) {
+            newCondFailure = TalentsService.cause(failure) + ".";
+        }
+        for (String table :
+                List.of(
+                        "TraitNode",
+                        "TraitNodeXTraitNodeEntry",
+                        "TraitNodeEntry",
+                        "TraitDefinition",
+                        "TraitNodeGroup",
+                        "TraitNodeGroupXTraitNode",
+                        "TraitEdge",
+                        "TraitCond",
+                        "TraitNodeGroupXTraitCond")) {
+            int unknown = owner.hotfixUnknownRows(table, token);
+            if (unknown > 0) {
+                loadIssues.add(
+                        table
+                                + ": "
+                                + unknown
+                                + " record(s) are changed by the local client hotfix cache but"
+                                + " could not be read; talents, prerequisites or tier requirements"
+                                + " that depend on them may be missing. They are not shown as"
+                                + " removed.");
+            }
+        }
+
         mapped.keySet().removeIf(classId -> !populatedTrees.contains(mapped.get(classId)));
         classes = newClasses;
         nodes = newNodes;
@@ -871,6 +1157,9 @@ final class TraitTrees {
         edges = newEdges;
         entries = newEntries;
         definitions = newDefinitions;
+        conds = newConds;
+        condLinks = newCondLinks;
+        condFailure = newCondFailure;
         classTrees.putAll(mapped);
         issues.addAll(dedupe(loadIssues));
         loaded = true;

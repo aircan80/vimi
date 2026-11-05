@@ -579,4 +579,254 @@ final class TraitTreesTest {
                             .anyMatch(name -> name.startsWith("Talent tree")));
         }
     }
+
+    private static List<MemoryTables.FakeTable> withConds(
+            List<Db2Types.Row> conds, List<Db2Types.Row> links) {
+        var tables =
+                replace(
+                        replace(
+                                fixture(),
+                                "TraitNodeGroup",
+                                t -> {
+                                    var rows = new ArrayList<>(t.rows());
+                                    rows.add(row(5, 500, 0));
+                                    return new MemoryTables.FakeTable(
+                                            t.entry(),
+                                            t.columns(),
+                                            rows,
+                                            t.schema(),
+                                            Map.of(),
+                                            true);
+                                }),
+                        "TraitNodeGroupXTraitNode",
+                        t -> {
+                            var rows = new ArrayList<>(t.rows());
+                            rows.add(row(900, 5, 101, 0));
+                            return new MemoryTables.FakeTable(
+                                    t.entry(), t.columns(), rows, t.schema(), Map.of(), true);
+                        });
+        tables.add(
+                trait(
+                        16,
+                        "TraitCond",
+                        List.of(
+                                number("CondType"),
+                                number("TraitTreeID"),
+                                number("TraitNodeGroupID"),
+                                number("TraitCurrencyID"),
+                                number("SpentAmountRequired")),
+                        conds));
+        tables.add(
+                trait(
+                        17,
+                        "TraitNodeGroupXTraitCond",
+                        List.of(number("TraitCondID"), number("TraitNodeGroupID")),
+                        links));
+        return tables;
+    }
+
+    @Test
+    void traitCondSpendRequirementsBecomeTierGatesInTheTalentsTree() {
+        var result =
+                warrior(
+                        withConds(
+                                List.of(
+                                        row(1, 0, 500, 4, 3820, 5),
+                                        row(2, 0, 500, 0, 0, 0),
+                                        row(3, 0, 501, 4, 3820, 50)),
+                                List.of(row(10, 1, 5), row(11, 2, 5), row(12, 3, 5))));
+        var first = result.trees().getFirst();
+        assertEquals(5, talent(first, 101).requiredTreePoints());
+        assertNull(talent(first, 100).requiredTreePoints());
+        assertFalse(result.issues().stream().anyMatch(i -> i.contains("TraitCond")));
+    }
+
+    @Test
+    void tierGatesCountingAnotherTreeOrAnUnknownTypeAreNotShown() {
+        var result =
+                warrior(
+                        withConds(
+                                List.of(row(1, 0, 500, 2, 3820, 5), row(2, 7, 500, 4, 3820, 5)),
+                                List.of(row(10, 1, 5), row(11, 2, 5))));
+        assertNull(talent(result.trees().getFirst(), 101).requiredTreePoints());
+        assertTrue(
+                result.issues().stream()
+                        .anyMatch(i -> i.startsWith("2 TraitCond tier requirement(s)")));
+        var missing = warrior(fixture());
+        assertNull(talent(missing.trees().getFirst(), 101).requiredTreePoints());
+        assertTrue(
+                missing.issues().stream()
+                        .anyMatch(i -> i.startsWith("Tier point requirements are unavailable")));
+    }
+
+    @Test
+    void unreadableHotfixedTraitRowsAreReportedNotTreatedAsRemoved() {
+        try (var real = handle(FOREVER, fixture())) {
+            var tables =
+                    (com.vibeminer.formats.tables.BuildTables)
+                            java.lang.reflect.Proxy.newProxyInstance(
+                                    TraitTreesTest.class.getClassLoader(),
+                                    new Class<?>[] {com.vibeminer.formats.tables.BuildTables.class},
+                                    (proxy, method, args) -> {
+                                        if (method.getName().equals("hotfixInfo")
+                                                && ((TableTypes.Ref) args[0])
+                                                        .name()
+                                                        .equals("TraitEdge")) {
+                                            return java.util.concurrent.CompletableFuture
+                                                    .completedFuture(
+                                                            java.util.Optional.of(
+                                                                    new com.vibeminer.formats.tables
+                                                                            .HotfixViewInfo(
+                                                                            "in", "id", "p", 5, 3,
+                                                                            0, 0, 2, 0, 2, 0,
+                                                                            null)));
+                                        }
+                                        try {
+                                            return method.invoke(real, args);
+                                        } catch (java.lang.reflect.InvocationTargetException e) {
+                                            throw e.getCause();
+                                        }
+                                    });
+            try (var service = new TalentsService(tables, "1.60.1.70755")) {
+                var result = service.trees(1, Cancellation.NONE).join();
+                assertTrue(
+                        result.issues().stream()
+                                .anyMatch(
+                                        i ->
+                                                i.startsWith("TraitEdge: 2 record(s) are changed")
+                                                        && i.contains("not shown as removed")),
+                        result.issues().toString());
+                assertFalse(result.issues().stream().anyMatch(i -> i.startsWith("TraitNode: ")));
+            }
+        }
+    }
+
+    private static MemoryTables.FakeTable curvePoints(List<Db2Types.Row> rows) {
+        var definitions = new ArrayList<TableSchema.SchemaColumn>();
+        definitions.add(
+                new TableSchema.SchemaColumn(
+                        "Pos",
+                        TableSchema.ColumnKind.FLOAT,
+                        null,
+                        null,
+                        2,
+                        null,
+                        TableSchema.KeyStorage.NONE,
+                        TableSchema.KeyStorage.NONE,
+                        true,
+                        WowLocale.parse("enUS"),
+                        null,
+                        null));
+        definitions.add(
+                new TableSchema.SchemaColumn(
+                        "CurveID",
+                        TableSchema.ColumnKind.INT,
+                        32,
+                        true,
+                        1,
+                        null,
+                        TableSchema.KeyStorage.NONE,
+                        TableSchema.KeyStorage.NONE,
+                        true,
+                        WowLocale.parse("enUS"),
+                        null,
+                        null));
+        var columns =
+                List.of(
+                        new Db2Types.Column("Pos[0]", "float", false, null, null),
+                        new Db2Types.Column("Pos[1]", "float", false, null, null),
+                        new Db2Types.Column("CurveID", "integer", false, null, null));
+        return new MemoryTables.FakeTable(
+                new TableTypes.Entry(
+                        20,
+                        "CurvePoint",
+                        TableTypes.State.READY,
+                        true,
+                        null,
+                        new TableTypes.Counts(
+                                rows.size(), rows.size(), 0, 0, "fixture", "7D4954A1"),
+                        "c".repeat(32)),
+                columns,
+                rows,
+                new TableSchema(
+                        definitions,
+                        List.of("7D4954A1"),
+                        TableSchema.SchemaMatch.BUILD,
+                        WowLocale.parse("enUS"),
+                        null),
+                Map.of(),
+                true);
+    }
+
+    private static List<MemoryTables.FakeTable> withRankCurves() {
+        var tables = fixture();
+        tables.add(
+                trait(
+                        18,
+                        "TraitDefinitionEffectPoints",
+                        List.of(
+                                number("TraitDefinitionID"),
+                                number("EffectIndex"),
+                                number("OperationType"),
+                                number("CurveID")),
+                        List.of(
+                                row(1, 20100, 0, 0, 900),
+                                row(2, 20100, 1, 1, 901),
+                                row(3, 20100, 2, 0, 902))));
+        tables.add(
+                verified(
+                        19,
+                        "Curve",
+                        List.of(number("Type")),
+                        List.of(row(900, 0), row(901, 0), row(902, 3))));
+        tables.add(
+                curvePoints(
+                        List.of(
+                                row(1, "1", "-8", 900),
+                                row(2, "2", "-17", 900),
+                                row(3, "3", "-25", 900),
+                                row(4, "1", "5", 901),
+                                row(5, "1", "4", 902))));
+        return tables;
+    }
+
+    @Test
+    void traitRankValuesComeFromExactCurvePointsAndOtherwiseStayUnknown() {
+        try (var handle = handle(FOREVER, withRankCurves());
+                var service = new TalentsService(handle, "1.60.1.70755")) {
+            var second = service.rankPoints(20100, 2, Cancellation.NONE);
+            var byEffect =
+                    new java.util.TreeMap<
+                            Integer, com.vibeminer.concepts.effects.SpellTexts.EffectOverride>();
+            second.forEach(o -> byEffect.put(o.effectIndex(), o));
+            assertEquals(0, new java.math.BigDecimal("-17").compareTo(byEffect.get(0).value()));
+            // Multiply operations and non-linear curves are not reviewed; their effects stay
+            // unknown.
+            assertNull(byEffect.get(1).value());
+            assertNull(byEffect.get(2).value());
+            assertEquals(
+                    0,
+                    new java.math.BigDecimal("-25")
+                            .compareTo(
+                                    service.rankPoints(20100, 3, Cancellation.NONE).stream()
+                                            .filter(o -> o.effectIndex() == 0)
+                                            .findFirst()
+                                            .orElseThrow()
+                                            .value()));
+            // A rank without an exact point is unknown, never interpolated.
+            assertNull(
+                    service.rankPoints(20100, 4, Cancellation.NONE).stream()
+                            .filter(o -> o.effectIndex() == 0)
+                            .findFirst()
+                            .orElseThrow()
+                            .value());
+            assertTrue(service.rankPoints(20101, 1, Cancellation.NONE).isEmpty());
+        }
+        try (var handle = handle(FOREVER, fixture());
+                var service = new TalentsService(handle, "1.60.1.70755")) {
+            var unreadable = service.rankPoints(20100, 1, Cancellation.NONE);
+            assertEquals(com.vibeminer.concepts.effects.SpellTexts.EFFECT_SLOTS, unreadable.size());
+            assertTrue(unreadable.stream().allMatch(o -> o.value() == null));
+        }
+    }
 }
