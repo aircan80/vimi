@@ -9,7 +9,9 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
+import tempfile
 import time
 import zipfile
 
@@ -45,6 +47,51 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+NATIVE_SUFFIXES = (".so", ".dll", ".dylib", ".jnilib")
+# NativeLibLoader messages under -Djavafx.verbose=true (OpenJFX 25).
+PATH_LOAD = re.compile(r"^Loaded (.+) from (?:java\.library\.path|relative path)\r?$", re.MULTILINE)
+RESOURCE_LOAD = re.compile(r"^(?:Loaded|Unpacked) library .+ from resource|^Loading library .+ from resource failed", re.MULTILINE)
+
+
+def javafx_glass(system):
+    return {"linux": "libglass.so", "macos": "libglass.dylib", "windows": "glass.dll"}[system]
+
+
+def require_class_only_javafx(staging, javafx_native, system):
+    """Packaged JavaFX loads natives from the image; JARs that embed them would extract to ~/.openjfx/cache."""
+    jars = sorted(staging.glob("javafx-*.jar"))
+    if not jars:
+        raise ValueError("GUI distribution has no JavaFX JARs")
+    for jar in jars:
+        with zipfile.ZipFile(jar) as archive:
+            embedded = [name for name in archive.namelist() if name.lower().endswith(NATIVE_SUFFIXES)]
+        if embedded:
+            raise ValueError(f"{jar.name} embeds JavaFX natives ({embedded[0]}) that would extract into ~/.openjfx/cache; "
+                             "build with -PjavafxSdkRepository from scripts/ci/javafx_sdk.py")
+    if not (javafx_native / javafx_glass(system)).is_file():
+        raise ValueError("Verified JavaFX native directory lacks the platform glass library")
+
+
+def check_native_loading(log, image, cache, ui):
+    """Assert JavaFX loaded its natives from the app image and never used a JavaFX cache directory."""
+    if cache.exists():
+        raise ValueError("Packaged application extracted JavaFX natives into a cache directory")
+    if RESOURCE_LOAD.search(log):
+        raise ValueError("Packaged application loaded JavaFX natives from JAR resources")
+    if ui:
+        root = os.path.normcase(os.path.realpath(image))
+        loaded = [match.group(1) for match in PATH_LOAD.finditer(log)]
+        if not loaded:
+            raise ValueError("Packaged application reported no JavaFX native library loads")
+        outside = [path for path in loaded if not os.path.normcase(os.path.realpath(path)).startswith(root + os.sep)]
+        if outside:
+            raise ValueError(f"Packaged application loaded JavaFX natives outside the app image: {outside[0]}")
+        if not any(Path(path).name.startswith(("glass", "libglass")) for path in loaded):
+            raise ValueError("Packaged application did not load the JavaFX glass library")
+        return loaded
+    return []
+
+
 def native_name(system):
     return {"linux": "libsqlite3.so.0", "macos": "libsqlite3.dylib", "windows": "sqlite3.dll"}[system]
 
@@ -61,14 +108,37 @@ def smoke(image, system, output, ui):
     report = output / ("ui-smoke.json" if ui else "backend-smoke.json")
     if report.exists():
         report.unlink()
-    run([image_launcher(image, system), "--package-ui-smoke-test" if ui else "--package-smoke-test", "--smoke-report", report], timeout=90)
-    deadline = time.monotonic() + 30
-    while not report.is_file() and time.monotonic() < deadline:
-        time.sleep(.1)
-    data = json.loads(report.read_text(encoding="utf-8"))
-    if data.get("status") != "ok" or data.get("ui") != ui:
-        raise ValueError("Packaged application smoke check failed")
+    with tempfile.TemporaryDirectory(prefix="vimi-javafx-cache-check-") as sentinel:
+        # Any JavaFX native extraction lands here instead of the shared ~/.openjfx/cache.
+        cache = Path(sentinel) / "cache"
+        environment = dict(os.environ)
+        environment["JAVA_TOOL_OPTIONS"] = " ".join(filter(None, [
+            environment.get("JAVA_TOOL_OPTIONS"), "-Djavafx.verbose=true", f"-Djavafx.cachedir={cache}"]))
+        result = subprocess.run([str(image_launcher(image, system)), "--package-ui-smoke-test" if ui else "--package-smoke-test",
+                                 "--smoke-report", str(report)], timeout=90, env=environment,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+        sys.stdout.write(result.stdout)
+        if result.returncode:
+            raise subprocess.CalledProcessError(result.returncode, result.args)
+        deadline = time.monotonic() + 30
+        while not report.is_file() and time.monotonic() < deadline:
+            time.sleep(.1)
+        data = json.loads(report.read_text(encoding="utf-8"))
+        if data.get("status") != "ok" or data.get("ui") != ui:
+            raise ValueError("Packaged application smoke check failed")
+        loaded = check_native_loading(result.stdout, image, cache, ui)
+    print(f"JavaFX natives loaded from the app image: {len(loaded)} libraries, no cache extraction")
     return data
+
+
+def verify_macos_signatures(image):
+    """The bundle seal and every bundled native library, including JavaFX's, must verify."""
+    run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", image], timeout=300)
+    libraries = sorted((image / "Contents/app/native").rglob("*.dylib"))
+    if not any(path.name == "libglass.dylib" for path in libraries):
+        raise ValueError("macOS app image lacks the bundled JavaFX glass library")
+    for library in libraries:
+        run(["codesign", "--verify", "--strict", library], timeout=60)
 
 
 def main():
@@ -76,7 +146,8 @@ def main():
     parser.add_argument("--tag", required=True)
     parser.add_argument("--sqlite", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--javafx-native", type=Path)
+    parser.add_argument("--javafx-native", required=True, type=Path,
+                        help="verified JavaFX native directory from scripts/ci/javafx_sdk.py")
     parser.add_argument("--javafx-legal", type=Path)
     parser.add_argument("--image-only", action="store_true")
     parser.add_argument("--ui-smoke", action="store_true")
@@ -102,8 +173,8 @@ def main():
     native.mkdir()
     sqlite = args.sqlite.resolve(strict=True)
     shutil.copy2(sqlite, native / native_name(system))
-    if args.javafx_native:
-        shutil.copytree(args.javafx_native, native / "javafx")
+    require_class_only_javafx(staging, args.javafx_native, system)
+    shutil.copytree(args.javafx_native, native / "javafx")
     legal = staging / "legal"
     legal.mkdir()
     shutil.copy2(ROOT / "LICENSE", legal / "LICENSE-vimi")
@@ -127,12 +198,14 @@ def main():
                "--jlink-options", "--strip-debug --no-man-pages --no-header-files",
                "--java-options", "--enable-native-access=ALL-UNNAMED",
                "--java-options", f"-Dvimi.version={args.tag}",
-               "--java-options", f"-Dvibeminer.sqlite.library=$APPDIR/native/{native_name(system)}"]
-    if args.javafx_native:
-        command += ["--java-options", "-Djava.library.path=$APPDIR/native/javafx"]
+               "--java-options", f"-Dvibeminer.sqlite.library=$APPDIR/native/{native_name(system)}",
+               # JavaFX natives ship in the image; class-only JARs make JavaFX load them from here.
+               "--java-options", "-Djava.library.path=$APPDIR/native/javafx"]
     if system == "macos":
         command += ["--mac-package-identifier", "com.vibeminer.desktop", "--mac-package-name", "VibeMiner"]
     run(command, timeout=600)
+    if system == "macos":
+        verify_macos_signatures(image)
     report = smoke(image, system, output, args.ui_smoke)
     if report.get("version") != args.tag:
         raise ValueError("Packaged version differs from requested tag")

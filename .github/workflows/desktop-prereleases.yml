@@ -65,7 +65,7 @@ jobs:
       - name: Locate verified native SQLite
         id: sqlite
         run: python scripts/ci/native_sqlite.py --directory "$RUNNER_TEMP/vimi-sqlite"
-      - name: Prepare verified platform JavaFX notices
+      - name: Prepare verified platform JavaFX SDK
         id: javafx
         run: python scripts/ci/javafx_sdk.py --platform "${{ matrix.platform }}" --directory "$RUNNER_TEMP/vimi-javafx"
       - name: Check packaging helpers
@@ -78,22 +78,20 @@ jobs:
           SQLITE_LIBRARY: ${{ steps.sqlite.outputs.library }}
           JAVAFX_REPOSITORY: ${{ steps.javafx.outputs.repository }}
           JAVAFX_NATIVE: ${{ steps.javafx.outputs.native }}
+        # Class-only SDK JARs on every platform: packaged JavaFX natives load from the app image.
         run: |
-          args=()
-          if [ -n "$JAVAFX_REPOSITORY" ]; then args+=("-PjavafxSdkRepository=$JAVAFX_REPOSITORY"); fi
-          if [ -n "$JAVAFX_NATIVE" ]; then args+=("-PjavafxNativeLibrary=$JAVAFX_NATIVE"); fi
-          ./gradlew check :gui:installDist "-PsqliteLibrary=$SQLITE_LIBRARY" "${args[@]}" --no-daemon --console=plain --stacktrace
+          ./gradlew check :gui:installDist "-PsqliteLibrary=$SQLITE_LIBRARY" "-PjavafxSdkRepository=$JAVAFX_REPOSITORY" "-PjavafxNativeLibrary=$JAVAFX_NATIVE" --no-daemon --console=plain --stacktrace
       - name: Build installers and test packaged GUI
         env:
           SQLITE_LIBRARY: ${{ steps.sqlite.outputs.library }}
           JAVAFX_NATIVE: ${{ steps.javafx.outputs.native }}
           JAVAFX_LEGAL: ${{ steps.javafx.outputs.legal }}
+        # The UI smoke runs with -Djavafx.verbose=true and fails unless JavaFX loads its natives
+        # from inside the app image without extracting them into a JavaFX cache directory.
         run: |
-          args=()
-          if [ -n "$JAVAFX_NATIVE" ]; then args+=(--javafx-native "$JAVAFX_NATIVE"); fi
           prefix=()
           if [ "$RUNNER_OS" = Linux ]; then prefix=(xvfb-run -a); fi
-          "${prefix[@]}" python scripts/release/package_app.py --tag "$RELEASE_TAG" --sqlite "$SQLITE_LIBRARY" --output dist --javafx-legal "$JAVAFX_LEGAL" "${args[@]}" --ui-smoke
+          "${prefix[@]}" python scripts/release/package_app.py --tag "$RELEASE_TAG" --sqlite "$SQLITE_LIBRARY" --output dist --javafx-legal "$JAVAFX_LEGAL" --javafx-native "$JAVAFX_NATIVE" --ui-smoke
       - name: Retain packages and manifests
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
