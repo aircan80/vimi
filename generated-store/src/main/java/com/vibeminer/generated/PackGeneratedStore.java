@@ -29,12 +29,28 @@ import java.util.function.Supplier;
 public final class PackGeneratedStore implements GeneratedStore {
     private final ObjectStore store;
     private final com.vibeminer.store.PackLibraryOwner writer;
-    private final long maxCommitBytes = 16L << 20;
+    private final long maxCommitBytes;
 
     public PackGeneratedStore(
             ObjectStore library, com.vibeminer.store.PackLibraryOwner ownedWriter) {
+        this(library, ownedWriter, 16L << 20);
+    }
+
+    /**
+     * {@code maxCommitBytes} bounds one store put: a larger batch is put as consecutive parts, each
+     * only after the previous one committed with nothing refused. Tests use small values to force
+     * the split.
+     */
+    public PackGeneratedStore(
+            ObjectStore library,
+            com.vibeminer.store.PackLibraryOwner ownedWriter,
+            long maxCommitBytes) {
+        if (maxCommitBytes < 1) {
+            throw new IllegalArgumentException("Commit bound must be positive");
+        }
         this.store = java.util.Objects.requireNonNull(library);
         this.writer = java.util.Objects.requireNonNull(ownedWriter);
+        this.maxCommitBytes = maxCommitBytes;
     }
 
     private static ObjectKey key(GeneratedKey key) {
@@ -133,7 +149,7 @@ public final class PackGeneratedStore implements GeneratedStore {
                             StoreTypes.Origin.UNKNOWN));
         }
         int next = end;
-        return writer.put(part, true, cancellation.objectToken())
+        return writer.putUnlessRefused(part, true, cancellation.objectToken())
                 .thenCompose(
                         outcomes -> {
                             for (StoreTypes.PutResult outcome : outcomes) {

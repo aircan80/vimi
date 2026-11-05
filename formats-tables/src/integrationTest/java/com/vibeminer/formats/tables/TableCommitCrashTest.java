@@ -48,11 +48,16 @@ final class TableCommitCrashTest {
         WRITTEN_NOT_SYNCED("HEADER_WRITTEN", -1),
         /** The pack is synced; the index transaction has not begun. */
         SYNCED_NOT_INDEXED("PACK_SYNCED", -1),
-        /** The index transaction has applied one entry. */
-        MID_TRANSACTION("INDEX_UPDATED", 1),
-        /** The index transaction has applied every entry but has not committed. */
-        TRANSACTION_UNCOMMITTED("INDEX_UPDATED", -1),
-        /** The index transaction committed; the writer has not acknowledged it. */
+        /**
+         * Inside the open index transaction, after every entry's rows are applied, before COMMIT.
+         * (The store applies all rows before the first INDEX_UPDATED, so no point lies between
+         * entries; SQLite makes the transaction atomic anyway.)
+         */
+        INDEX_UNCOMMITTED("INDEX_UPDATED", 1),
+        /**
+         * After the index transaction committed. The writer has started completing the put, so the
+         * caller may or may not hold the acknowledgement yet.
+         */
         COMMITTED("INDEX_COMMITTED", -1);
 
         final String point;
@@ -286,7 +291,7 @@ final class TableCommitCrashTest {
      * Splits observed write points into durable commits. A commit writes its entries, then syncs
      * the pack once (PACK_SYNCED for each entry), then updates and commits the index once.
      */
-    private static List<List<GeneratedKey>> commits(List<TableCommitScenario.Event> events) {
+    static List<List<GeneratedKey>> commits(List<TableCommitScenario.Event> events) {
         var commits = new ArrayList<List<GeneratedKey>>();
         var written = new LinkedHashSet<GeneratedKey>();
         int at = 0;
@@ -318,6 +323,16 @@ final class TableCommitCrashTest {
 
     private static void kill(Path folder, String mode, CrashPoint point, int occurrence)
             throws Exception {
+        kill(folder, mode, point.point, occurrence, TableCommitScenario.Config.DEFAULT);
+    }
+
+    static void kill(
+            Path folder,
+            String mode,
+            String point,
+            int occurrence,
+            TableCommitScenario.Config config)
+            throws Exception {
         var command = new ArrayList<String>();
         command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
         command.add("--enable-native-access=ALL-UNNAMED");
@@ -334,8 +349,9 @@ final class TableCommitCrashTest {
                         TableCommitCrashWorker.class.getName(),
                         folder.toString(),
                         mode,
-                        point.point,
-                        Integer.toString(occurrence)));
-        CrashProcess.killAtReady(command, "READY " + point.point + " " + occurrence);
+                        point,
+                        Integer.toString(occurrence),
+                        config.name()));
+        CrashProcess.killAtReady(command, "READY " + point + " " + occurrence);
     }
 }

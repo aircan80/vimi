@@ -173,7 +173,7 @@ public final class DiskGeneratedStore implements GeneratedStore {
                             StoreTypes.Origin.UNKNOWN));
         }
         int next = end;
-        return store.put(part, true, cancellation.objectToken())
+        return store.putUnlessRefused(part, true, cancellation.objectToken())
                 .thenCompose(
                         outcomes -> {
                             for (StoreTypes.PutResult outcome : outcomes) {

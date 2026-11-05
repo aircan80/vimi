@@ -172,4 +172,36 @@ final class GeneratedCommitGroupTest {
         assertTrue(memory.keys().isEmpty(), "a canceled commit stores nothing");
         assertThrows(IllegalArgumentException.class, () -> new GeneratedCommitGroup(memory, 0, 1));
     }
+
+    @Test
+    void aSharedBudgetBoundsCollectedBytesAcrossGroupsByCommittingEarly() {
+        var memory = new MemoryGeneratedStore();
+        var puts = new ArrayList<List<Put>>();
+        var budget = new GeneratedCommitGroup.Budget(8);
+        var first = new GeneratedCommitGroup(recording(memory, puts), 1 << 20, 128, budget);
+        var second = new GeneratedCommitGroup(recording(memory, puts), 1 << 20, 128, budget);
+        var a = put("aaaa");
+        var b = put("bbbb");
+        var c = put("cccc");
+        var d = put("dddd");
+        first.put(List.of(a, b)).join();
+        assertEquals(8, budget.used());
+        second.put(List.of(c)).join();
+        assertEquals(12, budget.used(), "an empty group may always collect one object");
+        first.put(List.of(d)).join();
+        assertEquals(
+                List.of(List.of(a.key(), b.key())),
+                puts.stream().map(g -> keys(g)).toList(),
+                "over budget, the group commits what it collected first");
+        assertEquals(8, budget.used());
+        second.delete(List.of(c.key())).join();
+        assertEquals(4, budget.used());
+        first.close();
+        assertEquals(0, budget.used(), "closing an abandoned group returns its bytes");
+        assertEquals(0, first.pending());
+        assertFalse(memory.has(d.key()).join(), "a closed group commits nothing more");
+        second.put(List.of(c)).join();
+        second.commit(Cancellation.NONE).join();
+        assertEquals(0, budget.used());
+    }
 }

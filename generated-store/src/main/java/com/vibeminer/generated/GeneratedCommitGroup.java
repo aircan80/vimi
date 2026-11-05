@@ -25,34 +25,100 @@ import java.util.function.Supplier;
  * collected bytes would exceed {@code maxBytes} (or {@code maxObjects}), the collected objects are
  * put first, as their own commit, and collection continues.
  *
+ * <p>A lower store must not commit an object after one it refused in the same put: the pack stores
+ * use {@code putUnlessRefused}, which refuses the whole put, and put their parts one at a time,
+ * each only after the previous part committed with nothing refused.
+ *
+ * <p>Collected bytes are bounded twice: per group by {@code maxBytes}, and across groups by an
+ * optional shared {@link Budget}. When adding an object would pass either bound, the objects
+ * collected so far are put first. So many concurrent groups cost more commits, never more memory
+ * than the budget plus one object per group.
+ *
  * <p>Reads see collected objects, so a writer can read back what it is about to commit. A collected
  * object the lower store already holds reads from the lower store, because that copy is the one
- * that remains after the commit. Deletes apply to both. One writer uses a group at a time; after
- * {@link #commit} the group reads and writes through to the lower store.
+ * that remains after the commit (the lower store reports it {@code ALREADY_PRESENT} and keeps it).
+ * This is decided at read time: if another writer commits the same key between this read and our
+ * commit, the stored copy is that writer's. Keys are content hashes or deterministic, so both
+ * copies hold the same bytes. Deletes apply to both.
+ *
+ * <p>One writer uses a group at a time; after {@link #commit} the group reads and writes through to
+ * the lower store. After any failure (of a put, an early flush or the commit) the group's outcome
+ * is unknown: the writer abandons it and calls {@link #close}, which drops what is still collected.
+ * A prefix may already be in the lower store.
  */
-public final class GeneratedCommitGroup implements GeneratedStore {
+public final class GeneratedCommitGroup implements GeneratedStore, AutoCloseable {
     /** The largest single commit of the pack-backed stores, and their per-commit object bound. */
     public static final long MAX_BYTES = 16L << 20;
 
     public static final int MAX_OBJECTS = 128;
 
+    /** Collected bytes shared by several groups, such as all tables one store writes at once. */
+    public static final class Budget {
+        private final long limit;
+        private long used;
+
+        public Budget(long limit) {
+            if (limit < 1) {
+                throw new IllegalArgumentException("Budget must be positive");
+            }
+            this.limit = limit;
+        }
+
+        /** Bytes currently collected by groups using this budget. */
+        public synchronized long used() {
+            return used;
+        }
+
+        synchronized boolean fits(long length) {
+            return used + length <= limit;
+        }
+
+        synchronized void add(long length) {
+            used += length;
+        }
+    }
+
     private final GeneratedStore lower;
     private final long maxBytes;
     private final int maxObjects;
+    private final Budget budget;
     private final Map<GeneratedKey, Put> pending = new LinkedHashMap<>();
     private long bytes;
 
     public GeneratedCommitGroup(GeneratedStore lower) {
-        this(lower, MAX_BYTES, MAX_OBJECTS);
+        this(lower, MAX_BYTES, MAX_OBJECTS, null);
     }
 
     public GeneratedCommitGroup(GeneratedStore lower, long maxBytes, int maxObjects) {
+        this(lower, maxBytes, maxObjects, null);
+    }
+
+    public GeneratedCommitGroup(
+            GeneratedStore lower, long maxBytes, int maxObjects, Budget budget) {
         this.lower = Objects.requireNonNull(lower);
         if (maxBytes < 1 || maxObjects < 1 || maxObjects > GeneratedTypes.MAX_BATCH) {
             throw new IllegalArgumentException("Invalid commit group bounds");
         }
         this.maxBytes = maxBytes;
         this.maxObjects = maxObjects;
+        this.budget = budget;
+    }
+
+    /** Takes the collected objects and returns their bytes to the budget. Caller holds the lock. */
+    private List<Put> drain() {
+        List<Put> batch = List.copyOf(pending.values());
+        pending.clear();
+        if (budget != null) {
+            budget.add(-bytes);
+        }
+        bytes = 0;
+        return batch;
+    }
+
+    /** Drops what is still collected, after a failure or when the group is no longer needed. */
+    @Override
+    public synchronized void close() {
+        drain();
     }
 
     /** Objects collected and not yet put to the lower store. */
@@ -64,9 +130,7 @@ public final class GeneratedCommitGroup implements GeneratedStore {
     public CompletableFuture<List<PutOutcome>> commit(Cancellation cancellation) {
         List<Put> batch;
         synchronized (this) {
-            batch = List.copyOf(pending.values());
-            pending.clear();
-            bytes = 0;
+            batch = drain();
         }
         if (batch.isEmpty()) {
             return CompletableFuture.completedFuture(List.of());
@@ -111,16 +175,21 @@ public final class GeneratedCommitGroup implements GeneratedStore {
                 return PutOutcome.ALREADY_PRESENT;
             }
             long length = put.data().length;
-            if (!pending.isEmpty() && (bytes + length > maxBytes || pending.size() >= maxObjects)) {
-                full = List.copyOf(pending.values());
-                pending.clear();
-                bytes = 0;
+            if (!pending.isEmpty()
+                    && (bytes + length > maxBytes
+                            || pending.size() >= maxObjects
+                            || budget != null && !budget.fits(length))) {
+                full = drain();
             }
             pending.put(put.key(), put);
             bytes += length;
+            if (budget != null) {
+                budget.add(length);
+            }
         }
         if (full != null) {
-            // Earlier objects commit first, so the order (and the prefix property) is kept.
+            // Earlier objects commit first, so the order (and the prefix property) is kept. Its
+            // outcomes can only be STORED or ALREADY_PRESENT; a refusal or failure throws.
             lower.put(full, cancellation).join();
         }
         return PutOutcome.STORED;
@@ -195,6 +264,9 @@ public final class GeneratedCommitGroup implements GeneratedStore {
                             Put removed = pending.remove(key);
                             if (removed != null) {
                                 bytes -= removed.data().length;
+                                if (budget != null) {
+                                    budget.add(-removed.data().length);
+                                }
                             }
                         }
                     }

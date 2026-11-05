@@ -12,13 +12,17 @@ import com.vibeminer.formats.db2.Db2Fixture;
 import com.vibeminer.formats.definitions.BundledDefinitions;
 import com.vibeminer.formats.definitions.TableDefinitions;
 import com.vibeminer.formats.generated.GeneratedTables;
+import com.vibeminer.generated.GeneratedCommitGroup;
 import com.vibeminer.generated.GeneratedKey;
+import com.vibeminer.generated.GeneratedStore;
 import com.vibeminer.generated.GeneratedTypes;
 import com.vibeminer.generated.PackGeneratedStore;
+import com.vibeminer.generated.RecordFileOptions;
 import com.vibeminer.store.LibraryCatalog;
 import com.vibeminer.store.ObjectKey;
 import com.vibeminer.store.ObjectStore;
 import com.vibeminer.store.PackLibraryOwner;
+import com.vibeminer.store.StoreTypes;
 import com.vibeminer.store.StoreTypes.PutObject;
 import com.vibeminer.store.WriteProbes;
 import java.nio.ByteBuffer;
@@ -45,12 +49,66 @@ final class TableCommitScenario implements AutoCloseable {
     /** One observed write point of a generated object. */
     record Event(String point, GeneratedKey key) {}
 
+    /**
+     * Store bounds. DEFAULT is production. The others give table 100 many rows and one record
+     * segment per row, then shrink one bound so its single put is forced to split into several
+     * durable commits, each at a different layer.
+     */
+    enum Config {
+        DEFAULT(0, 0, 0, 0, 0, 0),
+        /** The store's own pending batch is full (PendingWrites, 128 entries). */
+        STORE_BATCH(300, 0, 0, 1L << 30, GeneratedTypes.MAX_BATCH, 0),
+        /** The active pack is full and the store rolls over to a new one. */
+        PACK_ROLLOVER(30, 2048, 0, 0, 0, 0),
+        /** PackGeneratedStore puts the batch as several parts. */
+        STORE_PART(30, 0, 256, 0, 0, 0),
+        /** The commit group's byte bound. */
+        GROUP_BYTES(30, 0, 0, 256, 0, 0),
+        /** The commit group's object bound. */
+        GROUP_OBJECTS(30, 0, 0, 0, 8, 0),
+        /** The collected-bytes budget shared by all of the instance's groups. */
+        BUDGET(30, 0, 0, 0, 0, 256);
+
+        final int rows;
+        final long packBytes, partBytes, groupBytes, collectedBytes;
+        final int groupObjects;
+
+        Config(
+                int rows,
+                long packBytes,
+                long partBytes,
+                long groupBytes,
+                int groupObjects,
+                long collectedBytes) {
+            this.rows = rows;
+            this.packBytes = packBytes;
+            this.partBytes = partBytes;
+            this.groupBytes = groupBytes;
+            this.groupObjects = groupObjects;
+            this.collectedBytes = collectedBytes;
+        }
+
+        GeneratedTables tables(GeneratedStore store) {
+            if (this == DEFAULT) {
+                return new GeneratedTables(store);
+            }
+            // One block and one segment per record, so a table writes one object per row.
+            return new GeneratedTables(
+                    store,
+                    new RecordFileOptions(4 << 20, 16 << 20, 16 << 20, 1, 1, 9),
+                    groupBytes > 0 ? groupBytes : GeneratedCommitGroup.MAX_BYTES,
+                    groupObjects > 0 ? groupObjects : GeneratedCommitGroup.MAX_OBJECTS,
+                    collectedBytes > 0 ? collectedBytes : GeneratedTables.COLLECTED_BYTES);
+        }
+    }
+
     /** The outcome of a clean cold preparation, which every recovered library must reach. */
     record Reference(
             List<TableTypes.Entry> ledger,
             Map<Long, String> identities,
             Map<Long, List<List<String>>> rows,
-            Map<Long, Set<GeneratedKey>> objects) {}
+            Map<Long, Set<GeneratedKey>> objects,
+            Map<Long, List<Event>> traces) {}
 
     final ObjectStore library;
     final LibraryCatalog catalog;
@@ -59,27 +117,39 @@ final class TableCommitScenario implements AutoCloseable {
     final CachingObjectSource access;
     final FilesScenario files;
     final Tables service;
+    final GeneratedTables tableStore;
+    final Config config;
     private BuildTables handle;
 
-    private TableCommitScenario(Path folder) {
-        library = ObjectStore.openLibrary(folder).join();
+    private TableCommitScenario(Path folder, Config config) {
+        this.config = config;
+        library =
+                config.packBytes > 0
+                        ? ObjectStore.open(
+                                        folder,
+                                        new StoreTypes.Options(
+                                                StoreTypes.Kind.LIBRARY,
+                                                config.packBytes,
+                                                java.time.Clock.systemUTC()))
+                                .join()
+                        : ObjectStore.openLibrary(folder).join();
         catalog = LibraryCatalog.open(library.databasePath()).join();
         original =
                 library.forOwner(
                         OWNER, LibraryCatalog.Scope.BUILD, "source", LibraryCatalog.Role.ORIGINAL);
+        var derived =
+                library.forOwner(
+                        OWNER, LibraryCatalog.Scope.BUILD, "tables", LibraryCatalog.Role.DERIVED);
         generated =
-                new PackGeneratedStore(
-                        library,
-                        library.forOwner(
-                                OWNER,
-                                LibraryCatalog.Scope.BUILD,
-                                "tables",
-                                LibraryCatalog.Role.DERIVED));
+                config.partBytes > 0
+                        ? new PackGeneratedStore(library, derived, config.partBytes)
+                        : new PackGeneratedStore(library, derived);
+        tableStore = config.tables(generated);
         access = CachingObjectSource.localOnly(original, original);
         files = new FilesScenario(false, FileSystemOptions.defaults(), ignored -> access);
         var inventory = new ArrayList<BundledDefinitions.DefinitionTable>();
         for (long id : IDS) {
-            files.add(id, "dbfilesclient/t" + id + ".db2", db2(id), false, List.of());
+            files.add(id, "dbfilesclient/t" + id + ".db2", db2(id, config), false, List.of());
             inventory.add(
                     new BundledDefinitions.DefinitionTable(
                             "11223344", "T" + id, Long.toString(id), true));
@@ -98,7 +168,7 @@ final class TableCommitScenario implements AutoCloseable {
                                                         "a".repeat(64), "fixture", definition))),
                                 null,
                                 null),
-                        new GeneratedTables(generated),
+                        tableStore,
                         new TablesOptions(
                                         (build, token) ->
                                                 CompletableFuture.completedFuture("1.2.3.4"))
@@ -106,12 +176,51 @@ final class TableCommitScenario implements AutoCloseable {
     }
 
     static TableCommitScenario open(Path folder) {
-        return new TableCommitScenario(folder.toAbsolutePath());
+        return open(folder, Config.DEFAULT);
+    }
+
+    static TableCommitScenario open(Path folder, Config config) {
+        return new TableCommitScenario(folder.toAbsolutePath(), config);
     }
 
     /** Each table has its own content, so its own content key, node and segment. */
-    static byte[] db2(long id) {
-        return Db2Fixture.numeric("WDC5", 0, 32, id, new long[0], true);
+    static byte[] db2(long id, Config config) {
+        return id == 100 && config.rows > 0
+                ? rows(id, config.rows)
+                : Db2Fixture.numeric("WDC5", 0, 32, id, new long[0], true);
+    }
+
+    /**
+     * Db2Fixture.numeric's one-section WDC5 layout (an inline 32-bit Value and a non-inline ID
+     * list) with {@code count} records: IDs 1..count, values from {@code first}.
+     */
+    static byte[] rows(long first, int count) {
+        int header = 204, at = header - 68, start = header + 40 + 28;
+        var b = ByteBuffer.allocate(start + 12 * count).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.put("WDC5".getBytes(StandardCharsets.US_ASCII)).putInt(5);
+        b.putInt(at, count);
+        b.putInt(at + 4, 1);
+        b.putInt(at + 8, 8);
+        b.putInt(at + 16, 0x11223344);
+        b.putInt(at + 20, 0x01020304);
+        b.putShort(at + 36, (short) 4);
+        b.putInt(at + 40, 1);
+        b.putInt(at + 52, 24);
+        b.putInt(at + 64, 1);
+        b.position(header);
+        b.putLong(0).putInt(start).putInt(count).putInt(0).putInt(0).putInt(4 * count);
+        b.putInt(0).putInt(0).putInt(0);
+        b.putShort((short) 0).putShort((short) 0);
+        b.putShort((short) 0).putShort((short) 32).putInt(0).putInt(0).putInt(0).putInt(0);
+        b.putInt(0);
+        b.position(start);
+        for (int i = 0; i < count; i++) {
+            b.putLong(first * 1000 + i);
+        }
+        for (int i = 0; i < count; i++) {
+            b.putInt(i + 1);
+        }
+        return b.array();
     }
 
     static GeneratedKey manifest(GeneratedKey node) {
@@ -191,16 +300,20 @@ final class TableCommitScenario implements AutoCloseable {
      */
     Reference reference() {
         var objects = new LinkedHashMap<Long, Set<GeneratedKey>>();
+        var traces = new LinkedHashMap<Long, List<Event>>();
         for (long id : IDS) {
             var written = new LinkedHashSet<GeneratedKey>();
+            var trace = java.util.Collections.synchronizedList(new ArrayList<Event>());
             probe(
                     (point, key) -> {
+                        trace.add(new Event(point, key));
                         if (point.equals("ENTRY_STARTED")) {
                             written.add(key);
                         }
                     });
             assertEquals(TableTypes.State.READY, check(id, Cancellation.NONE).state());
             objects.put(id, Set.copyOf(written));
+            traces.put(id, List.copyOf(trace));
         }
         probe(null);
         var ledger = tables().prepareKnown(null, Cancellation.NONE).join();
@@ -212,7 +325,7 @@ final class TableCommitScenario implements AutoCloseable {
             identities.put(id, page.identity());
             rows.put(id, values(page));
         }
-        return new Reference(ledger.tables(), identities, rows, objects);
+        return new Reference(ledger.tables(), identities, rows, objects, traces);
     }
 
     TableTypes.Page page(long id) {
@@ -315,6 +428,7 @@ final class TableCommitScenario implements AutoCloseable {
         assertEquals(
                 0,
                 library.verify(true, com.vibeminer.store.Cancellation.NONE).join().corruptCount());
+        assertEquals(0, tableStore.collectedBytes(), "no commit group keeps collected bytes");
     }
 
     @Override

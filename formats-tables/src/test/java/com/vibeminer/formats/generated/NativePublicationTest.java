@@ -64,7 +64,8 @@ final class NativePublicationTest {
 
     @Test
     void preparatoryFailuresNeverPublishNativeNodeAndAlwaysCloseOwnerOnce() {
-        for (String stage : List.of("layout", "alias", "readback", "owner", "final-before")) {
+        for (String stage :
+                List.of("layout", "alias", "readback", "owner", "final-before", "prefix")) {
             var memory = new MemoryGeneratedStore();
             var closed = new AtomicInteger();
             var fixture =
@@ -166,6 +167,62 @@ final class NativePublicationTest {
                 "Ambiguous commit is not rolled back by deleting a potentially shared graph");
     }
 
+    @Test
+    void damagedPreExistingSegmentFailsReadbackAndPublishesNoNode() {
+        var memory = new MemoryGeneratedStore();
+        var first = fixture(false, () -> {});
+        var node =
+                GeneratedKey.parse(
+                        new GeneratedTables(memory)
+                                .identityOf(
+                                        first.source(),
+                                        TactKeyStatus.NONE,
+                                        first.content().keysUsed(),
+                                        false));
+        new GeneratedTables(memory)
+                .store(first.source(), TactKeyStatus.NONE, first.content(), Cancellation.NONE)
+                .join();
+        var manifest =
+                GeneratedKey.hash(
+                        java.nio.ByteBuffer.allocate(21)
+                                .put("table".getBytes(StandardCharsets.US_ASCII))
+                                .put(node.bytes())
+                                .array());
+        var layout =
+                GeneratedKey.hash(
+                        ("vibeminer-generated-table-layout v1\n" + first.source().contentKey())
+                                .getBytes(StandardCharsets.UTF_8));
+        var segments = new java.util.ArrayList<>(memory.keys());
+        segments.removeAll(List.of(node, manifest, layout));
+        assertTrue(!segments.isEmpty(), "record segments: " + memory.keys());
+        // The graph is gone but its segments stay, damaged; the next store writes the same
+        // segment keys, which the store reports already present and keeps.
+        memory.delete(List.of(node, manifest)).join();
+        segments.forEach(memory::damage);
+        var closed = new AtomicInteger();
+        var second = fixture(false, closed::incrementAndGet);
+        var failure =
+                assertThrows(
+                        CompletionException.class,
+                        () ->
+                                new GeneratedTables(memory)
+                                        .store(
+                                                second.source(),
+                                                TactKeyStatus.NONE,
+                                                second.content(),
+                                                Cancellation.NONE)
+                                        .join());
+        assertTrue(
+                failure.getCause().getMessage().contains("failed readback before publication"),
+                "" + failure);
+        assertEquals(1, closed.get());
+        assertTrue(!memory.keys().contains(node), "no node is published");
+        assertNull(
+                new GeneratedTables(memory)
+                        .openPreparedLocal(second.source(), TactKeyStatus.NONE, Cancellation.NONE)
+                        .join());
+    }
+
     private static GeneratedStore intercept(
             MemoryGeneratedStore memory, String stage, GeneratedKey finalNode) {
         var committed = new AtomicBoolean();
@@ -187,6 +244,21 @@ final class NativePublicationTest {
                                     && method.getName().equals("read")) {
                                 return CompletableFuture.failedFuture(
                                         new IllegalStateException("storage unavailable"));
+                            }
+                            if (method.getName().equals("put") && stage.equals("prefix")) {
+                                // The store commits every object before the node, then fails.
+                                @SuppressWarnings("unchecked")
+                                var batch = (List<GeneratedTypes.Put>) args[0];
+                                var before =
+                                        batch.stream()
+                                                .takeWhile(put -> !put.key().equals(finalNode))
+                                                .toList();
+                                if (before.size() < batch.size()) {
+                                    memory.put(before, com.vibeminer.generated.Cancellation.NONE)
+                                            .join();
+                                    return CompletableFuture.failedFuture(
+                                            new IllegalStateException("failed after a prefix"));
+                                }
                             }
                             if (method.getName().equals("put")) {
                                 for (var value : (List<?>) args[0]) {

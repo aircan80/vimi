@@ -123,8 +123,46 @@ public final class GeneratedTables implements GeneratedTableStore {
     }
 
     public GeneratedTables(GeneratedStore store, RecordFileOptions options) {
+        this(
+                store,
+                options,
+                GeneratedCommitGroup.MAX_BYTES,
+                GeneratedCommitGroup.MAX_OBJECTS,
+                COLLECTED_BYTES);
+    }
+
+    /**
+     * Bytes all of this instance's stores may hold collected, uncommitted, at once: four concurrent
+     * deep prepares at one full group each. Past it, a store commits its collected prefix early.
+     */
+    public static final long COLLECTED_BYTES = 4 * GeneratedCommitGroup.MAX_BYTES;
+
+    /**
+     * {@code groupBytes} and {@code groupObjects} bound one table's commit group, and {@code
+     * collectedBytes} bounds all groups of this instance together. Tests use small values to force
+     * split commits.
+     */
+    public GeneratedTables(
+            GeneratedStore store,
+            RecordFileOptions options,
+            long groupBytes,
+            int groupObjects,
+            long collectedBytes) {
         this.store = java.util.Objects.requireNonNull(store);
         this.options = java.util.Objects.requireNonNull(options);
+        this.groupBytes = groupBytes;
+        this.groupObjects = groupObjects;
+        this.collected = new GeneratedCommitGroup.Budget(collectedBytes);
+        new GeneratedCommitGroup(store, groupBytes, groupObjects).close();
+    }
+
+    private final long groupBytes;
+    private final int groupObjects;
+    private final GeneratedCommitGroup.Budget collected;
+
+    /** Bytes currently collected by this instance's commit groups. */
+    public long collectedBytes() {
+        return collected.used();
     }
 
     private record Lookup(
@@ -573,6 +611,20 @@ public final class GeneratedTables implements GeneratedTableStore {
             Cancellation token,
             com.vibeminer.generated.Cancellation lower,
             Runnable release) {
+        // Abandoned on any failure; closing drops whatever is still collected.
+        try (var group = new GeneratedCommitGroup(store, groupBytes, groupObjects, collected)) {
+            return storeCore(source, keys, content, token, lower, release, group);
+        }
+    }
+
+    private GeneratedTable storeCore(
+            GeneratedTableSource source,
+            KeyStatus keys,
+            GeneratedTableContent content,
+            Cancellation token,
+            com.vibeminer.generated.Cancellation lower,
+            Runnable release,
+            GeneratedCommitGroup group) {
         content.validateSource(source);
         var used = used(content.keysUsed());
         var holes = used(content.holeKeys());
@@ -614,7 +666,6 @@ public final class GeneratedTables implements GeneratedTableStore {
         // Segments, manifest, layout, alias and node reach the store as one put, so normally as
         // one durable commit. The store keeps at most an ordered prefix of a put, and the node
         // that publishes the graph comes after the objects it references.
-        var group = new GeneratedCommitGroup(store);
         try (var writer = new RecordFileWriter(group, options)) {
             long first = 0;
             long evidenceBytes = 0;
@@ -684,6 +735,9 @@ public final class GeneratedTables implements GeneratedTableStore {
                         GeneratedTypes.CORRUPT,
                         "Stored native table failed readback before publication");
             }
+            // The owner (source and work slot) must close before the node is published, so it
+            // closes before the commit. The scheduler then no longer bounds collected groups;
+            // the instance's collected-bytes budget does.
             release.run();
         } else {
             group.put(List.of(new GeneratedTypes.Put(node, nodeBytes)), lower).join();

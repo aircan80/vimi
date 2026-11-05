@@ -15,7 +15,12 @@ public final class TableCommitCrashWorker {
     public static void main(String[] args) throws Exception {
         String mode = args[1], point = args[2];
         int occurrence = Integer.parseInt(args[3]);
-        var scenario = TableCommitScenario.open(Path.of(args[0]));
+        var scenario =
+                TableCommitScenario.open(
+                        Path.of(args[0]),
+                        args.length > 4
+                                ? TableCommitScenario.Config.valueOf(args[4])
+                                : TableCommitScenario.Config.DEFAULT);
         var seen = new AtomicInteger();
         scenario.probe(
                 (name, key) -> {
