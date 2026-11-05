@@ -106,18 +106,28 @@ final class SqliteLibraryTest {
 
     @Test
     void tooOldOrSingleThreadedSqliteIsRejectedBeforeAnyOpen() {
-        SqliteLibrary.requireUsable(SqliteLibrary.MINIMUM_VERSION, "3.24.0", 1);
-        SqliteLibrary.Unusable old =
+        SqliteRuntime.requireUsable(SqliteRuntime.MINIMUM_VERSION, "3.24.0", 1);
+        SqliteRuntime.Unusable old =
                 assertThrows(
-                        SqliteLibrary.Unusable.class,
-                        () -> SqliteLibrary.requireUsable(3_023_001, "3.23.1", 1));
+                        SqliteRuntime.Unusable.class,
+                        () -> SqliteRuntime.requireUsable(3_023_001, "3.23.1", 1));
         assertTrue(old.getMessage().contains("3.23.1"), old.getMessage());
         assertTrue(old.getMessage().contains("3.24.0"), old.getMessage());
-        SqliteLibrary.Unusable single =
+        SqliteRuntime.Unusable single =
                 assertThrows(
-                        SqliteLibrary.Unusable.class,
-                        () -> SqliteLibrary.requireUsable(3_054_001, "3.54.1", 0));
+                        SqliteRuntime.Unusable.class,
+                        () -> SqliteRuntime.requireUsable(3_054_001, "3.54.1", 0));
         assertTrue(single.getMessage().contains("SQLITE_THREADSAFE=0"), single.getMessage());
+    }
+
+    @Test
+    void missingRuntimeEntryPointIsRejectedBeforeAnyCall() {
+        SqliteRuntime.Unusable missing =
+                assertThrows(
+                        SqliteRuntime.Unusable.class,
+                        () -> SqliteRuntime.initialize(name -> Optional.empty()));
+        assertTrue(
+                missing.getMessage().contains("sqlite3_libversion_number"), missing.getMessage());
     }
 
     @Test
