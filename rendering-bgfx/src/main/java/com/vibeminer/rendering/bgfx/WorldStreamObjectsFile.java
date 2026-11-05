@@ -27,20 +27,29 @@ import java.util.concurrent.CancellationException;
 import java.util.function.BooleanSupplier;
 
 /**
- * Immutable per-tile BASIC_EXTERIOR_V1 objects file {@code tile-<txn>.wso}. Structural only: the
- * application's closed source bridge is its sole producer, and the terrain tile header names its
- * exact length and SHA-256 so it shares that tile's OFFER/COMMIT/CANCEL/retirement lifetime.
+ * Immutable per-tile BASIC_EXTERIOR_V1 objects file {@code tile-<txn>.wso}, version 2. Structural
+ * only: the application's closed source bridge is its sole producer, and the OBJECTS command (or
+ * the terrain tile header) names its exact length and SHA-256.
  *
- * <p>Little-endian layout: a 256-byte header, then the model, mesh, range, placement and image
- * tables, then 32-byte vertices (position, normal, uv floats), u16 mesh-relative indices padded to
- * four bytes, and RGBA8 pixels. Every count, offset, index and float is validated; reserved bytes
- * must be zero.
+ * <p>Little-endian layout: a 256-byte header, then the model, mesh, range (first index, index
+ * count, image, material class), placement (model, translation, scale and a row-major rotation)
+ * and image tables, then 32-byte vertices (position, normal, uv floats), u16 mesh-relative indices
+ * padded to four bytes, and RGBA8 pixels. Every count, offset, index and float is validated;
+ * reserved bytes must be zero.
  */
 final class WorldStreamObjectsFile {
-    static final int HEADER_BYTES = 256, MAX_BYTES = 8 << 20;
-    static final int MAX_MODELS = 24, MAX_MESHES = 256, MAX_RANGES = 1024, MAX_PLACEMENTS = 64;
-    static final int MAX_IMAGES = 64, MAX_VERTICES = 98_304, MAX_INDICES = 294_912;
-    static final int MAX_PIXELS = 1 << 20, MAX_IMAGE_SIDE = 256, MAX_MESH_VERTICES = 65_536;
+    static final int VERSION = 2, HEADER_BYTES = 256, MAX_BYTES = 16 << 20;
+    // Buildings (24 roots, 256 meshes, 1,024 ranges, 64 placements, 64 images, 98,304 vertices,
+    // 294,912 indices, 1 Mi pixels) plus BASIC doodads (48 models and meshes, 512 ranges and
+    // placements, 64 images, 65,536 vertices, 196,608 indices, 512 Ki pixels).
+    static final int MAX_MODELS = 72, MAX_MESHES = 304, MAX_RANGES = 1536, MAX_PLACEMENTS = 576;
+    static final int MAX_IMAGES = 128, MAX_VERTICES = 163_840, MAX_INDICES = 491_520;
+    static final int MAX_PIXELS = 3 << 19, MAX_IMAGE_SIDE = 256, MAX_MESH_VERTICES = 65_536;
+
+    /** Range material classes: depth-writing opaque, alpha-tested cutout, sorted alpha blend. */
+    static final int OPAQUE = 0, CUTOUT = 1, BLENDED = 2;
+
+    static final int RANGE_INTS = 4, PLACEMENT_DOUBLES = 13;
 
     /** Draw calls per tile (sum over placements of their model's ranges); bounds a frame. */
     static final int MAX_DRAWS = 4096;
@@ -58,13 +67,16 @@ final class WorldStreamObjectsFile {
         /** Per mesh: first vertex, vertex count, first index, index count, first range, ranges. */
         final int[] meshes;
 
-        /** Per range: mesh-relative first index, index count, image. */
+        /** Per range: mesh-relative first index, index count, image, material class. */
         final int[] ranges;
 
         /** Per placement model ordinal. */
         final int[] placementModels;
 
-        /** Per placement: x, y, z, scale, cos, sin (native terrain axes). */
+        /**
+         * Per placement: x, y, z, scale, then a row-major rotation (rows are output X, Y, Z) in
+         * native terrain axes.
+         */
         final double[] placements;
 
         /** Per image: width, height. */
@@ -106,7 +118,7 @@ final class WorldStreamObjectsFile {
         }
 
         int rangeCount() {
-            return ranges.length / 3;
+            return ranges.length / RANGE_INTS;
         }
 
         int placementCount() {
@@ -148,11 +160,11 @@ final class WorldStreamObjectsFile {
             require(
                     models.length % 2 == 0
                             && meshes.length % 6 == 0
-                            && ranges.length % 3 == 0
+                            && ranges.length % RANGE_INTS == 0
                             && images.length % 2 == 0
                             && vertices.length % VERTEX_FLOATS == 0
                             && pixels.length % 4 == 0
-                            && placements.length == placementCount * 6
+                            && placements.length == placementCount * PLACEMENT_DOUBLES
                             && modelCount >= 1
                             && modelCount <= MAX_MODELS
                             && meshCount >= modelCount
@@ -199,9 +211,10 @@ final class WorldStreamObjectsFile {
                     require(Short.toUnsignedInt(indices[i]) < vertexes, "Mesh index");
                 }
                 for (int r = rangeAt; r < rangeAt + count; r++) {
-                    int first = ranges[r * 3],
-                            length = ranges[r * 3 + 1],
-                            image = ranges[r * 3 + 2];
+                    int first = ranges[r * RANGE_INTS],
+                            length = ranges[r * RANGE_INTS + 1],
+                            image = ranges[r * RANGE_INTS + 2],
+                            blend = ranges[r * RANGE_INTS + 3];
                     require(
                             first >= 0
                                     && first % 3 == 0
@@ -209,7 +222,9 @@ final class WorldStreamObjectsFile {
                                     && length % 3 == 0
                                     && (long) first + length <= indexes
                                     && image >= 0
-                                    && image < imageCount,
+                                    && image < imageCount
+                                    && blend >= OPAQUE
+                                    && blend <= BLENDED,
                             "Draw range");
                 }
                 meshRanges[mesh] = count;
@@ -227,9 +242,9 @@ final class WorldStreamObjectsFile {
             for (int p = 0; p < placementCount; p++) {
                 int model = placementModels[p];
                 require(model >= 0 && model < modelCount, "Placement model");
-                double x = placements[p * 6], y = placements[p * 6 + 1], z = placements[p * 6 + 2];
-                double scale = placements[p * 6 + 3];
-                double co = placements[p * 6 + 4], si = placements[p * 6 + 5];
+                int at = p * PLACEMENT_DOUBLES;
+                double x = placements[at], y = placements[at + 1], z = placements[at + 2];
+                double scale = placements[at + 3];
                 require(
                         Double.isFinite(x)
                                 && Double.isFinite(y)
@@ -240,9 +255,7 @@ final class WorldStreamObjectsFile {
                                 && Double.isFinite(scale)
                                 && scale > 0
                                 && scale <= MAX_SCALE
-                                && Double.isFinite(co)
-                                && Double.isFinite(si)
-                                && Math.abs(co * co + si * si - 1) <= 1e-9,
+                                && rotation(placements, at + 4),
                         "Placement transform");
                 for (int mesh = models[model * 2];
                         mesh < models[model * 2] + models[model * 2 + 1];
@@ -315,6 +328,31 @@ final class WorldStreamObjectsFile {
         return "tile-" + transaction + ".wso";
     }
 
+    /** A proper rotation: finite, orthonormal rows within 1e-6 and determinant +1. */
+    static boolean rotation(double[] m, int at) {
+        for (int i = 0; i < 9; i++) {
+            if (!Double.isFinite(m[at + i])) {
+                return false;
+            }
+        }
+        for (int i = 0; i < 3; i++) {
+            for (int j = 0; j < 3; j++) {
+                double dot = 0;
+                for (int k = 0; k < 3; k++) {
+                    dot += m[at + i * 3 + k] * m[at + j * 3 + k];
+                }
+                if (Math.abs(dot - (i == j ? 1 : 0)) > 1e-6) {
+                    return false;
+                }
+            }
+        }
+        double det =
+                m[at] * (m[at + 4] * m[at + 8] - m[at + 5] * m[at + 7])
+                        - m[at + 1] * (m[at + 3] * m[at + 8] - m[at + 5] * m[at + 6])
+                        + m[at + 2] * (m[at + 3] * m[at + 7] - m[at + 4] * m[at + 6]);
+        return Math.abs(det - 1) <= 1e-6;
+    }
+
     static int length(
             int models,
             int meshes,
@@ -328,8 +366,8 @@ final class WorldStreamObjectsFile {
                 HEADER_BYTES
                         + models * 8L
                         + meshes * 24L
-                        + ranges * 12L
-                        + placements * 56L
+                        + ranges * (RANGE_INTS * 4L)
+                        + placements * (8L + PLACEMENT_DOUBLES * 8L)
                         + images * 8L
                         + vertices * (long) VERTEX_BYTES
                         + (indices * 2L + 3) / 4 * 4
@@ -376,10 +414,11 @@ final class WorldStreamObjectsFile {
                 for (int p = 0; p < data.placementCount(); p++) {
                     output.writeInt(Integer.reverseBytes(data.placementModels[p]));
                     output.writeInt(0);
-                    for (int i = 0; i < 6; i++) {
+                    for (int i = 0; i < PLACEMENT_DOUBLES; i++) {
                         output.writeLong(
                                 Long.reverseBytes(
-                                        Double.doubleToRawLongBits(data.placements[p * 6 + i])));
+                                        Double.doubleToRawLongBits(
+                                                data.placements[p * PLACEMENT_DOUBLES + i])));
                     }
                 }
                 for (int value : data.images) {
@@ -456,7 +495,7 @@ final class WorldStreamObjectsFile {
             var in = ByteBuffer.wrap(head).order(ByteOrder.LITTLE_ENDIAN);
             require(
                     Arrays.equals(MAGIC, Arrays.copyOf(head, 8))
-                            && in.getInt(8) == 1
+                            && in.getInt(8) == VERSION
                             && in.getInt(12) == HEADER_BYTES
                             && in.getLong(16) == reference.length()
                             && in.getLong(24) == identity.nonce().high()
@@ -508,14 +547,14 @@ final class WorldStreamObjectsFile {
             // Bounded by the counts above before any body allocation.
             int[] modelTable = ints(input, models * 2);
             int[] meshTable = ints(input, meshes * 6);
-            int[] rangeTable = ints(input, ranges * 3);
+            int[] rangeTable = ints(input, ranges * RANGE_INTS);
             int[] placementModels = new int[placements];
-            double[] transforms = new double[placements * 6];
+            double[] transforms = new double[placements * PLACEMENT_DOUBLES];
             for (int p = 0; p < placements; p++) {
                 placementModels[p] = Integer.reverseBytes(input.readInt());
                 require(input.readInt() == 0, "Reserved placement bytes");
-                for (int i = 0; i < 6; i++) {
-                    transforms[p * 6 + i] =
+                for (int i = 0; i < PLACEMENT_DOUBLES; i++) {
+                    transforms[p * PLACEMENT_DOUBLES + i] =
                             Double.longBitsToDouble(Long.reverseBytes(input.readLong()));
                 }
             }
@@ -570,7 +609,7 @@ final class WorldStreamObjectsFile {
 
     private static byte[] encodeHeader(Identity identity, Data data) {
         var out = ByteBuffer.allocate(HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN);
-        out.put(MAGIC).putInt(1).putInt(HEADER_BYTES).putLong(data.bytes());
+        out.put(MAGIC).putInt(VERSION).putInt(HEADER_BYTES).putLong(data.bytes());
         out.putLong(identity.nonce().high()).putLong(identity.nonce().low());
         out.put(HexFormat.of().parseHex(identity.scope())).putLong(identity.transaction());
         out.putLong(identity.lease().generation()).putInt(identity.lease().slot());

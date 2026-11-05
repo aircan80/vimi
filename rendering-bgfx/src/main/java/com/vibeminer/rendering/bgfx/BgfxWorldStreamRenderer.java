@@ -277,6 +277,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         final int[] models, meshes, ranges, placementModels, images;
         final double[] placements;
         final short[] textures;
+
+        /** Per model: whether any of its ranges is alpha blended (drawn in the sorted pass). */
+        final boolean[] blendedModels;
+
         short vertices = INVALID, indices = INVALID;
         long bytes;
 
@@ -289,6 +293,18 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             placements = source.placements;
             textures = new short[source.imageCount()];
             java.util.Arrays.fill(textures, INVALID);
+            blendedModels = new boolean[models.length / 2];
+            for (int m = 0; m < blendedModels.length; m++) {
+                for (int mesh = models[m * 2]; mesh < models[m * 2] + models[m * 2 + 1]; mesh++) {
+                    for (int r = meshes[mesh * 6 + 4];
+                            r < meshes[mesh * 6 + 4] + meshes[mesh * 6 + 5];
+                            r++) {
+                        blendedModels[m] |=
+                                ranges[r * WorldStreamObjectsFile.RANGE_INTS + 3]
+                                        == WorldStreamObjectsFile.BLENDED;
+                    }
+                }
+            }
         }
 
         void destroy() {
@@ -324,6 +340,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     // Optional exterior objects pass (existing world-wmo shaders); INVALID program disables it.
     private short wmoProgram = INVALID, wmoEye = INVALID, wmoProjection = INVALID;
     private short wmoModel = INVALID, wmoNormal = INVALID, wmoSampler = INVALID;
+    private short wmoMaterial = INVALID;
     private List<WorldStreamState.Lease> active = List.of();
     private WorldStreamState.Lease staged;
     private LateUpload late;
@@ -399,6 +416,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             wmoModel = valid(bgfx_create_uniform("u_wmoModel", BGFX_UNIFORM_TYPE_MAT4, 1));
             wmoNormal = valid(bgfx_create_uniform("u_wmoNormal", BGFX_UNIFORM_TYPE_MAT4, 1));
             wmoSampler = valid(bgfx_create_uniform("s_wmoDiffuse", BGFX_UNIFORM_TYPE_SAMPLER, 1));
+            wmoMaterial = valid(bgfx_create_uniform("u_wmoMaterial", BGFX_UNIFORM_TYPE_VEC4, 1));
         } catch (IOException | RuntimeException failed) {
             destroyObjectPass();
         }
@@ -408,12 +426,14 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         if (wmoProgram != INVALID) {
             bgfx_destroy_program(wmoProgram);
         }
-        for (short uniform : new short[] {wmoEye, wmoProjection, wmoModel, wmoNormal, wmoSampler}) {
+        for (short uniform :
+                new short[] {wmoEye, wmoProjection, wmoModel, wmoNormal, wmoSampler, wmoMaterial}) {
             if (uniform != INVALID) {
                 bgfx_destroy_uniform(uniform);
             }
         }
         wmoProgram = wmoEye = wmoProjection = wmoModel = wmoNormal = wmoSampler = INVALID;
+        wmoMaterial = INVALID;
     }
 
     Upload begin(WorldStreamPackedTile packed) {
@@ -949,6 +969,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     }
                 }
             }
+            var blended = wmoProgram == INVALID ? List.<SlotObjects>of() : blendedSlots();
             // Static diagnostic water after ALL opaque terrain: nearest flat surface wins under
             // strict reversed depth, so coincident duplicates cannot blend twice. RGB only keeps
             // the opaque output alpha.
@@ -975,14 +996,88 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                         WATER_BLEND_FACTOR);
                 bgfx_submit(0, program, 0, BGFX_DISCARD_ALL);
             }
+            // Alpha-blended object ranges last, after water, farthest placement first.
+            if (!blended.isEmpty()) {
+                drawBlended(stack, blended, origin, matrix, project);
+            }
         }
         return new Ticket(cameraRevision, content, policy, width, height);
     }
 
+    private List<SlotObjects> blendedSlots() {
+        var result = new java.util.ArrayList<SlotObjects>();
+        for (var lease : active) {
+            var objects = slots[lease.slot()].objects;
+            if (objects != null) {
+                for (boolean b : objects.blendedModels) {
+                    if (b) {
+                        result.add(objects);
+                        break;
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    /** Alpha-test reference for cutout ranges: a BASIC approximation, not client parity. */
+    static final float CUTOUT_REFERENCE = 0.5f;
+
+    /** Blend state: depth tested, no depth or alpha write, source-alpha over. */
+    static final long BLENDED_STATE =
+            BGFX_STATE_WRITE_RGB
+                    | BGFX_STATE_DEPTH_TEST_GREATER
+                    | org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_FUNC(
+                            org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_SRC_ALPHA,
+                            org.lwjgl.bgfx.BGFX.BGFX_STATE_BLEND_INV_SRC_ALPHA);
+
     /**
-     * Opaque BASIC exterior objects after all terrain and before water, sharing terrain's camera,
-     * reversed depth and float origin. Each model matrix is the double placement position minus
-     * that origin, cast to float once.
+     * Blended placements of every active slot, sorted back to front by the squared distance of
+     * their placement origin to the camera origin (per placement, not per triangle).
+     */
+    private void drawBlended(
+            MemoryStack stack,
+            List<SlotObjects> blended,
+            TerrainScene.Origin origin,
+            java.nio.FloatBuffer eyeMatrix,
+            java.nio.FloatBuffer projectionMatrix) {
+        var order = new java.util.ArrayList<long[]>();
+        var distances = new java.util.ArrayList<Double>();
+        for (int s = 0; s < blended.size(); s++) {
+            var objects = blended.get(s);
+            for (int p = 0; p < objects.placementModels.length; p++) {
+                if (!objects.blendedModels[objects.placementModels[p]]) {
+                    continue;
+                }
+                int at = p * WorldStreamObjectsFile.PLACEMENT_DOUBLES;
+                double dx = objects.placements[at] - origin.x();
+                double dy = objects.placements[at + 1] - origin.y();
+                double dz = objects.placements[at + 2] - origin.z();
+                order.add(new long[] {s, p, distances.size()});
+                distances.add(dx * dx + dy * dy + dz * dz);
+            }
+        }
+        order.sort((a, b) -> Double.compare(distances.get((int) b[2]), distances.get((int) a[2])));
+        var model = stack.mallocFloat(16);
+        var normal = stack.mallocFloat(16);
+        for (var entry : order) {
+            drawPlacement(
+                    stack,
+                    blended.get((int) entry[0]),
+                    (int) entry[1],
+                    origin,
+                    eyeMatrix,
+                    projectionMatrix,
+                    model,
+                    normal,
+                    true);
+        }
+    }
+
+    /**
+     * Opaque and cutout BASIC exterior objects after all terrain and before water, sharing
+     * terrain's camera, reversed depth and float origin. Each model matrix is the double placement
+     * position minus that origin, cast to float once.
      */
     private void drawObjects(
             MemoryStack stack,
@@ -993,41 +1088,71 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         var model = stack.mallocFloat(16);
         var normal = stack.mallocFloat(16);
         for (int p = 0; p < objects.placementModels.length; p++) {
-            objectMatrices(objects.placements, p, origin, model, normal);
-            // bgfx uniforms persist across submits, so they change once per placement.
-            bgfx_set_uniform(wmoEye, eyeMatrix, 1);
-            bgfx_set_uniform(wmoProjection, projectionMatrix, 1);
-            bgfx_set_uniform(wmoModel, model, 1);
-            bgfx_set_uniform(wmoNormal, normal, 1);
-            int m = objects.placementModels[p];
-            for (int mesh = objects.models[m * 2];
-                    mesh < objects.models[m * 2] + objects.models[m * 2 + 1];
-                    mesh++) {
-                int at = mesh * 6;
-                for (int r = objects.meshes[at + 4];
-                        r < objects.meshes[at + 4] + objects.meshes[at + 5];
-                        r++) {
-                    bgfx_set_dynamic_vertex_buffer(
-                            0, objects.vertices, objects.meshes[at], objects.meshes[at + 1]);
-                    bgfx_set_dynamic_index_buffer(
-                            objects.indices,
-                            objects.meshes[at + 2] + objects.ranges[r * 3],
-                            objects.ranges[r * 3 + 1]);
-                    bgfx_set_texture(
-                            0,
-                            wmoSampler,
-                            objects.textures[objects.ranges[r * 3 + 2]],
-                            BgfxWorldWmoPass.SAMPLER_STATE);
-                    bgfx_set_state(BgfxWorldWmoPass.DRAW_STATE, 0);
-                    bgfx_submit(0, wmoProgram, 0, BGFX_DISCARD_ALL);
+            drawPlacement(
+                    stack, objects, p, origin, eyeMatrix, projectionMatrix, model, normal, false);
+        }
+    }
+
+    /** One placement's ranges of one pass: opaque and cutout, or blended only. */
+    private void drawPlacement(
+            MemoryStack stack,
+            SlotObjects objects,
+            int p,
+            TerrainScene.Origin origin,
+            java.nio.FloatBuffer eyeMatrix,
+            java.nio.FloatBuffer projectionMatrix,
+            java.nio.FloatBuffer model,
+            java.nio.FloatBuffer normal,
+            boolean blendedPass) {
+        objectMatrices(objects.placements, p, origin, model, normal);
+        // bgfx uniforms persist across submits, so they change once per placement.
+        bgfx_set_uniform(wmoEye, eyeMatrix, 1);
+        bgfx_set_uniform(wmoProjection, projectionMatrix, 1);
+        bgfx_set_uniform(wmoModel, model, 1);
+        bgfx_set_uniform(wmoNormal, normal, 1);
+        var opaque = stack.floats(0, 0, 0, 0);
+        var cutout = stack.floats(CUTOUT_REFERENCE, 0, 0, 0);
+        var blend = stack.floats(0, 1, 0, 0);
+        int stride = WorldStreamObjectsFile.RANGE_INTS;
+        int m = objects.placementModels[p];
+        for (int mesh = objects.models[m * 2];
+                mesh < objects.models[m * 2] + objects.models[m * 2 + 1];
+                mesh++) {
+            int at = mesh * 6;
+            for (int r = objects.meshes[at + 4];
+                    r < objects.meshes[at + 4] + objects.meshes[at + 5];
+                    r++) {
+                int kind = objects.ranges[r * stride + 3];
+                if ((kind == WorldStreamObjectsFile.BLENDED) != blendedPass) {
+                    continue;
                 }
+                bgfx_set_uniform(
+                        wmoMaterial,
+                        kind == WorldStreamObjectsFile.OPAQUE
+                                ? opaque
+                                : kind == WorldStreamObjectsFile.CUTOUT ? cutout : blend,
+                        1);
+                bgfx_set_dynamic_vertex_buffer(
+                        0, objects.vertices, objects.meshes[at], objects.meshes[at + 1]);
+                bgfx_set_dynamic_index_buffer(
+                        objects.indices,
+                        objects.meshes[at + 2] + objects.ranges[r * stride],
+                        objects.ranges[r * stride + 1]);
+                bgfx_set_texture(
+                        0,
+                        wmoSampler,
+                        objects.textures[objects.ranges[r * stride + 2]],
+                        BgfxWorldWmoPass.SAMPLER_STATE);
+                bgfx_set_state(blendedPass ? BLENDED_STATE : BgfxWorldWmoPass.DRAW_STATE, 0);
+                bgfx_submit(0, wmoProgram, 0, BGFX_DISCARD_ALL);
             }
         }
     }
 
     /**
      * Column-major model and normal matrices for placement p relative to origin. The translation is
-     * computed in double and cast to float once; rotation is the reviewed ADT heading rule.
+     * computed in double and cast to float once; the rotation is the placement's row-major matrix
+     * (the reviewed ADT heading rule for buildings and MDDF doodads) times its uniform scale.
      */
     static void objectMatrices(
             double[] placements,
@@ -1035,45 +1160,27 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             TerrainScene.Origin origin,
             java.nio.FloatBuffer model,
             java.nio.FloatBuffer normal) {
-        double x = placements[p * 6], y = placements[p * 6 + 1], z = placements[p * 6 + 2];
-        double s = placements[p * 6 + 3], co = placements[p * 6 + 4], si = placements[p * 6 + 5];
-        model.clear()
-                .put((float) (-s * co))
-                .put((float) (-s * si))
-                .put(0)
-                .put(0)
-                .put((float) (s * si))
-                .put((float) (-s * co))
-                .put(0)
-                .put(0)
-                .put(0)
-                .put(0)
-                .put((float) s)
-                .put(0)
-                .put((float) (x - origin.x()))
+        int at = p * WorldStreamObjectsFile.PLACEMENT_DOUBLES;
+        double x = placements[at], y = placements[at + 1], z = placements[at + 2];
+        double s = placements[at + 3];
+        int r = at + 4;
+        model.clear();
+        normal.clear();
+        for (int column = 0; column < 3; column++) {
+            for (int row = 0; row < 3; row++) {
+                double value = placements[r + row * 3 + column];
+                model.put((float) (s * value));
+                normal.put((float) value);
+            }
+            model.put(0);
+            normal.put(0);
+        }
+        model.put((float) (x - origin.x()))
                 .put((float) (y - origin.y()))
                 .put((float) (z - origin.z()))
                 .put(1)
                 .flip();
-        float c = (float) co, n = (float) si;
-        normal.clear()
-                .put(-c)
-                .put(-n)
-                .put(0)
-                .put(0)
-                .put(n)
-                .put(-c)
-                .put(0)
-                .put(0)
-                .put(0)
-                .put(0)
-                .put(1)
-                .put(0)
-                .put(0)
-                .put(0)
-                .put(0)
-                .put(1)
-                .flip();
+        normal.put(0).put(0).put(0).put(1).flip();
     }
 
     long contentRevision() {

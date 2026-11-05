@@ -254,16 +254,33 @@ public final class WorldStreamTileWriter {
 
             /**
              * Copies one mesh of the current model: 8 floats per vertex (position, normal, uv),
-             * mesh-relative indices and (first index, index count, image) range triples.
+             * mesh-relative indices and opaque (first index, index count, image) range triples.
              */
             public void mesh(
                     java.nio.FloatBuffer vertexData,
                     java.nio.IntBuffer indexData,
                     int[] drawRanges) {
+                Objects.requireNonNull(drawRanges);
+                mesh(vertexData, indexData, drawRanges, new int[drawRanges.length / 3]);
+            }
+
+            /**
+             * As {@link #mesh(java.nio.FloatBuffer, java.nio.IntBuffer, int[])}, with one material
+             * class per range: 0 opaque, 1 alpha-key cutout, 2 alpha blended.
+             */
+            public void mesh(
+                    java.nio.FloatBuffer vertexData,
+                    java.nio.IntBuffer indexData,
+                    int[] drawRanges,
+                    int[] blends) {
                 open();
                 Objects.requireNonNull(vertexData);
                 Objects.requireNonNull(indexData);
                 Objects.requireNonNull(drawRanges);
+                Objects.requireNonNull(blends);
+                if (blends.length * 3 != drawRanges.length) {
+                    throw new IllegalArgumentException("Exterior range classes");
+                }
                 int vertexFloats = vertexData.remaining(), indexCount = indexData.remaining();
                 int count = vertexFloats / WorldStreamObjectsFile.VERTEX_FLOATS;
                 if (models.isEmpty()
@@ -298,7 +315,10 @@ public final class WorldStreamTileWriter {
                             drawRanges.length / 3
                         });
                 for (int r = 0; r < drawRanges.length; r += 3) {
-                    ranges.add(new int[] {drawRanges[r], drawRanges[r + 1], drawRanges[r + 2]});
+                    ranges.add(
+                            new int[] {
+                                drawRanges[r], drawRanges[r + 1], drawRanges[r + 2], blends[r / 3]
+                            });
                 }
                 vertexBlocks.add(floats);
                 indexBlocks.add(shorts);
@@ -307,15 +327,33 @@ public final class WorldStreamTileWriter {
                 models.get(models.size() - 1)[1]++;
             }
 
-            /** One placement of a model; native terrain axes, heading cos/sin and scale. */
+            /**
+             * One placement of a model; native terrain axes, scale and the reviewed ADT heading
+             * rule from cos/sin.
+             */
             public void placement(
                     int model, double x, double y, double z, double scale, double cos, double sin) {
+                placement(
+                        model, x, y, z, scale, new double[] {-cos, sin, 0, -sin, -cos, 0, 0, 0, 1});
+            }
+
+            /** One placement with a row-major rotation (rows are output X, Y, Z). */
+            public void placement(
+                    int model, double x, double y, double z, double scale, double[] rotation) {
                 open();
-                if (placements.size() == WorldStreamObjectsFile.MAX_PLACEMENTS) {
+                Objects.requireNonNull(rotation);
+                if (placements.size() == WorldStreamObjectsFile.MAX_PLACEMENTS
+                        || rotation.length != 9) {
                     throw new IllegalArgumentException("Exterior placements exceed file profile");
                 }
                 placementModels.add(model);
-                placements.add(new double[] {x, y, z, scale, cos, sin});
+                var row = new double[WorldStreamObjectsFile.PLACEMENT_DOUBLES];
+                row[0] = x;
+                row[1] = y;
+                row[2] = z;
+                row[3] = scale;
+                System.arraycopy(rotation, 0, row, 4, 9);
+                placements.add(row);
             }
 
             /** Validates the whole set against the reader's exact checks. */
@@ -331,15 +369,17 @@ public final class WorldStreamTileWriter {
                 for (int i = 0; i < meshes.size(); i++) {
                     System.arraycopy(meshes.get(i), 0, meshTable, i * 6, 6);
                 }
-                var rangeTable = new int[ranges.size() * 3];
+                int stride = WorldStreamObjectsFile.RANGE_INTS;
+                var rangeTable = new int[ranges.size() * stride];
                 for (int i = 0; i < ranges.size(); i++) {
-                    System.arraycopy(ranges.get(i), 0, rangeTable, i * 3, 3);
+                    System.arraycopy(ranges.get(i), 0, rangeTable, i * stride, stride);
                 }
+                int doubles = WorldStreamObjectsFile.PLACEMENT_DOUBLES;
                 var models = new int[placementModels.size()];
-                var transforms = new double[placements.size() * 6];
+                var transforms = new double[placements.size() * doubles];
                 for (int i = 0; i < models.length; i++) {
                     models[i] = placementModels.get(i);
-                    System.arraycopy(placements.get(i), 0, transforms, i * 6, 6);
+                    System.arraycopy(placements.get(i), 0, transforms, i * doubles, doubles);
                 }
                 var imageTable = new int[images.size() * 2];
                 for (int i = 0; i < images.size(); i++) {
