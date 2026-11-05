@@ -554,7 +554,8 @@ public final class WorldStreamTransport {
         private CommitOperation commitOperation;
         private CommitReceipt currentReceipt;
         private Frame latestFrame;
-        // Diagnostics only: bounded helper stderr, logged once on abnormal end; never protocol.
+        // Diagnostics only: bounded helper stderr, logged on abnormal end and with renderer
+        // objects failures; never protocol.
         private final HelperStderrTail stderrTail = new HelperStderrTail();
         private final java.util.concurrent.atomic.AtomicBoolean endReported =
                 new java.util.concurrent.atomic.AtomicBoolean();
@@ -1630,15 +1631,16 @@ public final class WorldStreamTransport {
                                 current.offerOutstanding = false;
                                 retireReliable();
                             }
-                            if (current.ticket.resident.objects == 2) {
-                                rendererObjectsFailed();
-                            }
                             if (!closing && !handle.stopping() && !current.stop) {
                                 current.result.complete(new Resident(current.ticket.resident));
                             } else {
                                 current.result.completeExceptionally(
                                         new java.util.concurrent.CancellationException(
                                                 "World stopped"));
+                            }
+                            // Diagnostics after delivery, so they never delay the tile.
+                            if (current.ticket.resident.objects == 2) {
+                                rendererObjectsFailed();
                             }
                         }
                         case CANCELED -> {
@@ -1757,7 +1759,7 @@ public final class WorldStreamTransport {
 
         private void drainErrors(Process process) throws IOException {
             // Keep draining so the helper never blocks on a full pipe; retain only a bounded,
-            // sanitized tail for an abnormal-exit log record.
+            // sanitized tail for the abnormal-exit and renderer objects failure log records.
             byte[] scratch = new byte[4096];
             var errors = process.getErrorStream();
             int read;
@@ -1772,7 +1774,7 @@ public final class WorldStreamTransport {
          */
         private void objectsWriteFailed(Throwable failed) {
             long count = objectsWriteFailures.incrementAndGet();
-            if (!objectsWriteLogged(count)) {
+            if (!cadenceLogged(count)) {
                 return;
             }
             try {
@@ -1791,8 +1793,8 @@ public final class WorldStreamTransport {
             }
         }
 
-        /** The first objects write failure of a session is logged, then every 64th. */
-        static boolean objectsWriteLogged(long count) {
+        /** A repeated diagnostic is logged for its first occurrence, then every 64th. */
+        static boolean cadenceLogged(long count) {
             return count == 1 || count % 64 == 0;
         }
 
@@ -1804,22 +1806,22 @@ public final class WorldStreamTransport {
          */
         private void rendererObjectsFailed() {
             long count = rendererObjectsFailures.incrementAndGet();
-            if (!objectsWriteLogged(count)) {
+            if (!cadenceLogged(count)) {
                 return;
             }
-            String record =
-                    "World renderer could not draw exterior objects ("
-                            + count
-                            + (count == 1 ? " tile" : " tiles")
-                            + " this session); tiles kept as terrain only"
-                            + stderrSuffix();
+            // Runs on the status reader: nothing here, redaction included, may end the session.
             try {
+                String record =
+                        "World renderer could not draw exterior objects ("
+                                + count
+                                + (count == 1 ? " tile" : " tiles")
+                                + " this session); tiles kept as terrain only"
+                                + stderrSuffix();
+                objectsDiagnostic.complete(record);
                 System.getLogger(WorldStreamTransport.class.getName())
                         .log(System.Logger.Level.WARNING, record);
             } catch (RuntimeException | Error ignored) {
                 // Diagnostic delivery cannot interrupt objects delivery.
-            } finally {
-                objectsDiagnostic.complete(record);
             }
         }
 

@@ -118,6 +118,8 @@ class WorldStreamLateObjectsTransportTest {
         try (var fixture = new Fixture(directory)) {
             var first = fixture.stage(7, 19);
             fixture.commit(first);
+            // The renderer's reason is on stderr before the failure is reported.
+            fixture.until(() -> !fixture.stderrTail().isEmpty());
             Files.writeString(fixture.control("fail-objects"), "fail");
             assertSame(
                     WorldStreamTransport.ObjectsOutcome.FAILED,
@@ -291,6 +293,16 @@ class WorldStreamLateObjectsTransportTest {
                 field.setAccessible(true);
                 var metadata = (WorldStreamParentState.Resident) field.get(resident);
                 return scratch.resolve(WorldStreamObjectsFile.basename(metadata.transaction));
+            } catch (ReflectiveOperationException error) {
+                throw new AssertionError(error);
+            }
+        }
+
+        HelperStderrTail stderrTail() {
+            try {
+                var field = WorldStreamTransport.Session.class.getDeclaredField("stderrTail");
+                field.setAccessible(true);
+                return (HelperStderrTail) field.get(session);
             } catch (ReflectiveOperationException error) {
                 throw new AssertionError(error);
             }

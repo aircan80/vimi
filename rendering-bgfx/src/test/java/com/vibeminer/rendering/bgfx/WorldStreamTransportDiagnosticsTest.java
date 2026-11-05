@@ -93,7 +93,7 @@ class WorldStreamTransportDiagnosticsTest {
     void objectsWriteFailuresLogTheFirstAndThenEvery64th() {
         var logged = new java.util.ArrayList<Long>();
         for (long count = 1; count <= 200; count++) {
-            if (WorldStreamTransport.Session.objectsWriteLogged(count)) {
+            if (WorldStreamTransport.Session.cadenceLogged(count)) {
                 logged.add(count);
             }
         }
