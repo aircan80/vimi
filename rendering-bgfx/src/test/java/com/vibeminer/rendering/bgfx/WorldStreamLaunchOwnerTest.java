@@ -398,6 +398,7 @@ class WorldStreamLaunchOwnerTest {
     }
 
     @Test
+    @Timeout(WorldStreamTestChildren.TEST_TIMEOUT_SECONDS)
     void realOwnedJavaChildExitsThroughHandleBeforeMappingAndWorkerCleanup() throws Exception {
         var actual = new java.util.concurrent.atomic.AtomicReference<Process>();
         var ready = new CountDownLatch(1);
@@ -430,7 +431,18 @@ class WorldStreamLaunchOwnerTest {
                         0,
                         5000);
         try {
-            assertTrue(ready.await(8, TimeUnit.SECONDS));
+            // READY or the child's exit ends the wait; the guard only stops a genuine hang.
+            long until =
+                    System.nanoTime()
+                            + TimeUnit.MILLISECONDS.toNanos(
+                                    WorldStreamTestChildren.STARTUP_GUARD_MILLIS);
+            while (!ready.await(20, TimeUnit.MILLISECONDS)) {
+                var started = actual.get();
+                assertTrue(
+                        started == null || started.isAlive(),
+                        () -> "Child exited with " + started.exitValue() + " before READY");
+                assertTrue(System.nanoTime() - until < 0, "Child not READY within the guard");
+            }
             long pid = actual.get().pid();
             var receipt = owner.closeAsync().get(5, TimeUnit.SECONDS);
             assertEquals(pid, receipt.childPid().orElseThrow());
@@ -440,7 +452,7 @@ class WorldStreamLaunchOwnerTest {
             var child = actual.get();
             if (child != null && child.isAlive()) {
                 child.toHandle().destroyForcibly();
-                assertTrue(child.waitFor(3, TimeUnit.SECONDS));
+                assertTrue(child.waitFor(30, TimeUnit.SECONDS));
             }
         }
     }

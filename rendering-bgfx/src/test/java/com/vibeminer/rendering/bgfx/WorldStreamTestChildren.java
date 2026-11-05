@@ -16,6 +16,17 @@ import java.util.List;
  * with the test sources and start as plain classes.
  */
 public final class WorldStreamTestChildren {
+    /**
+     * Startup guard for a real child JVM: both the parent's initialization deadline and the test's
+     * own wait. A stalled Windows runner once took about 10 s to start a child (#299), as long as
+     * the product's default 10 s. Initialization still ends at once when the child exits or
+     * reports; this only bounds a genuine hang.
+     */
+    static final long STARTUP_GUARD_MILLIS = 60_000;
+
+    /** Class timeout for tests that start real child JVMs: one startup guard plus the test body. */
+    static final long TEST_TIMEOUT_SECONDS = 120;
+
     private WorldStreamTestChildren() {}
 
     /** Command line that runs {@code main} of {@code child} in a fresh, lightweight JVM. */

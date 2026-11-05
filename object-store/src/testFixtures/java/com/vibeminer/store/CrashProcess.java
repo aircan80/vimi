@@ -89,13 +89,20 @@ public final class CrashProcess {
                                     }
                                 });
         try {
-            ready.get(20, TimeUnit.SECONDS);
+            // Ends at once when the child prints the line or exits; the guard only stops a hang.
+            // A stalled Windows runner once took about 10 s to start a child JVM (#299).
+            try {
+                ready.get(60, TimeUnit.SECONDS);
+            } catch (java.util.concurrent.TimeoutException hung) {
+                throw new AssertionError(
+                        "Child still alive but not at " + expected + " after 60 s:\n" + output);
+            }
             if (!process.isAlive()) {
                 throw new AssertionError("Child did not remain blocked at " + expected);
             }
             process.destroyForcibly();
-            if (!process.waitFor(10, TimeUnit.SECONDS)) {
-                throw new AssertionError("Child did not terminate");
+            if (!process.waitFor(30, TimeUnit.SECONDS)) {
+                throw new AssertionError("Child did not terminate within 30 s of the kill");
             }
             if (process.exitValue() == 0) {
                 throw new AssertionError("Writer exited cleanly instead of being killed");

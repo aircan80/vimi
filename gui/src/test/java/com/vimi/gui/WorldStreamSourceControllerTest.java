@@ -761,7 +761,8 @@ public final class WorldStreamSourceControllerTest {
             });
             fixture.controller.camera(new WorldStreamTransport.Camera(1,1,80,50,new TerrainCamera(0,0,110,0,-.8)));
             started.get(5,TimeUnit.SECONDS);
-            fixture.gpu.session.initialized().get(5,TimeUnit.SECONDS);
+            // Bounded by the transport's own startup deadline, which fails init clearly.
+            fixture.gpu.session.initialized().get(60,TimeUnit.SECONDS);
             var field=WorldStreamTransport.Session.class.getDeclaredField("lock");
             field.setAccessible(true);
             Object parentGate=field.get(fixture.gpu.session);
