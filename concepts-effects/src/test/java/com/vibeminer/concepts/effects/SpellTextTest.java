@@ -241,7 +241,8 @@ final class SpellTextTest {
                         "15 sec",
                         List.of(new SpellTexts.Source("SpellDuration", 1, "Duration", "15000")),
                         null,
-                        15000L));
+                        15000L,
+                        Boolean.FALSE));
         var procs = new java.util.HashMap<Long, SpellText.Value>();
         procs.put(100L, new SpellText.Value("30", List.of(), null));
         var values =
@@ -273,7 +274,8 @@ final class SpellTextTest {
         assertTrue(
                 noDuration.substitutions().getFirst().issue().startsWith("Total periodic value"));
         var partialTick = new java.util.HashMap<Long, SpellText.Value>();
-        partialTick.put(100L, new SpellText.Value("10 sec", List.of(), null, 10000L));
+        partialTick.put(
+                100L, new SpellText.Value("10 sec", List.of(), null, 10000L, Boolean.FALSE));
         assertEquals(
                 "Duration is not a whole number of ticks",
                 SpellText.project(
@@ -287,5 +289,19 @@ final class SpellTextTest {
                         .issue());
         assertEquals(
                 "Chance ?%.", SpellText.project(100, "Chance $h%.", Map.of(), List.of()).display());
+        // A duration whose tick-on-application attribute is unknown never gives a total.
+        var unknownTick = new java.util.HashMap<Long, SpellText.Value>();
+        unknownTick.put(100L, new SpellText.Value("15 sec", List.of(), null, 15000L, null));
+        assertEquals(
+                "Whether the spell ticks on application is unreadable",
+                SpellText.project(
+                                100,
+                                "Total $o1.",
+                                new SpellText.Values(
+                                        Map.of(100L, Map.of(0, periodic)), unknownTick),
+                                List.of())
+                        .substitutions()
+                        .getFirst()
+                        .issue());
     }
 }
