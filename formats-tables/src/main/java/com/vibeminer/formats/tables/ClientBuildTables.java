@@ -20,6 +20,7 @@ import com.vibeminer.formats.generated.GeneratedTableSource;
 import com.vibeminer.formats.generated.GeneratedTableStore;
 import com.vibeminer.formats.generated.KeyStatus;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -1992,6 +1993,56 @@ final class ClientBuildTables implements BuildTables {
                         }
                     }
                     throw new IllegalStateException("Direct table fallback did not terminate");
+                });
+    }
+
+    /**
+     * FOUND ordinals for many IDs under one table preparation, as {@link #get} would report them
+     * one by one. IDs that are not FOUND are absent from the map. Completes with null when the
+     * prepared source fails, so the caller can fall back to {@link #get}, which retries and
+     * classifies damaged sources.
+     */
+    CompletableFuture<Map<Long, Long>> foundOrdinals(
+            TableTypes.Ref table,
+            Collection<Long> requested,
+            TableTypes.Priority priority,
+            Cancellation token) {
+        var ids = List.copyOf(requested);
+        for (long id : ids) {
+            if (id < 0 || id > 0xffffffffL) {
+                throw new IllegalArgumentException("Unsigned32 ID required");
+            }
+        }
+        return operation(
+                token,
+                t -> {
+                    try (var p = prepare(table, priority, true, false, t)) {
+                        if (p.direct() == null && p.stored() == null) {
+                            return null;
+                        }
+                        var found = new HashMap<Long, Long>();
+                        for (long id : ids) {
+                            t.check();
+                            var lookup =
+                                    p.direct() != null
+                                            ? p.direct().findWithOrdinal(id, t).join()
+                                            : p.stored().findWithOrdinal(id, t).join();
+                            if (lookup != null && lookup.lookup() instanceof Db2Types.Found) {
+                                found.put(id, lookup.ordinal());
+                            }
+                        }
+                        return found;
+                    } catch (RuntimeException error) {
+                        Throwable cause = unwrap(error);
+                        if (cause instanceof Db2FormatException
+                                || cause instanceof com.vibeminer.formats.db2.Db2SourceException
+                                || cause
+                                        instanceof
+                                        com.vibeminer.generated.GeneratedStoreException) {
+                            return null;
+                        }
+                        throw error;
+                    }
                 });
     }
 

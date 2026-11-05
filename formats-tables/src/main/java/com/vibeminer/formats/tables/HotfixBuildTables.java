@@ -530,12 +530,24 @@ public final class HotfixBuildTables implements BuildTables {
         var additions = new ArrayList<Db2Types.Row>();
         var additionIndex = new HashMap<Long, Integer>();
         int added = 0, replaced = 0, deleted = 0, protectedRows = 0, unknown = 0;
+        // One base preparation for every changed ID; a failed bulk read falls back to get().
+        var ordinals =
+                await(base.foundOrdinals(TableTypes.Ref.id(id), changes.keySet(), priority, token));
         for (var changed : new TreeMap<>(changes).entrySet()) {
             token.check();
-            var original =
-                    await(base.get(TableTypes.Ref.id(id), changed.getKey(), priority, token));
-            if (original.outcome() == TableTypes.RowOutcome.FOUND) {
-                long ordinal = original.row().ordinal();
+            Long ordinal;
+            if (ordinals != null) {
+                ordinal = ordinals.get(changed.getKey());
+            } else {
+                var original =
+                        await(base.get(TableTypes.Ref.id(id), changed.getKey(), priority, token));
+                ordinal =
+                        original.outcome() == TableTypes.RowOutcome.FOUND
+                                ? original.row().ordinal()
+                                : null;
+            }
+            boolean found = ordinal != null;
+            if (found) {
                 if (ordinal < 0 || ordinal >= metadata.rows()) {
                     throw new IllegalStateException("Hotfix base ordinal differs");
                 }
@@ -546,7 +558,7 @@ public final class HotfixBuildTables implements BuildTables {
                 case ADD -> {
                     additionIndex.put(changed.getKey(), additions.size());
                     additions.add(change.row());
-                    if (original.outcome() == TableTypes.RowOutcome.FOUND) {
+                    if (found) {
                         replaced++;
                     } else {
                         added++;

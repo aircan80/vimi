@@ -449,6 +449,29 @@ class HotfixBuildTablesTest {
     }
 
     @Test
+    void bulkBaseOrdinalsMatchOneByOneGets() throws Exception {
+        try (var tables = numbers(0x11223344L, entry(0x11223344L, 1, 7, 1, number(99)))) {
+            var field = HotfixBuildTables.class.getDeclaredField("base");
+            field.setAccessible(true);
+            var base = (ClientBuildTables) field.get(tables);
+            var ids = List.of(7L, 8L, 9L, 4_000_000_000L);
+            var bulk = base.foundOrdinals(TableTypes.Ref.id(100), ids, P, Cancellation.NONE).join();
+            int found = 0;
+            for (long id : ids) {
+                var row = base.get(TableTypes.Ref.id(100), id, P, Cancellation.NONE).join();
+                if (row.outcome() == TableTypes.RowOutcome.FOUND) {
+                    found++;
+                    assertEquals(row.row().ordinal(), bulk.get(id), "ordinal of " + id);
+                } else {
+                    assertFalse(bulk.containsKey(id), "not found " + id);
+                }
+            }
+            assertEquals(found, bulk.size());
+            assertTrue(found > 0, "fixture has base rows");
+        }
+    }
+
+    @Test
     void replacementFilteringGetAndDenseCursorAgreeWithoutStaleBaseRows() {
         try (var tables =
                 numbers(
