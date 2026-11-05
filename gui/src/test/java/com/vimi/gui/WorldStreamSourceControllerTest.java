@@ -37,6 +37,7 @@ public final class WorldStreamSourceControllerTest {
         skyOnlyFullUnionAdmitsMissingLookaheadBeforeReacquiringVictim();
         permanentSkyDisjointDemandRetiresPinsWithoutFakePresentation();
         explicitUnsupportedSourceHasCleanNoOwnerDrain();
+        stallSummaryWithoutSessionIsBoundedAndNeverWaits();
         fullPresentationUnionRecoversBackDemandWithoutAcceptingUnwantedPixels(false);
         fullPresentationUnionRecoversBackDemandWithoutAcceptingUnwantedPixels(true);
         backDemandDoesNotTreatPresentedOnlySourceAsLiveGpuResident();
@@ -560,6 +561,33 @@ public final class WorldStreamSourceControllerTest {
             fixture.controller.closeAsync().get(5,TimeUnit.SECONDS);
             check(starts.get()==0 && fixture.files.totalOpens()==reads,
                     "Explicit absent optional capability has no source IO or fake GPU owner");
+        } finally { fixture.close(); }
+    }
+
+    private static void stallSummaryWithoutSessionIsBoundedAndNeverWaits() throws Exception {
+        var fixture=new Fixture(new AuthoredTerrainSource.Files(),1);
+        try {
+            var custom=(com.vibeminer.concepts.world.BuildWorld)java.lang.reflect.Proxy.newProxyInstance(
+                    com.vibeminer.concepts.world.BuildWorld.class.getClassLoader(),
+                    new Class<?>[]{com.vibeminer.concepts.world.BuildWorld.class},
+                    (proxy,method,args)-> {
+                        if(method.getName().equals("terrainStreaming")) return java.util.Optional.empty();
+                        throw new AssertionError("Unsupported custom source must perform no IO/close");
+                    });
+            var map=new WorldService.MapInfo(7,"Authored",null,0,1L);
+            var inventory=fixture.world.inventory(map,Cancellation.NONE).join();
+            fixture.controller=new WorldStreamSourceController(new WorldStreamSourceController.Request(
+                    1,custom,map,inventory,fixture.tiles.getFirst(),null,WorldCurrentArea.Index.of(List.of())),
+                    fixture.gpu::start,()->{},fixture.fx::add);
+            fixture.until(()->fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.UNAVAILABLE);
+            var controller=fixture.controller;
+            String summary=java.util.concurrent.CompletableFuture.supplyAsync(controller::stallSummary)
+                    .get(2,TimeUnit.SECONDS);
+            check(summary.startsWith("phase UNAVAILABLE (")
+                            && summary.endsWith("; accepted frame sequence 0; presentation none; no session"),
+                    "Controller stall summary without a session: "+summary);
+            check(summary.length()<600,"Controller stall summary stays bounded");
+            controller.closeAsync().get(5,TimeUnit.SECONDS);
         } finally { fixture.close(); }
     }
 

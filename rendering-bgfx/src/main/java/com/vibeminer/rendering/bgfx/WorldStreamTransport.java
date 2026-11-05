@@ -1839,6 +1839,47 @@ public final class WorldStreamTransport {
         }
 
         /**
+         * Bounded, redacted evidence for a stalled-frame report, without waiting on the helper:
+         * pending upload, commit and late objects work, queued reliable commands, whether a frame
+         * awaits the viewer, the ignored stdout noise count and the helper stderr tail. Never ends
+         * or changes the session.
+         *
+         * <p>Runs on the FX thread during a stall, when a session thread may hold {@code lock}, so
+         * it never takes it: the fields are read racily as a best-effort snapshot. A stale or mixed
+         * view is acceptable for a diagnostic, and none of these reads can throw.
+         */
+        public String stallSummary() {
+            boolean upload = tile != null;
+            boolean commit = commitOperation != null;
+            boolean objects = objectsOperation != null;
+            boolean frame = latestFrame != null;
+            int commands = reliableCommands.size();
+            int reliable = outstandingReliable;
+            long noiseLines = stdout.noiseLines(), noiseBytes = stdout.noiseBytes();
+            long pid = childPid;
+            return (pid == 0 ? "no child process" : "pid " + pid)
+                    + (closing ? "; closing" : "")
+                    + "; tile upload "
+                    + (upload ? "pending" : "idle")
+                    + "; commit "
+                    + (commit ? "pending" : "idle")
+                    + "; late objects "
+                    + (objects ? "pending" : "idle")
+                    + "; queued commands "
+                    + commands
+                    + "; outstanding reliable "
+                    + reliable
+                    + "; frame awaiting viewer "
+                    + (frame ? "yes" : "no")
+                    + "; unrelated stdout ignored "
+                    + noiseLines
+                    + (noiseLines == 1 ? " line, " : " lines, ")
+                    + noiseBytes
+                    + (noiseBytes == 1 ? " byte" : " bytes")
+                    + stderrSuffix();
+        }
+
+        /**
          * Once per session, on the status reader: the helper wrote a line that is not protocol (for
          * example JVM or JFR startup text). It is ignored; this warning names it, redacted.
          */

@@ -356,6 +356,36 @@ final class WorldStreamSourceController {
         return WorldCurrentArea.locateIn(request.map().id(), x, y, known, request.areaIndex());
     }
 
+    /**
+     * Bounded evidence for a stalled-frame report: the phase, how many desired tiles are prepared,
+     * whether a presentation is queued or borrowed, and the transport's own summary. Never waits on
+     * the worker or the helper.
+     */
+    String stallSummary() {
+        Snapshot current;
+        boolean queuedFrame, borrowedFrame;
+        long accepted;
+        synchronized (lock) {
+            current = snapshot;
+            queuedFrame = queued != null;
+            borrowedFrame = borrowed != null;
+            accepted = acceptedSequence;
+        }
+        var transport = session;
+        String helper;
+        try {
+            helper = transport == null ? "no session" : transport.stallSummary();
+        } catch (RuntimeException unavailable) {
+            helper = "session summary unavailable";
+        }
+        return "phase " + current.phase()
+                + " (" + WorldDiagnostics.clean(current.detail()) + ")"
+                + "; tiles " + current.prepared() + "/" + current.desired()
+                + "; accepted frame sequence " + accepted
+                + "; presentation " + (borrowedFrame ? "borrowed" : queuedFrame ? "queued" : "none")
+                + "; " + helper;
+    }
+
     Optional<Presentation> takePresentation() {
         synchronized (lock) {
             if (closing || borrowed != null || queued == null) return Optional.empty();
