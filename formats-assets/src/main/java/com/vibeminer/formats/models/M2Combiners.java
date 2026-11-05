@@ -158,14 +158,22 @@ public final class M2Combiners {
         return new ShaderNames(ps, vs);
     }
 
+    /**
+     * Whether {@code shader} sets only the bits that {@link #name} reads: every bit for a {@code
+     * 0x8000} effect, else {@code 0x40f0} with one texture and {@code 0x40ff} with more.
+     */
+    public static boolean namedBitsOnly(int count, int shader) {
+        int known = (shader & 0x8000) != 0 ? 0xffff : count == 1 ? 0x40f0 : 0x40ff;
+        return (shader & ~known) == 0;
+    }
+
     public static Admission admit(int count, int shader) {
         ShaderNames n = name(count, shader);
         String id = String.format(java.util.Locale.ROOT, "0x%04X", shader);
         if (n == null) {
             return new Admission(null, "shader " + id + " (no named combiner)");
         }
-        int known = (shader & 0x8000) != 0 ? 0xffff : count == 1 ? 0x40f0 : 0x40ff;
-        if ((shader & ~known) != 0) {
+        if (!namedBitsOnly(count, shader)) {
             return new Admission(null, "shader " + id + " (bits outside the named selection)");
         }
         String label =

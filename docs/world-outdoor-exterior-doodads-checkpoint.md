@@ -38,12 +38,13 @@ The material class is read from MOMT blend mode (buildings) or M2 material blend
 
 **MDDF records** are taken in obj0 order. Each one needs:
 
-- the direct FileDataID flag `0x40`, and no other flags besides `0x2`, `0x20` and `0x1000`;
+- the direct FileDataID flag `0x40`, and no other flags besides `0x2`, `0x20`, `0x200` and
+  `0x1000` (see [Pinned placement conventions](#pinned-placement-conventions));
 - a positive scale/1024 of at most 64;
-- zero pitch and roll. Only the reviewed ADT heading rule (`WorldBasicWmo.Transform`) is applied.
+- a finite rotation. Pitch (rotation x) and roll (rotation z) are applied with the heading, as
+  pinned below.
 
-Records with a nonzero pitch or roll are counted as *tilted*, not drawn. Identical duplicate
-unique IDs share one placement; conflicting ones are all omitted.
+Identical duplicate unique IDs share one placement; conflicting ones are all omitted.
 
 **WMO doodad sets**. For each drawn building, set 0 is drawn, plus its MODF doodad set when that
 is nonzero. Entries are taken in MODD order.
@@ -59,23 +60,75 @@ is nonzero. Entries are taken in MODD order.
   resolved.
 - MODD flags are allow-listed like MDDF flags: only `0x1` (accepts projected textures, no
   transform) is admitted. Any other flag is counted as an unsupported set doodad.
-- MODD rotations follow the MDDF rule. Only a rotation about local z is applied (quaternion x and
-  y exactly zero). Entries with pitch or roll are counted as `SET_DOODAD_TILTED`, shown as tilted
-  in the status, and not drawn, because no reviewed convention is pinned for them.
+- The full MODD quaternion is applied, as pinned below.
 - Each entry's position goes through the building transform. Its rotation is the building heading
-  times that z rotation, normalized in double; the quaternion must be within 1e-3 of unit length.
-  Its scale is the building scale times the MODD scale, at most 64.
+  times the quaternion's rotation, normalized in double; the quaternion must be within 1e-3 of
+  unit length. Its scale is the building scale times the MODD scale, at most 64.
 - Group membership (MODR) is not evaluated, so the doodads of interior groups are drawn too.
+
+### Pinned placement conventions
+
+These facts were pinned from sources, not guessed. The reference tree (the `-PreferenceRoot`
+checkout) has no ADT or WMO placement code; its
+`.local/references/m2-static` covers M2 and SKIN only. The facts therefore come from the primary
+references this repository already pins in `world-placements-proposal.md`, at the same revisions,
+plus the wowdev format pages at fixed revisions:
+
+- TrinityCore `ec72c1914da121c07620dd5fe8ad084458dad9d1` (**TC**);
+- wow.export `4474fa460eb9b1b6130994a42a232ecd6af64681` (**WE**);
+- wowdev wiki [ADT/v18 rev 37119](https://wowdev.wiki/index.php?title=ADT/v18&oldid=37119) and
+  [WMO rev 37115](https://wowdev.wiki/index.php?title=WMO&oldid=37115) (**wiki**).
+
+Native axes are `x = 51200/3 - pos.z`, `y = 51200/3 - pos.x`, `z = pos.y` (the reviewed rule in
+`WorldBasicWmo.Transform`), and model vertices stay in raw M2/WMO-local axes (z up).
+
+| Fact | Convention | Sources |
+| --- | --- | --- |
+| MDDF `0x40` | `nameId` is a FileDataID, not an MMID index | wiki ADT/v18 `MDDFFlags` (`mddf_entry_is_filedata_id`); TC `adtfile.cpp:149` |
+| MDDF `0x200` | Meaning **not pinned** (wiki: `mddf_unk_200`, "could be for large vegetation", unverified). No source uses it to choose the reference or the transform: TC selects the reference with `0x40` alone and extracts every record with the same transform (`adtfile.cpp:149-155`, `model.cpp:160-178`); WE draws every record with one matrix and reads no flag (`M2Renderer.js:984-1008`); the wiki matrix has no flag term. It is admitted on that ground, like `0x2` and `0x1000` before it. | as listed |
+| Other MDDF bits | `0x1`, `0x4`, `0x8`, `0x10`, `0x80`, `0x100` stay refused (wiki: biodome or unknown) | wiki ADT/v18 `MDDFFlags` |
+| MDDF scale | `scale / 1024`, uniform | wiki `SMDoodadDef.scale`; TC `model.cpp:163`; WE `M2Renderer.js:164` |
+| MDDF rotation | Degrees; `R = Rz(180 + y) * Ry(x) * Rx(z)` in native axes, applied to raw model coordinates, so roll (z) is applied to the model first, then pitch (x), then the heading (y). `Rz(180 + y)` is exactly the reviewed heading rule. | TC: `Matrix3::fromEulerAnglesZYX(y, x, z)` (`ModelInstance.cpp:29`, `Matrix3.cpp:1664-1681`) in the frame `(pos.z, pos.x, pos.y)` (`wmo.h:68`), which is the native frame turned 180 degrees about up; TC keeps M2 vertices raw (`model.cpp:70`, `model.cpp:140-145`). wiki ADT/v18 "How to compute a matrix to map M2 to world coordinates" (`rotateY(y - 270)`, `rotateZ(-x)`, `rotateX(z - 90)`) gives the same matrix, and its axis table says rotation x turns about West/East and rotation z about North/South. |
+| MODD quaternion | Components `(x, y, z, w)`, w real, in raw WMO-local axes; `building * T(position) * fromQuat(q) * S(scale)` | wiki WMO `SMODoodadDef` and "How to compute a matrix to map WMO's M2 to world coordinates"; WE `WMOLoader.js:274`, `WMORenderer.js:400-426` (it swizzles position and quaternion together into its viewer axes, which is the same rotation) and `WMORenderer.js:467`; TC `vec3d.h:75`, `model.cpp:250` (raw local position under the building rotation) |
+| MODD scale | A float factor, multiplied with the building scale | wiki `SMODoodadDef.scale`; TC `wmo.h:62`; WE `WMOLoader.js:275` |
+
+**Disagreement.** WE's map viewer builds `Ry(y - 90) * Rx(x) * Rz(z)` on its swizzled
+`(x, z, -y)` vertices (`M2Renderer.js:156-195`, `M2Loader.js:641-643`). That agrees with the
+heading rule, but it swaps the pitch and roll axes relative to TC and the wiki (about 0.17 apart
+in a matrix element at 10 degrees). Two independent sources agree, and the wiki's axis table
+agrees with them, so Vimi follows TC and the wiki. WE is not used for MDDF pitch or roll.
+TC's set extraction composes `Quat * wmoRotation` and re-encodes it as Euler angles
+(`model.cpp:252-259`); that collision path is not used as evidence for the composition order.
 
 **Models**. A model is the M2 (chunked 272/274 or unchunked 264), its first SKIN, and texture1 of
 each admitted batch. A batch is admitted when it has:
 
 - material layer 0;
 - at least one texture;
-- UV0;
+- texture1 sampled with UV0, as chosen by the batch's vertex shader (see below);
 - a type-0 texture with a positive TXID;
 - blend mode 0, 1 or 2;
 - a section not already used by an earlier batch.
+
+**Texture1 coordinates.** The vertex shader picked from the batch's shader ID and texture count
+selects the coordinates, as in wow.export's `ShaderMapper.getVertexShader`. Texture1 uses UV0 when
+that shader is a `Diffuse_T1*` one:
+
+- not `0x8000`, not `0x80` (`Diffuse_Env*`), and not `0x4000` with one texture (`Diffuse_T2`); or
+- a `0x8000` combiner whose `SHADER_ARRAY` vertex shader is `Diffuse_T1*`. `Diffuse_EdgeFade_*`,
+  `Color_*` and IDs past the table are refused.
+
+The names come from `M2Combiners.name` in `formats-assets`, the existing reviewed transcription of
+that mapper, so there is one table. A shader ID with bits outside the named selection (`0x40f0`
+with one texture, `0x40ff` with more) is refused, as `M2Combiners.admit` refuses it
+(`M2Combiners.namedBitsOnly`). The vertex shader never depends on those bits. On the probed real
+models only `0x0000`, `0x0010`, `0x8000` and `0x8001` appeared, and all of them pass.
+
+Sources, all in the reference tree's `.local/references/m2-static`: `export-shadermapper.js:9-46`
+(the table) and `:52-90` (the selection), `export-renderer.js:606` (how it is used), and
+`formatlib-m2.cs:282` ("tex_unit_lookup_table unused as of cata"). #229 read that lookup table
+instead. Real models declare it empty, so no real doodad batch was admitted; the private probe
+below found 39 to 76 unsupported batches per tile and no drawn doodad on the base.
 
 Further rules:
 
@@ -172,9 +225,12 @@ doodads, into the same version 2 file.
 `ExteriorSummary` carries each attached tile's drawn and omitted counts, and the ready line reads,
 for example:
 
-    8 BASIC exterior buildings and 120 doodads on 7 (not drawn: 3 buildings, 41 doodads (12 tilted), 9 surfaces (2 unreadable))
+    5 BASIC exterior buildings and 512 doodads on 1 (not drawn: 12 buildings, 876 doodads (847 capped), 54 surfaces)
 
-Omitted buildings and doodads are records that were not drawn for any reason. Omitted surfaces are
+Omitted buildings and doodads are records that were not drawn for any reason. *Capped* doodads
+are the omitted ones that qualified but did not fit the per-tile doodad, model or draw caps
+(`DOODAD_CAPPED`, `SET_DOODAD_CAPPED` and the bridge's own draw-budget check). Nothing is counted
+as tilted any more: `DOODAD_TILTED` and `SET_DOODAD_TILTED` are gone. Omitted surfaces are
 unsupported, image-less, capped or unreadable batches. The GPU status label's tooltip carries
 the BASIC disclosure.
 
@@ -182,7 +238,7 @@ the BASIC disclosure.
 
 - **Unit tests.** `WorldExteriorObjectsTest` adds 10 authored tests (25 in total). They use authored
   chunk streams and an authored chunked 274 M2 and SKIN, with no game assets. They cover:
-  - MDDF flags, tilt, scale and duplicates, against the heading-rule oracle;
+  - MDDF flags, scale and duplicates, against the heading-rule oracle;
   - model blend classes and alpha keeping;
   - WMO cutout alpha;
   - model failures (unsupported version, truncation, missing SKIN);
@@ -192,7 +248,20 @@ the BASIC disclosure.
   - an unreadable cutout or blended image omitting only its surface;
   - cutout geometry never capping the opaque budget;
   - cutout ranges dropped, never a building, at the 4,096-draw boundary;
-  - MODD flag and tilt rules.
+  - MODD flag rules.
+- The tilt slice adds 3 tests (28 in total) and updates 2. The oracles are written from the cited
+  conventions, never from `Rotation`:
+  - `mddfPitchRollAndHeadingFollowThePinnedPlacementMatrix` transcribes the wowdev ADT/v18
+    placement matrix call by call (gl-matrix style) and maps five local points of each placement.
+    It covers `(17.5, -121.25, 33)` and `(-8, 405, -71)` with flags `0x240` and `0x40`, pure
+    pitch and roll against the wiki's axis table, and bit-identical heading-only matrices. `0x100`
+    and name references stay unsupported.
+  - `moddQuaternionsWithPitchRollAndYawComposeLikeThePinnedPlacementMatrix` transcribes the wowdev
+    WMO MODD matrix (`building * T * fromQuat * S`) for a 50-degree turn about `(1, 2, -0.5)` and
+    a yaw-30, pitch-20, roll-10 product, under a heading-37.5, scale-2 building.
+  - `texture1CoordinatesComeFromTheVertexShaderNotTheUnusedLookupTable` checks the shader rule
+    and that the authored model with an empty lookup table still draws.
+  - Negative control: applying roll before pitch in `Rotation.mddf` fails the MDDF oracle test.
 - `WorldStreamObjectsFileTest` draws a full frame of 10 x 576 placements twice through the
   per-frame uniform buffers, checking that the frame stack never grows. A negative control shows
   the old per-placement allocation running out of stack.
@@ -208,7 +277,54 @@ the BASIC disclosure.
   - The blended quad matches source-alpha over within 1 unit.
   - With the alpha test disabled, the proof fails ("cutout discards: 10 != 195").
 
-### Real data
+### Real data (tilt slice)
+
+A private probe ran `WorldTerrainStreaming.prepareExteriorObjects` and the real hot child over a
+reflink copy of the local library and a copy of the #229 warm cache. Nothing from it is committed.
+The repository owner allowed CDN downloads for this check. The missing doodad M2, SKIN and BLP
+sources for Azeroth 32..34 x 31..33 and the Elwynn tile 47,30 were fetched through the app's
+normal `CachingObjectSource` into that private cache, never into the live library. The counts
+below are a local-only rerun over the fetched cache, on the branch base (eac813fe) and on this
+branch.
+
+| Tile | Base: unsupported (all `0x200`) / tilted MDDF, tilted MODD | Base drawn | Branch drawn MDDF + set | Of which tilted (MDDF and set) / `0x200` | Branch capped MDDF / set |
+| --- | --- | ---: | ---: | --- | --- |
+| 32,31 | 231 / 124, 57 | 0 | 291 + 0 | 40 / 225 | 278 / 293 |
+| 32,32 | 307 / 70, 63 | 0 | 512 + 0 | 20 / 294 | 271 / 277 |
+| 32,33 | 363 / 293, 56 | 0 | 421 + 0 | 41 / 363 | 394 / 290 |
+| 33,31 | 178 / 84, 258 | 0 | 428 + 5 | 23 / 177 | 90 / 382 |
+| 33,32 | 241 / 132, 295 | 0 | 512 + 0 | 12 / 232 | 342 / 591 |
+| 33,33 | 220 / 201, 19 | 0 | 512 + 0 | 56 / 218 | 381 / 466 |
+| 34,31 | 27 / 110, 0 | 0 | 160 + 0 | 67 / 27 | 68 / 0 |
+| 34,32 | 3 / 23, 0 | 0 | 70 + 0 | 23 / 2 | 0 / 0 |
+| 34,33 | 43 / 13, 0 | 0 | 169 + 0 | 10 / 42 | 0 / 0 |
+| 47,30 | 56 / 90, 8 | 0 | 288 + 18 | 99 / 56 | 0 / 80 |
+
+- **No MDDF record is unsupported or tilted any more.** Every unsupported record carried only
+  `0x200` beside admitted flags.
+- **Buildings are unchanged.** Drawn and omitted placements, batches and images are identical
+  between base and branch on every tile.
+- **Base drew no doodad**, because of the texture-coordinate rule above.
+- **Caps now bind.** The 512-placement doodad cap is reached on 3 tiles. MDDF records come first,
+  so set doodads are mostly capped. Up to 43 of the 48 model reads and all 64 model-image reads
+  are used.
+- **Memory.** The file caps are unchanged, so the worst case stays about 14.9 MB per slot and
+  about 150 MB over 10 slots. The real tiles above reach at most 21,019 vertices, 44,232 indices
+  and 1,605,632 pixels per file, about 7.2 MB (about 72 MB over 10 slots).
+- **Slope check.** On the 7 tiles with MDDF records that are tilted on terrain steeper than
+  8 degrees (360 records), the doodad up axis was compared with the terrain normal under each
+  candidate convention. The pinned one is closest: the median angle is 10.2 to 22.1 degrees per
+  tile. WE's swapped axes give 16.1 to 31.5 degrees, and the pinned one wins on 262 of the 360
+  records. Negating pitch, roll or both is worse on every tile. The other Euler order is within
+  0.1 degree at these small angles, so the data cannot separate it. This corroborates the
+  sources; it is not used as one.
+- **GPU frames.** The real hot child rendered 800 x 500 frames of tiles 33,33 and 47,30 on Linux
+  Vulkan, through `vimi-heavy --gpu`. Trees stand upright on slopes and rocks sit on the ground.
+  Fallen logs lie along the ground as authored, and nothing floats or lies on its side. Status
+  line: `5 BASIC exterior buildings and 512 doodads on 1 (not drawn: 12 buildings, 876 doodads
+  (847 capped), 54 surfaces)`.
+
+### Real data (#229)
 
 A private run used `WorldStreamSourceController`'s preparer on Azeroth 32..34 x 31..33. The source
 was local-only, over a copy of the existing warm cache; there was no network and no CDN.
@@ -238,14 +354,19 @@ was local-only, over a copy of the existing warm cache; there was no network and
   - On a cold cache with a moving camera, though, objects may be preempted repeatedly.
   - This has not been measured.
 
-- **Tilted MDDF and MODD doodads.** The pitch and roll conventions are not pinned against a
-  reviewed oracle.
-- **The MDDF `0x200` flag** is not interpreted.
+- **The meaning of MDDF `0x200`** is not pinned (the wiki guesses large vegetation). It is
+  admitted only because no source lets it change the reference or the transform. If it turns
+  out to be, for example, a draw-distance or LOD hint, nothing here models that.
+- **Other MDDF bits** (`0x1`, `0x4`, `0x8`, `0x10`, `0x80`, `0x100`) and MODD flags other than
+  `0x1` stay refused. None of these MDDF bits appeared on the probed tiles.
+- **Set doodads are starved by the shared caps.** MDDF records take the 512 placements and most of
+  the 48 models first. A fairer split, or larger caps with a new file profile, is a follow-up.
 - **Interiors.** MODR group membership, portals and interior lighting.
 - **Client parity.** Client alpha references and per-layer M2 shaders.
 - **Animation.** Colour and transparency tracks and animation.
 - **Other blend modes** (additive, modulate) are not drawn.
 - **Backends.** DX11 and Metal were not run. The DX11 `world-wmo` binaries come from the Windows
   shader job.
-- **A real-data visual proof of doodads.** It needs the doodad sources, and fetching them needs
+- **A committed real-data visual proof of doodads.** The private frames above are not committed;
+  a repeatable one needs the doodad sources, and fetching them needs
   network access.
