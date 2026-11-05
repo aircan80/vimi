@@ -847,19 +847,42 @@ final class GpuPreviewService {
         }
     }
 
-    /** READY text; says how many recorded groups are left out and the most common reason. */
+    /** READY text; says what was left out of the drawn interior and why. */
     static String readyMessage(com.vibeminer.concepts.world.WorldGlobalScenes.Facts facts) {
-        int skipped = facts.skippedGroups();
-        if (skipped == 0) {
-            return "GPU interior";
+        return readyMessage(facts.groups().size(), facts.skippedGroupReasons(),
+                facts.skippedBlendedBatches());
+    }
+
+    /**
+     * Pure form of {@link #readyMessage(com.vibeminer.concepts.world.WorldGlobalScenes.Facts)}:
+     * skipped groups with their most common reason (a stronger warning when more than half are
+     * missing) and blended surfaces left out.
+     */
+    static String readyMessage(int drawnGroups, java.util.Map<String, Integer> skippedReasons,
+            int blendedBatches) {
+        var text = new StringBuilder("GPU interior");
+        int skipped = skippedReasons.values().stream().mapToInt(Integer::intValue).sum();
+        if (skipped > 0) {
+            int total = drawnGroups + skipped;
+            var reason = skippedReasons.entrySet().stream()
+                    .max(java.util.Map.Entry.comparingByValue())
+                    .map(java.util.Map.Entry::getKey)
+                    .orElse("");
+            String why = reason + (skippedReasons.size() > 1 ? ", …" : "");
+            if (skipped * 2 > total) {
+                text.append(" · incomplete: only ").append(drawnGroups).append(" of ")
+                        .append(total).append(" WMO groups drawn (").append(why).append(")");
+            } else {
+                text.append(" · ").append(skipped).append(" of ").append(total)
+                        .append(" WMO groups not drawn (").append(why).append(")");
+            }
         }
-        int total = facts.groups().size() + skipped;
-        var reason = facts.skippedGroupReasons().entrySet().stream()
-                .max(java.util.Map.Entry.comparingByValue())
-                .map(java.util.Map.Entry::getKey)
-                .orElse("");
-        return "GPU interior · " + skipped + " of " + total + " WMO groups not drawn ("
-                + reason + (facts.skippedGroupReasons().size() > 1 ? ", …" : "") + ")";
+        if (blendedBatches > 0) {
+            text.append(" · ").append(blendedBatches)
+                    .append(blendedBatches == 1 ? " glow or blended surface" : " glow or blended surfaces")
+                    .append(" not drawn");
+        }
+        return text.toString();
     }
 
     static final String GPU_UNAVAILABLE =
@@ -892,7 +915,10 @@ final class GpuPreviewService {
                                             + refusal.site() + ")")
                                     .orElse("This instance is outside the supported interior"
                                             + " profile (" + refusal.site() + ")");
-                    case RETRY_LATER -> "Interior source is busy; retry shortly";
+                    case RETRY_LATER ->
+                            refusal.detail()
+                                    .map(detail -> "Can't show this interior yet: " + detail)
+                                    .orElse("Interior source is busy; retry shortly");
                     case SOURCE_INVALIDATED -> "Interior source changed; retry";
                 };
             }

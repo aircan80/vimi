@@ -219,7 +219,8 @@ class WorldGlobalSceneFileTest {
 
     @Test
     void validChecksumsCannotHideNoncanonicalHeaderOrDescriptorSubstitutions() throws Exception {
-        for (int mode = 0; mode < 10; mode++) {
+        assertEquals(2, WorldGlobalLayout.PROFILE);
+        for (int mode = 0; mode < 12; mode++) {
             var dir = Files.createDirectory(directory.resolve("bad-" + mode));
             var target = target(dir);
             try (var source =
@@ -237,6 +238,10 @@ class WorldGlobalSceneFileTest {
                     case 7 -> b.putInt(1024 + 64 + 12, 1);
                     case 8 -> b.putInt(1424 + 16, 1561);
                     case 9 -> b.putInt(344, 5);
+                    // The format version word: the first profile's 1 and a zero both refuse,
+                    // even with repaired checksums (version 2 is current).
+                    case 10 -> b.putInt(8, 1);
+                    case 11 -> b.putInt(8, 0);
                     default -> throw new AssertionError();
                 }
                 var expected = resign(target.path(), bytes, source.expected().identity());

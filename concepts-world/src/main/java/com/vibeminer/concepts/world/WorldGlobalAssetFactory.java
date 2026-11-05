@@ -78,11 +78,22 @@ final class WorldGlobalAssetFactory {
             String canonicalMeshSha256,
             WmoFormats.GroupHeader header,
             String name,
-            List<Integer> materials) {
+            List<Integer> materials,
+            List<Integer> drawnBatches,
+            int blendedBatches) {
         GroupFacts {
             materials = List.copyOf(materials);
+            drawnBatches = List.copyOf(drawnBatches);
         }
     }
+
+    /**
+     * MOMT blend modes from 2 up (alpha blend, additive, modulate and their variants) are glows,
+     * light shafts and fire or lava cards. This profile has no blending, so drawn opaque and
+     * depth-writing they would become solid sheets that block corridors; they are left out and
+     * counted instead. Modes 0 (opaque) and 1 (alpha key) draw.
+     */
+    static final long FIRST_BLENDED_MODE = 2;
 
     /**
      * The recorded MOGP bounds in the same native space as the copied mesh (x and y mirrored, z
@@ -171,6 +182,11 @@ final class WorldGlobalAssetFactory {
         /** Root groups that could not be read or drawn and are left out of the interior. */
         int skippedGroups() {
             return skippedGroups;
+        }
+
+        /** Blended, additive or modulated batches of drawn groups that were left out. */
+        int skippedBlendedBatches() {
+            return groups.stream().mapToInt(GroupFacts::blendedBatches).sum();
         }
 
         /** Skipped groups by fixed reason text. */
@@ -374,8 +390,9 @@ final class WorldGlobalAssetFactory {
                 require(local < count);
                 indices[indexCount + i] = Math.addExact(vertices, local);
             }
-            require(spans.size() + raw.batches().size() <= GlobalInteriorLimits.BATCHES);
-            for (var batch : raw.batches()) {
+            require(spans.size() + facts.batches() <= GlobalInteriorLimits.BATCHES);
+            for (int drawn : facts.drawnBatches()) {
+                var batch = raw.batches().get(drawn);
                 spans.add(
                         new DrawSpan(
                                 ordinal,
@@ -990,9 +1007,11 @@ final class WorldGlobalAssetFactory {
             skipUnless(index < vertices, "indices outside the group's vertices");
             digest.integer(index);
         }
-        int drawn = 0;
+        int drawn = 0, blended = 0;
         var materials = new java.util.TreeSet<Integer>();
-        for (var batch : borrow.batches()) {
+        var drawnBatches = new ArrayList<Integer>();
+        for (int b = 0; b < borrow.batches().size(); b++) {
+            var batch = borrow.batches().get(b);
             int material = batch.materialIndex();
             skipUnless(
                     material >= 0
@@ -1005,6 +1024,11 @@ final class WorldGlobalAssetFactory {
                             && batch.indexCount() % 3 == 0
                             && batch.firstIndex() + batch.indexCount() <= borrow.indices().size(),
                     "a batch outside the group's indices");
+            if (root.materials().get(material).rawWords().get(2) >= FIRST_BLENDED_MODE) {
+                blended++;
+                continue;
+            }
+            drawnBatches.add(b);
             materials.add(material);
             drawn += batch.indexCount() / 3;
             digest.integer((int) batch.firstIndex());
@@ -1018,6 +1042,7 @@ final class WorldGlobalAssetFactory {
             skipUnless(batch.firstIndex() >= end, "overlapping batches");
             end = batch.firstIndex() + batch.indexCount();
         }
+        skipUnless(!drawnBatches.isEmpty(), "only blended or additive surfaces");
         return new GroupFacts(
                 ordinal,
                 id,
@@ -1025,14 +1050,16 @@ final class WorldGlobalAssetFactory {
                 vertices,
                 triangles,
                 drawn,
-                borrow.batches().size(),
+                drawnBatches.size(),
                 borrow.colors() != null,
                 borrow.liquid() != null,
                 borrow.liquid() == null ? 0 : borrow.liquid().size(),
                 digest.finish(),
                 h,
                 root.groupNames().name(h.nameOffset()).orElse(null),
-                List.copyOf(materials));
+                List.copyOf(materials),
+                drawnBatches,
+                blended);
     }
 
     private static void skipUnless(boolean drawable, String reason) {

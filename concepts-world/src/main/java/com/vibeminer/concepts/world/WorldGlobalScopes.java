@@ -478,11 +478,14 @@ final class WorldGlobalScopes {
                 if (opened.state() == FileTypes.FileReadState.COMPLETE) {
                     throw new IllegalStateException("Complete asset has no stream");
                 }
-                throw unavailable();
+                throw assetUnavailable(opened.state());
             }
             long length = stream.length();
-            if (opened.state() != FileTypes.FileReadState.COMPLETE || !stream.holes().isEmpty()) {
-                throw unavailable();
+            if (opened.state() != FileTypes.FileReadState.COMPLETE) {
+                throw assetUnavailable(opened.state());
+            }
+            if (!stream.holes().isEmpty()) {
+                throw pending(); // Partly fetched: the rest may arrive.
             }
             if (length < 12 || length > limit) {
                 throw oversize(kind, limit);
@@ -1242,6 +1245,28 @@ final class WorldGlobalScopes {
         if (failure != null) {
             throw new IllegalStateException(failure);
         }
+    }
+
+    /**
+     * States a later attempt can change (partly fetched, needs the network, or encrypted with a key
+     * the client may still receive) refuse the whole interior for a retry rather than letting it
+     * open with holes; any other state is a plain unavailable asset.
+     */
+    static boolean transientState(FileTypes.FileReadState state) {
+        return state == FileTypes.FileReadState.PARTIAL
+                || state == FileTypes.FileReadState.NEEDS_NETWORK
+                || state == FileTypes.FileReadState.PROTECTED;
+    }
+
+    private static WorldTerrainStreaming.Refusal assetUnavailable(FileTypes.FileReadState state) {
+        return transientState(state) ? pending() : unavailable();
+    }
+
+    private static WorldTerrainStreaming.Refusal pending() {
+        return WorldSourceRefusals.at(
+                WorldSourceRefusals.Site.GLOBAL_ASSET_PENDING,
+                "some of the interior's files are still downloading, need the network or are"
+                        + " locked; try again shortly");
     }
 
     private static WorldTerrainStreaming.Refusal oversize(AssetKind kind, int limit) {

@@ -87,12 +87,13 @@ public final class WorldGlobalScenes {
         private final List<Image> images;
         private final List<Source> sources;
         private final byte[] modf;
-        private final int skippedGroups;
+        private final int skippedGroups, skippedBlendedBatches;
         private final java.util.SortedMap<String, Integer> skippedReasons;
 
         private Facts(WorldGlobalAssetFactory.Manifest manifest) {
             declaration = manifest.declaration();
             skippedGroups = manifest.skippedGroups();
+            skippedBlendedBatches = manifest.skippedBlendedBatches();
             skippedReasons = manifest.skippedReasons();
             root = manifest.root().header();
             materials =
@@ -225,6 +226,14 @@ public final class WorldGlobalScenes {
          */
         public int skippedGroups() {
             return skippedGroups;
+        }
+
+        /**
+         * Blended, additive or modulated surfaces (glows, light shafts, fire cards) of drawn groups
+         * left out because this profile draws everything opaque.
+         */
+        public int skippedBlendedBatches() {
+            return skippedBlendedBatches;
         }
 
         /** {@link #skippedGroups()} by fixed reason text (counts only; no names or paths). */

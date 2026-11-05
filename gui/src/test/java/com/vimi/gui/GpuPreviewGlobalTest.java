@@ -26,6 +26,7 @@ public final class GpuPreviewGlobalTest {
             messagesNeverExposeRawCauses();
             onlyPureCancellationChainsEndAStoppedPreparationClosed(root);
             capabilityUnavailableChildFailsWithItsMessageAndKeepsTheOwner(root);
+            readyMessagesSayWhatWasLeftOut();
         } finally {
             try (var files = Files.walk(root)) {
                 for (var file : files.sorted(java.util.Comparator.reverseOrder()).toList()) {
@@ -418,6 +419,24 @@ public final class GpuPreviewGlobalTest {
             require(expected.getCause().getMessage().equals("successor ran"), "successor ran");
         }
         service.closeAsync().get(5, TimeUnit.SECONDS);
+    }
+
+    private static void readyMessagesSayWhatWasLeftOut() {
+        require(GpuPreviewService.readyMessage(8, java.util.Map.of(), 0).equals("GPU interior"),
+                "complete interior");
+        var few = new java.util.TreeMap<String, Integer>(java.util.Map.of(
+                "unsupported group layout", 3, "the group file is not readable", 1));
+        require(GpuPreviewService.readyMessage(44, few, 0).equals(
+                "GPU interior · 4 of 48 WMO groups not drawn (unsupported group layout, …)"),
+                GpuPreviewService.readyMessage(44, few, 0));
+        require(GpuPreviewService.readyMessage(3, java.util.Map.of("no group file is listed", 5), 2)
+                .equals("GPU interior · incomplete: only 3 of 8 WMO groups drawn"
+                        + " (no group file is listed) · 2 glow or blended surfaces not drawn"),
+                "more than half missing warns, blended surfaces counted");
+        require(GpuPreviewService.readyMessage(4, java.util.Map.of("x", 4), 1)
+                        .equals("GPU interior · 4 of 8 WMO groups not drawn (x)"
+                                + " · 1 glow or blended surface not drawn"),
+                "exactly half is not yet the strong warning");
     }
 
     private static void require(boolean condition, String message) {
