@@ -231,7 +231,7 @@ public final class BuildOpener implements Builds {
 
     private record MetadataContext(
             CdnContext cdn,
-            String cdnNote,
+            CdnNote cdnNote,
             ConfigFiles.CdnConfig config,
             EncodingTable encoding,
             RootTable root,
@@ -303,13 +303,11 @@ public final class BuildOpener implements Builds {
         try {
             return readMetadata(build, resolution, token);
         } catch (OpenFailed e) {
-            if (resolution.route() == null
-                    && resolution.note() != null
-                    && "OBJECT_ACCESS_NO_CDN_CONTEXT".equals(e.code)) {
+            if (resolution.code() != null && "OBJECT_ACCESS_NO_CDN_CONTEXT".equals(e.code)) {
                 throw new OpenFailed(
                         BuildOpenState.UNAVAILABLE,
                         e.part,
-                        "BUILD_NO_ACCEPTED_CDN_HOST",
+                        resolution.code(),
                         resolution.note(),
                         e.observedAt);
             }
@@ -319,18 +317,26 @@ public final class BuildOpener implements Builds {
 
     /**
      * The build's own region first; a region with no accepted host borrows the route of another
-     * region only when that region advertises this build with the same CDN config.
+     * region only when a stored versions reply shows that region serving this build with the same
+     * CDN config.
      */
     private CdnsRoutes.Resolution resolveRoute(BuildRef build, Cancellation token) {
         var cdns = CdnsRoutes.newestFirst(source, build.product(), token).join();
-        if (build.region() == null || CdnsRoutes.route(cdns, build.region()) != null) {
+        if (build.region() == null
+                || cdns.isEmpty()
+                || CdnsRoutes.route(cdns, build.region()) != null) {
             return CdnsRoutes.resolve(cdns, build.region(), java.util.Set.of());
         }
-        var versions = CdnsRoutes.newestVersionsFirst(source, build.product(), token).join();
         return CdnsRoutes.resolve(
                 cdns,
                 build.region(),
-                CdnsRoutes.regionsServing(versions, build.buildConfig(), build.cdnConfig()));
+                CdnsRoutes.regionsServing(
+                                source,
+                                build.product(),
+                                build.buildConfig(),
+                                build.cdnConfig(),
+                                token)
+                        .join());
     }
 
     private MetadataContext readMetadata(
@@ -436,8 +442,16 @@ public final class BuildOpener implements Builds {
                         root.fileCount(),
                         BuildLocales.of(root.localeUnion()));
         token.check();
-        return new MetadataContext(context, resolution.note(), cdnConfig, encoding, root, metadata);
+        return new MetadataContext(
+                context,
+                new CdnNote(resolution.code(), resolution.note()),
+                cdnConfig,
+                encoding,
+                root,
+                metadata);
     }
+
+    record CdnNote(String code, String note) {}
 
     private record IndexRequest(ObjectRequest request, BuildPart part, CdnKey key) {}
 
@@ -712,7 +726,7 @@ final class OpenedBuild implements Build, LedgerSource {
     private final BuildTypes.BuildRef build;
     private final BuildTypes.BuildMetadata metadata;
     private final CdnContext cdn;
-    private final String cdnNote;
+    private final BuildOpener.CdnNote cdnNote;
     private final EncodingTable encoding;
     private final RootTable root;
     private final ArchiveLocations locations;
@@ -722,7 +736,7 @@ final class OpenedBuild implements Build, LedgerSource {
             BuildTypes.BuildRef build,
             BuildTypes.BuildMetadata metadata,
             CdnContext cdn,
-            String cdnNote,
+            BuildOpener.CdnNote cdnNote,
             EncodingTable encoding,
             RootTable root,
             ArchiveLocations locations) {
@@ -752,7 +766,12 @@ final class OpenedBuild implements Build, LedgerSource {
 
     @Override
     public String cdnNote() {
-        return cdnNote;
+        return cdnNote.note();
+    }
+
+    @Override
+    public String cdnProblem() {
+        return cdnNote.code();
     }
 
     @Override

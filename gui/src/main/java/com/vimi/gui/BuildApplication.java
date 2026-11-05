@@ -174,15 +174,18 @@ public final class BuildApplication {
                                         accounting::indexBuild,
                                         owner -> ownership.figures(owner, indexToken),
                                         contexts::release);
+                        var routesToken = new Cancellation();
+                        cleanup.addFirst(
+                                () -> {
+                                    routesToken.cancel();
+                                    return CompletableFuture.completedFuture(null);
+                                });
                         state.withRoutedRegions(
                                 product -> {
                                     try {
                                         return com.vibeminer.builds.CdnsRoutes.routedRegions(
                                                 com.vibeminer.builds.CdnsRoutes.newestFirst(
-                                                                source,
-                                                                product,
-                                                                com.vibeminer.access.Cancellation
-                                                                        .NONE)
+                                                                source, product, routesToken)
                                                         .join());
                                     } catch (RuntimeException unreadable) {
                                         return null;

@@ -103,7 +103,7 @@ final class CdnRegionFallbackTest {
         assertNull(resolution.route());
         assertFalse(resolution.fallback());
         assertTrue(
-                resolution.note().startsWith("No accepted CDN host for region cn"),
+                resolution.note().startsWith("No accepted CDN host for region CN"),
                 resolution.note());
     }
 
@@ -112,7 +112,7 @@ final class CdnRegionFallbackTest {
         var resolution = CdnsRoutes.resolve(tables(cdns()), "cn", Set.of());
         assertNull(resolution.route());
         assertTrue(
-                resolution.note().startsWith("No accepted CDN host for region cn"),
+                resolution.note().startsWith("No accepted CDN host for region CN"),
                 resolution.note());
         var direct = CdnsRoutes.resolve(tables(cdns()), "us", Set.of());
         assertFalse(direct.fallback());
@@ -175,7 +175,7 @@ final class CdnRegionFallbackTest {
             assertEquals(BuildOpenState.UNAVAILABLE, result.state());
             assertEquals("BUILD_NO_ACCEPTED_CDN_HOST", result.code());
             assertTrue(
-                    result.message().startsWith("No accepted CDN host for region cn"),
+                    result.message().startsWith("No accepted CDN host for region CN"),
                     result.message());
             assertTrue(
                     routed.routes.isEmpty(),
@@ -185,18 +185,168 @@ final class CdnRegionFallbackTest {
         }
     }
 
+    private static String versionsRows(String... rows) {
+        return "Region!STRING:0|BuildConfig!HEX:16|CDNConfig!HEX:16|VersionsName!STRING:0\n"
+                + String.join("\n", rows)
+                + "\n";
+    }
+
+    private static BuildRef savedCn(RoutedSource routed) {
+        return new BuildRef(
+                "wow", routed.build.ref.buildConfig(), routed.build.ref.cdnConfig(), "cn");
+    }
+
+    @Test
+    void sameConfigUsRowOlderThanThirtyTwoNewerRepliesStillBorrows() {
+        var routed = new RoutedSource();
+        String build = routed.build.ref.buildConfig(), cdn = routed.build.ref.cdnConfig();
+        routed.history.append(
+                1,
+                "wow",
+                "us",
+                Instant.EPOCH,
+                versionsRows(
+                        "cn|" + build + "|" + cdn + "|1.0.0.1",
+                        "us|" + build + "|" + cdn + "|1.0.0.1"));
+        for (int i = 1; i <= CdnsRoutes.MAX_REPLIES + 8; i++) {
+            String newer = String.format("%032x", i);
+            routed.history.append(
+                    1,
+                    "wow",
+                    "us",
+                    Instant.EPOCH.plusSeconds(i),
+                    "## seqn = "
+                            + i
+                            + "\n"
+                            + versionsRows(
+                                    "cn|" + newer + "|" + newer + "|1.0.0." + i,
+                                    "us|" + newer + "|" + newer + "|1.0.0." + i));
+        }
+        BuildOpener opener = new BuildOpener(routed);
+        try {
+            var result = opener.open(savedCn(routed)).join();
+            assertEquals(BuildOpenState.OPEN, result.state(), result.message());
+            assertEquals(
+                    List.of("us.cdn.blizzard.com", "level3.blizzard.com"),
+                    result.opened().cdn().route().hosts());
+        } finally {
+            opener.closeAsync().join();
+        }
+    }
+
+    @Test
+    void newestUsRowDiffersButAnOlderUsRowMatchesSoTheRouteIsBorrowed() {
+        var routed = new RoutedSource();
+        String build = routed.build.ref.buildConfig(), cdn = routed.build.ref.cdnConfig();
+        routed.history.append(
+                1,
+                "wow",
+                "us",
+                Instant.EPOCH,
+                versionsRows(
+                        "cn|" + build + "|" + cdn + "|1.0.0.1",
+                        "us|" + build + "|" + cdn + "|1.0.0.1"));
+        routed.history.append(
+                1,
+                "wow",
+                "us",
+                Instant.EPOCH.plusSeconds(100),
+                versionsRows(
+                        "cn|" + build + "|" + cdn + "|1.0.0.1",
+                        "us|" + build + "|" + OTHER_CDN_CONFIG + "|1.0.0.1"));
+        BuildOpener opener = new BuildOpener(routed);
+        try {
+            var result = opener.open(savedCn(routed)).join();
+            assertEquals(BuildOpenState.OPEN, result.state(), result.message());
+            assertTrue(result.opened().cdnNote().contains("region US"), result.opened().cdnNote());
+        } finally {
+            opener.closeAsync().join();
+        }
+    }
+
+    @Test
+    void sameCdnConfigUnderAnotherBuildConfigIsNotBorrowed() {
+        var routed = new RoutedSource();
+        String build = routed.build.ref.buildConfig(), cdn = routed.build.ref.cdnConfig();
+        routed.history.append(
+                1,
+                "wow",
+                "us",
+                Instant.EPOCH,
+                versionsRows(
+                        "cn|" + build + "|" + cdn + "|1.0.0.1",
+                        "us|" + "22".repeat(16) + "|" + cdn + "|1.0.0.2"));
+        BuildOpener opener = new BuildOpener(routed);
+        try {
+            var result = opener.open(savedCn(routed)).join();
+            assertEquals(BuildOpenState.UNAVAILABLE, result.state());
+            assertEquals(CdnsRoutes.NO_ACCEPTED_HOST, result.code());
+            assertTrue(result.message().contains("Choose another region"), result.message());
+            assertTrue(routed.routes.isEmpty());
+        } finally {
+            opener.closeAsync().join();
+        }
+    }
+
+    @Test
+    void noStoredHostListHasItsOwnCode() {
+        var routed = new RoutedSource(false);
+        BuildOpener opener = new BuildOpener(routed);
+        try {
+            var result = opener.open(savedCn(routed)).join();
+            assertEquals(BuildOpenState.UNAVAILABLE, result.state());
+            assertEquals(CdnsRoutes.NO_HOST_LIST, result.code());
+            assertTrue(result.message().contains("refresh the catalog"), result.message());
+        } finally {
+            opener.closeAsync().join();
+        }
+    }
+
+    @Test
+    void downloadAllReportsTheSameCodeAndCause() {
+        var routed = new RoutedSource();
+        routed.gated = false;
+        BuildOpener opener = new BuildOpener(routed);
+        var jobs =
+                new DownloadAllJobs(
+                        routed,
+                        t -> CompletableFuture.completedFuture(1L << 30),
+                        new DownloadAllJobs.Options(2, 16, 2, 10, java.time.Duration.ZERO));
+        try {
+            var opened = opener.open(savedCn(routed)).join();
+            assertEquals(BuildOpenState.OPEN, opened.state(), opened.message());
+            assertNull(opened.opened().cdn());
+            assertEquals(CdnsRoutes.NO_ACCEPTED_HOST, opened.opened().cdnProblem());
+            var result = jobs.start(opened.opened(), null).completion().join();
+            assertEquals(CdnsRoutes.NO_ACCEPTED_HOST, result.code());
+            assertTrue(
+                    result.message().startsWith("No accepted CDN host for region CN"),
+                    result.message());
+        } finally {
+            jobs.closeAsync().join();
+            opener.closeAsync().join();
+        }
+    }
+
     /** Stored history plus a synthetic build whose ENCODING is only reachable through a CDN. */
     private static final class RoutedSource implements ObjectSource {
         final SyntheticBuild build = new SyntheticBuild();
         final CatalogSource history = new CatalogSource();
         final List<CdnRoute> routes = new java.util.concurrent.CopyOnWriteArrayList<>();
+        volatile boolean gated = true;
 
         RoutedSource() {
-            history.append(2, "wow", "us", Instant.EPOCH, cdns());
+            this(true);
+        }
+
+        RoutedSource(boolean hostList) {
+            if (hostList) {
+                history.append(2, "wow", "us", Instant.EPOCH, cdns());
+            }
         }
 
         private ObjectResult gate(ObjectRequest request, CdnContext cdn) {
-            if (!request.key().equals(build.encodingKey)) {
+            if (!gated || !request.key().equals(build.encodingKey)) {
                 return null;
             }
             if (cdn == null) {

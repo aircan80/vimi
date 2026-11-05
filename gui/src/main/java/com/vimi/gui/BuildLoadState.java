@@ -51,7 +51,7 @@ public final class BuildLoadState implements BuildOpening.Observer {
 
     /**
      * Supplies, per product, the regions with an accepted CDN route (null when unknown), so a
-     * recorded region is one that can fetch files.
+     * recorded region is one that can fetch files. It is asked once per product per listing.
      */
     public BuildLoadState withRoutedRegions(Function<String, java.util.Set<String>> routed) {
         routedRegions = Objects.requireNonNull(routed);
@@ -146,31 +146,44 @@ public final class BuildLoadState implements BuildOpening.Observer {
     }
 
     /**
-     * Keeps an earlier record (the user's last chosen region) while it is still observed and
-     * routed; otherwise prefers a routed region, current evidence, then US.
+     * Records once: an earlier record (including a user's explicit choice) is kept while it is
+     * still observed and reachable, directly or through another routed region listing the same CDN
+     * config. Otherwise a routed region is preferred, then the earlier CDN config, current
+     * evidence and US, rather than the first region in sort order.
      */
     static BuildInfo.RegionEvidence recorded(
             BuildInfo build, BuildRegistry.Entry prior, java.util.Set<String> routed) {
-        java.util.function.Predicate<BuildInfo.RegionEvidence> reachable =
+        java.util.function.Predicate<BuildInfo.RegionEvidence> direct =
                 evidence -> routed == null || routed.contains(evidence.region());
         if (prior != null) {
+            String priorConfig = prior.reference().cdnConfig();
+            boolean reachable =
+                    build.observations().stream()
+                            .anyMatch(
+                                    evidence ->
+                                            direct.test(evidence)
+                                                    && evidence.cdnConfig()
+                                                            .equalsIgnoreCase(priorConfig));
             var kept =
                     build.observations().stream()
                             .filter(
                                     evidence ->
                                             evidence.region().equals(prior.reference().region())
                                                     && evidence.cdnConfig()
-                                                            .equalsIgnoreCase(
-                                                                    prior.reference().cdnConfig()))
-                            .filter(reachable)
+                                                            .equalsIgnoreCase(priorConfig))
                             .findFirst();
-            if (kept.isPresent()) return kept.get();
+            if (kept.isPresent() && (direct.test(kept.get()) || reachable)) return kept.get();
         }
+        String priorConfig = prior == null ? null : prior.reference().cdnConfig();
         return build.observations().stream()
                 .min(
                         java.util.Comparator.comparing(
                                         (BuildInfo.RegionEvidence evidence) ->
-                                                !reachable.test(evidence))
+                                                !direct.test(evidence))
+                                .thenComparing(
+                                        evidence ->
+                                                !evidence.cdnConfig().equalsIgnoreCase(
+                                                        String.valueOf(priorConfig)))
                                 .thenComparing(evidence -> !evidence.current())
                                 .thenComparing(evidence -> !evidence.region().equals("us"))
                                 .thenComparing(BuildInfo.RegionEvidence::region)

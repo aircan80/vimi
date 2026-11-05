@@ -30,17 +30,6 @@ public final class CdnsRoutes {
 
     public static CompletableFuture<List<VersionsTable>> newestFirst(
             ObjectSource source, String product, Cancellation token) {
-        return newestFirst(source, product, 2, token);
-    }
-
-    /** Recent distinct versions replies, read offline like {@link #newestFirst}. */
-    public static CompletableFuture<List<VersionsTable>> newestVersionsFirst(
-            ObjectSource source, String product, Cancellation token) {
-        return newestFirst(source, product, 1, token);
-    }
-
-    private static CompletableFuture<List<VersionsTable>> newestFirst(
-            ObjectSource source, String product, int kind, Cancellation token) {
         return TASKS.submit(
                 token,
                 () -> {
@@ -52,7 +41,7 @@ public final class CdnsRoutes {
                             List<History.Entry> page =
                                     source.readHistory(
                                                     new History.Query(
-                                                            product, null, kind, after, 1000),
+                                                            product, null, 2, after, 1000),
                                                     token)
                                             .join();
                             for (History.Entry entry : page) {
@@ -158,12 +147,20 @@ public final class CdnsRoutes {
         return null;
     }
 
+    /** The build has no accepted CDN host in its region or any region serving its config. */
+    public static final String NO_ACCEPTED_HOST = "BUILD_NO_ACCEPTED_CDN_HOST";
+
+    /** No CDN host list (cdns reply) is stored for the product at all. */
+    public static final String NO_HOST_LIST = "BUILD_NO_CDN_HOST_LIST";
+
     /**
      * How a build reaches the CDN. Only official hosts are ever accepted ({@link CdnRoute}); a
      * region without one may borrow another region's accepted route, but only when that region
-     * advertises the same build with the exact same CDN config.
+     * advertises the same build with the exact same CDN config. {@code code} is null when a route
+     * was found.
      */
-    public record Resolution(CdnRoute route, String requested, String served, String note) {
+    public record Resolution(
+            CdnRoute route, String requested, String served, String code, String note) {
         public boolean fallback() {
             return route != null && requested != null && !requested.equals(served);
         }
@@ -173,14 +170,24 @@ public final class CdnsRoutes {
             List<VersionsTable> cdnsNewestFirst, String region, Set<String> sameConfigRegions) {
         CdnRoute direct = route(cdnsNewestFirst, region);
         if (direct != null) {
-            return new Resolution(direct, region, region, null);
+            return new Resolution(direct, region, region, null, null);
         }
         if (cdnsNewestFirst.isEmpty()) {
             return new Resolution(
-                    null, region, null, "No CDN host list is stored for this product");
+                    null,
+                    region,
+                    null,
+                    NO_HOST_LIST,
+                    "No CDN host list is stored for this product; refresh the catalog with"
+                            + " network access");
         }
         if (region == null) {
-            return new Resolution(null, null, null, "No accepted CDN host is listed");
+            return new Resolution(
+                    null,
+                    null,
+                    null,
+                    NO_ACCEPTED_HOST,
+                    "No accepted CDN host is listed; refresh the catalog with network access");
         }
         List<String> candidates =
                 sameConfigRegions.stream()
@@ -196,9 +203,10 @@ public final class CdnsRoutes {
                         borrowed,
                         region,
                         other,
+                        null,
                         "Region "
                                 + label(region)
-                                + " has no accepted CDN host; files come from "
+                                + " has no accepted CDN host; files come from region "
                                 + label(other)
                                 + ", which serves the same CDN config");
             }
@@ -207,11 +215,83 @@ public final class CdnsRoutes {
                 null,
                 region,
                 null,
+                NO_ACCEPTED_HOST,
                 "No accepted CDN host for region "
-                        + region
+                        + label(region)
                         + (candidates.isEmpty()
-                                ? ", and no other region serves the same CDN config"
-                                : ", and no region serving the same CDN config has one"));
+                                ? "; no stored versions reply shows another region serving the"
+                                        + " same CDN config"
+                                : "; no region serving the same CDN config has an accepted host")
+                        + ". Choose another region's listing of this build, if one exists.");
+    }
+
+    /**
+     * Every region that any stored versions reply shows serving this build config with exactly this
+     * CDN config. Unlike {@link #newestFirst}, the whole history is read, one document at a time,
+     * so an older same-config listing still counts.
+     */
+    public static CompletableFuture<Set<String>> regionsServing(
+            ObjectSource source,
+            String product,
+            String buildConfig,
+            String cdnConfig,
+            Cancellation token) {
+        return TASKS.submit(
+                token,
+                () -> {
+                    Set<ObjectKey> documents = new java.util.LinkedHashSet<>();
+                    History.Entry after = null;
+                    Set<String> regions = new TreeSet<>();
+                    try {
+                        while (true) {
+                            token.check();
+                            List<History.Entry> page =
+                                    source.readHistory(
+                                                    new History.Query(
+                                                            product, null, 1, after, 1000),
+                                                    token)
+                                            .join();
+                            for (History.Entry entry : page) {
+                                documents.add(entry.document());
+                            }
+                            if (page.size() < 1000) {
+                                break;
+                            }
+                            after = page.getLast();
+                        }
+                    } catch (RuntimeException e) {
+                        if (CatalogTasks.unwrap(e) instanceof CancellationException canceled) {
+                            throw canceled;
+                        }
+                        return regions;
+                    }
+                    for (ObjectKey document : documents) {
+                        try {
+                            token.check();
+                            var reply =
+                                    source.getKey(
+                                                    new ObjectRequest(document),
+                                                    null,
+                                                    FetchPriority.INTERACTIVE,
+                                                    token)
+                                            .join();
+                            byte[] bytes = reply.bytes();
+                            if (!reply.isPresent() || bytes == null) {
+                                continue;
+                            }
+                            regions.addAll(
+                                    regionsServing(
+                                            List.of(VersionsTable.parse(bytes)),
+                                            buildConfig,
+                                            cdnConfig));
+                        } catch (RuntimeException e) {
+                            if (CatalogTasks.unwrap(e) instanceof CancellationException canceled) {
+                                throw canceled;
+                            }
+                        }
+                    }
+                    return regions;
+                });
     }
 
     /** Regions whose versions rows list this build config with exactly this CDN config. */

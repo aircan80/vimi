@@ -283,11 +283,16 @@ public final class DownloadAllJobs {
         private Result runCore() {
             CdnContext cdn = build.cdn();
             if (cdn == null) {
+                if (build.cdnProblem() != null) {
+                    return finish(
+                            Outcome.FAILED,
+                            build.cdnProblem(),
+                            build.cdnNote() + " Nothing was fetched.");
+                }
                 return finish(
                         Outcome.NEEDS_NETWORK,
                         "OBJECT_ACCESS_NO_CDN_CONTEXT",
-                        (build.cdnNote() == null ? "The build has no CDN route" : build.cdnNote())
-                                + "; nothing fetched");
+                        "The build has no CDN route; nothing fetched");
             }
             token.check();
             ObjectLedger ledger = ledgerSource.ledger();

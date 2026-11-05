@@ -21,6 +21,14 @@ public interface Build {
         return null;
     }
 
+    /**
+     * The failure code when the build has no CDN route ({@link CdnsRoutes#NO_ACCEPTED_HOST} or
+     * {@link CdnsRoutes#NO_HOST_LIST}); null when a route was found.
+     */
+    default String cdnProblem() {
+        return null;
+    }
+
     FileResolution resolve(long fileDataId);
 
     FileResolution resolve(String path);
