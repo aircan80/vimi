@@ -9,15 +9,16 @@ import java.util.concurrent.CompletableFuture;
 /** Small application-arbiter adapter; readiness and actual ownership drain stay separate. */
 final class WorldStreamGpuOwner {
     /**
-     * BASIC_EXTERIOR_V1 outdoor buildings are opt-in with {@code -Dvimi.world.exteriors=true}.
-     * Their objects are delivered late, after terrain commits, and object preparation runs only
-     * while terrain is idle (terrain preempts it), so terrain never waits for buildings.
+     * BASIC_EXTERIOR_V1 outdoor buildings are on by default; {@code -Dvimi.world.exteriors=false}
+     * turns them off. Their objects are delivered late, after terrain commits, and object
+     * preparation runs only while terrain is idle (terrain preempts it), so terrain never waits
+     * for buildings.
      */
     static final boolean EXTERIORS = exteriorsEnabled(System.getProperty("vimi.world.exteriors"));
 
-    /** Only {@code true} (any letter case) selects the exterior session profile. */
+    /** Only {@code false} (any letter case) selects the terrain-only session profile. */
     static boolean exteriorsEnabled(String property) {
-        return Boolean.parseBoolean(property);
+        return !"false".equalsIgnoreCase(property);
     }
 
     /** The streaming session this owner opens; its profile follows {@link #EXTERIORS}. */

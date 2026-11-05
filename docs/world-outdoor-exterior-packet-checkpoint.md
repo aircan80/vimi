@@ -6,33 +6,82 @@ uploaded by the hot streaming child, and drawn in the GUI World Explorer in the 
 camera and depth buffer as terrain. Lighting is BASIC: texture1 only with the fixed world-wmo
 light and fog, not client parity.
 
-## Status: opt-in
+## Status: on by default, delivered late
 
-Exteriors are **off by default** since the follow-up to #217. Pass
-`-Dvimi.world.exteriors=true` to the GUI to see outdoor buildings. The reason is the readiness
-lag below: under profile 2 a tile's terrain OFFER waits for that tile's object preparation, which
-took 0.4 to 21 s per tile on a cold cache. That is not acceptable as a default. Under the default
-profile the producer never starts object preparation, so terrain stages and commits exactly as
-before #217 (`WorldStreamSourceBridgeTest` injects an object preparer that would block, and the default
-profile never enters it while the terrain packet is produced).
+#217 made a tile's terrain OFFER wait for that tile's object preparation (0.4 to 21 s per tile
+on a cold cache), so #218 made exteriors opt-in. The GUI now delivers the objects **late**, after
+the tile's terrain has committed, and exteriors are **on by default** again.
+`-Dvimi.world.exteriors=false` turns them off (terrain-only profile 1).
 
-Measured on real data (private headless Vulkan run through `WorldStreamSourceController` with the
-real child, Azeroth 3x3 around 32,32, of which 7 tiles are available; local-only, warm private
-cache, no network; two runs each):
+### Late delivery design
 
-| | First tile resident | All 7 tiles ready |
-| --- | --- | --- |
-| `-Dvimi.world.exteriors=true` (#217 default) | 2.1 / 2.2 s | 9.3 / 9.1 s |
-| default (exteriors off) | 1.4 / 1.0 s | 4.8 / 3.8 s |
+- **Scheduling on the single source lane** (`WorldStreamSourceController`). `WorldStreamScopes`
+  admits one source operation at a time, so object preparation is deferred and preemptible:
+  - It starts only when terrain is idle: every wanted tile is current or unavailable, and
+    nothing is pending, staged or committing. It runs on its own `world-exterior-objects` worker,
+    one current resident at a time, nearest first.
+  - The moment a wanted tile is missing, the controller cancels the preparation and starts that
+    terrain as soon as the canceled operation has drained. A preempted resident is retried the
+    next time terrain is idle.
+  - The terrain producer (`WorldStreamSourceBridge.Producer`) no longer prepares or names
+    objects at all; tile packets carry terrain and water only.
+- **Protocol.** A new control command and a reply, both bound to the resident's tile
+  transaction and exact lease:
+  - `OBJECTS <txn> <serial> <slot> <generation> tile-<txn>.wso <length> <sha256>`
+  - `OBJECTS_DONE <txn> <serial> <slot> <generation> ATTACHED|FAILED|DROPPED`
 
-On a cold cache the opt-in cost is larger (0.4 to 21 s of object preparation per tile).
+  The objects file format is unchanged; its identity is the resident tile's nonce, scope,
+  transaction, lease and coordinates.
+- **Parent** (`WorldStreamTransport.Session.attachObjects`).
+  - At most one delivery is in flight; a second is refused `RETRY_LATER`. It uses its own
+    reliable-command credit; offer, cancel, commit and objects together stay within the existing
+    four.
+  - A seventh transport worker (`objects`) writes the file, publishes `OBJECTS`, waits for the
+    reply and deletes the file. This never touches the tile, commit or file-task lanes.
+  - `WorldStreamParentState.lateObjects` admits only an active resident of the current slot
+    generation that carried no inline objects, once per resident. A resident already retired is
+    `DROPPED` without any command.
+  - On close, an advertised file is deleted only after the child has actually exited and its
+    statuses drained; the future completes with a `CancellationException`.
+  - `Resident.exteriorObjects()` reports `DRAWN` or `FAILED` once the reply arrives.
+- **Child** (`WorldStreamSession`, `WorldStreamState`, `BgfxWorldStreamRenderer`).
+  - The mailbox keeps objects in a one-deep lane of their own, never queued with tiles.
+  - `WorldStreamState.objectsOffer` admits only the exact active lease whose tile transaction
+    matches, once per generation. Anything else is answered `DROPPED` without opening the file.
+  - The file is read and packed on a separate `world-v2-objects-decoder` worker.
+  - The upload uses only `bgfx_copy` slices of at most 256 KiB (no release-callback tickets). It
+    runs only in loop iterations without a terrain upload, and never after the frame's draw
+    submission.
+  - It attaches only if the same generation is still active in its ready slot without objects.
+    A new lease on the slot, a staged cancel or a commit that retires it makes the result
+    `DROPPED`, and the built resources are destroyed.
+  - An attach bumps an objects revision, so an unchanged camera redraws once.
+  - Failures (missing, changed or truncated file, invalid tables, upload errors) are `FAILED`
+    for these objects only.
+- **Status.** The ready line adds "loading buildings" while a delivery is in flight.
 
-Turning exteriors back on by default needs a decoupled delivery: terrain committed first, and
-the objects file delivered later for the same tile and slot generation, attached only if the
-generation still matches. That needs a new control message and child slot state, an upload into
-an already active slot, and scheduling on the single source lane, because `WorldStreamScopes`
-admits one source operation at a time and an object preparation would otherwise hold up the
-next tile's terrain. None of this exists yet.
+### Measurements
+
+Measured on real data: a private headless Vulkan run through `WorldStreamSourceController` with
+the real child, Azeroth 3x3 around 32,32, of which 7 tiles are available. The source was
+local-only over a copy of the existing warm private cache, with no network. Runs alternated on
+and off.
+
+| | First tile resident | All 7 tiles' terrain | All buildings attached |
+| --- | --- | --- | --- |
+| exteriors on (late delivery) | 1.07 / 1.05 s | 3.62 / 3.65 s | 8.5 / 8.6 s (43 buildings on 7) |
+| exteriors off | 1.08 / 1.08 s | 3.69 / 3.67 s | n/a |
+| #218 opt-in (coupled, for reference) | 2.1 / 2.2 s | 9.3 / 9.1 s | with terrain |
+
+Camera move while buildings were loading: as soon as all 7 tiles were ready, the neighborhood
+moved to the 3x3 around 33,32. Object preparation had just started, so it was preempted. The new
+neighborhood's terrain was complete 1.42 / 1.22 s after the move with exteriors on, and
+1.30 / 1.24 s with them off. Buildings then attached on 6 tiles. The 3 tiles at x = 34 report
+"building objects failed": their object sources are not in the local-only warm cache
+(`SOURCE_INPUT`).
+
+Atlas claims were 0 after every run. A cold-cache comparison was not run, because it would need
+network fetches.
 
 ## Session profile
 
@@ -46,8 +95,10 @@ for terrain only (unchanged bytes) and `2` for BASIC_EXTERIOR_V1. Under profile 
 
 A profile 1 session never accepts a header that names objects; the child rejects that packet.
 `WorldStreamTransport.Spec` gains the flag, and its old three-argument constructor keeps
-profile 1. The GUI selects profile 2 only with `-Dvimi.world.exteriors=true`; by default it opens
-the terrain-only profile 1 (see "Status: opt-in" above).
+profile 1. The GUI opens profile 2 by default, and the terrain-only profile 1 with
+`-Dvimi.world.exteriors=false`. Profile 2 also admits the late `OBJECTS` command (see "Status"
+above). The GUI uses only late delivery; inline header-named objects remain supported by the
+transport and child.
 
 ## Objects file (`WorldStreamObjectsFile`, `tile-<txn>.wso`)
 
@@ -84,10 +135,14 @@ The body follows: the model, mesh, range, placement and image tables, then 32-by
 
 ## Ownership and lifetime
 
-- The GUI bridge (`WorldStreamSourceBridge.Producer`) prepares the object set first, as its own
-  serialized BASIC_EXTERIOR source operation that is never nested in the terrain write. It
-  copies the set into `WorldStreamTileWriter.Exterior`, closes the source set and publishes the
-  objects file.
+This section describes the inline (header-named) path of #217. The GUI now uses the late path in
+"Status" above instead; the inline path stays supported by the transport and child.
+
+- In #217 the GUI bridge (`WorldStreamSourceBridge.Producer`) prepared the object set first, as
+  its own serialized BASIC_EXTERIOR source operation never nested in the terrain write. It
+  copied the set into `WorldStreamTileWriter.Exterior`, closed the source set and published the
+  objects file. The bridge's `WorldStreamSourceBridge.prepareExterior` keeps that preparation
+  and copy for the late path.
 - The terrain write then names the file in its header. `WorldStreamPacketFile` adopts the
   sibling path, so close or retirement deletes both files together.
 - Before adoption, the bridge's `ObjectsFile` owner deletes the objects file on any failure.
@@ -165,8 +220,7 @@ the refusal site. Detailed omission counts in the GUI remain delivery step 3.
     8,277 vertices.
   - Four headings show textured buildings (thatched houses, a chapel and its bell tower) seated
     on the terrain, occluded by and occluding terrain correctly.
-  - With exteriors off (`-Dvimi.world.exteriors=false` then; now the default), the same camera
-    shows bare terrain.
+  - With exteriors off (`-Dvimi.world.exteriors=false`), the same camera shows bare terrain.
   - All owners drained, with atlas claims at 0.
   - Frames and logs are under `$HOME/.cache/vimi-tmp/exterior-visible-proof/` and are not
     committed, because they derive from game assets.
@@ -200,9 +254,8 @@ A fresh reviewer read the code at ba97007e. Its findings and the fixes:
 ## Not done
 
 - **Backends.** Metal and DX11 were not run; only Linux Vulkan was exercised.
-- **Readiness lag (opt-in only).** Under `-Dvimi.world.exteriors=true` a tile's terrain waits
-  for its object preparation before its OFFER, so the first terrain appears later on a cold
-  cache. This is why exteriors are off by default; see "Status: opt-in".
+- **Cold-cache late delivery.** Only the warm-cache comparison above was measured. On a cold cache
+  buildings arrive later, but terrain does not wait for them.
 - **Delivery step 3.** GUI omission counts and the BASIC disclosure text.
 - **Not in this slice.** Doodads, cutout and blended materials, cross-tile sharing of duplicate
   WMOs, and a larger view distance.

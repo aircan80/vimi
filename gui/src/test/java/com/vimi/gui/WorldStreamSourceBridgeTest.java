@@ -30,23 +30,23 @@ public final class WorldStreamSourceBridgeTest {
         destinationStoppingCancelsActualSourceAdmission();
         cleanSourceRetirementMapsButProviderFailureStaysFatal();
         stickySourceCleanupHealthIsFatalBeforeFileMove();
-        exteriorsAreOptIn();
+        exteriorsAreOnByDefault();
         terrainProducerNeverWaitsForObjects();
     }
 
-    private static void exteriorsAreOptIn() {
-        check(!WorldStreamGpuOwner.exteriorsEnabled(null), "Exteriors are off without the property");
-        check(!WorldStreamGpuOwner.exteriorsEnabled("false"), "false keeps exteriors off");
-        check(!WorldStreamGpuOwner.exteriorsEnabled(""), "An empty value keeps exteriors off");
-        check(WorldStreamGpuOwner.exteriorsEnabled("true"), "true opts in to exteriors");
-        check(WorldStreamGpuOwner.exteriorsEnabled("TRUE"), "The opt-in ignores letter case");
-        check(!WorldStreamGpuOwner.exteriorsEnabled("yes"), "Only true opts in");
+    private static void exteriorsAreOnByDefault() {
+        check(WorldStreamGpuOwner.exteriorsEnabled(null), "Exteriors are on without the property");
+        check(WorldStreamGpuOwner.exteriorsEnabled("true"), "true keeps exteriors on");
+        check(WorldStreamGpuOwner.exteriorsEnabled(""), "An empty value keeps exteriors on");
+        check(!WorldStreamGpuOwner.exteriorsEnabled("false"), "false turns exteriors off");
+        check(!WorldStreamGpuOwner.exteriorsEnabled("FALSE"), "The opt-out ignores letter case");
+        check(WorldStreamGpuOwner.exteriorsEnabled("no"), "Only false opts out");
         var spec = WorldStreamGpuOwner.spec("0".repeat(64));
         check(spec.exteriorObjects() == WorldStreamGpuOwner.EXTERIORS,
                 "The GUI session profile follows the property");
         if (System.getProperty("vimi.world.exteriors") == null) {
-            check(!WorldStreamGpuOwner.EXTERIORS && !spec.exteriorObjects(),
-                    "The default GUI session is terrain only");
+            check(WorldStreamGpuOwner.EXTERIORS && spec.exteriorObjects(),
+                    "The default GUI session draws exterior buildings");
         }
     }
 
