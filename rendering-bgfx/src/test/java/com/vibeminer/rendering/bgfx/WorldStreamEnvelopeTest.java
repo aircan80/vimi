@@ -29,8 +29,9 @@ final class WorldStreamEnvelopeTest {
         assertEquals(7, values.getLong(80));
         assertEquals(800, values.getInt(88));
         assertEquals(500, values.getInt(92));
-        assertEquals(26, values.getInt(96));
-        assertEquals(25, values.getInt(100));
+        // The default (near) session: 10 slots, 9 active.
+        assertEquals(10, values.getInt(96));
+        assertEquals(9, values.getInt(100));
         assertEquals(2_907_264, values.getInt(104));
         assertEquals(
                 session,
@@ -44,6 +45,30 @@ final class WorldStreamEnvelopeTest {
             byte[] corrupt = bytes.clone();
             corrupt[offset] ^= 1;
             assertThrows(WorldStreamEnvelope.Invalid.class, () -> decodeSession(corrupt));
+        }
+    }
+
+    @Test
+    void sessionCarriesItsViewDistanceAndRefusesOtherCaps() throws Exception {
+        var far = new WorldStreamEnvelope.Session(NONCE, SCOPE, 7, true, 25);
+        byte[] bytes = WorldStreamEnvelope.encode(far);
+        var values = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+        assertEquals(26, values.getInt(96));
+        assertEquals(25, values.getInt(100));
+        assertEquals(far, decodeSession(bytes));
+        assertEquals(26, far.slots());
+        for (int[] caps : new int[][] {{26, 9}, {10, 25}, {25, 24}, {11, 10}, {27, 26}, {0, 0}}) {
+            byte[] corrupt = bytes.clone();
+            ByteBuffer.wrap(corrupt)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .putInt(96, caps[0])
+                    .putInt(100, caps[1]);
+            assertThrows(WorldStreamEnvelope.Invalid.class, () -> decodeSession(corrupt));
+        }
+        for (int active : new int[] {0, 8, 10, 24, 26}) {
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> new WorldStreamEnvelope.Session(NONCE, SCOPE, 7, false, active));
         }
     }
 

@@ -29,6 +29,22 @@ public final class WorldStreamNeighborhoodTest {
             require(outer.x() == 2 * wanted[i][0] - 32 && outer.y() == 2 * wanted[i][1] - 32,
                     "First outer-ring load follows the native camera heading");
         }
+        // NEAR keeps the legacy 3x3: the first nine of the FAR order, nothing beyond ring 1.
+        for (int i = 0; i < wanted.length; i++) {
+            double yaw = i * Math.PI / 2;
+            var near = WorldStreamNeighborhood.select(recorded, 32, 32, yaw,
+                    WorldStreamTransport.ViewDistance.NEAR);
+            require(near.size() == 9 && near.equals(
+                            WorldStreamNeighborhood.select(recorded, 32, 32, yaw).subList(0, 9)),
+                    "Near demand is the inner prefix of the far demand");
+        }
+        require(WorldStreamGpuOwner.viewDistance(null) == WorldStreamTransport.ViewDistance.NEAR
+                        && WorldStreamGpuOwner.viewDistance("") == WorldStreamTransport.ViewDistance.NEAR
+                        && WorldStreamGpuOwner.viewDistance("near") == WorldStreamTransport.ViewDistance.NEAR
+                        && WorldStreamGpuOwner.viewDistance("bogus") == WorldStreamTransport.ViewDistance.NEAR
+                        && WorldStreamGpuOwner.viewDistance("Far") == WorldStreamTransport.ViewDistance.FAR
+                        && WorldStreamGpuOwner.viewDistance(" far ") == WorldStreamTransport.ViewDistance.FAR,
+                "Only an explicit far opts in; the default is near");
         var sparse = List.of(recorded.getFirst(), new WorldFormats.Tile(33, 32, 7, 0, 0),
                 new WorldFormats.Tile(34, 30, 7, 0, 0));
         require(WorldStreamNeighborhood.select(sparse, 32, 32, Math.PI)

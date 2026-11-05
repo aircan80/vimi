@@ -277,7 +277,7 @@ final class WorldStreamSourceController {
             LongSupplier clock,
             WorldStreamSourceBridge.ExteriorPreparer exteriorPreparer) {
         this(request, starter, events, fxPost, clock, exteriorPreparer,
-                WorldStreamTransport.MAX_RESIDENTS);
+                WorldStreamGpuOwner.VIEW_DISTANCE.residents());
     }
 
     /** Tests may also bound the neighborhood below the protocol's resident limit. */
@@ -347,6 +347,12 @@ final class WorldStreamSourceController {
             long policy, WorldStreamTransport.Resident[] ordered) {
         commitIssuedCapacity = session.capacityRevision();
         return session.commit(policy, ordered);
+    }
+
+    /** The resident bound, never above what the open session's view distance admits. */
+    private int residentLimit() {
+        var open = session;
+        return open == null ? residents : Math.min(residents, open.viewDistance().residents());
     }
 
     void pulse() {
@@ -768,7 +774,7 @@ final class WorldStreamSourceController {
             var latest = camera;
             if (latest == null) return;
             var target = new ArrayList<>(current);
-            if (target.size() == residents) {
+            if (target.size() >= residentLimit()) {
                 int outgoing = target.size() - 1;
                 for (int i = target.size() - 1; i >= 0; i--) {
                     if (!containsResident(wanted, target.get(i).resident())) {

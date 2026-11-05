@@ -88,7 +88,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
      * GPU bytes all resident and building exterior object sets may reserve together: the former
      * ten-slot worst case. A set that does not fit fails alone and its terrain is kept.
      */
-    static final long OBJECT_BUDGET_BYTES = 10L * WorldStreamObjectsFile.MAX_BYTES;
+    static final long OBJECT_BUDGET_BYTES = 160L << 20;
 
     /** Terrain 65536 plus optional static water 16384 instances in one per-slot buffer. */
     static final int MAX_TRIANGLES = 65536 + WorldStreamPackedTile.MAX_WATER_TRIANGLES;
@@ -346,7 +346,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private final java.util.ArrayList<Long> blendOrder = new java.util.ArrayList<>();
     private final java.util.ArrayList<Double> blendDistances = new java.util.ArrayList<>();
     private final WorldStreamEnvelope.Session session;
-    private final Slot[] slots = new Slot[SLOT_COUNT];
+    private final Slot[] slots;
     private final AtomicReference<Upload> uploading = new AtomicReference<>();
     private final AtomicLong callbackCount = new AtomicLong();
     private final AtomicReference<String> callbackFailure = new AtomicReference<>();
@@ -371,6 +371,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     BgfxWorldStreamRenderer(WorldStreamEnvelope.Session session) throws IOException {
         this.session = java.util.Objects.requireNonNull(session);
+        // A near session allocates fewer slots of the same fixed size; never more than the ceiling.
+        slots = new Slot[session.slots()];
         try {
             var caps = bgfx_get_caps();
             BgfxTerrainRenderer.requireCapabilities(
@@ -928,10 +930,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 || expected == Long.MAX_VALUE
                 || next != expected + 1
                 || ordered == null
-                || ordered.size() > WorldStreamState.MAX_ACTIVE) {
+                || ordered.size() > session.maxActive()) {
             throw new IllegalArgumentException("Commit revision/count");
         }
-        boolean[] seen = new boolean[SLOT_COUNT], coordinates = new boolean[4096];
+        boolean[] seen = new boolean[slots.length], coordinates = new boolean[4096];
         for (var lease : ordered) {
             if (lease == null
                     || seen[lease.slot()]

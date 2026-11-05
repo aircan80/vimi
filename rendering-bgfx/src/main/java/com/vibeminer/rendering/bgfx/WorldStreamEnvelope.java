@@ -27,16 +27,35 @@ final class WorldStreamEnvelope {
      * tile headers may name a per-tile objects file and whose STAGED status reports its outcome.
      */
     record Session(
-            WorldStreamState.Nonce nonce, String scope, long policy, boolean exteriorObjects) {
+            WorldStreamState.Nonce nonce,
+            String scope,
+            long policy,
+            boolean exteriorObjects,
+            int maxActive) {
+        /** Active-table bound of the near 3 x 3 view distance. */
+        static final int NEAR_ACTIVE = 9;
+
         Session(WorldStreamState.Nonce nonce, String scope, long policy) {
             this(nonce, scope, policy, false);
         }
 
+        Session(WorldStreamState.Nonce nonce, String scope, long policy, boolean exteriorObjects) {
+            this(nonce, scope, policy, exteriorObjects, NEAR_ACTIVE);
+        }
+
         Session {
             Objects.requireNonNull(nonce);
-            if (scope == null || !scope.matches("[0-9a-f]{64}") || policy <= 0) {
+            if (scope == null
+                    || !scope.matches("[0-9a-f]{64}")
+                    || policy <= 0
+                    || maxActive != NEAR_ACTIVE && maxActive != WorldStreamState.MAX_ACTIVE) {
                 throw new IllegalArgumentException("Invalid session metadata");
             }
+        }
+
+        /** Renderer slots of this session: every active one plus one staged. */
+        int slots() {
+            return maxActive + 1;
         }
     }
 
@@ -94,7 +113,7 @@ final class WorldStreamEnvelope {
         out.put(HexFormat.of().parseHex(session.scope()));
         out.putInt(1).putInt(1).putInt(1).putInt(session.exteriorObjects() ? 2 : 1);
         out.putLong(session.policy()).putInt(800).putInt(500);
-        out.putInt(WorldStreamState.SLOTS).putInt(WorldStreamState.MAX_ACTIVE);
+        out.putInt(session.slots()).putInt(session.maxActive());
         out.putInt(MAX_PACKET_BYTES);
         return out.array();
     }
@@ -111,15 +130,16 @@ final class WorldStreamEnvelope {
             int objects = in.getInt();
             require(objects == 1 || objects == 2, "Unsupported session profile");
             long policy = in.getLong();
+            require(in.getInt() == 800 && in.getInt() == 500, "Invalid session caps");
+            int slots = in.getInt(), active = in.getInt();
             require(
-                    in.getInt() == 800
-                            && in.getInt() == 500
-                            && in.getInt() == WorldStreamState.SLOTS
-                            && in.getInt() == WorldStreamState.MAX_ACTIVE
+                    (active == Session.NEAR_ACTIVE || active == WorldStreamState.MAX_ACTIVE)
+                            && slots == active + 1
                             && in.getInt() == MAX_PACKET_BYTES,
                     "Invalid session caps");
             zero(in, BYTES);
-            return new Session(nonce, HexFormat.of().formatHex(scope), policy, objects == 2);
+            return new Session(
+                    nonce, HexFormat.of().formatHex(scope), policy, objects == 2, active);
         } catch (IllegalArgumentException error) {
             throw new Invalid("Invalid session fields");
         }

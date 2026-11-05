@@ -11,8 +11,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Native evidence for the 5 x 5 World neighborhood (issue #173): fills every active slot with a
- * maximum-triangle textured tile and times camera frames at 9 and at 25 residents. All tiles share
+ * Native evidence for the World view distances (issue #173): for NEAR (3 x 3) and FAR (5 x 5) fills
+ * every active slot with a maximum-triangle textured tile and times camera frames. All tiles share
  * the authored footprint, so every triangle stays inside the far cut: a vertex-load worst case.
  * Prints the timings; asserts only completion and resource counts, never a frame rate.
  */
@@ -25,11 +25,33 @@ public final class WorldStreamNeighborhoodNativeProof {
         Path base = Path.of(args[0]);
         Files.createDirectories(base);
         Path directory = Files.createTempDirectory(base, "neighborhood-");
-        Path mapping = directory.resolve("frames-v2");
+        var report = new StringBuilder("WORLD_NEIGHBORHOOD_PASS");
         try (var worker =
-                        Executors.newSingleThreadExecutor(
-                                Thread.ofPlatform().daemon().name("world-proof-pack").factory());
-                var frames =
+                Executors.newSingleThreadExecutor(
+                        Thread.ofPlatform().daemon().name("world-proof-pack").factory())) {
+            for (var distance : WorldStreamTransport.ViewDistance.values()) {
+                report.append(' ').append(run(directory, worker, distance));
+            }
+        }
+        System.out.println(report);
+    }
+
+    /** One owner per view distance: fills every active slot, then times frames. */
+    private static String run(
+            Path directory,
+            java.util.concurrent.ExecutorService worker,
+            WorldStreamTransport.ViewDistance distance)
+            throws Exception {
+        var session =
+                new WorldStreamEnvelope.Session(
+                        WorldStreamNativeProof.NONCE,
+                        WorldStreamNativeProof.SCOPE,
+                        1,
+                        false,
+                        distance.residents());
+        Path mapping = directory.resolve("frames-" + distance);
+        WorldStreamNativeProof.sequence = 0;
+        try (var frames =
                         WorldFrameFileV2.create(
                                 mapping,
                                 WorldStreamNativeProof.NONCE,
@@ -40,20 +62,18 @@ public final class WorldStreamNeighborhoodNativeProof {
                                 WorldStreamNativeProof.NONCE,
                                 WorldStreamNativeProof.SCOPE);
                 var owner =
-                        new WorldStreamNativeOwner(
-                                WorldStreamNativeProof.SESSION,
-                                frames,
-                                BGFX_RENDERER_TYPE_VULKAN)) {
+                        new WorldStreamNativeOwner(session, frames, BGFX_RENDERER_TYPE_VULKAN)) {
+            long idleHeap = owner.stats().gpuHeapBytes();
             var active = new ArrayList<WorldStreamState.Lease>();
-            long content = 0, tx = 1;
-            var report = new StringBuilder("WORLD_NEIGHBORHOOD_PASS");
-            for (int slot = 0; slot < WorldStreamState.MAX_ACTIVE; slot++) {
+            long content = 0;
+            var report = new StringBuilder(distance.name().toLowerCase(java.util.Locale.ROOT));
+            for (int slot = 0; slot < distance.residents(); slot++) {
                 var lease = new WorldStreamState.Lease(slot, 1, slot + 1);
                 var packed =
                         WorldStreamNativeProof.prepare(
                                         worker,
                                         directory,
-                                        tx++,
+                                        100L * distance.ordinal() + slot + 1,
                                         lease,
                                         5 + slot % 5,
                                         17 + slot / 5,
@@ -65,19 +85,22 @@ public final class WorldStreamNeighborhoodNativeProof {
                 owner.commit(content, content + 1, active);
                 content++;
                 WorldStreamNativeProof.accepted(owner, reader, content);
-                if (active.size() == 9 || active.size() == WorldStreamState.MAX_ACTIVE) {
-                    report.append(" residents")
-                            .append(active.size())
-                            .append('=')
-                            .append(time(owner, reader, content));
-                }
             }
             var stats = owner.stats();
-            if (stats.dynamicBuffers() != BgfxWorldStreamRenderer.SLOT_COUNT
+            if (stats.dynamicBuffers() != session.slots()
+                    || session.slots() > BgfxWorldStreamRenderer.SLOT_COUNT
                     || stats.upload().liveUploadBytes() != 0) {
                 throw new AssertionError("Fixed slot resources " + stats);
             }
-            System.out.println(report + " gpuHeapBytes=" + stats.gpuHeapBytes());
+            return report.append(":residents=")
+                    .append(active.size())
+                    .append(",frame=")
+                    .append(time(owner, reader, content))
+                    .append(",gpuHeapBytes=")
+                    .append(stats.gpuHeapBytes())
+                    .append(",idleGpuHeapBytes=")
+                    .append(idleHeap)
+                    .toString();
         }
     }
 

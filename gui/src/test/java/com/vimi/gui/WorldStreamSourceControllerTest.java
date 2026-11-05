@@ -85,7 +85,8 @@ public final class WorldStreamSourceControllerTest {
                         && fixture.pool.stats().leaseClaims() == residents;
             });
             check(peak[0] <= residents + 3, "Source owners never exceed residents plus staged, pending and retiring");
-            check(fixture.commitLines().size() >= residents + 5, "Five tiles entered the neighborhood");
+            // The authored child's commit log may trail the controller's READY by a write.
+            fixture.until(() -> fixture.commitLines().size() >= residents + 5);
             check(fixture.pool.stats().leaseClaims() <= com.vibeminer.concepts.world.TerrainAtlasPool.MAX_ENTRIES,
                     "The shared atlas pool keeps headroom for other borrowers");
         } finally { fixture.close(); }
@@ -1557,7 +1558,10 @@ public final class WorldStreamSourceControllerTest {
                                     directory,
                                     new WorldStreamTransport.Spec(
                                             scope, 1, WorldStreamTransport.Backend.VULKAN,
-                                            exteriors));
+                                            exteriors,
+                                            residents > WorldStreamTransport.ViewDistance.NEAR.residents()
+                                                    ? WorldStreamTransport.ViewDistance.FAR
+                                                    : WorldStreamTransport.ViewDistance.NEAR));
                     session =
                             prepared.launch(
                                     arguments -> {

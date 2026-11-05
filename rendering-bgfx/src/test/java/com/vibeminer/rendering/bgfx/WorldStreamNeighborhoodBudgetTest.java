@@ -20,6 +20,56 @@ final class WorldStreamNeighborhoodBudgetTest {
     }
 
     @Test
+    void viewDistancesUseFewerSlotsOfTheSameSizeUnderTheCeiling() {
+        var near = WorldStreamTransport.ViewDistance.NEAR;
+        var far = WorldStreamTransport.ViewDistance.FAR;
+        assertEquals(1, near.radius());
+        assertEquals(9, near.residents());
+        assertEquals(10, near.slots());
+        assertEquals(2, far.radius());
+        assertEquals(WorldStreamState.MAX_ACTIVE, far.residents());
+        assertEquals(BgfxWorldStreamRenderer.SLOT_COUNT, far.slots());
+        for (var distance : WorldStreamTransport.ViewDistance.values()) {
+            int side = 2 * distance.radius() + 1;
+            assertEquals(side * side, distance.residents());
+            var session =
+                    new WorldStreamEnvelope.Session(
+                            new WorldStreamState.Nonce(1, 2),
+                            "ab".repeat(32),
+                            1,
+                            false,
+                            distance.residents());
+            assertEquals(distance.slots(), session.slots());
+        }
+        // Default specs and sessions stay near: safe on integrated GPUs.
+        assertEquals(
+                near,
+                new WorldStreamTransport.Spec(
+                                "ab".repeat(32), 1, WorldStreamTransport.Backend.DEFAULT)
+                        .viewDistance());
+        assertEquals(
+                9,
+                new WorldStreamEnvelope.Session(
+                                new WorldStreamState.Nonce(1, 2), "ab".repeat(32), 1)
+                        .maxActive());
+    }
+
+    @Test
+    void stateRefusesTablesAboveItsSessionBound() {
+        var nonce = new WorldStreamState.Nonce(3, 4);
+        var near = new WorldStreamState(nonce, 9);
+        var table = new java.util.ArrayList<WorldStreamState.Lease>();
+        for (int slot = 0; slot < 10; slot++) {
+            table.add(new WorldStreamState.Lease(slot, 1, slot + 1));
+        }
+        assertEquals(WorldStreamState.Result.INVALID_TABLE, near.commit(nonce, 1, 0, 1, table));
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class, () -> new WorldStreamState(nonce, 26));
+        org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalArgumentException.class, () -> new WorldStreamState(nonce, 0));
+    }
+
+    @Test
     void terrainGpuMemoryStaysFixedPerSlot() {
         long buffer =
                 (long) BgfxWorldStreamRenderer.MAX_TRIANGLES
@@ -34,7 +84,9 @@ final class WorldStreamNeighborhoodBudgetTest {
     @Test
     void exteriorObjectsShareTheFormerTenSlotWorstCase() {
         long budget = BgfxWorldStreamRenderer.OBJECT_BUDGET_BYTES;
-        assertEquals(10L * WorldStreamObjectsFile.MAX_BYTES, budget);
+        // Pinned to main's former ten-slot worst case, independent of later per-set limits.
+        assertEquals(160L << 20, budget);
+        assertTrue(WorldStreamObjectsFile.MAX_BYTES <= budget);
         assertTrue(BgfxWorldStreamRenderer.objectsFit(0, WorldStreamObjectsFile.MAX_BYTES));
         assertTrue(BgfxWorldStreamRenderer.objectsFit(budget - 100, 100));
         assertFalse(BgfxWorldStreamRenderer.objectsFit(budget - 100, 101));
@@ -42,12 +94,11 @@ final class WorldStreamNeighborhoodBudgetTest {
         assertTrue(BgfxWorldStreamRenderer.objectsFit(budget, 0));
         assertFalse(BgfxWorldStreamRenderer.objectsFit(-1, 0));
         assertFalse(BgfxWorldStreamRenderer.objectsFit(0, -1));
-        // Ten maximum-profile sets fit; the eleventh fails alone.
+        // Ten 16 MiB sets (main's per-set maximum) fit; the eleventh fails alone.
         long reserved = 0;
         for (int set = 0; set < 10; set++) {
-            assertTrue(
-                    BgfxWorldStreamRenderer.objectsFit(reserved, WorldStreamObjectsFile.MAX_BYTES));
-            reserved += WorldStreamObjectsFile.MAX_BYTES;
+            assertTrue(BgfxWorldStreamRenderer.objectsFit(reserved, 16L << 20));
+            reserved += 16L << 20;
         }
         assertFalse(BgfxWorldStreamRenderer.objectsFit(reserved, 1));
     }
