@@ -1,6 +1,6 @@
 # Handoff: continue development on Windows
 
-Written 2026-11-05 from the Linux session. Main is at `1f7e9faa` (after #239 and #237). The
+Written 2026-11-05 from the Linux session. Main is at `bc5eb911` (after #239, #237 and #236). The
 latest release is v0.1.0-alpha.26.
 
 ## Setup
@@ -41,7 +41,6 @@ Linux agents may still push to these until they merge. Pull main after they land
 
 | PR | Branch | State |
 | --- | --- | --- |
-| #236 | `feature/exterior-doodads-flag200-tilt` | Real-data doodads (0x200 flag, tilt, UV0 fix). Review passed; CI after main merge |
 | #238 | `fix/javafx-natives-in-app-image` | JavaFX natives shipped in the app image. Fixing the `.deb` Depends regression on Debian 13 |
 | #241 | `fix/cn-region-cdn-fallback` | cn region CDN fallback (#240). Fixing the review findings |
 
@@ -58,7 +57,7 @@ Linux agents may still push to these until they merge. Pull main after they land
    - Verify by playing a race voice clip and World area music.
 2. **Zephras Isle (map 2991) shows no buildings.** Southshore does show them on
    Direct3D 11, so the renderer works. Record the World status line on Zephras Isle.
-   After #236 lands, check again: its buildings may be doodads, which no real data
+   #236 is now merged, so check again: its buildings may be doodads, which no real data
    drew before #236. They may also be files that could not be read
    ("building objects failed"), or a map that uses one large global model.
 3. **Multi-minute walk.** Walk on Direct3D 11 and on Vulkan to confirm the #230 fix (the
@@ -70,7 +69,10 @@ Linux agents may still push to these until they merge. Pull main after they land
 5. **Packaging (#238).** Once merged, install the Windows MSI from a prerelease and
    check that JavaFX natives load from the app folder, not `%USERPROFILE%\.openjfx\cache`.
    Run with `-Djavafx.verbose=true`.
-6. **Storage on native Windows: #24, #25, #26.** Long-pending; see continue-windows.md.
+6. **Windows CI flakes still seen after #235:** `gpuPreviewServiceTest` (orbit controls),
+   `WorldStreamTransportCommitCloseTest` and object-store `WriterAdmissionTest` each failed once
+   and passed on rerun. These are easier to chase on a real Windows box.
+7. **Storage on native Windows: #24, #25, #26.** Long-pending; see continue-windows.md.
 
 ## Queued work, not started (needs no Windows; may stay on Linux)
 
