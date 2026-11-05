@@ -5,6 +5,10 @@ PowerShell, not WSL, so the tests exercise Windows locking, sharing and native
 libraries. The baseline before these guides is main commit `724a957`. Always use
 latest main and read `HANDOFF.md`, including any completed macOS work.
 
+Development is now single-machine on Windows; live status is in #253 and #186. The
+"Start the agent" and "Return to Linux" sections below date from the earlier
+multi-machine workflow and are kept for reference.
+
 ## Open the project
 
 Install Git for Windows if needed. For a fresh workspace, clone into sibling folders:

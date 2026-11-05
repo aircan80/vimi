@@ -1,6 +1,8 @@
 # Current continuation entry point
 
-Read [Linux AI handoff, 2026-11-04](docs/ai-handoff-2026-11-04.md) first. The release and task status below is historical.
+Development now happens on a single Windows machine. Live status is tracked on GitHub in
+#253 (Windows task list) and #186 (roadmap). The [Linux AI handoff, 2026-11-04](docs/ai-handoff-2026-11-04.md)
+and the [Windows handoff](docs/windows-dev-handoff.md) are historical, as is the release and task status below.
 
 # vimi development handoff
 

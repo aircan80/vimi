@@ -1,5 +1,10 @@
 # Handoff: continue development on Windows
 
+> **Historical document.** This was the one-time handoff from the Linux session.
+> Development now happens on a single Windows machine; there is no parallel Linux
+> session. Live status is tracked on GitHub in #253 (Windows task list) and #186
+> (roadmap). The sections below are kept as history, with small factual corrections.
+
 Written 2026-11-05 from the Linux session. Main includes everything through #236. The
 latest release is v0.1.0-alpha.26.
 
@@ -22,6 +27,8 @@ Turn outdoor buildings off with `-Dvimi.world.exteriors=false`.
 
 ## Rules carried over from the Linux session
 
+These rules still apply on the Windows machine.
+
 - No Claude attribution in commits or PRs: no `Co-Authored-By: Claude`, and no
   "Generated with Claude Code". This lives in the user's global CLAUDE.md on Linux.
   Copy it to the Windows machine's `~/.claude/CLAUDE.md` too.
@@ -38,9 +45,9 @@ Turn outdoor buildings off with `-Dvimi.world.exteriors=false`.
 ## State when Linux handed over
 
 Every PR from the Linux session is merged, including #238 (JavaFX natives in the
-app image, pinned deb `Depends`) and #241 (cn region CDN fallback). The Linux
-session publishes **v0.1.0-alpha.27** from main. After that, nothing is in flight
-on Linux. Pull main and continue here.
+app image, pinned deb `Depends`) and #241 (cn region CDN fallback). The plan was
+for the Linux session to publish **v0.1.0-alpha.27**. In the end the lead published
+it from Windows. Nothing remains in flight on Linux.
 
 Packaging follow-ups from the #238 review (low priority):
 - Add `libharfbuzz0b` to `DEB_DEPENDS`. On arm64, the glass and font natives link it directly.
@@ -51,7 +58,8 @@ Packaging follow-ups from the #238 review (low priority):
 
 ## Windows issues to work on
 
-1. **Audio: "Audio output is unavailable on this machine."**
+1. **Audio: "Audio output is unavailable on this machine."** Done in #243 (Windows
+   mixer formats in the device probe) and #244 (ID3v2 tags in MP3 audio).
    - Every `AudioFormat` in the app is big-endian (`bigEndian=true`): `VoicePlayback.java:76`,
      `WorldAudioPlayback.java:317`, and the `PROBE` format at `WorldAudioPlayback.java:31`.
      The Windows DirectSound mixer usually supports only little-endian 16-bit PCM.
@@ -68,7 +76,7 @@ Packaging follow-ups from the #238 review (low priority):
 3. **Multi-minute walk.** Walk on Direct3D 11 and on Vulkan to confirm the #230 fix (the
    viewer closing on routine cancellation). If anything fails, the log now has the
    cause, redacted (#191).
-4. **The object pass fails silently at startup.** `BgfxWorldStreamRenderer.objectPass`
+4. **The object pass fails silently at startup.** The reason is logged since #245. `BgfxWorldStreamRenderer.objectPass`
    swallows any shader or texture-check failure, and then every tile reports
    "building objects failed". Make it log and show the reason.
 5. **Packaging (#238, merged).** Install the Windows MSI from a prerelease and
@@ -78,10 +86,11 @@ Packaging follow-ups from the #238 review (low priority):
    `WorldStreamTransportCommitCloseTest` and object-store `WriterAdmissionTest` each failed once
    and passed on rerun. These are easier to chase on a real Windows box.
 7. **Storage on native Windows: #24, #25, #26.** Long-pending; see continue-windows.md.
+   Native Windows evidence is in PR #258.
 
-## Queued work, not started (needs no Windows; may stay on Linux)
+## Queued work, not started when this was written (needs no Windows)
 
-- #174 step 1: linear filtering and mipmaps for the terrain atlas. Today it uses
+- #174 step 1 (now in PR #257): linear filtering and mipmaps for the terrain atlas. Today it uses
   `MIN/MAG/MIP_POINT` in `BgfxWorldStreamRenderer`, and the atlas is 512 × 512 per tile.
 - #174 step 2: shader-side layer splatting for sharp ground.
 - #184: verify dungeon floors on a real dungeon.
