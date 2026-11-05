@@ -274,6 +274,15 @@ it does not delete a potentially shared graph. Both prepared opening and artifac
 validate certificates against the final graph, actual scoped/unscoped source,
 header columns and saved row count. Inventory does not read row segments.
 
+A stored table's segments, manifest, layout, alias and node reach the store as one
+put (`GeneratedCommitGroup`), so normally as one durable commit: one pack sync and
+one index transaction. Manifest readback reads the collected objects before that
+commit (an object the store already holds is read from the store). A put larger
+than 16 MiB commits its earlier objects first; a store keeps at most an ordered
+prefix of a put after a crash or cancellation, and the node comes after everything
+it references, so a node never points at missing objects. `TableCommitCrashTest`
+kills or fails the writer at each step of that commit.
+
 Native capture normalizes a null issue list to an explicit empty list only after
 validating the graph-bound receipt. Direct parser reads, ordinary generated reads
 and saved row bytes retain null. Explicit invalid/unknown issues and capture limits

@@ -174,7 +174,11 @@ final class NativePublicationTest {
                         GeneratedStore.class.getClassLoader(),
                         new Class<?>[] {GeneratedStore.class},
                         (proxy, method, args) -> {
-                            if (stage.equals("readback") && method.getName().equals("readRange")) {
+                            // Readback reads collected objects only after asking whether the
+                            // store already holds them, so a failing store fails it too.
+                            if (stage.equals("readback")
+                                    && (method.getName().equals("readRange")
+                                            || method.getName().equals("has"))) {
                                 return CompletableFuture.failedFuture(
                                         new IllegalStateException("readback failure"));
                             }
@@ -205,9 +209,10 @@ final class NativePublicationTest {
                                     if (put.key().equals(finalNode)
                                             && (stage.equals("final-after")
                                                     || stage.equals("reconcile-unavailable"))) {
-                                        memory.put(
-                                                        List.of(put),
-                                                        com.vibeminer.generated.Cancellation.NONE)
+                                        // The whole put commits, then its acknowledgement is lost.
+                                        @SuppressWarnings("unchecked")
+                                        var batch = (List<GeneratedTypes.Put>) args[0];
+                                        memory.put(batch, com.vibeminer.generated.Cancellation.NONE)
                                                 .join();
                                         committed.set(true);
                                         return CompletableFuture.failedFuture(
