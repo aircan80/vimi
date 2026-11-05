@@ -20,9 +20,10 @@ final class TestCleanup {
      * the test directory fails exactly when the real cause is needed.
      */
     static void after(Throwable primary, Step cleanup) throws Exception {
+        // Throwable: an AssertionError or other Error from cleanup must not replace the cause.
         try {
             cleanup.run();
-        } catch (Exception failure) {
+        } catch (Throwable failure) {
             if (primary == null) {
                 throw failure;
             }

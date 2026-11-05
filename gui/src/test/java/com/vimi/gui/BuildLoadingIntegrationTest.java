@@ -27,6 +27,7 @@ public final class BuildLoadingIntegrationTest {
         Throwable primary = null;
         try {
             var old = ObjectStore.open(directory.resolve("objects")).join();
+            Throwable seedFailure = null;
             try {
                 var inputs =
                         fixture.objects.entrySet().stream()
@@ -62,8 +63,11 @@ public final class BuildLoadingIntegrationTest {
                                         versions.getBytes(StandardCharsets.UTF_8)),
                                 Cancellation.NONE)
                         .join();
+            } catch (Throwable failure) {
+                seedFailure = failure;
+                throw failure;
             } finally {
-                old.closeAsync().join();
+                TestCleanup.after(seedFailure, () -> old.closeAsync().join());
             }
             String identity;
             var service = BuildApplication.open(directory, OfflineSourceFixtures::publicKeys).get(15, TimeUnit.SECONDS);
@@ -164,6 +168,7 @@ public final class BuildLoadingIntegrationTest {
                 TestCleanup.after(loadFailure, () -> service.closeAsync().get(15, TimeUnit.SECONDS));
             }
             var reopened = BuildApplication.open(directory, OfflineSourceFixtures::publicKeys).get(15, TimeUnit.SECONDS);
+            Throwable reopenFailure = null;
             try {
                 var build =
                         reopened.listBuilds().join().stream()
@@ -182,8 +187,11 @@ public final class BuildLoadingIntegrationTest {
                                         .storedBytes()
                                 > 0,
                         "Build-size accounting survives restart");
+            } catch (Throwable failure) {
+                reopenFailure = failure;
+                throw failure;
             } finally {
-                reopened.closeAsync().join();
+                TestCleanup.after(reopenFailure, () -> reopened.closeAsync().join());
             }
             require(
                     Files.isRegularFile(directory.resolve("objects/objects.sqlite3")),

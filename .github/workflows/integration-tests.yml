@@ -158,6 +158,7 @@ jobs:
             concepts-effects/build/reports/
             concepts-effects/build/test-results/
             gui/build/reports/jvm-crash/
+            gui/hs_err_pid*.log
           if-no-files-found: warn
           retention-days: 7
 

@@ -86,7 +86,7 @@ class WorldStreamTransportCommitCloseTest {
                 },
                 10000,
                 8000,
-                5000);
+                2000);
     }
 
     @Test

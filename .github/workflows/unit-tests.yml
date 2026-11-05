@@ -143,6 +143,7 @@ jobs:
             questie/build/reports/tests/test/
             questie/build/test-results/test/TEST-*.xml
             gui/build/reports/jvm-crash/
+            gui/hs_err_pid*.log
           if-no-files-found: warn
           retention-days: 7
 
