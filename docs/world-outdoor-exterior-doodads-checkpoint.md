@@ -49,13 +49,22 @@ unique IDs share one placement; conflicting ones are all omitted.
 is nonzero. Entries are taken in MODD order.
 
 - `WmoFormats` now retains MODS, MODI and MODD as raw declarations.
-- Declarations that are oversized (more than 256 sets or 32,768 definitions) or over the fact
-  budget are not retained, and the root still parses.
+- Doodad declarations never decline a root. Any of these is simply not retained, and the root
+  still parses exactly as it did before doodads were read:
+  - a duplicate MODS, MODN, MODI or MODD;
+  - a partial record;
+  - an oversized declaration (more than 256 sets or 32,768 definitions);
+  - a declaration over the fact budget.
 - A MODD reference is an index into MODI. Name-only roots (MODN without MODI) are counted, not
   resolved.
+- MODD flags are allow-listed like MDDF flags: only `0x1` (accepts projected textures, no
+  transform) is admitted. Any other flag is counted as an unsupported set doodad.
+- MODD rotations follow the MDDF rule. Only a rotation about local z is applied (quaternion x and
+  y exactly zero). Entries with pitch or roll are counted as `SET_DOODAD_TILTED`, shown as tilted
+  in the status, and not drawn, because no reviewed convention is pinned for them.
 - Each entry's position goes through the building transform. Its rotation is the building heading
-  times the MODD quaternion, normalized in double; the quaternion must be within 1e-3 of unit
-  length. Its scale is the building scale times the MODD scale, at most 64.
+  times that z rotation, normalized in double; the quaternion must be within 1e-3 of unit length.
+  Its scale is the building scale times the MODD scale, at most 64.
 - Group membership (MODR) is not evaluated, so the doodads of interior groups are drawn too.
 
 **Models**. A model is the M2 (chunked 272/274 or unchunked 264), its first SKIN, and texture1 of
@@ -90,6 +99,11 @@ Doodads have their own caps, so they never displace buildings:
 
 - The 4,096-draw budget now covers every placement and is applied in the source, in the order
   buildings, then MDDF doodads, then set doodads. The bridge repeats the check defensively.
+- A building is admitted on its opaque-only cost, as the opaque-only profile did. Only a building
+  that profile would not have drawn is charged all its ranges.
+- If the drawn buildings' full cost then exceeds the budget, the cutout and blended ranges of
+  buildings that also have opaque ranges are dropped, last root first, until it fits. They are
+  counted as `BATCH_CAPPED`. A building the opaque-only profile drew is never capped.
 - `WorldStreamScopes.UseProfile.BASIC_EXTERIOR` gains the M2_MODEL, M2_SKIN and M2_IMAGE derived
   kinds, and its binding limit grows to 506.
 - Caps never split a model.
@@ -98,10 +112,15 @@ Doodads have their own caps, so they never displace buildings:
 
 Every read the opaque-only profile made keeps the slice 1 policy: anything but a missing,
 protected or oversized source fails the whole set. A cutout or blended building image refused at
-`SOURCE_INPUT` omits only its surfaces (see Materials). A doodad source refused at `SOURCE_INPUT` (a partial, network or store state,
-or a short read) omits only its doodads instead. It is counted as `DOODAD_SOURCE_INPUT`, in
-addition to that read's unavailable bucket, so decoration never costs a tile its buildings. A
-source that changes during or after a read (`SOURCE_BINDING`) still fails the whole set.
+`SOURCE_INPUT` omits only its surfaces (see Materials). A doodad source refused at
+`SOURCE_INPUT` (a partial, network or store state, or a short read) omits only its doodads
+instead. It is counted as `DOODAD_SOURCE_INPUT`, in
+addition to that read's unavailable bucket, so decoration never costs a tile its buildings.
+
+Any other runtime failure while reading or copying a doodad M2 or SKIN is counted as
+`MODEL_FAILED` and omits only that model's doodads; this tile's own cancellation still
+propagates. A source that changes during or after a read (`SOURCE_BINDING`) still fails the whole
+set.
 
 ## Objects file version 2
 
@@ -112,9 +131,30 @@ source that changes during or after a read (`SOURCE_BINDING`) still fails the wh
   must be orthonormal within 1e-6 with determinant +1.
 - **Caps** are the opaque building, material and doodad caps: 72 models, 304 meshes, 1,792
   ranges, 576 placements, 160 images, 196,608 vertices, 589,824 indices and 1,835,008 pixels.
-- **Ceiling**: 16 MiB (the maximum profile is about 14.9 MB). Nine resident tiles plus one staged
-  tile could therefore hold about 150 MB of object GPU memory in the worst case. Real tiles stay
-  far below this.
+- **Ceiling**: 16 MiB (the maximum profile is about 14.9 MB).
+
+## GPU and heap memory budget
+
+The hot child holds `SLOT_COUNT` = 10 slots (9 active and 1 staged). Each slot carries at most one
+validated objects file.
+
+| Per slot, worst case | Bytes |
+| --- | ---: |
+| Vertices (196,608 x 32) | 6.3 MB |
+| Indices (589,824 x 2) | 1.2 MB |
+| RGBA8 textures (1,835,008 x 4) | 7.3 MB |
+| Total (maximum profile) | about 14.9 MB |
+
+- The object GPU budget is therefore about **150 MB** over 10 slots, up from about 79 MB before
+  this slice.
+- The decoder worker and the upload hold at most one more file's worth of heap memory at a time.
+- The bound is enforced by the file caps and the reader's count checks, and the renderer charges
+  it in `Stats.objectBytes`. It is not checked against the device's memory.
+- It is acceptable for the desktop GPUs this targets. Real tiles stay far below it: 3 to 10
+  buildings and 3,478 to 18,582 vertices per tile were measured in slice 2.
+- **Frame stack.** The renderer allocates the object uniform buffers once per frame
+  (`BgfxWorldStreamRenderer.ObjectFrame`). Per-placement work allocates nothing on the LWJGL frame
+  stack, whatever the number of placements: up to 10 x 576 placements, each drawn in two passes.
 
 ## Creatures (#226)
 
@@ -140,7 +180,7 @@ the BASIC disclosure.
 
 ## Validation
 
-- **Unit tests.** `WorldExteriorObjectsTest` adds 9 authored tests (24 in total). They use authored
+- **Unit tests.** `WorldExteriorObjectsTest` adds 10 authored tests (25 in total). They use authored
   chunk streams and an authored chunked 274 M2 and SKIN, with no game assets. They cover:
   - MDDF flags, tilt, scale and duplicates, against the heading-rule oracle;
   - model blend classes and alpha keeping;
@@ -150,12 +190,19 @@ the BASIC disclosure.
   - doodad-set composition (set selection, MODI references, quaternion composition);
   - doodad input refusals versus changed sources;
   - an unreadable cutout or blended image omitting only its surface;
-  - cutout geometry never capping the opaque budget.
+  - cutout geometry never capping the opaque budget;
+  - cutout ranges dropped, never a building, at the 4,096-draw boundary;
+  - MODD flag and tilt rules.
+- `WorldStreamObjectsFileTest` draws a full frame of 10 x 576 placements twice through the
+  per-frame uniform buffers, checking that the frame stack never grows. A negative control shows
+  the old per-placement allocation running out of stack.
+- `WmoFormatsTest` covers duplicate and partial doodad chunks on an otherwise valid root.
 - `WmoFormatsTest` covers the raw doodad declarations, partial records and budget fallback.
 - `WorldStreamObjectsFileTest` covers the version 2 maximum profile, range classes and the
   rotation checks.
 - **Native proof.** `nativeGpuWorldStreamObjectsProof` launches the real hot child on Vulkan with
-  an authored terrain tile and late objects: three camera-facing quads.
+  an authored terrain tile and late objects: three camera-facing quads, plus enough placements
+  behind the camera to fill the tile's 576-placement cap.
   - The cutout quad, whose texels are all transparent, leaves the background pixel unchanged.
   - The opaque quad gives its exact texel colour.
   - The blended quad matches source-alpha over within 1 unit.
@@ -184,7 +231,15 @@ was local-only, over a copy of the existing warm cache; there was no network and
 
 ## Not done
 
-- **Tilted MDDF doodads.** The pitch and roll convention is not pinned against a reviewed oracle.
+- **Cold-cache preemption timing (follow-up).**
+  - Doodads add up to about 150 derived reads per tile. That lengthens the time a preempted
+    preparation needs to drain before terrain can start.
+  - The time is still bounded, and terrain never waits for a completed objects result.
+  - On a cold cache with a moving camera, though, objects may be preempted repeatedly.
+  - This has not been measured.
+
+- **Tilted MDDF and MODD doodads.** The pitch and roll conventions are not pinned against a
+  reviewed oracle.
 - **The MDDF `0x200` flag** is not interpreted.
 - **Interiors.** MODR group membership, portals and interior lighting.
 - **Client parity.** Client alpha references and per-layer M2 shaders.
