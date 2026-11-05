@@ -41,6 +41,8 @@ public final class TableCommitCrashWorker {
                                     CompletableFuture.runAsync(
                                             () -> scenario.check(200, Cancellation.NONE)))
                             .join();
+            // The production pass: tables 100 and 200 need building, up to four at once.
+            case "prepare" -> scenario.tables().prepareKnown(null, Cancellation.NONE).join();
             default -> throw new IllegalArgumentException("Unknown mode " + mode);
         }
         System.out.println("NOT REACHED " + point + " " + occurrence + " seen " + seen.get());

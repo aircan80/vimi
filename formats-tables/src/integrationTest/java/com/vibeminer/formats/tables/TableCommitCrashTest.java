@@ -150,12 +150,40 @@ final class TableCommitCrashTest {
     @EnumSource(CrashPoint.class)
     void killedSecondOfTwoConcurrentTableCommitsKeepsTheFirstComplete(CrashPoint point)
             throws Exception {
+        killSecondOfTwo("concurrent", point);
+    }
+
+    @ParameterizedTest
+    @EnumSource(CrashPoint.class)
+    void killedKnownPassWithConcurrentDeepPreparesKeepsEachTableAllOrNothing(CrashPoint point)
+            throws Exception {
+        killSecondOfTwo("prepare", point);
+    }
+
+    @Test
+    void coldKnownPassCommitsEachTableInOneDurableCommitOfItsOwn() {
+        try (var scenario = TableCommitScenario.open(temporary.resolve("library")).seed()) {
+            var events = Collections.synchronizedList(new ArrayList<TableCommitScenario.Event>());
+            scenario.probe((point, key) -> events.add(new TableCommitScenario.Event(point, key)));
+            var pass = scenario.tables().prepareKnown(null, Cancellation.NONE).join();
+            scenario.probe(null);
+            assertEquals(reference.ledger(), pass.tables());
+            var commits = commits(events).stream().map(Set::copyOf).toList();
+            assertEquals(TableCommitScenario.IDS.size(), commits.size(), "" + events);
+            for (long id : TableCommitScenario.IDS) {
+                assertTrue(commits.contains(reference.objects().get(id)), id + ": " + events);
+            }
+            scenario.assertRegenerates(reference, false);
+        }
+    }
+
+    private void killSecondOfTwo(String mode, CrashPoint point) throws Exception {
         Path folder = temporary.resolve("library");
         try (var scenario = TableCommitScenario.open(folder).seed()) {
             scenario.preparePrevious();
         }
         assertEquals(entries(100), entries(200));
-        kill(folder, "concurrent", point, point.occurrence(entries(200), entries(100)));
+        kill(folder, mode, point, point.occurrence(entries(200), entries(100)));
         try (var scenario = TableCommitScenario.open(folder)) {
             assertRecovered(scenario, List.of(100L, 200L), point.committed() ? 2 : 1);
             scenario.assertRegenerates(reference, true);
