@@ -1256,8 +1256,7 @@ class WorldExteriorObjectsTest {
                         set.count(WorldExteriorObjects.Count.DOODAD_DRAWN));
                 assertEquals(3, set.count(WorldExteriorObjects.Count.DOODAD_CAPPED));
                 assertEquals(
-                        WorldExteriorObjects.MAX_DOODADS - 1,
-                        set.placements().getLast().ordinal());
+                        WorldExteriorObjects.MAX_DOODADS - 1, set.placements().getLast().ordinal());
             }
         }
         var distinct = new ArrayList<Mddf>();

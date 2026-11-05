@@ -34,8 +34,8 @@ import java.util.concurrent.CompletionException;
  * their WMO doodad sets and the tile's MDDF doodads into an immutable, neutral heap object set:
  * shared per-root exterior meshes in local WMO space, shared per-model static M2 doodad meshes,
  * texture1 images and per-placement ADT transforms. Opaque, alpha-key (cutout) and alpha-blended
- * materials are drawn; every other material, and everything else outside the documented profile,
- * is omitted and counted by reason; nothing is guessed. Selection and omission depend only on obj0
+ * materials are drawn; every other material, and everything else outside the documented profile, is
+ * omitted and counted by reason; nothing is guessed. Selection and omission depend only on obj0
  * source order, never on a camera or on neighboring tiles. There is no claim of client lighting,
  * animation or material parity.
  */
@@ -47,6 +47,7 @@ public final class WorldExteriorObjects {
 
     /** BASIC doodad caps, separate from the building caps so buildings are never displaced. */
     static final int MAX_DOODADS = 512, MAX_MODELS = 48, MAX_MODEL_IMAGES = 64;
+
     static final int MAX_DOODAD_VERTICES = 65_536, MAX_DOODAD_INDICES = 196_608;
     static final int MAX_DOODAD_RANGES = 512, MAX_DOODAD_PIXELS = 1 << 19;
 
@@ -76,8 +77,8 @@ public final class WorldExteriorObjects {
 
     private static final M2Types.Limits MODEL_LIMITS =
             new M2Types.Limits(
-                    2L << 20, 32L << 20, 65_536, 65_536, 196_608, 256, 256, 512, 32, 32, 128,
-                    4096, 65_536);
+                    2L << 20, 32L << 20, 65_536, 65_536, 196_608, 256, 256, 512, 32, 32, 128, 4096,
+                    65_536);
 
     /** MODF flags: 0x2 LOD-capable, 0x4 scale-enable, 0x8 direct FileDataID (required). */
     private static final int DIRECT_ID = 0x8, SCALED = 0x4, LOD_CAPABLE = 0x2;
@@ -174,8 +175,8 @@ public final class WorldExteriorObjects {
         MODEL_IMAGE_UNDECODABLE,
         MODEL_IMAGE_CAPPED,
         /**
-         * Doodad source reads (model, SKIN or image) refused for a partial, network or store
-         * state or a short read. Each is also counted as that read's UNAVAILABLE bucket; unlike a
+         * Doodad source reads (model, SKIN or image) refused for a partial, network or store state
+         * or a short read. Each is also counted as that read's UNAVAILABLE bucket; unlike a
          * building read, it omits only its doodads instead of failing the whole set.
          */
         DOODAD_SOURCE_INPUT
@@ -713,8 +714,7 @@ public final class WorldExteriorObjects {
                         new WorldBasicWmo.Transform(
                                 record.position(), record.rotation().y(), scale);
                 if (scale > MAX_SCALE
-                        || !finite(
-                                transform.originX(), transform.originY(), transform.originZ())) {
+                        || !finite(transform.originX(), transform.originY(), transform.originZ())) {
                     count(Count.DOODAD_UNSUPPORTED);
                     continue;
                 }
@@ -743,9 +743,9 @@ public final class WorldExteriorObjects {
         }
 
         /**
-         * Each drawn building's set 0 and, when nonzero, its MODF doodad set, in MODD order. A
-         * MODD entry is placed in the building's local axes: its position goes through the
-         * building transform and its quaternion composes with the building heading.
+         * Each drawn building's set 0 and, when nonzero, its MODF doodad set, in MODD order. A MODD
+         * entry is placed in the building's local axes: its position goes through the building
+         * transform and its quaternion composes with the building heading.
          */
         private void placeSetDoodads() {
             var buildings = List.copyOf(placements);
@@ -951,7 +951,12 @@ public final class WorldExteriorObjects {
             for (var mesh : pending) {
                 token.check();
                 var mapped =
-                        resolve(mesh, Pool.BUILDING, local, Count.BATCH_MISSING_IMAGE, Count.BATCH_DRAWN);
+                        resolve(
+                                mesh,
+                                Pool.BUILDING,
+                                local,
+                                Count.BATCH_MISSING_IMAGE,
+                                Count.BATCH_DRAWN);
                 if (mapped == null) {
                     local[Count.GROUP_EMPTY.ordinal()]++;
                     continue;
@@ -996,7 +1001,8 @@ public final class WorldExteriorObjects {
                     local[missing.ordinal()]++;
                     continue;
                 }
-                System.arraycopy(mesh.indices(), range.firstIndex(), compact, used, range.indexCount());
+                System.arraycopy(
+                        mesh.indices(), range.firstIndex(), compact, used, range.indexCount());
                 kept.add(
                         new DrawRange(
                                 used, range.indexCount(), slot, range.material(), range.blend()));
@@ -1241,8 +1247,8 @@ public final class WorldExteriorObjects {
 
         /**
          * One static mesh over the SKIN's vertex lookup, with one range per admitted batch; null
-         * when an admitted section references a zero or non-finite normal, or the mesh exceeds
-         * the 16-bit index domain.
+         * when an admitted section references a zero or non-finite normal, or the mesh exceeds the
+         * 16-bit index domain.
          */
         private PendingMesh copyModel(
                 long id, long skinId, M2Types.Model model, M2Types.Skin skin, int[] local) {
@@ -1268,8 +1274,7 @@ public final class WorldExteriorObjects {
                         || batch.textureComboIndex() < 0
                         || batch.textureComboIndex() >= model.textureCombos().size()
                         || batch.textureCoordinateComboIndex() < 0
-                        || batch.textureCoordinateComboIndex()
-                                >= model.textureCoordinates().size()
+                        || batch.textureCoordinateComboIndex() >= model.textureCoordinates().size()
                         || model.textureCoordinates().get(batch.textureCoordinateComboIndex())
                                 != 0) {
                     local[Count.MODEL_BATCH_UNSUPPORTED.ordinal()]++;
@@ -1278,7 +1283,8 @@ public final class WorldExteriorObjects {
                 // M2 blend mode: 0 opaque, 1 alpha key (cutout), 2 alpha (blended).
                 int blend = model.materials().get(batch.materialIndex()).blendMode();
                 int ordinal = model.textureCombos().get(batch.textureComboIndex());
-                var texture = ordinal < model.textures().size() ? model.textures().get(ordinal) : null;
+                var texture =
+                        ordinal < model.textures().size() ? model.textures().get(ordinal) : null;
                 var range = sections.get(section);
                 if (blend > BLENDED
                         || texture == null
@@ -1377,8 +1383,12 @@ public final class WorldExteriorObjects {
                 return known;
             }
             int slot = -1;
-            if (pool == Pool.BUILDING ? imagesRead >= MAX_IMAGES : modelImagesRead >= MAX_MODEL_IMAGES) {
-                local[(pool == Pool.BUILDING ? Count.IMAGE_CAPPED : Count.MODEL_IMAGE_CAPPED).ordinal()]++;
+            if (pool == Pool.BUILDING
+                    ? imagesRead >= MAX_IMAGES
+                    : modelImagesRead >= MAX_MODEL_IMAGES) {
+                local[
+                        (pool == Pool.BUILDING ? Count.IMAGE_CAPPED : Count.MODEL_IMAGE_CAPPED)
+                                .ordinal()]++;
             } else {
                 if (pool == Pool.BUILDING) {
                     imagesRead++;
@@ -1473,8 +1483,8 @@ public final class WorldExteriorObjects {
         /**
          * Null for an unavailable source (missing, protected or over its cap), and for a doodad
          * source refused at SOURCE_INPUT (decoration never costs the tile its buildings). Every
-         * other refusal, including any building short read and any changed source, fails the
-         * whole set.
+         * other refusal, including any building short read and any changed source, fails the whole
+         * set.
          */
         private WorldStreamScopes.Input derived(long id, WorldStreamScopes.DerivedKind kind) {
             if (id <= 0 || id > 0xffff_ffffL) {

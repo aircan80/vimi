@@ -467,7 +467,19 @@ final class WorldStreamScopes {
                 int groupLimit,
                 int images,
                 int imageLimit) {
-            this(bindings, roots, rootLimit, groups, groupLimit, images, imageLimit, 0, 0, 0, 0, 0,
+            this(
+                    bindings,
+                    roots,
+                    rootLimit,
+                    groups,
+                    groupLimit,
+                    images,
+                    imageLimit,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
                     0);
         }
 

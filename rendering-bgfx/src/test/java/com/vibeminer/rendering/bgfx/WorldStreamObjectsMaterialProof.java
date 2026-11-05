@@ -81,9 +81,15 @@ public final class WorldStreamObjectsMaterialProof {
             // Blended: 128/255 of blue (0, 0, 255) over the terrain pixel.
             double a = 128 / 255.0;
             int b = 16 - r;
-            near(channel(right, b), (int) Math.round(255 * a + channel(baseRight, b) * (1 - a)), 3,
+            near(
+                    channel(right, b),
+                    (int) Math.round(255 * a + channel(baseRight, b) * (1 - a)),
+                    3,
                     "blended blue");
-            near(channel(right, r), (int) Math.round(channel(baseRight, r) * (1 - a)), 3,
+            near(
+                    channel(right, r),
+                    (int) Math.round(channel(baseRight, r) * (1 - a)),
+                    3,
                     "blended red");
             if ((after.pixels().get(row * WIDTH + 656) >>> 24) != 255) {
                 throw new AssertionError("Blending must keep the opaque output alpha");
@@ -172,8 +178,8 @@ public final class WorldStreamObjectsMaterialProof {
         }
     }
 
-    private static WorldStreamTransport.TileReservation reserve(WorldStreamTransport.Session session)
-            throws Exception {
+    private static WorldStreamTransport.TileReservation reserve(
+            WorldStreamTransport.Session session) throws Exception {
         long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
         while (System.nanoTime() < until) {
             var value = session.tryReserveTile(7, 19);

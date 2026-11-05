@@ -265,9 +265,9 @@ public final class WmoFormats {
             float scale) {}
 
     /**
-     * Recorded doodad declarations. {@code retained} is false when MODS or MODD is absent,
-     * exceeds {@link #MAX_DOODAD_SETS}/{@link #MAX_DOODAD_DEFS}, or does not fit the root fact
-     * budget: a root that qualifies without its doodads is never declined because of them.
+     * Recorded doodad declarations. {@code retained} is false when MODS or MODD is absent, exceeds
+     * {@link #MAX_DOODAD_SETS}/{@link #MAX_DOODAD_DEFS}, or does not fit the root fact budget: a
+     * root that qualifies without its doodads is never declined because of them.
      */
     public static final class Doodads {
         private final boolean declared, retained, namesPresent, fileIdsPresent;
@@ -696,8 +696,7 @@ public final class WmoFormats {
                 || setCount > MAX_DOODAD_SETS
                 || defCount > MAX_DOODAD_DEFS
                 || idCount > MAX_DOODAD_DEFS
-                || !budget.tryClaim(
-                        192L + 32L * setCount + 64L * defCount + 8L * idCount)) {
+                || !budget.tryClaim(192L + 32L * setCount + 64L * defCount + 8L * idCount)) {
             return new Doodads(declared, false, names, ids, List.of(), List.of(), new long[0]);
         }
         var sets = new ArrayList<DoodadSet>(setCount);

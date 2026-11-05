@@ -559,8 +559,7 @@ class WmoFormatsTest {
         assertTrue(doodads.declared() && doodads.retained() && doodads.fileIdsPresent());
         assertFalse(doodads.namesPresent());
         assertEquals(
-                java.util.List.of(
-                        new WmoFormats.DoodadSet(0, 1), new WmoFormats.DoodadSet(1, 1)),
+                java.util.List.of(new WmoFormats.DoodadSet(0, 1), new WmoFormats.DoodadSet(1, 1)),
                 doodads.sets());
         var first = doodads.definitions().getFirst();
         assertEquals(2, first.reference());

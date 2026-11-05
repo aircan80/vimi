@@ -32,8 +32,8 @@ import java.util.function.BooleanSupplier;
  * the terrain tile header) names its exact length and SHA-256.
  *
  * <p>Little-endian layout: a 256-byte header, then the model, mesh, range (first index, index
- * count, image, material class), placement (model, translation, scale and a row-major rotation)
- * and image tables, then 32-byte vertices (position, normal, uv floats), u16 mesh-relative indices
+ * count, image, material class), placement (model, translation, scale and a row-major rotation) and
+ * image tables, then 32-byte vertices (position, normal, uv floats), u16 mesh-relative indices
  * padded to four bytes, and RGBA8 pixels. Every count, offset, index and float is validated;
  * reserved bytes must be zero.
  */
