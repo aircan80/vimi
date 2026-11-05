@@ -65,6 +65,7 @@ public final class WorldStreamSourceBridgeTest {
         var high = com.vibeminer.concepts.world.WorldExteriorObjects.ImageDetail.HIGH;
         check(WorldStreamGpuOwner.imageDetail(null) == standard, "Object textures default to Standard");
         check(WorldStreamGpuOwner.imageDetail("HIGH") == high, "high (any case) selects High");
+        check(WorldStreamGpuOwner.imageDetail(" high ") == high, "Surrounding whitespace is ignored");
         check(WorldStreamGpuOwner.imageDetail("ultra") == standard, "Anything else stays Standard");
         check(high.totalPixels() == 2 * standard.totalPixels(), "High doubles every pool");
         check(WorldStreamGpuOwner.exteriorsEnabled(null), "Exteriors are on without the property");
