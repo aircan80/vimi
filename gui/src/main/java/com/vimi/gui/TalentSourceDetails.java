@@ -94,6 +94,20 @@ final class TalentSourceDetails {
                 : "Talent icon unavailable: " + shortText(talent.iconIssue(), 240);
     }
 
+    /** A bounded, readable cause for a failed request; null means no cause was returned. */
+    static String failure(Throwable error) {
+        Throwable actual = error;
+        while (actual instanceof java.util.concurrent.CompletionException && actual.getCause() != null)
+            actual = actual.getCause();
+        if (actual == null) return "no cause was returned";
+        String message = actual.getMessage();
+        if ("SPELL_TEXT_OPERATION_LIMIT".equals(message))
+            return "spell text previews are busy (SPELL_TEXT_OPERATION_LIMIT); select the talent again";
+        if (actual instanceof java.util.concurrent.CancellationException) return "the request was canceled";
+        return actual.getClass().getSimpleName()
+                + (message == null || message.isBlank() ? "" : ": " + shortText(message, 200));
+    }
+
     static String buildLabel(String version) {
         return version == null || version.isBlank() ? "" : "Source build " + version;
     }

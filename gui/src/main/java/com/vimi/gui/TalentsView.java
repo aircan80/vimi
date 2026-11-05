@@ -35,6 +35,7 @@ import java.util.Map;
 /** Read-only, build-derived Classic trees; domain queries and media never block JavaFX. */
 final class TalentsView extends BorderPane implements AutoCloseable {
     private static final double ICON = 44, PITCH = 62, PADDING = 24;
+    private static final String TALENT_BUTTON = "vimi.talentButton";
     private final java.util.function.Supplier<com.vibeminer.concepts.talents.BuildTalents>
             handleSupplier;
     private final java.util.function.LongSupplier workspaceRevision;
@@ -474,7 +475,11 @@ final class TalentsView extends BorderPane implements AutoCloseable {
             var hover = new Tooltip(TalentSourceDetails.hoverText(tree, talent, byId));
             hover.setWrapText(true);
             hover.setMaxWidth(340);
-            Tooltip.install(node, hover);
+            node.setTooltip(hover);
+            if (talent.iconFileDataId() == null && talent.iconIssue() != null)
+                node.setAccessibleHelp(TalentSourceDetails.missingIconText(talent));
+            // A failed icon load adds its cause to this button's tooltip and help text.
+            graphic.getProperties().put(TALENT_BUTTON, node);
             node.setOnAction(event -> select(tree, talent, byId, node));
             node.setOnKeyPressed(
                     event -> {
@@ -635,7 +640,7 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                         text(
                                 "Previewing the first recorded rank, not character talent points.",
                                 "muted"));
-        if (!sourceVersion.isEmpty())
+        if (!TalentSourceDetails.buildLabel(sourceVersion).isEmpty())
             evidence.getChildren().add(text(TalentSourceDetails.buildLabel(sourceVersion), "muted"));
         var sourceDetails =
                 new TitledPane(
@@ -711,7 +716,8 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                                                 if (error != null || result == null) {
                                                     description.setText(
                                                             "Description values are unavailable.");
-                                                    descriptionSource.setText("Description: value resolution failed; a precise source cause was not returned.");
+                                                    descriptionSource.setText("Description: value resolution failed: "
+                                                            + TalentSourceDetails.failure(error) + ".");
                                                     return;
                                                 }
                                                 description.setText(
@@ -869,7 +875,13 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                                                         : loadedIcon.explanation().lines().findFirst().orElse("");
                                                 target.setAccessibleText("Talent icon unavailable: " + why);
                                                 target.getChildren().setAll(missingArt());
-                                                Tooltip.install(target, new Tooltip(why));
+                                                if (target.getProperties().get(TALENT_BUTTON)
+                                                        instanceof Button owner) {
+                                                    owner.setAccessibleHelp("Talent icon unavailable: " + why);
+                                                    var tip = owner.getTooltip();
+                                                    if (tip != null && !tip.getText().contains("\nIcon: "))
+                                                        tip.setText(tip.getText() + "\nIcon: " + why);
+                                                }
                                                 return;
                                             }
                                             var bitmap =
@@ -921,7 +933,10 @@ final class TalentsView extends BorderPane implements AutoCloseable {
                                                 return;
                                             target.setText(
                                                     error != null
-                                                                    || result == null
+                                                            ? "Next rank description is unavailable (spell "
+                                                                    + spell + "): "
+                                                                    + TalentSourceDetails.failure(error) + "."
+                                                            : result == null
                                                                     || result.display() == null
                                                                     || result.display().isBlank()
                                                             ? "Next rank description is"

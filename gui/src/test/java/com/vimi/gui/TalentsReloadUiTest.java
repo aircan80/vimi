@@ -33,6 +33,8 @@ public final class TalentsReloadUiTest {
         final AtomicInteger catalogs = new AtomicInteger();
         final AtomicInteger trees = new AtomicInteger();
         final Map<Long, CompletableFuture<Void>> gates = new ConcurrentHashMap<>();
+        final Map<Long, CompletableFuture<TalentTypes.ClassTrees>> answers =
+                new ConcurrentHashMap<>();
 
         public CompletableFuture<TalentTypes.Catalog> catalog(Cancellation token) {
             catalogs.incrementAndGet();
@@ -59,12 +61,15 @@ public final class TalentsReloadUiTest {
                                             List.of(),
                                             player.name() + " talent",
                                             "Plain text.",
-                                            null)));
+                                            900L)));
             var result =
                     new TalentTypes.ClassTrees(
                             TalentTypes.State.READY, player, List.of(tree), List.of(), null, null);
-            return gates.getOrDefault(classId, CompletableFuture.completedFuture(null))
-                    .thenApply(ignored -> result);
+            var answer =
+                    gates.getOrDefault(classId, CompletableFuture.completedFuture(null))
+                            .thenApply(ignored -> result);
+            answers.put(classId, answer);
+            return answer;
         }
 
         public CompletableFuture<Void> closeAsync() {
@@ -187,6 +192,30 @@ public final class TalentsReloadUiTest {
                 () -> talentNames(holder.scene).stream().anyMatch(t -> t.startsWith("Warrior")),
                 failed);
 
+        // A failed icon keeps the button's full tooltip and adds the cause to it and its help.
+        await(
+                "failed icon cause on the talent button",
+                () ->
+                        holder.scene.getRoot().lookupAll(".talent-node").stream()
+                                .map(Button.class::cast)
+                                .anyMatch(
+                                        b ->
+                                                b.getTooltip() != null
+                                                        && b.getTooltip().getText().contains("Maximum rank")
+                                                        && b.getTooltip().getText().contains("\nIcon: ")
+                                                        && b.getAccessibleHelp() != null
+                                                        && b.getAccessibleHelp().startsWith("Talent icon unavailable")),
+                failed);
+        fx(
+                () -> {
+                    for (var node : holder.scene.getRoot().lookupAll(".talent-node")) {
+                        var graphic = ((Button) node).getGraphic();
+                        if (graphic.getProperties().keySet().stream()
+                                .anyMatch(key -> String.valueOf(key).contains("Tooltip")))
+                            throw new AssertionError("The icon must not install its own tooltip");
+                    }
+                });
+
         // Reload with unchanged source data must show the selected class's trees again.
         fx(
                 () -> {
@@ -214,7 +243,11 @@ public final class TalentsReloadUiTest {
                 () -> talentNames(holder.scene).stream().anyMatch(t -> t.startsWith("Warrior")),
                 failed);
         druidGate.complete(null);
-        Thread.sleep(200);
+        // Completing the gate runs the view's completion stage on this thread, which posts its
+        // FX update; the next FX action is queued behind it, so no sleep is needed.
+        if (!fixture.answers.get(11L).isDone())
+            throw new AssertionError("Superseded Druid answer was not delivered");
+        fx(() -> {});
         fx(
                 () -> {
                     var names = talentNames(holder.scene);

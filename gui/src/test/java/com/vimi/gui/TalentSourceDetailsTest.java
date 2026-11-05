@@ -86,6 +86,12 @@ public final class TalentSourceDetailsTest {
                 "Without a reported cause the missing icon stays unconfirmed");
         require("Source build 1.60.1.70707".equals(TalentSourceDetails.buildLabel("1.60.1.70707"))
                 && TalentSourceDetails.buildLabel("").isEmpty(), "The source build is labelled");
+        require(TalentSourceDetails.buildLabel(null).isEmpty(), "A missing build version is not an error");
+        require(TalentSourceDetails.failure(new java.util.concurrent.CompletionException(
+                        new IllegalStateException("SPELL_TEXT_OPERATION_LIMIT"))).contains("busy"),
+                "A busy spell text service is named, not hidden");
+        require(TalentSourceDetails.failure(new IllegalStateException("x".repeat(1000))).length() < 260,
+                "Failure causes are bounded");
         System.out.println("Talent source details PASS: protected, unsupported, download, unresolved, bounded evidence, trait source rows and talent wording");
     }
 
