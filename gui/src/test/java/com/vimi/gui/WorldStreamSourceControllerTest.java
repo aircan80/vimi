@@ -29,6 +29,7 @@ public final class WorldStreamSourceControllerTest {
 
     public static void main(String[] args) throws Exception {
         retryCommitKeepsExactTargetUntilPriorFileActuallyRetires();
+        retirementBetweenRefusalAndRetryStillWakesTheCommit();
         failedFxWakeStillCancelsHeldInitialSourceQualification();
         returningNearestCanProgressWhenAllNeverPresentedNeighborsRemainWanted();
         newNearestCanProgressWhenAllNeverPresentedNeighborsRemainWanted();
@@ -341,6 +342,57 @@ public final class WorldStreamSourceControllerTest {
         } finally {
             Files.deleteIfExists(hold);
             firstRelease.countDown();
+            fixture.close();
+        }
+    }
+
+    /**
+     * Lost wake-up regression: the previous commit's input retires (a capacity change) after the
+     * transport refused the next commit but before the controller recorded the refusal. With the
+     * frozen test clock the controller must still retry, because the change happened after the
+     * refused commit was issued.
+     */
+    private static void retirementBetweenRefusalAndRetryStillWakesTheCommit() throws Exception {
+        var fixture = new Fixture(new AuthoredTerrainSource.Files(),13);
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        Path hold = fixture.directory.resolve("authored-hold-commit");
+        try {
+            fixture.start();
+            fixture.until(() -> fixture.controller.snapshot().seed()!=null);
+            fixture.camera(1);
+            fixture.controller.neighborhood(fixture.tiles.subList(0,9));
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared()==9);
+            Files.writeString(hold,"12");
+            fixture.controller.neighborhood(fixture.tiles.subList(4,13));
+            fixture.until(() -> Files.exists(fixture.directory.resolve("authored-held-commit")));
+            // Hold the parent's file lane so commit 12's input cannot retire yet.
+            enqueueHeldFile(fixture.gpu.session, entered, release);
+            check(entered.await(3,TimeUnit.SECONDS),"Parent file lane held");
+            var session = fixture.gpu.session;
+            var seamRan = new java.util.concurrent.atomic.AtomicBoolean();
+            fixture.controller.refusalSeam = () -> {
+                if (!seamRan.compareAndSet(false,true)) return;
+                // Inside the window: let commit 12's input retire and wait for its capacity change.
+                long before = session.capacityRevision();
+                release.countDown();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (session.capacityRevision() == before && System.nanoTime() < deadline)
+                    java.util.concurrent.locks.LockSupport.parkNanos(1_000_000);
+                check(session.capacityRevision() != before, "Retirement changed capacity inside the window");
+            };
+            Files.delete(hold);
+            fixture.until(() -> fixture.commitLines().stream().anyMatch(line -> line.startsWith("12 ")));
+            var returning = new ArrayList<>(fixture.tiles.subList(4,12));
+            returning.addFirst(fixture.tiles.get(1));
+            fixture.controller.neighborhood(returning);
+            fixture.until(seamRan::get);
+            // The clock never advances: only the observed capacity change may trigger the retry.
+            fixture.untilPresented(() -> fixture.controller.snapshot().phase()==WorldStreamSourceController.Phase.READY
+                    && fixture.controller.snapshot().prepared()==9);
+        } finally {
+            release.countDown();
             fixture.close();
         }
     }
