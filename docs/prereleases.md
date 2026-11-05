@@ -98,7 +98,17 @@ The packager refuses JavaFX JARs that embed natives, since they would extract in
 `-Djavafx.cachedir` through `JAVA_TOOL_OPTIONS`. It fails if the sentinel cache
 appears, if any native loads from a JAR resource, or (for the UI smoke) if glass and
 the other JavaFX natives do not load from inside the app image. On macOS it also
-verifies the bundle seal and the signature of every bundled native library.
+verifies the bundle seal and the signature of every bundled native library, just
+before archiving.
+
+The `.deb` `Depends` is pinned through a jpackage `--resource-dir` control template to
+the direct runtime needs of the bundled JDK and JavaFX natives (GTK 3, X11, GL, ALSA,
+Pango/Cairo, fontconfig/freetype, xdg-utils), with `t64` alternatives. Left alone,
+jpackage derives `Depends` from the whole shared-library closure using the build
+runner's Ubuntu 24.04 package names, which do not install on Debian or Ubuntu 22.04.
+The packager fails if the built deb's `Depends` or the rpm's `Requires` differ from
+their allowlists. The pinned set was checked with `apt-get install -s` on Debian 12,
+Debian 13, Ubuntu 22.04 and Ubuntu 24.04 for amd64 and arm64.
 
 The packaged application image is launched on every platform. Installer creation is
 checked, but installing/uninstalling the MSI/DMG/DEB/RPM is not automated yet.

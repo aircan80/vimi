@@ -55,7 +55,7 @@ def sdk_source(platform):
     return f"https://download2.gluonhq.com/openjfx/{VERSION}/openjfx-{VERSION}_{slug}_bin-sdk.zip", checksum
 
 
-def prepare(archive, destination, platform="linux-arm64"):
+def prepare(archive, destination, platform):
     url, checksum = sdk_source(platform)
     classifier = TARGETS[platform][2]
     if hashlib.sha256(archive).hexdigest() != checksum:
@@ -107,7 +107,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--archive", type=Path)
-    parser.add_argument("--platform", choices=tuple(TARGETS), default="linux-arm64")
+    parser.add_argument("--platform", choices=tuple(TARGETS), required=True)
     args = parser.parse_args()
     if args.archive:
         archive = args.archive.read_bytes()

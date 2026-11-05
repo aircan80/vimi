@@ -93,14 +93,14 @@ class JavafxSdkTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             destination = Path(temp) / 'sdk'
             with self.assertRaisesRegex(ValueError, 'checksum'):
-                javafx_sdk.prepare(b'wrong archive', destination)
+                javafx_sdk.prepare(b'wrong archive', destination, 'linux-arm64')
             self.assertFalse(destination.exists())
 
     def test_verified_archive_cannot_escape_destination(self):
         archive = self.archive({'../outside': b'no'})
         with tempfile.TemporaryDirectory() as temp, patch.dict(javafx_sdk.TARGETS, {'linux-arm64': ('linux-aarch64', hashlib.sha256(archive).hexdigest(), 'linux-aarch64')}):
             with self.assertRaisesRegex(ValueError, 'path'):
-                javafx_sdk.prepare(archive, Path(temp) / 'sdk')
+                javafx_sdk.prepare(archive, Path(temp) / 'sdk', 'linux-arm64')
             self.assertFalse((Path(temp) / 'outside').exists())
 
     def test_only_required_runtime_and_notices_are_extracted(self):
@@ -109,7 +109,7 @@ class JavafxSdkTest(unittest.TestCase):
         entries.update(self.notices())
         archive = self.archive(entries)
         with tempfile.TemporaryDirectory() as temp, patch.dict(javafx_sdk.TARGETS, {'linux-arm64': ('linux-aarch64', hashlib.sha256(archive).hexdigest(), 'linux-aarch64')}):
-            artifacts, native, legal = javafx_sdk.prepare(archive, Path(temp))
+            artifacts, native, legal = javafx_sdk.prepare(archive, Path(temp), 'linux-arm64')
             self.assertEqual(3, len(list(artifacts.iterdir())))
             self.assertEqual(b'native', (native / 'libglass.so').read_bytes())
             self.assertEqual(b'notice', (legal / 'javafx.graphics/LICENSE').read_bytes())
