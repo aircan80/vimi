@@ -1224,9 +1224,7 @@ class WorldExteriorObjectsTest {
             }
             // With nothing retained, the second read happens and its refusal keeps the level.
             f.files.opens.clear();
-            long limit = WorldExteriorObjects.retainedSourceLimit;
-            WorldExteriorObjects.retainedSourceLimit = 0;
-            try (var set = f.run()) {
+            try (var set = retaining(f, 0)) {
                 assertEquals(2, set.count(WorldExteriorObjects.Count.BATCH_DRAWN));
                 var cutout =
                         set.images().stream()
@@ -1235,8 +1233,70 @@ class WorldExteriorObjectsTest {
                                 .orElseThrow();
                 assertEquals(128, cutout.width(), "registered level kept");
                 assertEquals(2, f.files.opens.get(IMAGE2).get(), "the second read was attempted");
-            } finally {
-                WorldExteriorObjects.retainedSourceLimit = limit;
+                assertEquals(0, set.retainedSourceBytes);
+            }
+        }
+    }
+
+    private static WorldExteriorObjects.TileObjects retaining(Fixture f, long limit) {
+        return WorldExteriorObjects.prepare(
+                f.engine,
+                f.scope,
+                TILE,
+                Cancellation.NONE,
+                WorldExteriorObjects.ModelReader.STANDARD,
+                WorldExteriorObjects.ImageDetail.STANDARD,
+                limit);
+    }
+
+    @Test
+    void retainedImageSourcesStayWithinTheirBoundAndCountEachFileOnce() {
+        // One 256^2 file with three recorded levels, drawn opaque and cutout: two images (one per
+        // material class) from one source file.
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(
+                    ROOT,
+                    root(
+                            1,
+                            new long[] {GROUP},
+                            List.of(new Material(0, IMAGE2, 0), new Material(1, IMAGE2, 0))));
+            f.files.sources.put(
+                    GROUP, group(EXT, 3, 2, List.of(new Batch(0, 3, 0, 0), new Batch(3, 3, 0, 1))));
+            byte[] file = blp(256, 256, 3, 0x001f);
+            f.files.sources.put(IMAGE2, file);
+            try (var set = retaining(f, WorldExteriorObjects.RETAINED_SOURCE_BYTES)) {
+                assertEquals(2, set.images().size(), "one image per material class");
+                assertEquals(file.length, set.retainedSourceBytes, "the file is kept once");
+            }
+            // A bound below one file keeps nothing, yet the tile draws the same images.
+            try (var set = retaining(f, file.length - 1)) {
+                assertEquals(0, set.retainedSourceBytes);
+                assertEquals(2, set.images().size());
+                assertTrue(set.images().stream().allMatch(i -> i.width() == 256));
+            }
+        }
+        // Many files: the kept bytes never pass the bound, and the drawn result is unchanged.
+        var materials = new ArrayList<Material>();
+        var batches = new ArrayList<Batch>();
+        for (int i = 0; i < 18; i++) {
+            materials.add(new Material(0, 4000 + i, 0));
+            batches.add(new Batch(i * 3, 3, 0, i));
+        }
+        try (var f = new Fixture(List.of(Modf.of(ROOT, 1, 0x8)))) {
+            f.files.sources.put(ROOT, root(1, new long[] {GROUP}, materials));
+            f.files.sources.put(GROUP, group(EXT, 3, 18, batches));
+            for (int i = 0; i < 18; i++) {
+                f.files.sources.put(4000L + i, blp(256, 256, 3, i));
+            }
+            long one = f.files.sources.get(4000L).length, bound = one * 5 + one / 2;
+            java.util.List<Integer> unbounded;
+            try (var set = f.run()) {
+                unbounded = set.images().stream().map(i -> i.width()).toList();
+            }
+            try (var set = retaining(f, bound)) {
+                assertTrue(set.retainedSourceBytes <= bound, "kept " + set.retainedSourceBytes);
+                assertEquals(one * 5, set.retainedSourceBytes, "whole files only, up to the bound");
+                assertEquals(unbounded, set.images().stream().map(i -> i.width()).toList());
             }
         }
     }

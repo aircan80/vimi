@@ -114,9 +114,6 @@ public final class WorldExteriorObjects {
      */
     static final long RETAINED_SOURCE_BYTES = 32L << 20;
 
-    /** Test seam: the retained-bytes bound new builders use; 0 forces every second read. */
-    static volatile long retainedSourceLimit = RETAINED_SOURCE_BYTES;
-
     /** Per-tile draw budget: the sum over all placements of their model's ranges. */
     static final int MAX_DRAWS = 4096;
 
@@ -581,6 +578,9 @@ public final class WorldExteriorObjects {
         private final RuntimeException modelFailure;
         private volatile boolean closed;
 
+        /** Most image source bytes its builder kept at once (#265); diagnostics and tests. */
+        long retainedSourceBytes;
+
         private TileObjects(
                 long mapId,
                 int tileX,
@@ -753,6 +753,21 @@ public final class WorldExteriorObjects {
             Cancellation token,
             ModelReader modelReader,
             ImageDetail detail) {
+        return prepare(engine, scope, tile, token, modelReader, detail, RETAINED_SOURCE_BYTES);
+    }
+
+    /** As above, with the retained image source bound; tests pass 0 to force every re-read. */
+    static TileObjects prepare(
+            WorldStreamScopes engine,
+            WorldStreamScopes.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation token,
+            ModelReader modelReader,
+            ImageDetail detail,
+            long retainLimit) {
+        if (retainLimit < 0) {
+            throw new IllegalArgumentException("Retained source bound");
+        }
         Objects.requireNonNull(modelReader);
         Objects.requireNonNull(detail);
         Objects.requireNonNull(engine);
@@ -764,7 +779,7 @@ public final class WorldExteriorObjects {
                 tile,
                 WorldStreamScopes.UseProfile.BASIC_EXTERIOR,
                 token,
-                admission -> new Builder(admission, modelReader, detail).build());
+                admission -> new Builder(admission, modelReader, detail, retainLimit).build());
     }
 
     private enum RootState {
@@ -817,15 +832,18 @@ public final class WorldExteriorObjects {
         private List<Integer> setIds = List.of();
 
         /**
-         * Image source bytes by slot, kept from their first read until the image's chain is built
-         * so the budget's relevel and the chain's file mips need no second read (#265). Bounded by
-         * {@link #RETAINED_SOURCE_BYTES}; images past it are read again.
+         * Image source bytes by file, kept from an image's first read until its chain is built, so
+         * the budget's relevel and the chain's file mips need no second read (#265). One file used
+         * under two material classes is kept and counted once. Bounded by retainLimit: past it a
+         * re-read source serves its one use and is dropped.
          */
-        private final Map<Integer, byte[]> sources = new HashMap<>();
+        private final Map<Long, byte[]> sources = new HashMap<>();
 
-        private long retainedSourceBytes;
-        private final java.util.Set<Integer> unreadSources = new java.util.HashSet<>();
-        private final long retainLimit = retainedSourceLimit;
+        /** Files whose second read was refused; never tried again. */
+        private final java.util.Set<Long> unreadSources = new java.util.HashSet<>();
+
+        private final long retainLimit;
+        private long retainedSourceBytes, peakRetainedSourceBytes;
 
         /** Registered images by slot, in admission (priority) order; null for other slots. */
         private final List<Demand> demands = new ArrayList<>();
@@ -847,8 +865,10 @@ public final class WorldExteriorObjects {
         Builder(
                 WorldStreamScopes.TileAdmission admission,
                 ModelReader modelReader,
-                ImageDetail detail) {
+                ImageDetail detail,
+                long retainLimit) {
             this.detail = detail;
+            this.retainLimit = retainLimit;
             this.admission = admission;
             this.token = admission.cancellation();
             this.modelReader = modelReader;
@@ -875,17 +895,21 @@ public final class WorldExteriorObjects {
             chainImages();
             sources.clear();
             unreadSources.clear();
+            retainedSourceBytes = 0;
             dropUnusedImages();
-            return new TileObjects(
-                    admission.mapId(),
-                    recorded.x(),
-                    recorded.y(),
-                    models,
-                    placements,
-                    images,
-                    counts,
-                    modelFailure,
-                    detail);
+            var objects =
+                    new TileObjects(
+                            admission.mapId(),
+                            recorded.x(),
+                            recorded.y(),
+                            models,
+                            placements,
+                            images,
+                            counts,
+                            modelFailure,
+                            detail);
+            objects.retainedSourceBytes = peakRetainedSourceBytes;
+            return objects;
         }
 
         private void count(Count count) {
@@ -2205,10 +2229,7 @@ public final class WorldExteriorObjects {
                 }
                 images.add(image);
                 int slot = images.size() - 1;
-                if (retainedSourceBytes + raw.length <= retainLimit) {
-                    sources.put(slot, raw.clone());
-                    retainedSourceBytes += raw.length;
-                }
+                retain(id, raw);
                 while (demands.size() < slot) {
                     demands.add(null);
                 }
@@ -2360,8 +2381,8 @@ public final class WorldExteriorObjects {
 
         /** The image's retained source bytes, or a second read when they were not kept. */
         private byte[] source(Demand demand) {
-            byte[] kept = sources.get(demand.slot());
-            if (kept != null || unreadSources.contains(demand.slot())) {
+            byte[] kept = sources.get(demand.id());
+            if (kept != null || unreadSources.contains(demand.id())) {
                 return kept; // A refused second read is not tried again.
             }
             // A refused second read of a cutout or blended image keeps what the first read gave,
@@ -2372,14 +2393,24 @@ public final class WorldExteriorObjects {
                             imageKind(demand.pool()),
                             demand.pool() == Pool.MATERIAL ? new boolean[1] : null);
             if (input == null) {
-                unreadSources.add(demand.slot());
+                unreadSources.add(demand.id());
                 return null;
             }
             try (input) {
                 byte[] raw = input.bytes().clone();
-                sources.put(demand.slot(), raw);
+                retain(demand.id(), raw);
                 return raw;
             }
+        }
+
+        /** Keeps one file's source bytes while they fit the bound; counts each file once. */
+        private void retain(long id, byte[] raw) {
+            if (sources.containsKey(id) || retainedSourceBytes + raw.length > retainLimit) {
+                return;
+            }
+            sources.put(id, raw.clone());
+            retainedSourceBytes += raw.length;
+            peakRetainedSourceBytes = Math.max(peakRetainedSourceBytes, retainedSourceBytes);
         }
 
         /** The file's own mip {@code level}, or null when it does not decode at that size. */

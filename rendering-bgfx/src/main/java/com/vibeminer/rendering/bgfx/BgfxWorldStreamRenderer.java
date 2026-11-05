@@ -633,9 +633,8 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             if (build.image < source.imageCount()) {
                 int image = build.image;
                 int width = source.images[image * 2], height = source.images[image * 2 + 1];
-                int count = width * height * 4;
                 // The image's packed chain, top level down to 1 x 1, is one mipmapped texture.
-                count =
+                int count =
                         com.vibeminer.rendering.world.ObjectTextureMips.chainPixels(width, height)
                                 * 4;
                 built.textures[image] =
