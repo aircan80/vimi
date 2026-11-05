@@ -10,9 +10,6 @@ import static org.lwjgl.bgfx.BGFX.BGFX_BUFFER_NONE;
 import static org.lwjgl.bgfx.BGFX.BGFX_CLEAR_COLOR;
 import static org.lwjgl.bgfx.BGFX.BGFX_CLEAR_DEPTH;
 import static org.lwjgl.bgfx.BGFX.BGFX_DISCARD_ALL;
-import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MAG_POINT;
-import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MIN_POINT;
-import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_MIP_POINT;
 import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_U_CLAMP;
 import static org.lwjgl.bgfx.BGFX.BGFX_SAMPLER_V_CLAMP;
 import static org.lwjgl.bgfx.BGFX.BGFX_STATE_DEPTH_TEST_GREATER;
@@ -91,15 +88,15 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     /** Constant 0.40 diagonal blend factor for diagnostic water over opaque terrain. */
     static final int WATER_BLEND_FACTOR = 0x66666666;
 
-    private static final int MAX_TICKETS = 64;
-    static final int GEOMETRY_CHUNK = 2048 * INSTANCE_BYTES, ATLAS_CHUNK = 32 * 512 * 4;
+    static final int MAX_TICKETS = 64;
+    static final int GEOMETRY_CHUNK = 2048 * INSTANCE_BYTES;
     private static final short INVALID = -1;
-    private static final int SAMPLER_FLAGS =
-            BGFX_SAMPLER_MIN_POINT
-                    | BGFX_SAMPLER_MAG_POINT
-                    | BGFX_SAMPLER_MIP_POINT
-                    | BGFX_SAMPLER_U_CLAMP
-                    | BGFX_SAMPLER_V_CLAMP;
+
+    /**
+     * Trilinear over the worker-built mip chain (issue #174); clamp keeps each tile from sampling
+     * the opposite edge of its own atlas.
+     */
+    static final int SAMPLER_FLAGS = BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP;
 
     record Ticket(long camera, long content, long policy, int width, int height) {}
 
@@ -122,7 +119,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
         private final WorldStreamPackedTile.Source source;
         private final AtomicLong issued = new AtomicLong(), released = new AtomicLong();
         private final AtomicInteger references = new AtomicInteger();
-        private int geometryAt, atlasRow, tickets;
+        private int geometryAt, atlasStep, tickets;
         private boolean canceled, finished, successful;
         private volatile String failure;
         // Inline objects named by the tile header; the build owns their packed input.
@@ -133,7 +130,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
             this.tag = tag;
             this.source = source;
             lease = source.header.lease();
-            atlasRow = source.atlas == null ? 512 : 0;
+            atlasStep = source.atlas == null ? WorldStreamAtlasMips.STEPS.size() : 0;
             initialObjectsState = source.objectsState;
             objects =
                     source.objectsState == 1 && source.objects != null
@@ -379,9 +376,9 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                     slot.texture =
                             valid(
                                     bgfx_create_texture_2d(
-                                            512,
-                                            512,
-                                            false,
+                                            WorldStreamAtlasMips.SIDE,
+                                            WorldStreamAtlasMips.SIDE,
+                                            true,
                                             1,
                                             BGFX_TEXTURE_FORMAT_RGBA8,
                                             BGFX_TEXTURE_NONE,
@@ -522,27 +519,30 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
                 upload.geometryAt += count;
                 bytes += count;
             }
-            if (upload.atlasRow < 512 && (bytes == 0 || System.nanoTime() - started < 2_000_000)) {
-                int first = upload.atlasRow * 512 * 4;
-                var data =
-                        upload.source
-                                .atlas
-                                .duplicate()
-                                .position(first)
-                                .limit(first + ATLAS_CHUNK)
-                                .slice();
-                bgfx_update_texture_2d(
-                        slots[upload.lease.slot()].texture,
-                        0,
-                        0,
-                        0,
-                        upload.atlasRow,
-                        512,
-                        32,
-                        reference(upload, data),
-                        512 * 4);
-                upload.atlasRow += 32;
-                bytes += ATLAS_CHUNK;
+            if (upload.atlasStep < WorldStreamAtlasMips.STEPS.size()
+                    && (bytes == 0 || System.nanoTime() - started < 2_000_000)) {
+                for (var slice : WorldStreamAtlasMips.STEPS.get(upload.atlasStep)) {
+                    var data =
+                            upload.source
+                                    .atlas
+                                    .duplicate()
+                                    .position(slice.offset())
+                                    .limit(slice.offset() + slice.bytes())
+                                    .slice();
+                    int side = WorldStreamAtlasMips.side(slice.level());
+                    bgfx_update_texture_2d(
+                            slots[upload.lease.slot()].texture,
+                            0,
+                            slice.level(),
+                            0,
+                            slice.row(),
+                            side,
+                            slice.rows(),
+                            slice.referenced() ? reference(upload, data) : bgfx_copy(data),
+                            side * 4);
+                    bytes += slice.bytes();
+                }
+                upload.atlasStep++;
             }
         }
         if (!upload.canceled && bytes == 0 && terrainSubmitted(upload) && upload.objectsPending()) {
@@ -560,7 +560,7 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
     private static boolean terrainSubmitted(Upload upload) {
         return (upload.source.geometry == null
                         || upload.geometryAt == upload.source.geometry.capacity())
-                && upload.atlasRow == 512;
+                && upload.atlasStep == WorldStreamAtlasMips.STEPS.size();
     }
 
     /**

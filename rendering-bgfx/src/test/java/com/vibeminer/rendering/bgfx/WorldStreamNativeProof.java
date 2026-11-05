@@ -380,7 +380,10 @@ public final class WorldStreamNativeProof {
                             stats.upload().references() == 0
                                     && stats.upload().liveUploadBytes() == 0,
                             "Inputs not drained");
-                    require(stats.upload().peakUploadBytes() <= 4L << 20, "Producer buffer bound");
+                    require(
+                            stats.upload().peakUploadBytes()
+                                    <= WorldStreamPackedTile.MAX_PAYLOAD_BYTES,
+                            "Producer buffer bound");
                     require(ProcessHandle.current().pid() == pid, "Unexpected process replacement");
                 }
                 long drawnCamera = ++camera;
@@ -435,7 +438,10 @@ public final class WorldStreamNativeProof {
                                 .get(20, TimeUnit.SECONDS);
                 var closingUpload = owner.begin(closingInput);
                 owner.step(closingUpload);
-                require(closingUpload.retainedInputBytes() == 4L << 20, "Closing upload owner");
+                require(
+                        closingUpload.retainedInputBytes()
+                                == (3L << 20) + WorldStreamAtlasMips.CHAIN_BYTES,
+                        "Closing upload owner");
                 owner.submit(command(++camera, 800, 500, 2));
                 owner.close();
                 require(
