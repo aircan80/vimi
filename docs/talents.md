@@ -33,7 +33,8 @@ rank, so they show "Requires <Talent>". A talent with several ranks also shows
 its next rank's description. TraitTree talents take each rank's values from
 `TraitDefinitionEffectPoints` (OperationType 0, a Type 0 `Curve`, the exact
 `CurvePoint` at that rank); the spell's own base points describe a different
-rank, so an effect without a readable rank point shows `?`. When a local client
+rank, so an effect without a readable rank point shows `?`; once a talent
+records any rank value, its other effects show `?` as well. When a local client
 hotfix cache changes trait rows that cannot be decoded, the class lists the count
 instead of treating the missing rows as removed. The hover tooltip
 carries the same facts as the detail rail. The header and Source details name the
@@ -65,9 +66,12 @@ layout. It does not represent a real build's talent data or a character's points
 
 The selected rank resolves `$s1`–`$s5` and `$m1`–`$m5` fixed amounts through
 same-build SpellEffect rows. An amount is fixed when no random, level, resource,
-attack/spell power, PvP or scaling input can change it; a spell power coefficient
-only counts for damage, healing, damage-shield, leech and absorb effects. `$o1`
-multiplies a fixed tick by the whole number of ticks in a fixed duration, and
+attack/spell power, PvP or scaling input can change it. A spell power
+coefficient of zero is inert; a coefficient of one is inert only for a reviewed
+allow-list of stat, chance, speed, regeneration and spell-modifier auras, so any
+other effect with it shows `?`. `$o1` multiplies a fixed tick by the whole number
+of ticks in a fixed duration; spells that also tick on application
+(`SpellMisc` Attributes[5] 0x200), or whose attribute is unreadable, show `?`, and
 `$h` reads the single DifficultyID 0 `SpellAuraOptions.ProcChance` (1–100, not
 procs per minute). A tokenizer keeps all readable prose: each
 value it cannot resolve shows `?` in place, with its cause in Source details.
