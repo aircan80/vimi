@@ -13,6 +13,14 @@ public interface Build {
 
     CdnContext cdn();
 
+    /**
+     * Why the CDN route differs from the build's region, or why there is none; null when the
+     * region's own accepted route is used.
+     */
+    default String cdnNote() {
+        return null;
+    }
+
     FileResolution resolve(long fileDataId);
 
     FileResolution resolve(String path);

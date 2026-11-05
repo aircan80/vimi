@@ -46,6 +46,7 @@ public final class BuildLoadStateTest {
             failuresRemainDistinctFromLoaded(directory.resolve("failure"));
             duplicateCanonicalIndexReleasesOnlyDuplicateContext(directory.resolve("duplicate"));
             openedContextsReleaseOnCancellationOrReportingFailure(directory.resolve("release"));
+            recordedRegionHasAnAcceptedRouteNotTheFirstInSortOrder(directory.resolve("region"));
             System.out.println(
                     "BuildLoadState: persisted status, async accounting and metadata-only load"
                             + " passed");
@@ -99,6 +100,83 @@ public final class BuildLoadStateTest {
             require(calls.get() == 2, "Repeated changes coalesce into one final refresh");
         } finally {
             first.complete(figures());
+            state.closeAsync().join();
+            registry.closeAsync().join();
+            library.closeAsync().join();
+        }
+    }
+
+    private static void recordedRegionHasAnAcceptedRouteNotTheFirstInSortOrder(Path directory)
+            throws Exception {
+        String config = "b".repeat(32);
+        var cn = new BuildInfo.RegionEvidence("cn", config, true, Instant.EPOCH, Instant.EPOCH);
+        var eu = new BuildInfo.RegionEvidence("eu", config, true, Instant.EPOCH, Instant.EPOCH);
+        var us = new BuildInfo.RegionEvidence("us", config, true, Instant.EPOCH, Instant.EPOCH);
+        var info =
+                new BuildInfo(
+                        "wow",
+                        "Retail",
+                        "1.2.3",
+                        "cn, eu, us",
+                        "a".repeat(32),
+                        BuildInfo.BuildSource.CURRENT,
+                        false,
+                        null,
+                        0,
+                        "test-region-build",
+                        Instant.EPOCH,
+                        Instant.EPOCH,
+                        List.of(cn, eu, us));
+        require(
+                BuildLoadState.recorded(info, null, null).equals(us),
+                "Without route facts the record prefers US over the first region in sort order");
+        ObjectStore library = ObjectStore.openLibrary(directory.resolve("library")).join();
+        BuildRegistry registry = BuildRegistry.open(library.databasePath()).join();
+        var state =
+                new BuildLoadState(
+                                registry,
+                                (build, opened) -> CompletableFuture.completedFuture(null),
+                                identity -> CompletableFuture.completedFuture(figures()))
+                        .withRoutedRegions(product -> java.util.Set.of("eu", "us"));
+        var opening =
+                new BuildOpening(
+                        (build, ref, token) -> CompletableFuture.completedFuture(success(ref)),
+                        state);
+        try {
+            // Builds saved before the fix recorded the first observation, cn.
+            registry.observe(
+                            info.identity(),
+                            new BuildTypes.BuildRef("wow", info.config(), config, "cn"),
+                            info.version(),
+                            "enUS",
+                            Cancellation.NONE)
+                    .join();
+            state.observe(List.of(info));
+            require(
+                    registry.get(info.identity(), Cancellation.NONE)
+                            .join()
+                            .reference()
+                            .region()
+                            .equals("us"),
+                    "A recorded region without an accepted route is replaced by US");
+            opening.open(info, eu).get(5, TimeUnit.SECONDS);
+            state.observe(List.of(info));
+            require(
+                    registry.get(info.identity(), Cancellation.NONE)
+                            .join()
+                            .reference()
+                            .region()
+                            .equals("eu"),
+                    "The user's chosen routed region is kept");
+            require(
+                    BuildLoadState.recorded(
+                                    info,
+                                    registry.get(info.identity(), Cancellation.NONE).join(),
+                                    java.util.Set.of("us"))
+                            .equals(us),
+                    "A chosen region that loses its route falls back to a routed one");
+        } finally {
+            opening.closeAsync().join();
             state.closeAsync().join();
             registry.closeAsync().join();
             library.closeAsync().join();

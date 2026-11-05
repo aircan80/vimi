@@ -207,6 +207,7 @@ final class BuildFilesHandle implements BuildFiles {
                 objects,
                 variant,
                 local ? null : built.cdn(),
+                local ? null : built.cdnNote(),
                 options.keys(),
                 layouts,
                 options.maxReadBytes(),

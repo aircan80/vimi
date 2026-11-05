@@ -71,6 +71,7 @@ final class FileReader {
     final long max;
     private final ObjectSource objects;
     private final CdnContext cdn;
+    private final String unrouted;
     private final LayoutCache cache;
     private final Runnable decoded;
 
@@ -82,8 +83,22 @@ final class FileReader {
             LayoutCache cache,
             long max,
             Runnable decoded) {
+        this(objects, variant, cdn, null, keys, cache, max, decoded);
+    }
+
+    /** {@code unrouted} names why a build has no CDN route, replacing the generic message. */
+    FileReader(
+            ObjectSource objects,
+            FileVariant variant,
+            CdnContext cdn,
+            String unrouted,
+            TactKeySource keys,
+            LayoutCache cache,
+            long max,
+            Runnable decoded) {
         this.objects = objects;
         this.cdn = cdn;
+        this.unrouted = unrouted;
         this.keys = keys;
         this.cache = cache;
         this.max = max;
@@ -170,7 +185,11 @@ final class FileReader {
                         default -> throw new IllegalStateException("Present without bytes");
                     },
                     got.code(),
-                    got.message(),
+                    cdn == null
+                                    && unrouted != null
+                                    && "OBJECT_ACCESS_NO_CDN_CONTEXT".equals(got.code())
+                            ? unrouted
+                            : got.message(),
                     got.observedAt());
         }
         if (got.bytes() == null || got.bytes().length != length) {

@@ -174,6 +174,20 @@ public final class BuildApplication {
                                         accounting::indexBuild,
                                         owner -> ownership.figures(owner, indexToken),
                                         contexts::release);
+                        state.withRoutedRegions(
+                                product -> {
+                                    try {
+                                        return com.vibeminer.builds.CdnsRoutes.routedRegions(
+                                                com.vibeminer.builds.CdnsRoutes.newestFirst(
+                                                                source,
+                                                                product,
+                                                                com.vibeminer.access.Cancellation
+                                                                        .NONE)
+                                                        .join());
+                                    } catch (RuntimeException unreadable) {
+                                        return null;
+                                    }
+                                });
                         cleanup.addFirst(state::closeAsync);
                         var hotfixImports = new ClientHotfixStore(directory.resolve("client-hotfix"));
                         cleanup.addFirst(hotfixImports::closeAsync);

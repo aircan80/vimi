@@ -61,7 +61,7 @@ public final class VimiApp extends Application {
     private javafx.scene.control.Dialog<Void> realOpeningDialog;
     private final Button openingActivity = new Button();
     private record LoadedMetadata(com.vibeminer.builds.BuildTypes.BuildRef build,
-            com.vibeminer.builds.BuildTypes.BuildMetadata metadata) {}
+            com.vibeminer.builds.BuildTypes.BuildMetadata metadata, String cdnRoute) {}
     private final Map<String, LoadedMetadata> realOpened = new java.util.LinkedHashMap<>();
     private final Map<String, String> closedPreparations = new HashMap<>();
     private final Map<String, String> openingProblems = new HashMap<>();
@@ -1103,7 +1103,9 @@ public final class VimiApp extends Application {
                 openingProblems.put(build.identity(), error instanceof java.util.concurrent.CancellationException
                         || error.getCause() instanceof java.util.concurrent.CancellationException ? "Opening canceled" : problem(error));
             } else if (result.state() == com.vibeminer.builds.BuildTypes.BuildOpenState.OPEN) {
-                realOpened.put(build.identity(), new LoadedMetadata(result.build(), result.opened().metadata()));
+                realOpened.put(build.identity(), new LoadedMetadata(result.build(), result.opened().metadata(),
+                        result.opened().cdnNote() != null ? result.opened().cdnNote()
+                                : result.opened().cdn() == null ? "None" : "The region's own accepted hosts"));
                 if (realOpened.size() > 4) realOpened.remove(realOpened.keySet().iterator().next());
             } else {
                 openingProblems.put(build.identity(), result.state() + " · " + result.part() + " · "
@@ -1183,6 +1185,7 @@ public final class VimiApp extends Application {
         }));
         var content = new VBox(16, label("BUILD LOADED", "eyebrow"), label(build.version(), "h1"),
                 fact("Product", build.product()), fact("Source region", result.build().region()),
+                fact("CDN route", result.cdnRoute()),
                 fact("Build config", result.build().buildConfig()), fact("CDN config", result.build().cdnConfig()),
                 fact("Metadata build name", metadata.buildName()), fact("Files in ROOT", Integer.toString(metadata.fileCount())),
                 fact("Archives", Integer.toString(metadata.archiveCount())),
