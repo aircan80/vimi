@@ -77,6 +77,12 @@ public final class ClientHotfixDetailsTest {
                 "INVALID cache records are explained as hidden by the cache");
         check(ClientHotfixDetails.row(tables, "Item", 996, "Item", "70707", Cancellation.NONE)
                 .join().contains("unresolved"), "Other unresolved records stay unresolved");
+        check(ClientHotfixDetails.undecoded("OPTIONAL_KEY_DATA").contains("text key that is not applied"),
+                "Optional key data has its own reason");
+        check(ClientHotfixDetails.undecoded("TRAILING_BYTES:28").contains("has 28 bytes its layout does not describe"),
+                "Trailing bytes state their count");
+        check(ClientHotfixDetails.undecoded("TRAILING_BYTES:<script>").contains("unresolved"),
+                "Only a fixed-format count is ever shown");
         check(ClientHotfixDetails.row(tables, "ItemSparse", 995, "Item", "70707", Cancellation.NONE)
                 .join().contains("not applied to this table (too large)"), "Oversized overlay is visible");
         check(ClientHotfixDetails.row(tables, "ItemSparse", 994, "Item", "70707", Cancellation.NONE)

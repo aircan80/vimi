@@ -669,6 +669,8 @@ public final class HotfixBuildTables implements BuildTables {
             }
             Kind kind;
             Db2Types.Row row = null;
+            // Why a VALID body stays unknown; reported through hotfixInfo, never the payload.
+            String undecoded = null;
             if (entry.state() == HotfixCacheReader.State.VALID && entry.payloadBytes() > 0) {
                 try {
                     if (layout == null || entry.payloadBytes() > 64 << 10) {
@@ -694,6 +696,7 @@ public final class HotfixBuildTables implements BuildTables {
                     }
                 } catch (com.vibeminer.formats.hotfix.HotfixRowDecoder.Invalid invalid) {
                     kind = Kind.UNKNOWN;
+                    undecoded = invalid.detail();
                 }
             } else if (entry.state() == HotfixCacheReader.State.DELETE) {
                 kind = Kind.DELETE;
@@ -713,7 +716,11 @@ public final class HotfixBuildTables implements BuildTables {
             if (bytes > memory.tableBytes()) {
                 throw over(HotfixViewInfo.TABLE_BUDGET);
             }
-            changes.put(entry.recordId(), new Change(entry, kind, row));
+            changes.put(
+                    entry.recordId(),
+                    undecoded == null
+                            ? new Change(entry, kind, row)
+                            : new Change(entry, kind, row, undecoded));
         }
         var exclusions = new ArrayList<Long>();
         var additions = new ArrayList<Db2Types.Row>();

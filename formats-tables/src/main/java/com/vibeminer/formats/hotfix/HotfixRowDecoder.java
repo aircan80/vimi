@@ -17,7 +17,7 @@ import java.util.Objects;
  * select cache entries, authenticate sources, apply overlays or mint native capture evidence.
  */
 public final class HotfixRowDecoder {
-    public static final String REVISION = "hotfix-flat-dbd-v4";
+    public static final String REVISION = "hotfix-flat-dbd-v5";
 
     public enum Reason {
         LIMIT,
@@ -35,20 +35,50 @@ public final class HotfixRowDecoder {
         /**
          * Negative value in a raw-physical column, whose base rows print unsigned physical values.
          */
-        RAW_INTEGER
+        RAW_INTEGER,
+        /**
+         * The row is followed by an optional-data block for the TactKey table (its table hash, an
+         * 8-byte key name and a 16-byte key), as the server attaches to encrypted text. The key is
+         * not applied, so the row is not shown; the block is never decoded or exposed.
+         */
+        OPTIONAL_KEY_DATA
     }
+
+    /** Table hash of TactKey, which opens a server's optional key data block. */
+    private static final int TACT_KEY_HASH = 0xDF2F53CF;
+
+    /** Optional key data: table hash (4) + key name (8) + key (16). */
+    private static final int OPTIONAL_KEY_BYTES = 28;
 
     public static final class Invalid extends IllegalArgumentException {
         private static final long serialVersionUID = 1L;
         private final Reason reason;
+        private final int trailingBytes;
 
         private Invalid(Reason reason) {
+            this(reason, 0);
+        }
+
+        private Invalid(Reason reason, int trailingBytes) {
             super("Hotfix row " + reason.name());
             this.reason = reason;
+            this.trailingBytes = trailingBytes;
         }
 
         public Reason reason() {
             return reason;
+        }
+
+        /** Bytes left after the described fields, for {@code TRAILING_BYTES}; else 0. */
+        public int trailingBytes() {
+            return trailingBytes;
+        }
+
+        /** Fixed-vocabulary detail: the reason, plus the byte count for trailing bytes. */
+        public String detail() {
+            return reason == Reason.TRAILING_BYTES
+                    ? reason.name() + ":" + trailingBytes
+                    : reason.name();
         }
     }
 
@@ -248,7 +278,14 @@ public final class HotfixRowDecoder {
         }
         token.check();
         if (input.hasRemaining()) {
-            throw invalid(Reason.TRAILING_BYTES);
+            int rest = input.remaining();
+            if (rest == OPTIONAL_KEY_BYTES && input.getInt(input.position()) == TACT_KEY_HASH) {
+                // Recognized, but its key is not applied: refuse rather than show the row
+                // without the key it was sent with. The block itself is never decoded.
+                throw invalid(Reason.OPTIONAL_KEY_DATA);
+            }
+            // Zero padding included: extra bytes mean the layout may not describe this row.
+            throw new Invalid(Reason.TRAILING_BYTES, rest);
         }
         return new Decoded(
                 new Db2Types.Row(recordId, false, null, values, List.of()), input.position());

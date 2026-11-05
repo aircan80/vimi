@@ -258,6 +258,40 @@ class HotfixRowDecoderTest {
     }
 
     @Test
+    void trailingBytesAreRefusedWithTheirCountAndOptionalKeyDataIsNamed() {
+        var layout = layout("int ID\nint Value", "$id,noninline$ID<u32>\nValue<u8>");
+        // A recognized optional key data block: TactKey table hash, then 24 authored bytes.
+        var keyed = ByteBuffer.allocate(1 + 28).order(ByteOrder.LITTLE_ENDIAN);
+        keyed.put((byte) 5).putInt(0xDF2F53CF);
+        for (int i = 0; i < 24; i++) {
+            keyed.put((byte) (i * 7));
+        }
+        assertEquals(
+                HotfixRowDecoder.Reason.OPTIONAL_KEY_DATA,
+                assertThrows(HotfixRowDecoder.Invalid.class, () -> decode(layout, 9, keyed.flip()))
+                        .reason());
+        // Zero padding is not assumed harmless: the layout may simply not describe this row.
+        var padded = ByteBuffer.allocate(1 + 3).put((byte) 5).rewind();
+        var padding = assertThrows(HotfixRowDecoder.Invalid.class, () -> decode(layout, 9, padded));
+        assertEquals(HotfixRowDecoder.Reason.TRAILING_BYTES, padding.reason());
+        assertEquals(3, padding.trailingBytes());
+        assertEquals("TRAILING_BYTES:3", padding.detail());
+        // 28 bytes without the TactKey hash, and the hash with another length, stay unexplained.
+        var unexplained = ByteBuffer.allocate(1 + 28).order(ByteOrder.LITTLE_ENDIAN);
+        unexplained.put((byte) 5).putInt(0x12345678).rewind();
+        assertEquals(
+                "TRAILING_BYTES:28",
+                assertThrows(HotfixRowDecoder.Invalid.class, () -> decode(layout, 9, unexplained))
+                        .detail());
+        var shortKey = ByteBuffer.allocate(1 + 8).order(ByteOrder.LITTLE_ENDIAN);
+        shortKey.put((byte) 5).putInt(0xDF2F53CF).rewind();
+        assertEquals(
+                "TRAILING_BYTES:8",
+                assertThrows(HotfixRowDecoder.Invalid.class, () -> decode(layout, 9, shortKey))
+                        .detail());
+    }
+
+    @Test
     void inlineIdMustMatchAndNoninlineRelationActuallyConsumesBodyInDbdOrder() {
         var layout =
                 layout(
