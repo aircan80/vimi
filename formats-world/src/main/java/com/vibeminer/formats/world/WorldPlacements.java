@@ -73,14 +73,39 @@ public final class WorldPlacements {
         }
     }
 
-    public record Metadata(List<Doodad> doodads, List<WorldObject> worldObjects) {
+    /**
+     * One MWDR entry (Shadowlands+, wowdev ADT/v18): an inclusive range of MWDS entries, each a WMO
+     * MODS set index. A MODF placement with flag 0x80 names its MWDR entry in doodadSet.
+     */
+    public record SetRange(long begin, long end) {
+        public SetRange {
+            unsigned32(begin);
+            unsigned32(end);
+        }
+    }
+
+    public record Metadata(
+            List<Doodad> doodads,
+            List<WorldObject> worldObjects,
+            List<SetRange> setRanges,
+            List<Integer> setIds) {
+        public Metadata(List<Doodad> doodads, List<WorldObject> worldObjects) {
+            this(doodads, worldObjects, List.of(), List.of());
+        }
+
         public Metadata {
             Objects.requireNonNull(doodads);
             Objects.requireNonNull(worldObjects);
+            Objects.requireNonNull(setRanges);
+            Objects.requireNonNull(setIds);
             if (doodads.size() > MAX_RECORDS_PER_KIND
-                    || worldObjects.size() > MAX_RECORDS_PER_KIND) {
+                    || worldObjects.size() > MAX_RECORDS_PER_KIND
+                    || setRanges.size() > MAX_RECORDS_PER_KIND
+                    || setIds.size() > MAX_RECORDS_PER_KIND) {
                 throw invalid("Placement record count exceeds bounds");
             }
+            setRanges = List.copyOf(setRanges);
+            setIds = List.copyOf(setIds);
             doodads = List.copyOf(doodads);
             worldObjects = List.copyOf(worldObjects);
             for (int i = 0; i < doodads.size(); i++) {
@@ -105,9 +130,11 @@ public final class WorldPlacements {
             throw invalid("Object source size outside bounds");
         }
         var input = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
-        boolean version = false, mddf = false, modf = false;
+        boolean version = false, mddf = false, modf = false, mwdr = false, mwds = false;
         var doodads = new ArrayList<Doodad>();
         var worldObjects = new ArrayList<WorldObject>();
+        var setRanges = new ArrayList<SetRange>();
+        var setIds = new ArrayList<Integer>();
         int chunks = 0;
         while (input.hasRemaining()) {
             check(canceled);
@@ -179,6 +206,24 @@ public final class WorldPlacements {
                                         scale));
                     }
                 }
+                case 0x4d574452 -> { // MWDR: uint32 begin, uint32 end (inclusive) into MWDS
+                    if (mwdr || size % 8 != 0 || size / 8 > MAX_RECORDS_PER_KIND) {
+                        throw invalid("MWDR size, count or duplicate declaration");
+                    }
+                    mwdr = true;
+                    for (int i = 0; i < size / 8; i++) {
+                        setRanges.add(new SetRange(u32(input), u32(input)));
+                    }
+                }
+                case 0x4d574453 -> { // MWDS: uint16 WMO MODS set indexes
+                    if (mwds || size % 2 != 0 || size / 2 > MAX_RECORDS_PER_KIND) {
+                        throw invalid("MWDS size, count or duplicate declaration");
+                    }
+                    mwds = true;
+                    for (int i = 0; i < size / 2; i++) {
+                        setIds.add(u16(input));
+                    }
+                }
                 default -> {
                     // Other chunks (including legacy name blocks) do not establish reference kind.
                 }
@@ -189,7 +234,7 @@ public final class WorldPlacements {
             throw invalid("Object source has no version 18 declaration");
         }
         check(canceled);
-        return new Metadata(doodads, worldObjects);
+        return new Metadata(doodads, worldObjects, setRanges, setIds);
     }
 
     private static Reference reference(long id, int flags, int directFlag) {

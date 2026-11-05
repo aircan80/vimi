@@ -46,8 +46,13 @@ public final class WorldExteriorObjects {
     static final int MAX_VERTICES = 98_304, MAX_INDICES = 294_912;
     static final int MAX_RANGES = 1024, MAX_MESHES = 256, MAX_PIXELS = 1 << 20;
 
-    /** BASIC doodad caps, separate from the building caps so buildings are never displaced. */
-    static final int MAX_DOODADS = 512, MAX_MODELS = 48, MAX_MODEL_IMAGES = 64;
+    /**
+     * BASIC doodad caps, separate from the building caps so buildings are never displaced. Distinct
+     * models are the binding cap on dense tiles: Zephras Isle read 48 models per tile and capped
+     * 791 set doodads at 48, while no tile came near 512 doodad placements, so 96 models (and 96
+     * model images) are read.
+     */
+    static final int MAX_DOODADS = 512, MAX_MODELS = 96, MAX_MODEL_IMAGES = 96;
 
     static final int MAX_DOODAD_VERTICES = 65_536, MAX_DOODAD_INDICES = 196_608;
     static final int MAX_DOODAD_RANGES = 512, MAX_DOODAD_PIXELS = 1 << 19;
@@ -61,6 +66,40 @@ public final class WorldExteriorObjects {
     static final int MAX_MATERIAL_VERTICES = 32_768, MAX_MATERIAL_INDICES = 98_304;
     static final int MAX_MATERIAL_RANGES = 256;
 
+    /**
+     * Per-tile object texture budgets (#267). STANDARD keeps the original pixel budgets; HIGH
+     * doubles every pool's pixels for GPUs that can afford it. Image counts are the same in both.
+     * The objects file and renderer admit the HIGH totals.
+     */
+    public enum ImageDetail {
+        STANDARD(1 << 20, 1 << 18, 1 << 19),
+        HIGH(1 << 21, 1 << 19, 1 << 20);
+        private final int buildingPixels, materialPixels, doodadPixels;
+
+        ImageDetail(int buildingPixels, int materialPixels, int doodadPixels) {
+            this.buildingPixels = buildingPixels;
+            this.materialPixels = materialPixels;
+            this.doodadPixels = doodadPixels;
+        }
+
+        public int buildingPixels() {
+            return buildingPixels;
+        }
+
+        public int materialPixels() {
+            return materialPixels;
+        }
+
+        public int doodadPixels() {
+            return doodadPixels;
+        }
+
+        /** All pools together: the most RGBA8 pixels one tile's object set can carry. */
+        public int totalPixels() {
+            return buildingPixels + materialPixels + doodadPixels;
+        }
+    }
+
     /** Per-tile draw budget: the sum over all placements of their model's ranges. */
     static final int MAX_DRAWS = 4096;
 
@@ -73,11 +112,20 @@ public final class WorldExteriorObjects {
     /** Position xyz, unit normal xyz, texture1 uv: 32 bytes per vertex. */
     static final int VERTEX_FLOATS = 8;
 
-    /** Largest mip with both sides at most 256, falling to 128 or 64 near the pixel budget. */
-    private static final int[] IMAGE_SIDES = {256, 128, 64};
+    /**
+     * Building image sides, largest first. Images are read when their surfaces are admitted, but
+     * the pixel budget is shared only once every building has been read: {@link
+     * WorldImageBudget#allocate} gives every image the smallest side first and then raises them
+     * round by round, larger buildings first, so a tight budget lowers resolution instead of
+     * dropping surfaces.
+     */
+    static final int[] IMAGE_SIDES = {256, 128, 64, 32};
 
-    /** Doodad images: at most 128, falling to 64 near the doodad pixel budget. */
-    private static final int[] MODEL_IMAGE_SIDES = {128, 64};
+    /** Doodad image sides: at most 128. */
+    static final int[] MODEL_IMAGE_SIDES = {128, 64, 32};
+
+    /** Images are first decoded at this side; the budget later picks the uploaded level. */
+    static final int REGISTRATION_SIDE = 128;
 
     /**
      * MDDF flags: 0x40 direct FileDataID (required). 0x2, 0x20, 0x200 and 0x1000 select neither the
@@ -87,8 +135,21 @@ public final class WorldExteriorObjects {
      */
     private static final int DOODAD_DIRECT_ID = 0x40, DOODAD_ADMITTED = 0x2 | 0x20 | 0x200 | 0x1000;
 
-    /** MODD flags: only 0x1 (accepts projected textures) is admitted; it carries no transform. */
-    private static final int SET_DOODAD_ADMITTED = 0x1;
+    /**
+     * MODD flags (the high byte over the 24-bit reference) admitted without being interpreted: 0x1
+     * accepts projected textures, 0x2 selects interior rather than exterior lighting, and 0x4, 0x8
+     * and 0x10 are undocumented (0x10 lies in the bits wowdev records as unused as of 7.0.1.20994).
+     * No reviewed source lets any of them change the model reference or the transform: wowdev WMO
+     * (MODD, SMODoodadDef) keeps them apart from nameIndex, position, orientation and scale, and
+     * wow.export 4474fa4 reads them in WMOLoader.js but never uses them; WMORendererGL.js:380-418
+     * resolves the model from the reference alone and places it from position, rotation and scale.
+     * Zephras Isle records 0x10, 0x12, 0x16 and 0x1e on 1,337 set doodads. 0x20 to 0x80 are not
+     * seen and stay refused.
+     */
+    private static final int SET_DOODAD_ADMITTED = 0x1 | 0x2 | 0x4 | 0x8 | 0x10;
+
+    // MODD 0x2 selects interior rather than exterior lighting; vimi lights every set doodad as
+    // exterior (BASIC profile, fixed light), so the flag is admitted but not honoured.
 
     /**
      * Whether texture1 of a batch is sampled with UV0: the batch's shader ID and texture count name
@@ -119,6 +180,13 @@ public final class WorldExteriorObjects {
 
     /** MODF flags: 0x2 LOD-capable, 0x4 scale-enable, 0x8 direct FileDataID (required). */
     private static final int DIRECT_ID = 0x8, SCALED = 0x4, LOD_CAPABLE = 0x2;
+
+    /**
+     * MODF 0x80 (modf_use_sets_from_mwds, Shadowlands+, wowdev ADT/v18): doodadSet names an MWDR
+     * entry whose inclusive MWDS range lists the WMO MODS sets to load. It changes neither the
+     * model reference nor the transform.
+     */
+    private static final int SETS_FROM_MWDS = 0x80;
 
     /** MOGP exterior and interior flags; interior wins when both are present. */
     private static final long EXTERIOR = 0x8, INTERIOR = 0x2000;
@@ -195,7 +263,7 @@ public final class WorldExteriorObjects {
         DOODAD_EMPTY,
         SET_DOODAD_DRAWN,
         /**
-         * Name-table (MODN) reference, zero or out-of-range MODI entry, a MODD flag other than 0x1,
+         * Name-table (MODN) reference, zero or out-of-range MODI entry, a MODD flag outside 0x1F,
          * or a bad transform.
          */
         SET_DOODAD_UNSUPPORTED,
@@ -472,7 +540,8 @@ public final class WorldExteriorObjects {
                 List<Placement> placements,
                 List<Image> images,
                 int[] counts,
-                RuntimeException modelFailure) {
+                RuntimeException modelFailure,
+                ImageDetail detail) {
             this.modelFailure = modelFailure;
             this.mapId = mapId;
             this.tileX = tileX;
@@ -502,7 +571,7 @@ public final class WorldExteriorObjects {
                             && i <= MAX_INDICES + MAX_DOODAD_INDICES + MAX_MATERIAL_INDICES
                             && r <= MAX_RANGES + MAX_DOODAD_RANGES + MAX_MATERIAL_RANGES
                             && m <= MAX_MESHES + MAX_MODELS
-                            && p <= MAX_PIXELS + MAX_DOODAD_PIXELS + MAX_MATERIAL_PIXELS,
+                            && p <= detail.totalPixels(),
                     "EXTERIOR_TILE_BOUNDS");
             vertices = v;
             indices = i;
@@ -597,7 +666,16 @@ public final class WorldExteriorObjects {
             WorldStreamScopes.Scope scope,
             WorldFormats.Tile tile,
             Cancellation token) {
-        return prepare(engine, scope, tile, token, ModelReader.STANDARD);
+        return prepare(engine, scope, tile, token, ModelReader.STANDARD, ImageDetail.STANDARD);
+    }
+
+    static TileObjects prepare(
+            WorldStreamScopes engine,
+            WorldStreamScopes.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation token,
+            ImageDetail detail) {
+        return prepare(engine, scope, tile, token, ModelReader.STANDARD, detail);
     }
 
     /** Reads one doodad model's bytes; tests substitute a failing reader. */
@@ -616,7 +694,18 @@ public final class WorldExteriorObjects {
             WorldFormats.Tile tile,
             Cancellation token,
             ModelReader modelReader) {
+        return prepare(engine, scope, tile, token, modelReader, ImageDetail.STANDARD);
+    }
+
+    static TileObjects prepare(
+            WorldStreamScopes engine,
+            WorldStreamScopes.Scope scope,
+            WorldFormats.Tile tile,
+            Cancellation token,
+            ModelReader modelReader,
+            ImageDetail detail) {
         Objects.requireNonNull(modelReader);
+        Objects.requireNonNull(detail);
         Objects.requireNonNull(engine);
         Objects.requireNonNull(scope);
         Objects.requireNonNull(tile);
@@ -626,7 +715,7 @@ public final class WorldExteriorObjects {
                 tile,
                 WorldStreamScopes.UseProfile.BASIC_EXTERIOR,
                 token,
-                admission -> new Builder(admission, modelReader).build());
+                admission -> new Builder(admission, modelReader, detail).build());
     }
 
     private enum RootState {
@@ -673,19 +762,33 @@ public final class WorldExteriorObjects {
         private final Map<Long, RootState> doodadStates = new HashMap<>();
         private final Map<Long, Integer> doodadSlots = new HashMap<>();
 
+        /** obj0 MWDR ranges and MWDS set indexes, for MODF flag 0x80 placements. */
+        private List<WorldPlacements.SetRange> setRanges = List.of();
+
+        private List<Integer> setIds = List.of();
+
+        /** Registered images by slot, in admission (priority) order; null for other slots. */
+        private final List<Demand> demands = new ArrayList<>();
+
         /** Building placements with opaque draws; only these take one of MAX_PLACEMENTS. */
         private int opaquePlacements;
 
-        private int rootsRead, groupsRead, imagesRead, vertices, indices, ranges, pixels;
+        private int rootsRead, groupsRead, imagesRead, vertices, indices, ranges;
         private int modelsRead, modelImagesRead, doodadVertices, doodadIndices, doodadRanges;
-        private int doodadPixels, doodads, draws;
-        private int materialImagesRead, materialPixels, materialVertices, materialIndices;
+        private int doodads, draws;
+        private int materialImagesRead, materialVertices, materialIndices;
         private int materialRanges;
 
         private final ModelReader modelReader;
         private RuntimeException modelFailure;
 
-        Builder(WorldStreamScopes.TileAdmission admission, ModelReader modelReader) {
+        private final ImageDetail detail;
+
+        Builder(
+                WorldStreamScopes.TileAdmission admission,
+                ModelReader modelReader,
+                ImageDetail detail) {
+            this.detail = detail;
             this.admission = admission;
             this.token = admission.cancellation();
             this.modelReader = modelReader;
@@ -698,12 +801,17 @@ public final class WorldExteriorObjects {
                 try (var input = admission.readRecorded(WorldStreamScopes.RecordedInput.OBJ0)) {
                     metadata = WorldPlacements.readObj0(input.bytes(), token::isCanceled);
                 }
+                setRanges = metadata.setRanges();
+                setIds = metadata.setIds();
                 place(metadata.worldObjects());
                 fitMaterialDraws();
+                // Admission ran largest first; the set keeps obj0 source order.
+                placements.sort(java.util.Comparator.comparingInt(Placement::ordinal));
                 // Buildings first, then MDDF doodads, then the drawn buildings' doodad sets.
                 placeDoodads(metadata.doodads());
                 placeSetDoodads();
             }
+            allocateImages();
             dropUnusedImages();
             return new TileObjects(
                     admission.mapId(),
@@ -713,7 +821,8 @@ public final class WorldExteriorObjects {
                     placements,
                     images,
                     counts,
-                    modelFailure);
+                    modelFailure,
+                    detail);
         }
 
         private void count(Count count) {
@@ -963,7 +1072,13 @@ public final class WorldExteriorObjects {
                 }
                 conflicting.put(entry.getKey(), conflict);
             }
-            for (var record : records) {
+            // Larger buildings are admitted first, so caps and image budgets never favour a small
+            // building only because obj0 records it earlier. Equal sizes keep obj0 order.
+            var ordered = new ArrayList<>(records);
+            ordered.sort(
+                    java.util.Comparator.comparingDouble(
+                            (WorldPlacements.WorldObject r) -> -recordedSize(r)));
+            for (var record : ordered) {
                 token.check();
                 var group = byUid.get(record.uniqueId());
                 if (conflicting.get(record.uniqueId())) {
@@ -1028,7 +1143,8 @@ public final class WorldExteriorObjects {
                                         transform.scale(),
                                         transform.cos(),
                                         transform.sin(),
-                                        Rotation.heading(transform.cos(), transform.sin())));
+                                        buildingRotation(
+                                                record, transform.cos(), transform.sin())));
                     }
                 }
             }
@@ -1140,21 +1256,18 @@ public final class WorldExteriorObjects {
                 }
                 var selected = new ArrayList<Integer>(2);
                 selected.add(0);
-                if (building.doodadSet() != 0) {
+                if ((building.flags() & SETS_FROM_MWDS) != 0) {
+                    // MODF doodadSet names an MWDR range of MWDS set indexes (set 0 is kept).
+                    if (!selectFromMwds(building.doodadSet(), declared, selected)) {
+                        count(Count.SET_UNSUPPORTED);
+                    }
+                } else if (building.doodadSet() != 0) {
                     if (building.doodadSet() >= declared.sets().size()) {
                         count(Count.SET_UNSUPPORTED);
                     } else {
                         selected.add(building.doodadSet());
                     }
                 }
-                var parent =
-                        new WorldBasicWmo.Transform(
-                                building.x(),
-                                building.y(),
-                                building.z(),
-                                building.scale(),
-                                building.cos(),
-                                building.sin());
                 for (int set : selected) {
                     var range = declared.sets().get(set);
                     long end = range.firstDefinition() + range.count();
@@ -1164,18 +1277,41 @@ public final class WorldExteriorObjects {
                             count(Count.SET_DOODAD_UNSUPPORTED);
                             continue;
                         }
-                        setDoodad(building, parent, declared, set, (int) d);
+                        setDoodad(building, declared, set, (int) d);
                     }
                 }
             }
         }
 
+        /**
+         * Adds the MWDS sets of MWDR entry {@code entry}; false (nothing added) when the entry or
+         * any set index it lists is outside the recorded MWDR, MWDS or MODS.
+         */
+        private boolean selectFromMwds(
+                int entry, WmoFormats.Doodads declared, List<Integer> selected) {
+            if (entry >= setRanges.size()) {
+                return false;
+            }
+            var range = setRanges.get(entry);
+            if (range.end() < range.begin() || range.end() >= setIds.size()) {
+                return false;
+            }
+            var listed = new ArrayList<Integer>();
+            for (long i = range.begin(); i <= range.end(); i++) {
+                int set = setIds.get((int) i);
+                if (set >= declared.sets().size()) {
+                    return false;
+                }
+                if (!selected.contains(set) && !listed.contains(set)) {
+                    listed.add(set);
+                }
+            }
+            selected.addAll(listed);
+            return true;
+        }
+
         private void setDoodad(
-                Placement building,
-                WorldBasicWmo.Transform parent,
-                WmoFormats.Doodads declared,
-                int set,
-                int ordinal) {
+                Placement building, WmoFormats.Doodads declared, int set, int ordinal) {
             var def = declared.definitions().get(ordinal);
             long id =
                     def.reference() < declared.fileIdCount() ? declared.fileId(def.reference()) : 0;
@@ -1193,8 +1329,13 @@ public final class WorldExteriorObjects {
                 count(Count.SET_DOODAD_UNSUPPORTED);
                 return;
             }
-            double x = parent.x(def.x(), def.y()), y = parent.y(def.x(), def.y());
-            double z = parent.z(def.z());
+            // The building's full rotation (heading, pitch, roll) and scale carry the MODD
+            // position; for an untilted building this is exactly the heading rule.
+            double[] m = building.rotation().rowMajor();
+            double s = building.scale(), a = def.x(), b = def.y(), c = def.z();
+            double x = building.x() + s * (m[0] * a + m[1] * b + m[2] * c);
+            double y = building.y() + s * (m[3] * a + m[4] * b + m[5] * c);
+            double z = building.z() + s * (m[6] * a + m[7] * b + m[8] * c);
             if (!finite(x, y, z)) {
                 count(Count.SET_DOODAD_UNSUPPORTED);
                 return;
@@ -1306,6 +1447,8 @@ public final class WorldExteriorObjects {
             int[] local = new int[counts.length];
             var pending = new ArrayList<PendingMesh>();
             int tentativeVertices = 0, tentativeIndices = 0, tentativeRanges = 0;
+            // Heap held by pending copies: every candidate vertex and index of every kept group.
+            long pendingVertices = 0, pendingIndices = 0, tentativeMaterialVertices = 0;
             for (int g = 0; g < lod0; g++) {
                 token.check();
                 long groupId = root.gfid(g);
@@ -1317,6 +1460,33 @@ public final class WorldExteriorObjects {
                 var mesh = readGroup(g, groupId, root, local);
                 if (mesh == null) {
                     continue;
+                }
+                int meshVertices = mesh.vertices().length / VERTEX_FLOATS;
+                boolean materialOnly = mesh.ranges().stream().noneMatch(r -> r.blend() == OPAQUE);
+                if (materialOnly
+                        && !mesh.ranges().isEmpty()
+                        && meshVertices
+                                > MAX_MATERIAL_VERTICES
+                                        - materialVertices
+                                        - tentativeMaterialVertices) {
+                    // resolveBuilding would cap every range of this cutout- or blend-only mesh on
+                    // its vertices (BATCH_CAPPED, then GROUP_EMPTY) before reading any image; do it
+                    // now so its copy is never held. Material vertices still pending are charged
+                    // as if kept, a conservative bound.
+                    local[Count.BATCH_CAPPED.ordinal()] += mesh.ranges().size();
+                    local[Count.GROUP_EMPTY.ordinal()]++;
+                    continue;
+                }
+                if (materialOnly) {
+                    tentativeMaterialVertices += meshVertices;
+                }
+                pendingVertices += meshVertices;
+                pendingIndices += mesh.indices().length;
+                if (pendingVertices > MAX_VERTICES + MAX_MATERIAL_VERTICES
+                        || pendingIndices > MAX_INDICES + MAX_MATERIAL_INDICES) {
+                    // More candidate geometry than both budgets could ever draw: never hold it.
+                    count(Count.ROOT_CAPPED);
+                    return RootState.CAPPED;
                 }
                 pending.add(mesh);
                 // Caps are decided by opaque candidates alone, exactly as the opaque-only profile
@@ -1549,11 +1719,12 @@ public final class WorldExteriorObjects {
             var materials = root.materials();
             for (var batch : borrow.batches()) {
                 // Index ranges and vertex domains are already validated by WmoGroupSpans.
-                if (batch.flags() != 0 || batch.materialByte() >= materials.size()) {
+                int index = batch.materialIndex();
+                if (index < 0 || index >= materials.size()) {
                     unsupported++;
                     continue;
                 }
-                var material = materials.get(batch.materialByte());
+                var material = materials.get(index);
                 // MOMT blend mode: 0 opaque, 1 alpha key (cutout), 2 alpha (blended).
                 long blend = material.word(2);
                 if (blend > BLENDED || material.word(3) == 0) {
@@ -1564,7 +1735,7 @@ public final class WorldExteriorObjects {
                         new Candidate(
                                 (int) batch.firstIndex(),
                                 batch.indexCount(),
-                                batch.materialByte(),
+                                index,
                                 material.word(3),
                                 (int) blend));
                 candidateIndices += batch.indexCount();
@@ -1896,19 +2067,30 @@ public final class WorldExteriorObjects {
             return slot;
         }
 
+        /**
+         * One registered image: its slot, pool, source, level-0 size, recorded mip count and the
+         * level it was first decoded at.
+         */
+        private record Demand(
+                int slot,
+                Pool pool,
+                long id,
+                boolean opaque,
+                long width,
+                long height,
+                int recorded,
+                int registered) {}
+
+        /**
+         * Reads and decodes one image at the registration side; the uploaded level is chosen later
+         * by {@link #allocateImages}. Missing, protected or undecodable images are counted here.
+         */
         private int decode(long id, boolean opaque, Pool pool, int[] local) {
             boolean building = pool != Pool.DOODAD;
             var unavailable = building ? Count.IMAGE_UNAVAILABLE : Count.MODEL_IMAGE_UNAVAILABLE;
             var undecodable = building ? Count.IMAGE_UNDECODABLE : Count.MODEL_IMAGE_UNDECODABLE;
-            var capped = building ? Count.IMAGE_CAPPED : Count.MODEL_IMAGE_CAPPED;
             boolean[] unreadable = new boolean[1];
-            var input =
-                    derived(
-                            id,
-                            building
-                                    ? WorldStreamScopes.DerivedKind.WMO_IMAGE
-                                    : WorldStreamScopes.DerivedKind.M2_IMAGE,
-                            pool == Pool.MATERIAL ? unreadable : null);
+            var input = derived(id, imageKind(pool), pool == Pool.MATERIAL ? unreadable : null);
             if (input == null) {
                 local[unavailable.ordinal()]++;
                 return unreadable[0] ? UNREADABLE : MISSING;
@@ -1924,61 +2106,225 @@ public final class WorldExteriorObjects {
                 }
                 long width = Integer.toUnsignedLong(header.getInt(12));
                 long height = Integer.toUnsignedLong(header.getInt(16));
-                if (width == 0 || height == 0 || width > 8192 || height > 8192) {
-                    local[undecodable.ordinal()]++;
-                    return -1;
-                }
-                int level =
-                        switch (pool) {
-                            case BUILDING -> mipFor(width, height, MAX_PIXELS - pixels);
-                            case MATERIAL ->
-                                    mipFor(width, height, MAX_MATERIAL_PIXELS - materialPixels);
-                            case DOODAD ->
-                                    mipFor(
-                                            width,
-                                            height,
-                                            MAX_DOODAD_PIXELS - doodadPixels,
-                                            MODEL_IMAGE_SIDES);
-                        };
-                if (level < 0) {
-                    local[capped.ordinal()]++;
-                    return -1;
-                }
-                Blp2Types.Image image;
+                int recorded;
                 try {
-                    image =
-                            Blp2Decoder.decodeSynchronous(
-                                    AssetSource.bytes(raw),
-                                    level,
-                                    IMAGE_LIMITS,
-                                    token,
-                                    Blp2Types.MipProfile.STRICT);
-                } catch (BlpFormatException undecodableImage) {
+                    recorded =
+                            WorldImageBudget.recordedLevels(
+                                    Blp2Decoder.readMipsSynchronous(
+                                            AssetSource.bytes(raw),
+                                            IMAGE_LIMITS,
+                                            token,
+                                            Blp2Types.MipProfile.STRICT));
+                } catch (BlpFormatException undeclared) {
+                    recorded = 0;
+                }
+                if (width == 0 || height == 0 || width > 8192 || height > 8192 || recorded == 0) {
                     local[undecodable.ordinal()]++;
                     return -1;
                 }
-                int w = image.width(), h = image.height();
-                if (image.mipLevel() != level
-                        || w != Math.max(1, width >> level)
-                        || h != Math.max(1, height >> level)) {
+                // The registration level first, then every other recorded level with both sides
+                // at most 256, so an image the 256-side profile could draw is never lost here.
+                int preferred =
+                        WorldImageBudget.levelFor(width, height, REGISTRATION_SIDE, recorded);
+                int level = -1;
+                Image image = null;
+                for (int k = 0; k < recorded && image == null; k++) {
+                    int candidate =
+                            k <= recorded - 1 - preferred ? preferred + k : recorded - 1 - k;
+                    image = decodeLevel(raw, id, width, height, candidate, opaque);
+                    level = candidate;
+                }
+                if (image == null) {
                     local[undecodable.ordinal()]++;
                     return -1;
                 }
-                byte[] rgba = image.rgba();
-                if (opaque) {
-                    for (int i = 3; i < rgba.length; i += 4) {
-                        rgba[i] = (byte) 255;
+                images.add(image);
+                int slot = images.size() - 1;
+                while (demands.size() < slot) {
+                    demands.add(null);
+                }
+                demands.add(new Demand(slot, pool, id, opaque, width, height, recorded, level));
+                local[(building ? Count.IMAGE_DECODED : Count.MODEL_IMAGE_DECODED).ordinal()]++;
+                return slot;
+            }
+        }
+
+        private static WorldStreamScopes.DerivedKind imageKind(Pool pool) {
+            return pool == Pool.DOODAD
+                    ? WorldStreamScopes.DerivedKind.M2_IMAGE
+                    : WorldStreamScopes.DerivedKind.WMO_IMAGE;
+        }
+
+        /** One recorded level with both sides at most 256, or null when it does not decode. */
+        private Image decodeLevel(
+                byte[] raw, long id, long width, long height, int level, boolean opaque) {
+            if (Math.max(1, width >> level) > 256 || Math.max(1, height >> level) > 256) {
+                return null;
+            }
+            Blp2Types.Image image;
+            try {
+                image =
+                        Blp2Decoder.decodeSynchronous(
+                                AssetSource.bytes(raw),
+                                level,
+                                IMAGE_LIMITS,
+                                token,
+                                Blp2Types.MipProfile.STRICT);
+            } catch (BlpFormatException undecodableImage) {
+                return null;
+            }
+            int w = image.width(), h = image.height();
+            if (image.mipLevel() != level
+                    || w != Math.max(1, width >> level)
+                    || h != Math.max(1, height >> level)) {
+                return null;
+            }
+            byte[] rgba = image.rgba();
+            if (opaque) {
+                for (int i = 3; i < rgba.length; i += 4) {
+                    rgba[i] = (byte) 255;
+                }
+            }
+            return new Image(id, w, h, level, rgba);
+        }
+
+        /**
+         * Shares each pool's pixel budget among the images its kept ranges use, larger buildings
+         * (earlier admission) first, and replaces each registered image with its allotted level:
+         * the file's own mip when recorded, otherwise a 2x2 box reduction of the registered level.
+         */
+        private void allocateImages() {
+            boolean[] used = new boolean[images.size()];
+            for (var model : models) {
+                for (var mesh : model.meshes()) {
+                    for (var range : mesh.ranges()) {
+                        used[range.image()] = true;
                     }
                 }
-                switch (pool) {
-                    case BUILDING -> pixels += w * h;
-                    case MATERIAL -> materialPixels += w * h;
-                    case DOODAD -> doodadPixels += w * h;
-                }
-                images.add(new Image(id, w, h, level, rgba));
-                local[(building ? Count.IMAGE_DECODED : Count.MODEL_IMAGE_DECODED).ordinal()]++;
-                return images.size() - 1;
             }
+            for (var pool : Pool.values()) {
+                var chosen = new ArrayList<Demand>();
+                var requests = new ArrayList<WorldImageBudget.Request>();
+                for (var demand : demands) {
+                    if (demand != null && demand.pool() == pool && used[demand.slot()]) {
+                        chosen.add(demand);
+                        requests.add(
+                                new WorldImageBudget.Request(
+                                        demand.width(), demand.height(), levelsDown(demand)));
+                    }
+                }
+                long budget =
+                        switch (pool) {
+                            case BUILDING -> detail.buildingPixels();
+                            case MATERIAL -> detail.materialPixels();
+                            case DOODAD -> detail.doodadPixels();
+                        };
+                int[] levels =
+                        WorldImageBudget.allocate(
+                                requests,
+                                budget,
+                                pool == Pool.DOODAD ? MODEL_IMAGE_SIDES : IMAGE_SIDES);
+                for (int i = 0; i < chosen.size(); i++) {
+                    token.check();
+                    // Caps keep every pool far above its smallest sides; never drop here.
+                    require(levels[i] >= 0, "EXTERIOR_IMAGE_BUDGET");
+                    var demand = chosen.get(i);
+                    if (levels[i] != demand.registered()) {
+                        images.set(demand.slot(), relevel(demand, levels[i]));
+                    }
+                }
+            }
+        }
+
+        /** Every level down to 1x1: recorded levels come from the file, the rest are reduced. */
+        private static int levelsDown(Demand demand) {
+            int levels = 1;
+            while (levels < 16
+                    && (demand.width() >> (levels - 1) > 1
+                            || demand.height() >> (levels - 1) > 1)) {
+                levels++;
+            }
+            return Math.max(levels, demand.recorded());
+        }
+
+        private Image relevel(Demand demand, int level) {
+            var registered = images.get(demand.slot());
+            if (level < demand.recorded()) {
+                // A refused second read of a cutout or blended image keeps the registered level,
+                // as the first read would have: it never costs the tile its set.
+                var input =
+                        derived(
+                                demand.id(),
+                                imageKind(demand.pool()),
+                                demand.pool() == Pool.MATERIAL ? new boolean[1] : null);
+                if (input != null) {
+                    try (input) {
+                        var image =
+                                decodeLevel(
+                                        input.bytes(),
+                                        demand.id(),
+                                        demand.width(),
+                                        demand.height(),
+                                        level,
+                                        demand.opaque());
+                        if (image != null) {
+                            return image;
+                        }
+                    }
+                }
+                if (level < demand.registered()) {
+                    return registered; // a larger level is unavailable; keep the smaller one
+                }
+            }
+            return reduce(registered, level - demand.registered());
+        }
+
+        /**
+         * Halves the image {@code steps} times with a 2x2 box filter. Colour is weighted by alpha
+         * (straight alpha), so transparent texels do not darken the edge; alpha is the plain mean.
+         * An odd side truncates, like the halved level sizes: its last row or column is dropped.
+         */
+        static Image reduce(Image image, int steps) {
+            int w = image.width, h = image.height;
+            byte[] rgba = image.rgba;
+            for (int step = 0; step < steps; step++) {
+                int nw = Math.max(1, w >> 1), nh = Math.max(1, h >> 1);
+                byte[] next = new byte[nw * nh * 4];
+                for (int y = 0; y < nh; y++) {
+                    for (int x = 0; x < nw; x++) {
+                        int x0 = Math.min(w - 1, 2 * x), x1 = Math.min(w - 1, 2 * x + 1);
+                        int y0 = Math.min(h - 1, 2 * y), y1 = Math.min(h - 1, 2 * y + 1);
+                        int[] at = {
+                            (y0 * w + x0) * 4,
+                            (y0 * w + x1) * 4,
+                            (y1 * w + x0) * 4,
+                            (y1 * w + x1) * 4
+                        };
+                        int alpha = 0;
+                        for (int k : at) {
+                            alpha += rgba[k + 3] & 255;
+                        }
+                        int out = (y * nw + x) * 4;
+                        for (int c = 0; c < 3; c++) {
+                            int weighted = 0, plain = 0;
+                            for (int k : at) {
+                                weighted += (rgba[k + c] & 255) * (rgba[k + 3] & 255);
+                                plain += rgba[k + c] & 255;
+                            }
+                            next[out + c] =
+                                    (byte)
+                                            (alpha == 0
+                                                    ? (plain + 2) / 4
+                                                    : (weighted + alpha / 2) / alpha);
+                        }
+                        next[out + 3] = (byte) ((alpha + 2) / 4);
+                    }
+                }
+                rgba = next;
+                w = nw;
+                h = nh;
+            }
+            return new Image(image.id, w, h, image.mipLevel + steps, rgba);
         }
 
         private WorldStreamScopes.Input derived(long id, WorldStreamScopes.DerivedKind kind) {
@@ -2064,15 +2410,26 @@ public final class WorldExteriorObjects {
                 && a.scale() == b.scale();
     }
 
+    /**
+     * A MODF rotation: the same construction as MDDF ({@link Rotation#mddf}), heading from rotation
+     * y, pitch from rotation x and roll from rotation z. wowdev ADT/v18 builds MODF and MDDF
+     * placement matrices with the identical sequence (rotation[1] - 270, -rotation[0], rotation[2]
+     * - 90), and TrinityCore ec72c19 places WMO and M2 instances alike through {@code
+     * ModelInstance} with {@code fromEulerAnglesZYX}. Untilted placements stay bit-identical to the
+     * heading rule.
+     */
+    static Rotation buildingRotation(WorldPlacements.WorldObject p, double cos, double sin) {
+        return Rotation.mddf(cos, sin, p.rotation().x(), p.rotation().z());
+    }
+
     /** Placement policy; null means unsupported. The ADT heading rule is WorldBasicWmo's. */
     private static WorldBasicWmo.Transform qualify(WorldPlacements.WorldObject p) {
         int flags = p.flags();
         if ((flags & DIRECT_ID) == 0
-                || (flags & ~(DIRECT_ID | SCALED | LOD_CAPABLE)) != 0
+                || (flags & ~(DIRECT_ID | SCALED | LOD_CAPABLE | SETS_FROM_MWDS)) != 0
                 || p.reference().kind() != WorldPlacements.ReferenceKind.FILE_DATA_ID
                 || p.reference().value() <= 0
-                || p.rotation().x() != 0
-                || p.rotation().z() != 0) {
+                || !buildingRotation(p, 1, 0).finite()) {
             return null;
         }
         double scale = 1.0;
@@ -2092,25 +2449,13 @@ public final class WorldExteriorObjects {
         return transform;
     }
 
-    /**
-     * Mip level whose sides are both at most 256 (then 128, then 64) and whose pixels fit the
-     * remaining tile budget; -1 when none fits. The decoder later refuses absent levels.
-     */
-    static int mipFor(long width, long height, long remainingPixels) {
-        return mipFor(width, height, remainingPixels, IMAGE_SIDES);
-    }
-
-    private static int mipFor(long width, long height, long remainingPixels, int[] sides) {
-        for (int side : sides) {
-            int level = 0;
-            while (Math.max(1, width >> level) > side || Math.max(1, height >> level) > side) {
-                level++;
-            }
-            if (Math.max(1, width >> level) * Math.max(1, height >> level) <= remainingPixels) {
-                return level;
-            }
-        }
-        return -1;
+    /** The recorded MODF bounds diagonal (scaled native units); 0 when not finite. */
+    static double recordedSize(WorldPlacements.WorldObject record) {
+        double dx = (double) record.upperBounds().x() - record.lowerBounds().x();
+        double dy = (double) record.upperBounds().y() - record.lowerBounds().y();
+        double dz = (double) record.upperBounds().z() - record.lowerBounds().z();
+        double size = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        return Double.isFinite(size) ? size : 0;
     }
 
     private static boolean sameDeclaration(

@@ -48,7 +48,51 @@ public final class TalentSourceDetailsTest {
         require(TalentSourceDetails.identity(legacy).contains("legacy Talent table")
                 && TalentSourceDetails.identity(legacy).contains("not placed"),
                 "Legacy rows and unplaced talents stay distinct");
-        System.out.println("Talent source details PASS: protected, unsupported, download, unresolved, bounded evidence and trait source rows");
+        var types = new Object() {
+            com.vibeminer.concepts.talents.TalentTypes.Talent legacy(long id, int row, List<com.vibeminer.concepts.talents.TalentTypes.Prerequisite> needs, String text) {
+                return new com.vibeminer.concepts.talents.TalentTypes.Talent(id, row, 0, List.of(10L + id, 20L + id), 2,
+                        needs, "Talent " + id, text, null, com.vibeminer.concepts.talents.TalentTypes.Origin.LEGACY,
+                        "SpellMisc records no DifficultyID 0 icon for spell " + (10 + id) + ".");
+            }
+        };
+        var claws = types.legacy(1, 0, List.of(), "Plain text.");
+        var frenzy = types.legacy(2, 2, List.of(new com.vibeminer.concepts.talents.TalentTypes.Prerequisite(1, 2)),
+                "Gain $s1 rage.");
+        var orphan = types.legacy(3, 1, List.of(new com.vibeminer.concepts.talents.TalentTypes.Prerequisite(999, 0)), null);
+        var tree = new com.vibeminer.concepts.talents.TalentTypes.Tree(1, "Feral Combat", 1, "", List.of(claws, frenzy, orphan));
+        var byId = java.util.Map.of(1L, claws, 2L, frenzy, 3L, orphan);
+        require(TalentSourceDetails.pointRequirement(tree, claws) == null
+                && "Requires 10 points in Feral Combat Talents".equals(TalentSourceDetails.pointRequirement(tree, frenzy)),
+                "Legacy tiers use the game point-requirement wording");
+        require(TalentSourceDetails.pointRequirement(tree, trait) == null,
+                "TraitTree tier gates are not inferred");
+        require("Requires 3 points in Talent 1".equals(TalentSourceDetails.prerequisite(frenzy.prerequisites().getFirst(), byId))
+                && "Requires 1 point in unavailable talent #999".equals(TalentSourceDetails.prerequisite(orphan.prerequisites().getFirst(), byId))
+                && "Requires Talent 1".equals(TalentSourceDetails.prerequisite(
+                        new com.vibeminer.concepts.talents.TalentTypes.Prerequisite(1, null,
+                                com.vibeminer.concepts.talents.TalentTypes.PrerequisiteKind.TRAIT_SUFFICIENT), byId)),
+                "Prerequisites use game wording; trait edges claim no rank");
+        String hover = TalentSourceDetails.hoverText(tree, frenzy, byId);
+        require(hover.contains("Maximum rank 2") && hover.contains("Requires 10 points in Feral Combat Talents")
+                && hover.contains("Requires 3 points in Talent 1") && hover.contains("Select to show the description")
+                && hover.contains("no DifficultyID 0 icon"), "Hover tooltip carries the full talent facts");
+        require(TalentSourceDetails.hoverText(tree, claws, byId).contains("Plain text.")
+                && TalentSourceDetails.hoverText(tree, orphan, byId).contains("Description unavailable"),
+                "Hover tooltip shows plain descriptions and explicit absence");
+        require(TalentSourceDetails.missingIconReference(claws).contains("no DifficultyID 0 icon for spell 11")
+                && TalentSourceDetails.missingIconText(claws).contains("no DifficultyID 0 icon"),
+                "A reported missing-icon cause reaches the user");
+        require(TalentSourceDetails.missingIconReference(trait).contains("cause is unconfirmed"),
+                "Without a reported cause the missing icon stays unconfirmed");
+        require("Source build 1.60.1.70707".equals(TalentSourceDetails.buildLabel("1.60.1.70707"))
+                && TalentSourceDetails.buildLabel("").isEmpty(), "The source build is labelled");
+        require(TalentSourceDetails.buildLabel(null).isEmpty(), "A missing build version is not an error");
+        require(TalentSourceDetails.failure(new java.util.concurrent.CompletionException(
+                        new IllegalStateException("SPELL_TEXT_OPERATION_LIMIT"))).contains("busy"),
+                "A busy spell text service is named, not hidden");
+        require(TalentSourceDetails.failure(new IllegalStateException("x".repeat(1000))).length() < 260,
+                "Failure causes are bounded");
+        System.out.println("Talent source details PASS: protected, unsupported, download, unresolved, bounded evidence, trait source rows and talent wording");
     }
 
     private static BlpImageTypes.Result result(BlpImageTypes.State state,

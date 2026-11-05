@@ -5,6 +5,7 @@ import com.vibeminer.formats.audio.PcmClip;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.IntSupplier;
 
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioSystem;
@@ -40,16 +41,23 @@ final class VoicePlayback implements AutoCloseable {
     }
 
     private final Lines lines;
+    private final IntSupplier device;
     private final AtomicReference<Work> active = new AtomicReference<>();
     private final AtomicBoolean admitted = new AtomicBoolean();
     private volatile boolean closed;
 
     VoicePlayback() {
-        this(AudioSystem::getSourceDataLine);
+        this(AudioSystem::getSourceDataLine, AudioOutput::channels);
     }
 
     VoicePlayback(Lines lines) {
+        this(lines, () -> 2);
+    }
+
+    /** {@code device} gives the output's channels, as {@link AudioOutput#channels()} does. */
+    VoicePlayback(Lines lines, IntSupplier device) {
         this.lines = lines;
+        this.device = device;
     }
 
     CompletableFuture<String> play(PcmClip clip) {
@@ -72,14 +80,23 @@ final class VoicePlayback implements AutoCloseable {
                             String problem = null;
                             try {
                                 if (closed || work.cancelled) return;
+                                // clip.bytes() is a copy, so a downmix may rewrite it in place.
+                                byte[] bytes = clip.bytes();
+                                int length = bytes.length;
+                                // A stereo clip on a mono-only device plays downmixed to mono.
+                                int channels =
+                                        clip.channels() == 2
+                                                ? AudioOutput.lineChannels(2, device.getAsInt())
+                                                : clip.channels();
+                                if (channels < clip.channels())
+                                    length = AudioOutput.downmix(bytes, length);
                                 var format =
                                         new AudioFormat(
-                                                clip.sampleRate(), 16, clip.channels(), true, true);
+                                                clip.sampleRate(), 16, channels, true, true);
                                 line = lines.open(format);
                                 line.open(format, 8192);
                                 work.line.set(line);
                                 if (closed || work.cancelled) return;
-                                byte[] bytes = clip.bytes();
                                 line.start();
                                 if (!closed && !work.cancelled) {
                                     try {
@@ -89,12 +106,12 @@ final class VoicePlayback implements AutoCloseable {
                                     }
                                 }
                                 for (int offset = 0;
-                                        offset < bytes.length && !closed && !work.cancelled; ) {
+                                        offset < length && !closed && !work.cancelled; ) {
                                     int n =
                                             line.write(
                                                     bytes,
                                                     offset,
-                                                    Math.min(4096, bytes.length - offset));
+                                                    Math.min(4096, length - offset));
                                     if (n <= 0) break;
                                     offset += n;
                                 }

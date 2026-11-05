@@ -38,15 +38,16 @@ import java.util.function.BooleanSupplier;
  * reserved bytes must be zero.
  */
 final class WorldStreamObjectsFile {
-    static final int VERSION = 2, HEADER_BYTES = 256, MAX_BYTES = 16 << 20;
+    static final int VERSION = 2, HEADER_BYTES = 256, MAX_BYTES = 24 << 20;
     // Opaque buildings (24 roots, 256 meshes, 1,024 ranges, 64 placements, 64 images, 98,304
-    // vertices, 294,912 indices, 1 Mi pixels), plus cutout and blended building surfaces (256
-    // ranges, 32 images, 32,768 vertices, 98,304 indices, 256 Ki pixels), plus BASIC doodads (48
-    // models and meshes, 512 ranges and placements, 64 images, 65,536 vertices, 196,608 indices,
-    // 512 Ki pixels). Creature models share whatever room remains.
-    static final int MAX_MODELS = 72, MAX_MESHES = 304, MAX_RANGES = 1792, MAX_PLACEMENTS = 576;
-    static final int MAX_IMAGES = 160, MAX_VERTICES = 196_608, MAX_INDICES = 589_824;
-    static final int MAX_PIXELS = 7 << 18, MAX_IMAGE_SIDE = 256, MAX_MESH_VERTICES = 65_536;
+    // vertices, 294,912 indices, 1 Mi pixels, 2 Mi on the HIGH texture tier), plus cutout and
+    // blended building surfaces (256 ranges, 32 images, 32,768 vertices, 98,304 indices, 256 Ki
+    // pixels, 512 Ki on HIGH), plus BASIC doodads (96 models and meshes, 512 ranges and
+    // placements, 96 images, 65,536 vertices, 196,608 indices, 512 Ki pixels, 1 Mi on HIGH).
+    // Creature models share whatever room remains. Every table at its cap is about 22.2 MB.
+    static final int MAX_MODELS = 120, MAX_MESHES = 352, MAX_RANGES = 1792, MAX_PLACEMENTS = 576;
+    static final int MAX_IMAGES = 192, MAX_VERTICES = 196_608, MAX_INDICES = 589_824;
+    static final int MAX_PIXELS = 7 << 19, MAX_IMAGE_SIDE = 256, MAX_MESH_VERTICES = 65_536;
 
     /** Range material classes: depth-writing opaque, alpha-tested cutout, sorted alpha blend. */
     static final int OPAQUE = 0, CUTOUT = 1, BLENDED = 2;

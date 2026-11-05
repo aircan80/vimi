@@ -22,13 +22,27 @@ the [TraitTree checkpoint](talents-traittree-checkpoint.md) for the evidence and
 limits. Other Classic products keep the legacy reader.
 
 Class names, trees, positions and ranks come from the selected build's verified
-client tables. Rank badges show recorded maximum ranks. The browser does not
-allocate points, load character builds or calculate level/point gates. It does
-not replace unavailable data with another game's or build's talents.
+client tables. Rank badges read "Max N": the recorded maximum rank, not points
+spent. The browser does not allocate points or load character builds. Legacy
+Talent rows show the Classic tier gate ("Requires N points in <Tree> Talents")
+and their prerequisites with the recorded points ("Requires N points in
+<Talent>"); TraitTree tier gates (`TraitCond`) are not interpreted, and trait
+edges record no rank, so they show "Requires <Talent>". A legacy talent with
+several rank spells also shows its next rank's description. The hover tooltip
+carries the same facts as the detail rail. The header and Source details name the
+source build. It does not replace unavailable data with another game's or build's
+talents.
 
 Icons load on demand through the build's existing file/image services. Missing
-icons use neutral placeholders; unresolved background art uses a plain dark tree
-surface. Unsupported models (including Retail and Mists) explain that their
+icons use neutral artwork, never a glyph that reads as data; the reported cause
+(no SpellMisc icon, different icons for one spell, an unreadable or over-bound
+SpellMisc table, an image or file failure) is in the icon's tooltip and in Source
+details. Unresolved background art uses a plain dark tree surface.
+
+Optional spell names, descriptions, icon references and legacy tree names are
+read again on the next request after a failure, so Reload recovers from a
+transient read or schema failure. Reload with unchanged source data reloads the
+selected class. Unsupported models (including Retail and Mists) explain that their
 layout is not implemented, instead of showing fabricated Classic trees.
 
 Component contract and checks: [concepts-talents](../concepts-talents/README.md).
@@ -42,10 +56,18 @@ layout. It does not represent a real build's talent data or a character's points
 
 ## Spell value previews
 
-The selected first rank resolves reviewed `$s1`–`$s3` fixed percentage amounts
-through same-build SpellEffect rows. Unsupported values show `?`; complex client
-expressions show an unavailable message. Raw templates and exact substitution
-provenance remain in collapsed Source details, not the styled tooltip.
+The selected first rank resolves reviewed `$s1`–`$s5` fixed percentage amounts
+through same-build SpellEffect rows. A tokenizer keeps all readable prose: each
+value it cannot resolve shows `?` in place, with its cause in Source details.
+Tokens are case-insensitive (`$S1`, `$D`). Colour, link and newline markup is
+rendered as text. `$lsingular:plural;` follows the preceding resolved amount and
+shows both forms otherwise; `$gmale:female;` always shows both. `$/N;s1` and
+`$*N;s1` scale a resolved amount (at most two decimals). `$<spell>s1` and
+`$<spell>d` read up to eight other spells' rows. Expressions (`${...}`),
+conditionals (`$?...[...]`), `$@` references and named variables are never
+evaluated and show `?`. Raw templates and exact substitution provenance remain
+in collapsed Source details, not the styled tooltip. SpellEffect and SpellMisc
+reverse indexes have separate budgets.
 
 The original numeric profile is deliberately limited to Forever 1.60, layout
 `5362E3D4`, APPLY_AURA effects with percentage modifier/critical chance aura IDs

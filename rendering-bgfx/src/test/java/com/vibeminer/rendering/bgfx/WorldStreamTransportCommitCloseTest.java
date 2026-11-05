@@ -13,7 +13,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
-@Timeout(20)
+@Timeout(WorldStreamTestChildren.TEST_TIMEOUT_SECONDS)
 class WorldStreamTransportCommitCloseTest {
     @TempDir Path directory;
     private volatile Path sessionDirectory;
@@ -25,7 +25,8 @@ class WorldStreamTransportCommitCloseTest {
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         try {
-            session.initialized().get(8, TimeUnit.SECONDS);
+            session.initialized()
+                    .get(WorldStreamTestChildren.STARTUP_GUARD_MILLIS, TimeUnit.MILLISECONDS);
             var method =
                     WorldStreamTransport.Session.class.getDeclaredMethod(
                             "enqueueFile", Runnable.class);
@@ -84,7 +85,7 @@ class WorldStreamTransportCommitCloseTest {
                                             WorldStreamTestChildren.Closing.class, nonce))
                             .start();
                 },
-                10000,
+                WorldStreamTestChildren.STARTUP_GUARD_MILLIS,
                 8000,
                 2000);
     }
@@ -96,7 +97,8 @@ class WorldStreamTransportCommitCloseTest {
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         try {
-            session.initialized().get(8, TimeUnit.SECONDS);
+            session.initialized()
+                    .get(WorldStreamTestChildren.STARTUP_GUARD_MILLIS, TimeUnit.MILLISECONDS);
             holdFiles(session, entered, release);
             var closed = session.closeAsync();
             Path owned = sessionDirectory.resolve("commit-7.wsc");
@@ -115,6 +117,8 @@ class WorldStreamTransportCommitCloseTest {
     }
 
     @Test
+    // Two child JVMs in sequence: two startup guards, plus the test body.
+    @Timeout(2 * WorldStreamTestChildren.TEST_TIMEOUT_SECONDS)
     void stoppedDirtyCancellationAndFailedOwnedCleanupRemainFatal() throws Exception {
         for (boolean dirty : new boolean[] {true, false}) {
             var session = launch();
@@ -122,7 +126,8 @@ class WorldStreamTransportCommitCloseTest {
             var release = new CountDownLatch(1);
             Path owned = null;
             try {
-                session.initialized().get(8, TimeUnit.SECONDS);
+                session.initialized()
+                        .get(WorldStreamTestChildren.STARTUP_GUARD_MILLIS, TimeUnit.MILLISECONDS);
                 owned = sessionDirectory.resolve("commit-7.wsc");
                 holdFiles(session, entered, release);
                 session.closeAsync();

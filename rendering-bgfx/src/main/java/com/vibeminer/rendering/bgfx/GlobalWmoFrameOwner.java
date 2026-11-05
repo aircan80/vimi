@@ -130,7 +130,7 @@ final class GlobalWmoFrameOwner implements AutoCloseable {
                             1,
                             BGFX_TEXTURE_FORMAT_BGRA8,
                             BGFX_TEXTURE_BLIT_DST | BGFX_TEXTURE_READ_BACK)) {
-                throw new IOException("Global frame capabilities unavailable");
+                throw new GlobalWmoCapabilityException("Global frame capabilities unavailable");
             }
             scene = BgfxGlobalWmoRenderer.upload(decoded, canceled);
             color = texture(BGFX_TEXTURE_FORMAT_BGRA8, BGFX_TEXTURE_RT);

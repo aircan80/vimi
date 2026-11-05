@@ -7,6 +7,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.SourceDataLine;
 
 /**
@@ -46,15 +47,82 @@ public final class VoicePlaybackTest {
         player.close();
     }
 
+    /**
+     * Plays an authored stereo clip on a device reporting {@code device} channels and returns the
+     * bytes written; {@code lineChannels} is the format the line must be opened with.
+     */
+    private static byte[] played(byte[] stereo, int device, int lineChannels) throws Exception {
+        var written = new java.io.ByteArrayOutputStream();
+        var formats = new java.util.concurrent.ConcurrentLinkedQueue<AudioFormat>();
+        SourceDataLine line =
+                (SourceDataLine)
+                        Proxy.newProxyInstance(
+                                VoicePlaybackTest.class.getClassLoader(),
+                                new Class<?>[] {SourceDataLine.class},
+                                (proxy, method, args) ->
+                                        switch (method.getName()) {
+                                            case "write" -> {
+                                                synchronized (written) {
+                                                    written.write(
+                                                            (byte[]) args[0],
+                                                            (Integer) args[1],
+                                                            (Integer) args[2]);
+                                                }
+                                                yield args[2];
+                                            }
+                                            default -> null;
+                                        });
+        var player =
+                new VoicePlayback(
+                        format -> {
+                            if (format.getChannels() > device)
+                                throw new javax.sound.sampled.LineUnavailableException(
+                                        "unsupported");
+                            formats.add(format);
+                            return line;
+                        },
+                        () -> device);
+        String problem = player.play(new PcmClip(8000, 2, stereo)).get(5, TimeUnit.SECONDS);
+        player.close();
+        if (problem != null) throw new AssertionError("Stereo clip did not play: " + problem);
+        if (formats.size() != 1 || formats.peek().getChannels() != lineChannels)
+            throw new AssertionError("Line channels " + formats);
+        synchronized (written) {
+            return written.toByteArray();
+        }
+    }
+
+    /** A mono-only device plays a stereo clip as (L + R) / 2; a stereo device is unchanged. */
+    private static void monoOnlyDeviceDownmixesStereoClips() throws Exception {
+        short[][] frames = {{1000, 3000}, {Short.MIN_VALUE, Short.MIN_VALUE},
+            {Short.MAX_VALUE, Short.MIN_VALUE}};
+        byte[] stereo = new byte[frames.length * 4];
+        for (int i = 0; i < frames.length; i++)
+            for (int c = 0; c < 2; c++) {
+                stereo[4 * i + 2 * c] = (byte) (frames[i][c] >> 8);
+                stereo[4 * i + 2 * c + 1] = (byte) frames[i][c];
+            }
+        byte[] mono = played(stereo, 1, 1);
+        short[] expected = {2000, Short.MIN_VALUE, 0};
+        if (mono.length != expected.length * 2)
+            throw new AssertionError("Mono bytes " + mono.length);
+        for (int i = 0; i < expected.length; i++)
+            if ((short) (mono[2 * i] << 8 | mono[2 * i + 1] & 0xff) != expected[i])
+                throw new AssertionError("Downmixed frame " + i);
+        if (!java.util.Arrays.equals(stereo, played(stereo, 2, 2)))
+            throw new AssertionError("A stereo device must receive the clip unchanged");
+    }
+
     public static void main(String[] args) throws Exception {
         verify();
         System.out.println(
-                "Voice playback: actual-start feedback, bounded admission, asynchronous owned close"
-                    + " and close failure passed");
+                "Voice playback: actual-start feedback, bounded admission, asynchronous owned close,"
+                    + " mono downmix and close failure passed");
     }
 
     static void verify() throws Exception {
         closeFailure();
+        monoOnlyDeviceDownmixesStereoClips();
         var owner = Thread.currentThread();
         var opened = new CompletableFuture<Void>();
         var allowOpen = new CompletableFuture<Void>();

@@ -11,10 +11,10 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.IntSupplier;
 
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioSystem;
-import javax.sound.sampled.DataLine;
 import javax.sound.sampled.SourceDataLine;
 
 /**
@@ -27,20 +27,6 @@ final class WorldAudioPlayback implements AutoCloseable {
     static final int MAX_SILENCE_MILLIS = 600_000, MAX_LOOP_BYTES = 16 << 20;
     static final String OUTPUT_UNAVAILABLE = "Audio output is unavailable on this machine.",
             OUTPUT_STOPPED = "Audio output stopped accepting audio.";
-    /**
-     * A common line format, used only to check that an output device exists before decoding.
-     * Channels and frame size must be concrete: {@code AudioFormat.matches} treats unspecified
-     * values as wildcards only on the mixer's side, and Windows DirectSound advertises concrete
-     * channel counts, so an unspecified probe matched no Windows device. Only the rate is left
-     * open, which every mixer leaves unspecified too.
-     */
-    static final AudioFormat PROBE = new AudioFormat(AudioFormat.Encoding.PCM_SIGNED,
-            AudioSystem.NOT_SPECIFIED, 16, 2, 4, AudioSystem.NOT_SPECIFIED, true);
-
-    static boolean outputSupported() {
-        return AudioSystem.isLineSupported(new DataLine.Info(SourceDataLine.class, PROBE));
-    }
-
     @FunctionalInterface
     interface Lines {
         SourceDataLine open(AudioFormat format) throws Exception;
@@ -99,16 +85,19 @@ final class WorldAudioPlayback implements AutoCloseable {
     final Channel music, ambience;
 
     WorldAudioPlayback(Consumer<Status> status) {
-        this(WorldAudioPlayback::outputSupported, AudioSystem::getSourceDataLine,
+        this(AudioOutput::channels, AudioSystem::getSourceDataLine,
                 WorldAudioPlayback::decode, status);
     }
 
     WorldAudioPlayback(Lines lines, Decoder decoder, Consumer<Status> status) {
-        this(() -> true, lines, decoder, status);
+        this(() -> 2, lines, decoder, status);
     }
 
-    /** {@code output} is checked before each track's file read and decoder start. */
-    WorldAudioPlayback(BooleanSupplier output, Lines lines, Decoder decoder,
+    /**
+     * {@code output} gives the device's channels (see {@link AudioOutput#channels()}); it is
+     * checked before each track's file read and decoder start.
+     */
+    WorldAudioPlayback(IntSupplier output, Lines lines, Decoder decoder,
             Consumer<Status> status) {
         music = new Channel(WorldAreaAudio.Kind.MUSIC, output, lines, decoder, status);
         ambience = new Channel(WorldAreaAudio.Kind.AMBIENCE, output, lines, decoder, status);
@@ -130,7 +119,7 @@ final class WorldAudioPlayback implements AutoCloseable {
 
     static final class Channel {
         private final WorldAreaAudio.Kind kind;
-        private final BooleanSupplier output;
+        private final IntSupplier output;
         private final Lines lines;
         private final Decoder decoder;
         private final Consumer<Status> status;
@@ -144,7 +133,7 @@ final class WorldAudioPlayback implements AutoCloseable {
         private Pcm active;
         private volatile double volume = 0.5;
 
-        Channel(WorldAreaAudio.Kind kind, BooleanSupplier output, Lines lines, Decoder decoder,
+        Channel(WorldAreaAudio.Kind kind, IntSupplier output, Lines lines, Decoder decoder,
                 Consumer<Status> status) {
             this.kind = kind;
             this.output = output;
@@ -310,7 +299,9 @@ final class WorldAudioPlayback implements AutoCloseable {
          */
         private String play(long expected, WorldAreaAudio.Track playing, Source from,
                 Cancellation token) {
-            if (!outputAvailable()) return current(expected) ? OUTPUT_UNAVAILABLE : null;
+            // The device's channels are known before any file read or decoder start.
+            int device = outputChannels();
+            if (device == 0) return current(expected) ? OUTPUT_UNAVAILABLE : null;
             var ids = playing.fileDataIds();
             long fileId = ids.get(ThreadLocalRandom.current().nextInt(ids.size()));
             String[] problem = new String[1];
@@ -319,11 +310,14 @@ final class WorldAudioPlayback implements AutoCloseable {
             if (!adopt(pcm)) return null;
             SourceDataLine line = null;
             try {
-                var format = new AudioFormat(pcm.sampleRate(), 16, pcm.channels(), true, true);
-                int frame = pcm.channels() * 2;
+                // A stereo stream on a mono-only device plays through a mono line, downmixed.
+                int channels = AudioOutput.lineChannels(pcm.channels(), device);
+                boolean downmix = channels < pcm.channels();
+                var format = new AudioFormat(pcm.sampleRate(), 16, channels, true, true);
+                int frame = pcm.channels() * 2, lineFrame = channels * 2;
                 try {
                     line = lines.open(format);
-                    line.open(format, Math.max(frame, pcm.sampleRate() / 4 * frame));
+                    line.open(format, Math.max(lineFrame, pcm.sampleRate() / 4 * lineFrame));
                     line.start();
                 } catch (Exception unavailable) {
                     return current(expected) ? OUTPUT_UNAVAILABLE : null;
@@ -396,11 +390,12 @@ final class WorldAudioPlayback implements AutoCloseable {
                     }
                     fadingOut |= !live;
                     double target = fadingOut ? 0 : volume;
-                    gain = apply(block, count, pcm.channels(), gain, target, step);
-                    for (int offset = 0; offset < count; ) {
+                    int out = downmix ? AudioOutput.downmix(block, count) : count;
+                    gain = apply(block, out, channels, gain, target, step);
+                    for (int offset = 0; offset < out; ) {
                         int written;
                         try {
-                            written = line.write(block, offset, count - offset);
+                            written = line.write(block, offset, out - offset);
                         } catch (RuntimeException stopped) {
                             written = 0;
                         }
@@ -426,11 +421,11 @@ final class WorldAudioPlayback implements AutoCloseable {
         }
 
         /** Cheap device check before any file read or decoder process; no line is created. */
-        private boolean outputAvailable() {
+        private int outputChannels() {
             try {
-                return output.getAsBoolean();
+                return output.getAsInt();
             } catch (RuntimeException unavailable) {
-                return false;
+                return 0;
             }
         }
 

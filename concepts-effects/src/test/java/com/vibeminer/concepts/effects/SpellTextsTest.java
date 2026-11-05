@@ -333,6 +333,99 @@ final class SpellTextsTest {
     }
 
     @Test
+    void tokenizedDescriptionsResolveUppercaseCrossSpellAndMarkedUpValuesBesideUnknowns() {
+        var other = new ArrayList<>(scalar(103, 0, null).values());
+        other.set(FIELDS.indexOf("SpellID"), "777");
+        other.set(FIELDS.indexOf("EffectBasePointsF"), "-30");
+        var result =
+                scalarPreview(
+                        "|cffffffffSlow by $S1%|r, then $777s1% for $D; ${$s1*2} $?a1[x][y] done.",
+                        List.of(
+                                scalar(101, 0, null),
+                                new Db2Types.Row(103, false, null, other, List.of())),
+                        List.of(row(90, "16929", "0", "1", "0", "0")),
+                        List.of(row(1, "10000", "0", "10000", "0")));
+        assertEquals("Slow by 50%, then 30% for 10 sec; ? ? done.", result.display());
+        assertEquals(SpellTexts.State.UNRESOLVED, result.state());
+        assertTrue(
+                result.substitutions().get(1).sources().stream()
+                        .anyMatch(source -> source.rowId() == 103));
+    }
+
+    @Test
+    void effectAndDurationIndexesDoNotShareOneRelationBudget() {
+        var world =
+                new MemoryTables()
+                        .add(
+                                BUILD,
+                                "enUS",
+                                List.of(
+                                        table(
+                                                1,
+                                                "Spell",
+                                                List.of("Description_lang"),
+                                                List.of(row(16929, "Slow by $s1% for $d.")),
+                                                TableTypes.State.READY),
+                                        table(
+                                                2,
+                                                "SpellEffect",
+                                                FIELDS,
+                                                List.of(
+                                                        scalar(101, 0, null),
+                                                        scalar(102, 1, null),
+                                                        scalar(103, 2, null)),
+                                                TableTypes.State.READY),
+                                        miscTable(
+                                                List.of(
+                                                        row(90, "16929", "0", "1", "0", "0"),
+                                                        row(91, "5", "0", "1", "0", "0"),
+                                                        row(92, "6", "0", "1", "0", "0"))),
+                                        layout(
+                                                table(
+                                                        4,
+                                                        "SpellDuration",
+                                                        List.of(
+                                                                "Duration",
+                                                                "DurationPerLevel",
+                                                                "MaxDuration",
+                                                                "DurationPerResource"),
+                                                        List.of(row(1, "10000", "0", "10000", "0")),
+                                                        TableTypes.State.READY),
+                                                "4FDF0951")));
+        try (var tables = world.forBuild(BUILD, "enUS", Cancellation.NONE).join().tables();
+                var service = new SpellTexts(tables, "1.60.1.70755", 4)) {
+            var result =
+                    service.description(16929, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                            .join();
+            assertEquals("Slow by 50% for 10 sec.", result.display());
+        }
+    }
+
+    @Test
+    void forgettingCachedPreviewsResolvesAgainAfterReload() {
+        var world = world(List.of(effect(99, "4.0", null)), false);
+        try (var tables = world.forBuild(BUILD, "enUS", Cancellation.NONE).join().tables();
+                var service = new SpellTexts(tables, "1.60.1.70707")) {
+            var first =
+                    service.description(16929, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                            .join();
+            assertTrue(
+                    first
+                            == service.description(
+                                            16929,
+                                            TableTypes.Priority.INTERACTIVE,
+                                            Cancellation.NONE)
+                                    .join());
+            service.forgetCached();
+            var again =
+                    service.description(16929, TableTypes.Priority.INTERACTIVE, Cancellation.NONE)
+                            .join();
+            assertFalse(first == again);
+            assertEquals(first, again);
+        }
+    }
+
+    @Test
     void newScalarFormsRequirePercentUnitsAndEveryReviewedContextGuard() {
         for (String guard :
                 List.of(

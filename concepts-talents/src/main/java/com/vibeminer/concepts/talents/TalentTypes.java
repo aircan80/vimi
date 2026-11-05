@@ -75,7 +75,8 @@ public final class TalentTypes {
     /**
      * {@code id} is the Talent row ID for legacy rows and the TraitNode ID for trait nodes. {@code
      * rankSpells} are recorded spell IDs: one per rank for legacy rows and the single definition
-     * spell for trait nodes. {@code maxRanks} is the recorded maximum rank.
+     * spell for trait nodes. {@code maxRanks} is the recorded maximum rank. {@code iconIssue}
+     * explains a missing icon reference when the source reported a cause; null otherwise.
      */
     public record Talent(
             long id,
@@ -87,7 +88,8 @@ public final class TalentTypes {
             String name,
             String description,
             Long iconFileDataId,
-            Origin origin) {
+            Origin origin,
+            String iconIssue) {
         public Talent {
             rankSpells = List.copyOf(rankSpells);
             prerequisites = List.copyOf(prerequisites);
@@ -95,6 +97,34 @@ public final class TalentTypes {
             if (rankSpells.isEmpty() || maxRanks < 1) {
                 throw new IllegalArgumentException("A talent records at least one rank");
             }
+            if (iconFileDataId != null) {
+                iconIssue = null;
+            }
+        }
+
+        public Talent(
+                long id,
+                int row,
+                int column,
+                List<Long> rankSpells,
+                int maxRanks,
+                List<Prerequisite> prerequisites,
+                String name,
+                String description,
+                Long iconFileDataId,
+                Origin origin) {
+            this(
+                    id,
+                    row,
+                    column,
+                    rankSpells,
+                    maxRanks,
+                    prerequisites,
+                    name,
+                    description,
+                    iconFileDataId,
+                    origin,
+                    null);
         }
 
         public Talent(

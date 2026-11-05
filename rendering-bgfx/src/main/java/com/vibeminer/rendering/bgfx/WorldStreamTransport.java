@@ -359,10 +359,24 @@ public final class WorldStreamTransport {
         private volatile boolean stop;
         private volatile WorldStreamProducerCancellation.Producer cancellation;
         private boolean produced, offerOutstanding, cancelOutstanding;
+        // Guarded by the session lock: the capacity revision when this reservation was issued and
+        // the capacity changes it made itself before its result completed (#283).
+        private long issuedCapacity;
+        private int ownCapacityChanges;
 
         private TileReservation(Session session, WorldStreamParentState.Ticket ticket) {
             this.session = session;
             this.ticket = ticket;
+        }
+
+        /**
+         * The capacity revision this reservation alone accounts for: the revision when it was
+         * issued plus its own retirement and drain changes up to its result. Once the result has
+         * completed, a session revision above this means capacity changed for some other reason
+         * since the reservation was issued, so a caller blocked by its refusal should retry.
+         */
+        public long capacityBaseline() {
+            return session.baseline(this);
         }
 
         public CompletableFuture<Resident> produce(PacketProducer producer) {
@@ -554,7 +568,8 @@ public final class WorldStreamTransport {
         private CommitOperation commitOperation;
         private CommitReceipt currentReceipt;
         private Frame latestFrame;
-        // Diagnostics only: bounded helper stderr, logged once on abnormal end; never protocol.
+        // Diagnostics only: bounded helper stderr, logged on abnormal end and with renderer
+        // objects failures; never protocol.
         private final HelperStderrTail stderrTail = new HelperStderrTail();
         private final java.util.concurrent.atomic.AtomicBoolean endReported =
                 new java.util.concurrent.atomic.AtomicBoolean();
@@ -565,6 +580,13 @@ public final class WorldStreamTransport {
         private volatile boolean stderrAttached;
         private final java.util.concurrent.atomic.AtomicLong objectsWriteFailures =
                 new java.util.concurrent.atomic.AtomicLong();
+        private final java.util.concurrent.atomic.AtomicLong rendererObjectsFailures =
+                new java.util.concurrent.atomic.AtomicLong();
+        private final CompletableFuture<String> objectsDiagnostic = new CompletableFuture<>();
+        // Protocol records from helper stdout; unrelated lines are counted and sampled, never
+        // decoded. Their sample joins the abnormal-end record.
+        private final WorldStreamStdout stdout;
+        private final CompletableFuture<String> stdoutDiagnostic = new CompletableFuture<>();
 
         private ObjectsOperation objectsOperation;
 
@@ -610,6 +632,9 @@ public final class WorldStreamTransport {
 
         private Session(WorldStreamEnvelope.Session descriptor) {
             this.descriptor = descriptor;
+            stdout =
+                    new WorldStreamStdout(
+                            WorldStreamStdout.hex(descriptor.nonce()), this::unrelatedStdout);
             state = new WorldStreamParentState(descriptor);
             frames = new WorldStreamParentFrameGate(descriptor);
         }
@@ -670,6 +695,7 @@ public final class WorldStreamTransport {
                                             true);
                                 } else {
                                     diagnosticReport.complete("");
+                                    cleanNoiseCounts();
                                 }
                             });
         }
@@ -1124,6 +1150,20 @@ public final class WorldStreamTransport {
             }
         }
 
+        /** A capacity change caused by {@code reservation}'s own drain or retirement. */
+        private void capacityChanged(TileReservation reservation) {
+            synchronized (lock) {
+                capacityChanged();
+                reservation.ownCapacityChanges++;
+            }
+        }
+
+        private long baseline(TileReservation reservation) {
+            synchronized (lock) {
+                return reservation.issuedCapacity + reservation.ownCapacityChanges;
+            }
+        }
+
         /** Cheap metadata reservation; empty means genuine child/file credit is not available. */
         public java.util.Optional<TileReservation> tryReserveTile(int x, int y) {
             synchronized (lock) {
@@ -1135,6 +1175,7 @@ public final class WorldStreamTransport {
                     return java.util.Optional.empty();
                 }
                 tile = new TileReservation(this, reserved);
+                tile.issuedCapacity = capacityRevision;
                 return java.util.Optional.of(tile);
             }
         }
@@ -1267,9 +1308,9 @@ public final class WorldStreamTransport {
                     throw unavailable;
                 }
                 state.producerDrained(reservation.ticket);
-                capacityChanged();
+                capacityChanged(reservation);
                 state.retireTileFile(reservation.ticket);
-                capacityChanged();
+                capacityChanged(reservation);
                 reservation.result.completeExceptionally(
                         new java.util.concurrent.CancellationException(
                                 "World stopped before producer"));
@@ -1312,7 +1353,7 @@ public final class WorldStreamTransport {
                 error = cancellation.failure();
             }
             state.producerDrained(reservation.ticket);
-            capacityChanged();
+            capacityChanged(reservation);
             try {
                 if (error != null
                         && !(error instanceof PreparationRefusal refusal
@@ -1331,7 +1372,7 @@ public final class WorldStreamTransport {
                         packet = null;
                     }
                     state.retireTileFile(reservation.ticket);
-                    capacityChanged();
+                    capacityChanged(reservation);
                     synchronized (lock) {
                         var command = state.cancel(reservation.ticket);
                         if (command != null) {
@@ -1374,7 +1415,7 @@ public final class WorldStreamTransport {
                     packet.close();
                     packet = null;
                     state.retireTileFile(reservation.ticket);
-                    capacityChanged();
+                    capacityChanged(reservation);
                     synchronized (lock) {
                         var command = state.cancel(reservation.ticket);
                         if (command != null) {
@@ -1529,7 +1570,7 @@ public final class WorldStreamTransport {
                 throws Exception {
             try {
                 while (true) {
-                    var message = WorldStreamStatus.read(process.getInputStream());
+                    var message = stdout.read(process.getInputStream());
                     if (message == null) {
                         if (!closedStatus) {
                             throw new IOException("World status EOF before CLOSED");
@@ -1634,6 +1675,10 @@ public final class WorldStreamTransport {
                                         new java.util.concurrent.CancellationException(
                                                 "World stopped"));
                             }
+                            // Diagnostics after delivery, so they never delay the tile.
+                            if (current.ticket.resident.objects == 2) {
+                                rendererObjectsFailed();
+                            }
                         }
                         case CANCELED -> {
                             TileReservation current;
@@ -1719,6 +1764,7 @@ public final class WorldStreamTransport {
                             handle.closeAsync();
                         }
                         case OBJECTS -> {
+                            var outcome = ((WorldStreamStatus.ObjectsDone) message).outcome();
                             synchronized (lock) {
                                 var operation = objectsOperation;
                                 if (operation == null
@@ -1727,10 +1773,12 @@ public final class WorldStreamTransport {
                                     throw new IllegalStateException(
                                             "Late objects outcome correlation");
                                 }
-                                operation.reply =
-                                        ((WorldStreamStatus.ObjectsDone) message).outcome();
+                                operation.reply = outcome;
                                 retireReliable();
                                 lock.notifyAll();
+                            }
+                            if (outcome == WorldStreamStatus.LateOutcome.FAILED) {
+                                rendererObjectsFailed();
                             }
                         }
                         case CREDIT -> capacityChanged();
@@ -1748,7 +1796,7 @@ public final class WorldStreamTransport {
 
         private void drainErrors(Process process) throws IOException {
             // Keep draining so the helper never blocks on a full pipe; retain only a bounded,
-            // sanitized tail for an abnormal-exit log record.
+            // sanitized tail for the abnormal-exit and renderer objects failure log records.
             byte[] scratch = new byte[4096];
             var errors = process.getErrorStream();
             int read;
@@ -1763,7 +1811,7 @@ public final class WorldStreamTransport {
          */
         private void objectsWriteFailed(Throwable failed) {
             long count = objectsWriteFailures.incrementAndGet();
-            if (!objectsWriteLogged(count)) {
+            if (!cadenceLogged(count)) {
                 return;
             }
             try {
@@ -1782,9 +1830,134 @@ public final class WorldStreamTransport {
             }
         }
 
-        /** The first objects write failure of a session is logged, then every 64th. */
-        static boolean objectsWriteLogged(long count) {
+        /** A repeated diagnostic is logged for its first occurrence, then every 64th. */
+        static boolean cadenceLogged(long count) {
             return count == 1 || count % 64 == 0;
+        }
+
+        /**
+         * The renderer reported a tile's objects as failed (inline or late); terrain is kept. The
+         * first such failure of a session, then every 64th, is logged with the helper's redacted
+         * stderr tail, which holds the renderer's reason (for example an object pass that could not
+         * load its shaders). Otherwise the tail is only logged when the helper ends abnormally.
+         */
+        private void rendererObjectsFailed() {
+            long count = rendererObjectsFailures.incrementAndGet();
+            if (!cadenceLogged(count)) {
+                return;
+            }
+            // Runs on the status reader: nothing here, redaction included, may end the session.
+            try {
+                String record =
+                        "World renderer could not draw exterior objects ("
+                                + count
+                                + (count == 1 ? " tile" : " tiles")
+                                + " this session); tiles kept as terrain only"
+                                + stderrSuffix();
+                objectsDiagnostic.complete(record);
+                System.getLogger(WorldStreamTransport.class.getName())
+                        .log(System.Logger.Level.WARNING, record);
+            } catch (RuntimeException | Error ignored) {
+                // Diagnostic delivery cannot interrupt objects delivery.
+            }
+        }
+
+        /** Test observation of the first renderer objects failure record of the session. */
+        CompletableFuture<String> objectsDiagnostic() {
+            return objectsDiagnostic.copy();
+        }
+
+        /**
+         * Bounded, redacted evidence for a stalled-frame report, without waiting on the helper:
+         * pending upload, commit and late objects work, queued reliable commands, whether a frame
+         * awaits the viewer, the ignored stdout noise count and the helper stderr tail. Never ends
+         * or changes the session.
+         *
+         * <p>Runs on the FX thread during a stall, when a session thread may hold {@code lock}, so
+         * it never takes it: the fields are read racily as a best-effort snapshot. A stale or mixed
+         * view is acceptable for a diagnostic, and none of these reads can throw.
+         */
+        public String stallSummary() {
+            boolean upload = tile != null;
+            boolean commit = commitOperation != null;
+            boolean objects = objectsOperation != null;
+            boolean frame = latestFrame != null;
+            int commands = reliableCommands.size();
+            int reliable = outstandingReliable;
+            long noiseLines = stdout.noiseLines(), noiseBytes = stdout.noiseBytes();
+            long pid = childPid;
+            return (pid == 0 ? "no child process" : "pid " + pid)
+                    + (closing ? "; closing" : "")
+                    + "; tile upload "
+                    + (upload ? "pending" : "idle")
+                    + "; commit "
+                    + (commit ? "pending" : "idle")
+                    + "; late objects "
+                    + (objects ? "pending" : "idle")
+                    + "; queued commands "
+                    + commands
+                    + "; outstanding reliable "
+                    + reliable
+                    + "; frame awaiting viewer "
+                    + (frame ? "yes" : "no")
+                    + "; unrelated stdout ignored "
+                    + noiseLines
+                    + (noiseLines == 1 ? " line, " : " lines, ")
+                    + noiseBytes
+                    + (noiseBytes == 1 ? " byte" : " bytes")
+                    + stderrSuffix();
+        }
+
+        /**
+         * Once per session, on the status reader: the helper wrote a line that is not protocol (for
+         * example JVM or JFR startup text). It is ignored; this warning names it, redacted.
+         */
+        private void unrelatedStdout(String firstLine) {
+            try {
+                String record =
+                        "World helper wrote output unrelated to its protocol on stdout; ignoring"
+                                + " it (first line: "
+                                + firstLine
+                                + ")";
+                stdoutDiagnostic.complete(record);
+                System.getLogger(WorldStreamTransport.class.getName())
+                        .log(System.Logger.Level.WARNING, record);
+            } catch (RuntimeException | Error ignored) {
+                // Diagnostic delivery cannot interrupt status reading.
+            }
+        }
+
+        /** After a clean close: how much unrelated stdout was ignored, at debug level, no tail. */
+        private void cleanNoiseCounts() {
+            long lines = stdout.noiseLines(), bytes = stdout.noiseBytes();
+            if (lines == 0 && bytes == 0) {
+                return;
+            }
+            try {
+                System.getLogger(WorldStreamTransport.class.getName())
+                        .log(
+                                System.Logger.Level.DEBUG,
+                                "World helper closed cleanly; unrelated stdout ignored: "
+                                        + lines
+                                        + (lines == 1 ? " line, " : " lines, ")
+                                        + bytes
+                                        + (bytes == 1 ? " byte" : " bytes"));
+            } catch (RuntimeException | Error ignored) {
+                // Diagnostic delivery cannot interrupt lifetime ownership.
+            }
+        }
+
+        /** Test observation of the session's one unrelated stdout warning. */
+        CompletableFuture<String> stdoutDiagnostic() {
+            return stdoutDiagnostic.copy();
+        }
+
+        private String stderrSuffix() {
+            return !stderrAttached
+                    ? "; helper stderr not captured"
+                    : stderrTail.isEmpty()
+                            ? "; helper stderr empty"
+                            : "; helper stderr tail:\n" + stderrTail.snapshot();
         }
 
         private static String exitSuffix(WorldStreamLaunchOwner.Drain drain) {
@@ -1819,12 +1992,8 @@ public final class WorldStreamTransport {
                                         WorldStreamLaunchOwner.Handle.detached(cause)
                                                 .getMessage()));
             }
-            text.append(
-                    !stderrAttached
-                            ? "; helper stderr not captured"
-                            : stderrTail.isEmpty()
-                                    ? "; helper stderr empty"
-                                    : "; helper stderr tail:\n" + stderrTail.snapshot());
+            text.append(stdout.suffix());
+            text.append(stderrSuffix());
             String record = text.toString();
             try {
                 System.getLogger(WorldStreamTransport.class.getName())

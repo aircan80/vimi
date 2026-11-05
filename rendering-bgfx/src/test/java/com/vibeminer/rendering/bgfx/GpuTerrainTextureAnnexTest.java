@@ -171,6 +171,17 @@ final class GpuTerrainTextureAnnexTest {
                         GpuTerrainTextureAnnex.read(
                                 annex, decoded, () -> polls.incrementAndGet() > 300));
         assertEquals(1, GpuTerrainTextureAnnex.read(annex, decoded, () -> false).bindings().size());
+    }
+
+    @Test
+    void readRejectsSymbolicLinks() throws Exception {
+        SymbolicLinks.assumeAvailable(scratch);
+        var scene = scene(1, 10);
+        Path geometry = scratch.resolve("geometry"), annex = scratch.resolve("annex");
+        var receipt = GpuTerrainSceneFile.writeBound(geometry, scene, () -> false);
+        GpuTerrainTextureAnnex.write(annex, receipt, scene, bindings(scene), () -> false);
+        var decoded = GpuTerrainSceneFile.readBound(geometry, () -> false);
+        assertEquals(1, GpuTerrainTextureAnnex.read(annex, decoded, () -> false).bindings().size());
         Path link = scratch.resolve("link");
         Files.createSymbolicLink(link, annex);
         assertThrows(

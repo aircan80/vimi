@@ -16,11 +16,11 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Bounded, sanitized tail of native helper stderr. Only the last lines are retained for an
- * abnormal-exit log record; nothing is retained in the UI, persisted or parsed as protocol. Lines
- * are decoded as UTF-8 and redacted before anything outside printable ASCII becomes '?', so a
- * non-ASCII account name is still recognised, and a binary or control-sequence flood cannot forge
- * log lines.
+ * Bounded, sanitized tail of native helper stderr. Only the last lines are retained for diagnostic
+ * log records (an abnormal exit, or a renderer objects failure); nothing is retained in the UI,
+ * persisted or parsed as protocol. Lines are decoded as UTF-8 and redacted before anything outside
+ * printable ASCII becomes '?', so a non-ASCII account name is still recognised, and a binary or
+ * control-sequence flood cannot forge log lines.
  */
 public final class HelperStderrTail {
     public static final int MAX_LINES = 40;
@@ -122,8 +122,18 @@ public final class HelperStderrTail {
     private final ArrayDeque<byte[]> lines = new ArrayDeque<>(MAX_LINES);
     private final ArrayDeque<Boolean> truncated = new ArrayDeque<>(MAX_LINES);
     private final ByteArrayOutputStream current = new ByteArrayOutputStream(MAX_LINE_CHARS);
+    private final String stream;
     private long omittedLines;
     private boolean currentTruncated;
+
+    public HelperStderrTail() {
+        this("stderr");
+    }
+
+    /** A tail of another helper stream, such as unrelated stdout; {@code stream} labels it. */
+    HelperStderrTail(String stream) {
+        this.stream = java.util.Objects.requireNonNull(stream);
+    }
 
     public synchronized void accept(byte[] bytes, int offset, int length) {
         for (int i = offset; i < offset + length; i++) {
@@ -147,7 +157,11 @@ public final class HelperStderrTail {
     public synchronized String snapshot() {
         var result = new StringBuilder();
         if (omittedLines > 0) {
-            result.append("[").append(omittedLines).append(" earlier stderr lines omitted]\n");
+            result.append("[")
+                    .append(omittedLines)
+                    .append(" earlier ")
+                    .append(stream)
+                    .append(" lines omitted]\n");
         }
         var marks = truncated.iterator();
         for (var line : lines) {

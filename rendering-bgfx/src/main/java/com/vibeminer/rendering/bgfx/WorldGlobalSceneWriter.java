@@ -2,6 +2,7 @@ package com.vibeminer.rendering.bgfx;
 
 import static com.vibeminer.rendering.bgfx.WorldGlobalLayout.require;
 
+import com.vibeminer.rendering.world.GlobalInteriorLimits;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.FileSystems;
@@ -38,9 +39,9 @@ public final class WorldGlobalSceneWriter {
                 List<WorldGlobalHashes.Source> sources,
                 List<WorldGlobalHashes.Material> materials,
                 List<WorldGlobalHashes.Image> images) {
-            this.sources = bounded(sources, 28);
-            this.materials = bounded(materials, 24);
-            this.images = bounded(images, 18);
+            this.sources = bounded(sources, GlobalInteriorLimits.SOURCES);
+            this.materials = bounded(materials, GlobalInteriorLimits.MATERIALS);
+            this.images = bounded(images, GlobalInteriorLimits.IMAGES);
             recipe =
                     WorldGlobalHashes.recipe(
                             mapId,
@@ -200,8 +201,8 @@ public final class WorldGlobalSceneWriter {
                         && description.sources().size() == counts.sources()
                         && description.materials().size() == counts.materials()
                         && description.images().size() == counts.images());
-        var groups = bounded(borrowed.groups(), 8);
-        var batches = bounded(borrowed.batches(), 64);
+        var groups = bounded(borrowed.groups(), GlobalInteriorLimits.GROUPS);
+        var batches = bounded(borrowed.batches(), GlobalInteriorLimits.BATCHES);
         require(groups.size() == counts.groups() && batches.size() == counts.batches());
         int pixels = 0;
         for (int n = 0; n < counts.images(); n++) {
@@ -345,7 +346,7 @@ public final class WorldGlobalSceneWriter {
             }
             int value = mesh.index(index);
             require(value >= 0 && value < counts.vertices());
-            sink.shortValue(value);
+            sink.integer(value);
         }
         byte[] scratch = new byte[4096];
         for (int image = 0; image < counts.images(); image++) {

@@ -98,6 +98,64 @@ class WmoGroupSpansTest {
                 chunk("MOGP", join(header(1), join(mesh), join(extra))));
     }
 
+    /** A group whose MOGP header declares the given flags instead of the default 0x2a05. */
+    private static byte[] flagged(int flags, byte[][] mesh, byte[]... extra) {
+        var h = header(1);
+        ByteBuffer.wrap(h).order(ByteOrder.LITTLE_ENDIAN).putInt(8, flags);
+        return join(
+                chunk("MVER", buffer(4).putInt(17).array()),
+                chunk("MOGP", join(h, join(mesh), join(extra))));
+    }
+
+    private static final int COLORS2 = 0x1000000, UV2 = 0x2000000, UV3 = 0x40000000;
+
+    @Test
+    void declaredExtraUvAndColorSetsAreAdmittedAndTheFirstSetIsExposed() {
+        byte[] uv2 = chunk("MOTV", floats(7, 7, 8, 8, 9, 9));
+        byte[] colors = chunk("MOCV", new byte[] {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12});
+        byte[] colors2 = chunk("MOCV", new byte[12]);
+        WmoGroupSpans.withGroup(
+                flagged(0x2a05 | UV2 | UV3 | COLORS2, mesh(), colors, uv2, colors2, uv2),
+                () -> false,
+                b -> {
+                    assertEquals(.25f, b.uv().get(0));
+                    assertEquals(6, b.uv().size());
+                    assertEquals(1, b.colors().get(0));
+                    assertEquals(2, b.triangleBytes());
+                });
+        // Extra sets beyond what MOGP declares stay duplicates.
+        reject(flagged(0x2a05 | UV2, mesh(), uv2, uv2));
+        reject(flagged(0x2a05 | UV3, mesh(), uv2, uv2));
+        reject(flagged(0x2a05 | COLORS2, mesh(), colors, colors2, colors2));
+        reject(flagged(0x2a05 | UV2, mesh(), colors, colors2));
+        // A declared extra set must still match the vertex count and hold finite values.
+        reject(flagged(0x2a05 | UV2, mesh(), chunk("MOTV", floats(1, 1, 2, 2))));
+        reject(flagged(0x2a05 | UV2, mesh(), chunk("MOTV", floats(1, 1, 2, 2, 3, Float.NaN))));
+        reject(flagged(0x2a05 | COLORS2, mesh(), colors, chunk("MOCV", new byte[8])));
+    }
+
+    @Test
+    void mpy2TriangleRecordsReplaceMopyButNeverJoinIt() {
+        var m = mesh();
+        m[4] = chunk("MPY2", new byte[] {1, 0, (byte) 200, 1});
+        WmoGroupSpans.withGroup(
+                group(m),
+                () -> false,
+                b -> {
+                    assertEquals(4, b.triangleBytes());
+                    assertEquals(4, b.triangles().size());
+                    assertEquals(200, b.triangles().get(2));
+                });
+        reject(group(m, chunk("MOPY", new byte[2])));
+        reject(group(mesh(), chunk("MPY2", new byte[4])));
+        var short2 = mesh();
+        short2[4] = chunk("MPY2", new byte[2]);
+        reject(group(short2));
+        var twoTriangles = mesh();
+        twoTriangles[4] = chunk("MPY2", new byte[8]);
+        reject(group(twoTriangles));
+    }
+
     @Test
     void rawAsymmetricOperandsMatchOwnedFactsWithoutAxisOrAppearancePolicy() {
         byte[] raw =
@@ -226,6 +284,74 @@ class WmoGroupSpansTest {
         var extras = new byte[WmoGroupSpans.MAX_CHUNKS][];
         Arrays.setAll(extras, i -> chunk("ABCD", new byte[0]));
         reject(group(mesh(), extras));
+    }
+
+    @Test
+    void realInteriorGroupSizesAboveTheOldSixteenThousandAndOneMebibyteCapsParse() {
+        // Shaped like Blackrock Depths group 14: 19,919 vertices and 14,632 triangles in a file
+        // over 1 MiB, and the unused Monastery group 42: 22,194 triangles.
+        for (int[] shape : new int[][] {{19919, 14632}, {17302, 22194}, {28721, 19288}}) {
+            int vertices = shape[0], triangles = shape[1];
+            var indices = buffer(triangles * 6);
+            for (int t = 0; t < triangles; t++) {
+                indices.putShort((short) 0).putShort((short) 1).putShort((short) (vertices - 1));
+            }
+            var parts = new ArrayList<byte[]>();
+            parts.add(header(1));
+            parts.add(chunk("MOVT", new byte[vertices * 12]));
+            parts.add(chunk("MONR", new byte[vertices * 12]));
+            parts.add(chunk("MOTV", new byte[vertices * 8]));
+            parts.add(chunk("MOVI", indices.array()));
+            parts.add(chunk("MOPY", new byte[triangles * 2]));
+            parts.add(chunk("MOBA", batch(0, Math.min(triangles, 21845) * 3, vertices - 1)));
+            parts.add(chunk("MOCV", new byte[vertices * 4]));
+            parts.add(chunk("ZZZZ", new byte[1 << 20])); // unparsed bulk such as MOBR or MLIQ
+            byte[] raw =
+                    join(
+                            chunk("MVER", buffer(4).putInt(17).array()),
+                            chunk("MOGP", join(parts.toArray(byte[][]::new))));
+            assertTrue(raw.length > 1 << 20, "over the old 1 MiB cap");
+            WmoGroupSpans.withGroup(
+                    raw,
+                    () -> false,
+                    b -> {
+                        assertEquals(vertices * 3, b.positions().size());
+                        assertEquals(triangles * 3, b.indices().size());
+                    });
+        }
+        // The format's own bound: 16-bit indices address at most 65,536 vertices. Every vertex
+        // stream at N, one triangle using index N - 1.
+        for (int n : new int[] {65536, 65537}) {
+            int last = Math.min(n, 65536) - 1;
+            var full =
+                    new byte[][] {
+                        chunk("MOVT", new byte[n * 12]),
+                        chunk("MONR", new byte[n * 12]),
+                        chunk("MOTV", new byte[n * 8]),
+                        chunk(
+                                "MOVI",
+                                buffer(6)
+                                        .putShort((short) 0)
+                                        .putShort((short) 1)
+                                        .putShort((short) last)
+                                        .array()),
+                        chunk("MOPY", new byte[2]),
+                        chunk("MOBA", batch(0, 3, last)),
+                        chunk("MOCV", new byte[n * 4])
+                    };
+            if (n == 65536) {
+                WmoGroupSpans.withGroup(
+                        group(full),
+                        () -> false,
+                        b -> assertEquals(65536 * 3, b.positions().size()));
+            } else {
+                var refused =
+                        assertThrows(
+                                IllegalArgumentException.class,
+                                () -> WmoGroupSpans.withGroup(group(full), () -> false, b -> {}));
+                assertEquals("Group stream count", refused.getMessage());
+            }
+        }
     }
 
     @Test

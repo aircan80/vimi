@@ -2,6 +2,7 @@ package com.vibeminer.rendering.bgfx;
 
 import static com.vibeminer.rendering.bgfx.WorldGlobalLayout.require;
 
+import com.vibeminer.rendering.world.GlobalInteriorLimits;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -26,9 +27,9 @@ public final class WorldGlobalHashes {
 
     public enum Role {
         WDT(1, 1 << 20, 1),
-        ROOT(2, 64 << 10, 1),
-        GROUP(3, 1 << 20, 8),
-        IMAGE(4, 64 << 10, 18);
+        ROOT(2, GlobalInteriorLimits.ROOT_BYTES, 1),
+        GROUP(3, GlobalInteriorLimits.GROUP_BYTES, GlobalInteriorLimits.GROUPS),
+        IMAGE(4, GlobalInteriorLimits.IMAGE_BYTES, GlobalInteriorLimits.IMAGES);
         private final int wire, limit, ordinals;
 
         Role(int wire, int limit, int ordinals) {
@@ -73,10 +74,8 @@ public final class WorldGlobalHashes {
             for (long word : words) {
                 WorldGlobalLayout.unsigned(word);
             }
-            for (int i : new int[] {0, 1, 2, 6, 9, 11, 12, 13, 14, 15}) {
-                require(words[i] == 0);
-            }
-            require(words[3] > 0);
+            // Flags, shader and blend words are carried but not applied (unlit opaque profile). A
+            // material without a texture is allowed only while no batch draws it.
         }
 
         @Override
@@ -103,11 +102,17 @@ public final class WorldGlobalHashes {
             require(
                     id > 0
                             && width >= 1
-                            && width <= 256
+                            && width <= GlobalInteriorLimits.IMAGE_SIDE
                             && height >= 1
-                            && height <= 256
-                            && (encoding == 1 && alphaDepth == 0 && alphaEncoding == 0
-                                    || encoding == 2 && alphaDepth == 8 && alphaEncoding == 7)
+                            && height <= GlobalInteriorLimits.IMAGE_SIDE
+                            && encoding >= 1
+                            && encoding <= 3
+                            && (alphaDepth == 0
+                                    || alphaDepth == 1
+                                    || alphaDepth == 4
+                                    || alphaDepth == 8)
+                            && alphaEncoding >= 0
+                            && alphaEncoding <= 255
                             && mipCount >= 1
                             && mipCount
                                     <= 32 - Integer.numberOfLeadingZeros(Math.max(width, height))
@@ -123,7 +128,6 @@ public final class WorldGlobalHashes {
                                     && (nonopaque == width * height
                                             ? alphaMax < 255
                                             : alphaMax == 255));
-            require(encoding != 1 || nonopaque == 0);
             WorldGlobalLayout.hex(originalRgbaSha256, 64);
             WorldGlobalLayout.hex(opaqueRgbaSha256, 64);
         }
@@ -225,9 +229,9 @@ public final class WorldGlobalHashes {
         WorldGlobalLayout.hex(scope, 64);
         WorldGlobalLayout.hex(buildLocale, 64);
         Objects.requireNonNull(modf);
-        var ss = snapshot(sources, 4, 28);
-        var mm = snapshot(materials, 1, 24);
-        var ii = snapshot(images, 1, 18);
+        var ss = snapshot(sources, 4, GlobalInteriorLimits.SOURCES);
+        var mm = snapshot(materials, 1, GlobalInteriorLimits.MATERIALS);
+        var ii = snapshot(images, 1, GlobalInteriorLimits.IMAGES);
         require(
                 ss.get(0).role() == Role.WDT
                         && ss.get(1).role() == Role.ROOT
@@ -251,9 +255,9 @@ public final class WorldGlobalHashes {
         }
         require(
                 groups >= 1
-                        && groups <= 8
+                        && groups <= GlobalInteriorLimits.GROUPS
                         && slots == ii.size()
-                        && slots <= 18
+                        && slots <= GlobalInteriorLimits.IMAGES
                         && ss.size() == 2 + groups + slots);
         var imageIds = new HashSet<Long>();
         int pixels = 0;
@@ -262,19 +266,17 @@ public final class WorldGlobalHashes {
             require(imageIds.add(im.id()) && ss.get(2 + groups + n).id() == im.id());
             pixels += im.width() * im.height();
         }
-        require(pixels <= 1179648);
-        var used = new ArrayList<Long>();
+        require(pixels <= GlobalInteriorLimits.PIXELS);
+        // Every image is some material's texture. Materials whose texture is not among them must
+        // stay undrawn, which the renderer enforces per batch.
+        var used = new HashSet<Long>();
         for (var material : mm) {
             long id = material.words[3];
-            require(imageIds.contains(id));
-            if (!used.contains(id)) {
+            if (imageIds.contains(id)) {
                 used.add(id);
             }
         }
         require(used.size() == ii.size());
-        for (int n = 0; n < used.size(); n++) {
-            require(used.get(n) == ii.get(n).id());
-        }
         var h = new Feed("vimi.global.recipe.v1");
         h.integer(1);
         h.integer(WorldGlobalLayout.OMISSIONS);
@@ -324,20 +326,15 @@ public final class WorldGlobalHashes {
             require(
                     vertexFirst >= 0
                             && vertexCount >= 1
-                            && vertexCount <= 16384
+                            && vertexCount <= GlobalInteriorLimits.GROUP_VERTICES
                             && indexFirst >= 0
                             && indexCount >= 3
-                            && indexCount <= 49152
+                            && indexCount <= GlobalInteriorLimits.GROUP_INDICES
                             && indexCount % 3 == 0
                             && batchFirst >= 0
                             && batchCount >= 1
-                            && batchCount <= 64);
-            require(
-                    flags == 0x0a09
-                            || flags == 0x3805
-                            || flags == 0x2a05
-                            || flags == 0x2005
-                            || flags == 0x2805);
+                            && batchCount <= GlobalInteriorLimits.GROUP_BATCHES);
+            WorldGlobalLayout.unsigned(flags);
         }
     }
 
@@ -345,13 +342,13 @@ public final class WorldGlobalHashes {
         public Batch {
             require(
                     group >= 0
-                            && group < 8
+                            && group < GlobalInteriorLimits.GROUPS
                             && material >= 0
-                            && material < 24
+                            && material < GlobalInteriorLimits.MATERIALS
                             && firstIndex >= 0
                             && firstIndex % 3 == 0
                             && indexCount >= 3
-                            && indexCount <= 98304
+                            && indexCount <= GlobalInteriorLimits.INDICES
                             && indexCount % 3 == 0);
         }
     }
@@ -372,7 +369,7 @@ public final class WorldGlobalHashes {
     public record MeshDigests(String nativeWire, List<String> groups) {
         public MeshDigests {
             WorldGlobalLayout.hex(nativeWire, 64);
-            var bounded = snapshot(groups, 1, 8);
+            var bounded = snapshot(groups, 1, GlobalInteriorLimits.GROUPS);
             for (String hash : bounded) {
                 WorldGlobalLayout.hex(hash, 64);
             }
@@ -416,7 +413,7 @@ public final class WorldGlobalHashes {
                         && index == c.indices()
                         && batch == c.batches()
                         && drawn == c.drawnTriangles());
-        var wire = new Feed("vimi.global.native-mesh.v1");
+        var wire = new Feed("vimi.global.native-mesh.v2");
         nativePrefix(wire);
         for (int count :
                 new int[] {
@@ -433,7 +430,7 @@ public final class WorldGlobalHashes {
         for (int ordinal = 0; ordinal < groups.size(); ordinal++) {
             check(canceled);
             var g = groups.get(ordinal);
-            var group = new Feed("vimi.global.native-group.v1");
+            var group = new Feed("vimi.global.native-group.v2");
             nativePrefix(group);
             groupBlock(group, ordinal, g);
             groupBlock(wire, ordinal, g);
@@ -446,7 +443,10 @@ public final class WorldGlobalHashes {
                     float value = mesh.vertex(n, component);
                     require(
                             Float.isFinite(value)
-                                    && Math.abs(value) <= (component < 3 ? 4096 : 16));
+                                    && Math.abs(value)
+                                            <= (component < 3
+                                                    ? GlobalInteriorLimits.POSITION
+                                                    : GlobalInteriorLimits.UV));
                     int bits = Float.floatToRawIntBits(value);
                     require(component >= 3 || value != 0 || bits == 0);
                     group.integer(bits);
@@ -458,7 +458,7 @@ public final class WorldGlobalHashes {
                 }
                 int value = mesh.index(n);
                 require(value >= g.vertexFirst() && value < g.vertexFirst() + g.vertexCount());
-                group.shortValue(value);
+                group.integer(value);
             }
             String hash = group.finish();
             hashes.add(hash);

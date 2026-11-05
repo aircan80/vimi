@@ -118,6 +118,24 @@ public final class WorldGlobalTransport {
         }
     }
 
+    /**
+     * The child reported {@code GLOBAL_UNAVAILABLE}: this GPU or backend cannot draw the interior.
+     * {@link Session#ready()} fails with it, and the child still retires and exits cleanly.
+     */
+    public static final class Unavailable extends IOException {
+        private static final long serialVersionUID = 1L;
+        private final WorldGlobalStatus.Code code;
+
+        Unavailable(WorldGlobalStatus.Code code) {
+            super("Global renderer unavailable: " + code);
+            this.code = code;
+        }
+
+        public WorldGlobalStatus.Code code() {
+            return code;
+        }
+    }
+
     /** A started child's exit could not be confirmed; its input and mapping must be retained. */
     public static final class UnconfirmedExit extends IOException {
         private static final long serialVersionUID = 1L;
@@ -153,6 +171,7 @@ public final class WorldGlobalTransport {
         private long revision;
         private long sequence;
         private boolean closeRequested, closeSent, failed;
+        private volatile WorldGlobalStatus.Code unavailable;
         private String failure = "";
 
         private Session(
@@ -304,6 +323,14 @@ public final class WorldGlobalTransport {
                             && !ready.isDone()
                             && r.matches(identity, expected.counts())) {
                         ready.complete(null);
+                    } else if (status instanceof WorldGlobalStatus.Unavailable u
+                            && consumed.isDone()
+                            && !ready.isDone()
+                            && unavailable == null
+                            && u.identity().equals(identity)) {
+                        // Classified negative before READY: no frame will come, the child retires.
+                        unavailable = u.code();
+                        ready.completeExceptionally(new Unavailable(u.code()));
                     } else if (status instanceof WorldGlobalStatus.Closed c
                             && !closedStatus.isDone()
                             && c.identity().equals(identity)) {
@@ -383,7 +410,8 @@ public final class WorldGlobalTransport {
             boolean healthy;
             String reason;
             synchronized (lock) {
-                healthy = !failed && closeSent;
+                // A child that reported UNAVAILABLE ends on its own without a parent CLOSE.
+                healthy = !failed && (closeSent || unavailable != null);
                 reason = !failure.isEmpty() ? failure : "UNEXPECTED_EXIT";
             }
             if (healthy) {
