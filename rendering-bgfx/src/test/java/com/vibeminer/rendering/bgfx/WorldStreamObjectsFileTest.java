@@ -110,6 +110,30 @@ final class WorldStreamObjectsFileTest {
     }
 
     @Test
+    void aHighTierSetAtExactlyTheObjectPixelCapWritesAndReads() throws Exception {
+        // 56 images of 256^2 are exactly MAX_PIXELS (7 << 19), the HIGH tier's total.
+        var builder = WorldStreamTileWriter.Exterior.builder();
+        for (int i = 0; i < 56; i++) {
+            builder.image(256, 256, ByteBuffer.allocate(256 * 256 * 4));
+        }
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> builder.image(1, 1, ByteBuffer.allocate(4)),
+                "one pixel more is refused");
+        builder.model();
+        builder.mesh(
+                FloatBuffer.wrap(new float[24]),
+                IntBuffer.wrap(new int[] {0, 1, 2}),
+                new int[] {0, 3, 0});
+        builder.placement(0, 0, 0, 0, 1, 1, 0);
+        var maximum = builder.build();
+        assertTrue(maximum.bytes() <= WorldStreamObjectsFile.MAX_BYTES);
+        var reference = write(maximum);
+        var read = WorldStreamObjectsFile.read(objectsPath(), IDENTITY, reference, () -> false);
+        assertEquals(WorldStreamObjectsFile.MAX_PIXELS, read.pixelCount());
+    }
+
+    @Test
     void maximumProfileFitsUnderTheObjectsFileCeiling() throws Exception {
         var builder = WorldStreamTileWriter.Exterior.builder();
         for (int i = 0; i < 24; i++) {
