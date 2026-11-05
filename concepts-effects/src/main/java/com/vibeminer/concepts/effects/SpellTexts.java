@@ -165,15 +165,10 @@ public final class SpellTexts implements AutoCloseable {
         if (raw == null) {
             return unavailable(spell, "Spell description text is unreadable");
         }
-        if (!raw.contains("$") && !raw.contains("|")) {
-            return SpellText.project(spell, raw, Map.of(), issues);
-        }
-        boolean needsAmounts =
-                java.util.regex.Pattern.compile("\\$s[1-3](?![A-Za-z0-9])").matcher(raw).find();
-        boolean needsDuration =
-                java.util.regex.Pattern.compile("\\$d(?![A-Za-z0-9])").matcher(raw).find();
-        if (!needsAmounts && !needsDuration) {
-            return SpellText.project(spell, raw, Map.of(), issues);
+        var none = new SpellText.Values(Map.of(), Map.of());
+        var needs = SpellText.needs(spell, raw);
+        if (!needs.any()) {
+            return SpellText.project(spell, raw, none, issues);
         }
         // The direct-float profile is reviewed for modern Forever, not legacy integer Classic data.
         if (version == null
@@ -182,15 +177,22 @@ public final class SpellTexts implements AutoCloseable {
             return SpellText.project(
                     spell,
                     raw,
-                    Map.of(),
+                    none,
                     List.of("Spell amount profile is unsupported for this build."));
         }
-        var amounts =
-                needsAmounts
-                        ? amounts(spell, priority, token, issues)
-                        : Map.<Integer, SpellText.Amount>of();
-        var duration = needsDuration ? duration(spell, priority, token, issues) : null;
-        return SpellText.project(spell, raw, amounts, duration, issues);
+        var amounts = new LinkedHashMap<Long, Map<Integer, SpellText.Amount>>();
+        for (long source : needs.amounts()) {
+            amounts.put(source, amounts(source, priority, token, issues));
+        }
+        var durations = new LinkedHashMap<Long, SpellText.Value>();
+        for (long source : needs.durations()) {
+            durations.put(source, duration(source, priority, token, issues));
+        }
+        return SpellText.project(
+                spell,
+                raw,
+                new SpellText.Values(amounts, durations),
+                List.copyOf(new java.util.LinkedHashSet<>(issues)));
     }
 
     private Map<Integer, SpellText.Amount> amounts(
@@ -222,7 +224,7 @@ public final class SpellTexts implements AutoCloseable {
                     || difficulty.signum() != 0
                     || index.scale() > 0
                     || index.signum() < 0
-                    || index.compareTo(BigDecimal.valueOf(2)) > 0) {
+                    || index.compareTo(BigDecimal.valueOf(SpellText.EFFECT_SLOTS - 1)) > 0) {
                 continue;
             }
             int slot = index.intValueExact();

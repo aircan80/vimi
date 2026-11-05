@@ -333,6 +333,26 @@ final class SpellTextsTest {
     }
 
     @Test
+    void tokenizedDescriptionsResolveUppercaseCrossSpellAndMarkedUpValuesBesideUnknowns() {
+        var other = new ArrayList<>(scalar(103, 0, null).values());
+        other.set(FIELDS.indexOf("SpellID"), "777");
+        other.set(FIELDS.indexOf("EffectBasePointsF"), "-30");
+        var result =
+                scalarPreview(
+                        "|cffffffffSlow by $S1%|r, then $777s1% for $D; ${$s1*2} $?a1[x][y] done.",
+                        List.of(
+                                scalar(101, 0, null),
+                                new Db2Types.Row(103, false, null, other, List.of())),
+                        List.of(row(90, "16929", "0", "1", "0", "0")),
+                        List.of(row(1, "10000", "0", "10000", "0")));
+        assertEquals("Slow by 50%, then 30% for 10 sec; ? ? done.", result.display());
+        assertEquals(SpellTexts.State.UNRESOLVED, result.state());
+        assertTrue(
+                result.substitutions().get(1).sources().stream()
+                        .anyMatch(source -> source.rowId() == 103));
+    }
+
+    @Test
     void newScalarFormsRequirePercentUnitsAndEveryReviewedContextGuard() {
         for (String guard :
                 List.of(
