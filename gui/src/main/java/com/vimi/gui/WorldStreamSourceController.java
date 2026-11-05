@@ -162,6 +162,8 @@ final class WorldStreamSourceController {
         CompletableFuture<WorldStreamSourceBridge.ExteriorCopy> prepared;
         CompletableFuture<WorldStreamTransport.ObjectsOutcome> attached;
         int placements;
+        boolean buildingsFailed;
+        WorldTileCreatures.Summary creatures = WorldTileCreatures.Summary.NONE;
 
         Exterior(Entry entry) {
             this.entry = entry;
@@ -847,10 +849,13 @@ final class WorldStreamSourceController {
                 exterior = null;
                 if (!live(work.entry)) return;
                 if (copy.failed()) work.entry.source().exteriorFailedLate();
+                if (copy.exterior() == null) work.entry.source().creatures(copy.creatures());
                 if (copy.exterior() == null || copy.failed()) exteriorTried.add(work.entry);
                 return;
             }
             work.placements = copy.placements();
+            work.buildingsFailed = copy.failed();
+            work.creatures = copy.creatures();
             work.attached = session.attachObjects(work.entry.resident(), copy.exterior());
             work.attached.whenComplete((ignored, failure) -> kick());
             return;
@@ -865,7 +870,11 @@ final class WorldStreamSourceController {
         exteriorTried.add(work.entry);
         try {
             switch (work.attached.join()) {
-                case ATTACHED -> work.entry.source().exteriorAttached(work.placements);
+                case ATTACHED -> {
+                    work.entry.source().exteriorAttached(work.placements);
+                    work.entry.source().creatures(work.creatures);
+                    if (work.buildingsFailed) work.entry.source().exteriorFailedLate();
+                }
                 case FAILED -> work.entry.source().exteriorFailedLate();
                 case DROPPED -> {}
             }
@@ -874,6 +883,26 @@ final class WorldStreamSourceController {
             if (!closing && !CleanCancellation.is(failed)) work.entry.source().exteriorFailedLate();
         }
         changed();
+    }
+
+    /** Drawn creature models and the per-reason counts of spawn points not drawn. */
+    static String creatureDetail(WorldTileCreatures.Summary creatures, int tiles) {
+        var text = new StringBuilder();
+        if (creatures.drawn() > 0)
+            text.append("; ").append(creatures.drawn()).append(creatures.drawn() == 1 ? " static creature model on " : " static creature models on ").append(tiles)
+                    .append(tiles == 1 ? " tile" : " tiles").append(" (rest pose, facing north)");
+        if (creatures.omitted() > 0) {
+            text.append("; spawns not drawn: ");
+            String separator = "";
+            for (var count : WorldTileCreatures.Count.values()) {
+                if (count == WorldTileCreatures.Count.DRAWN || creatures.count(count) == 0) continue;
+                text.append(separator).append(creatures.count(count)).append(' ').append(count.label);
+                separator = ", ";
+            }
+        }
+        if (creatures.drawn() == 0 && creatures.omitted() == 0 && creatures.note() != null)
+            text.append("; creatures: ").append(creatures.note());
+        return text.toString();
     }
 
     /** Whether this entry still owns its resident, i.e. retireUnused has not closed it. */
@@ -889,14 +918,19 @@ final class WorldStreamSourceController {
 
     private String readyDetail() {
         int textured = 0, partial = 0, height = 0, watered = 0;
-        int buildingTiles = 0, buildings = 0, buildingFailures = 0;
+        int buildingTiles = 0, buildings = 0, buildingFailures = 0, creatureTiles = 0;
+        var creatures = WorldTileCreatures.Summary.NONE;
         String reason = "";
         for (var entry : current) {
             if (entry.source().waterCells() > 0) watered++;
+            var tileCreatures = entry.source().creatures();
+            if (tileCreatures.drawn() > 0) creatureTiles++;
+            creatures = creatures.plus(tileCreatures);
             switch (entry.resident().exteriorObjects()) {
                 case DRAWN -> {
-                    buildingTiles++;
+                    if (entry.source().exteriorPlacements() > 0) buildingTiles++;
                     buildings += entry.source().exteriorPlacements();
+                    if (entry.source().exteriorFailed()) buildingFailures++;
                 }
                 case FAILED -> buildingFailures++;
                 default -> {
@@ -930,6 +964,7 @@ final class WorldStreamSourceController {
                         ? ""
                         : "; " + buildings + " BASIC exterior buildings on " + buildingTiles)
                 + (buildingFailures == 0 ? "" : "; building objects failed on " + buildingFailures)
+                + creatureDetail(creatures, creatureTiles)
                 + (exterior == null ? "" : "; loading buildings")
                 + (water != null && waterTables != null && waterTables.isDone() && !waterReady()
                         ? "; water tables unavailable"

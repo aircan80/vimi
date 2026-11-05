@@ -89,6 +89,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
     private final StackPane viewport = new StackPane(image);
     private final WorldMinimap minimap = new WorldMinimap();
     private WorldSpawnOverlay spawns;
+    private WorldTileCreatures creatures;
     private WorldSpawnOverlay.Picked inspectedSpawn;
     private String inspectedMap;
     private long inspectedRequest;
@@ -2242,6 +2243,13 @@ final class WorldView extends BorderPane implements AutoCloseable {
         var request = new WorldStreamSourceController.Request(selection, handle, inventory.map(),
                 inventory, origin, areaEntry == null || areaEntry.entryChunk() == null
                         ? null : areaEntry.entryChunk().entryReference(), catalog.areaIndex());
+        var creatureSource = WorldStreamGpuOwner.CREATURES ? creatures : null;
+        long creatureMap = inventory.map().id();
+        WorldStreamSourceBridge.ExteriorPreparer preparer = creatureSource == null
+                ? WorldStreamSourceBridge::prepareExterior
+                : (source, scope, tile, cancellation) -> WorldStreamSourceBridge.prepareExterior(
+                        source, scope, tile, cancellation,
+                        (builder, owned, token) -> creatureSource.append(builder, creatureMap, owned, token));
         streaming = new WorldStreamSourceController(request, scope -> {
             var owner = new WorldStreamGpuOwner(gpuService, scope);
             return new WorldStreamSourceController.GpuOwner() {
@@ -2250,7 +2258,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
                 }
                 public CompletableFuture<Void> closeAsync() { return owner.closeAsync(); }
             };
-        }, streamingEvents, Platform::runLater);
+        }, streamingEvents, Platform::runLater, System::nanoTime, preparer);
         if (camera != null) {
             streamCamera();
             streamNeighborhood();
@@ -2619,6 +2627,15 @@ final class WorldView extends BorderPane implements AutoCloseable {
         }
     }
 
+    /**
+     * Supplies static creature models for declared spawns to every later streaming session's tile
+     * objects; tiles prepared before this is attached keep their objects. FX thread.
+     */
+    void attachCreatures(WorldTileCreatures source) {
+        if (creatures != null || closed) throw new IllegalStateException("Creature models already attached");
+        creatures = java.util.Objects.requireNonNull(source);
+    }
+
     /** Mounts declared NPC spawn markers over the presented explorer frame. FX thread. */
     void attachSpawns(WorldSpawnOverlay overlay) {
         if (spawns != null || closed) throw new IllegalStateException("Spawn overlay already attached");
@@ -2653,6 +2670,7 @@ final class WorldView extends BorderPane implements AutoCloseable {
         pendingBookmark = null;
         travel.close();
         if (spawns != null) spawns.close();
+        if (creatures != null) creatures.close();
         picks.shutdownNow();
         streamingImages.clear();
         minimap.close();

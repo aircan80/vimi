@@ -319,7 +319,7 @@ final class WorldSpawnOverlay extends Pane implements AutoCloseable {
 
     /** Status suffix: per-state counts of drawn markers, with refusal reasons, then pending. */
     static String modelSummary(WorldSpawnModels.Counts counts) {
-        var text = new StringBuilder(" · models (not drawn yet):");
+        var text = new StringBuilder(" · models:");
         boolean first = true;
         for (var state : CreatureModelPolicy.State.values()) {
             int n = counts.count(state);

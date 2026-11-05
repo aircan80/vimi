@@ -237,6 +237,61 @@ public final class CreatureModelPolicy {
                         + (chain.message() == null ? "" : " (" + chain.message() + ")"));
     }
 
+    /** Largest drawn scale admitted from client data; larger products are not claimed. */
+    public static final double MAX_SCALE = 64;
+
+    /**
+     * The client-data scale of a display: {@code CreatureDisplayInfo.CreatureModelScale} times
+     * {@code CreatureModelData.ModelScale}, each read from exactly one recorded column. Returns
+     * null when either value is not recorded once, is not a finite positive number, or the product
+     * exceeds {@link #MAX_SCALE}. A server-side per-creature scale is not part of client data and
+     * is never applied. Pure.
+     */
+    public static Double scale(CreatureResult result, int displayId) {
+        if (result == null || result.detail() == null || result.detail().displays() == null) {
+            return null;
+        }
+        for (var chain : result.detail().displays()) {
+            if (chain.slot() == null || chain.slot().displayId() != displayId) {
+                continue;
+            }
+            Double display = factValue(chain.displayFacts());
+            Double model = factValue(chain.modelFacts());
+            if (display == null || model == null) {
+                return null;
+            }
+            double product = display * model;
+            return product > 0 && product <= MAX_SCALE ? product : null;
+        }
+        return null;
+    }
+
+    private static Double factValue(CreatureTypes.CreatureRecordFacts facts) {
+        if (facts == null
+                || facts.state() != CreatureTypes.CreatureFactsState.READY
+                || facts.facts() == null) {
+            return null;
+        }
+        for (var fact : facts.facts()) {
+            if (!"scale".equals(fact.key())) {
+                continue;
+            }
+            if (fact.state() != CreatureTypes.CreatureFactState.VALUE
+                    || fact.cells() == null
+                    || fact.cells().size() != 1
+                    || fact.cells().getFirst().value() == null) {
+                return null;
+            }
+            try {
+                double value = Double.parseDouble(fact.cells().getFirst().value().trim());
+                return Double.isFinite(value) && value > 0 && value <= MAX_SCALE ? value : null;
+            } catch (NumberFormatException unreadable) {
+                return null;
+            }
+        }
+        return null;
+    }
+
     /** Readable chain stop. */
     static String describe(CreatureDisplayChainState state) {
         return switch (state) {

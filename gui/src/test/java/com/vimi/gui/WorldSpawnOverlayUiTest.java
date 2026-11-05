@@ -98,7 +98,7 @@ public final class WorldSpawnOverlayUiTest {
                     && "Authored guard".equals(picked.npc().name()), "Clicking a drawn marker picks its record");
             require(overlay.get().pick(5, 5).isEmpty(), "Clicking away from markers picks none");
         });
-        await(() -> fxValue(() -> overlay.get().status().getText().contains("models (not drawn yet): 2 qualified")),
+        await(() -> fxValue(() -> overlay.get().status().getText().contains("models: 2 qualified")),
                 "Drawn markers count their model outcomes");
         fx(() -> {
             var top = overlay.get().markers().getLast();

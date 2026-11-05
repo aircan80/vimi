@@ -51,6 +51,7 @@ dependencies {
     implementation project(':concepts-talents')
     implementation project(':concepts-races')
     implementation project(':concepts-mounts')
+    implementation project(':concepts-models')
     implementation project(':concepts-professions')
     implementation project(':rendering-models')
     implementation project(':rendering-bgfx')
@@ -105,6 +106,11 @@ tasks.withType(JavaExec).configureEach {
     def dataDirectory = providers.gradleProperty('dataDirectory')
     if (dataDirectory.isPresent()) {
         systemProperty 'vimi.dataDirectory', dataDirectory.get()
+    }
+    // Diagnostic renderer override for the inline GPU World: default, vulkan, metal or d3d11.
+    def gpuBackend = providers.gradleProperty('gpuBackend')
+    if (gpuBackend.isPresent()) {
+        systemProperty 'vimi.gpu.backend', gpuBackend.get()
     }
 }
 tasks.register('backendTest', JavaExec) {
@@ -325,6 +331,14 @@ tasks.register('worldSpawnModelsTest', JavaExec) {
     mainClass = 'com.vimi.gui.WorldSpawnModelsTest'
 }
 check.dependsOn worldSpawnModelsTest
+
+// Static creature models for spawn points in tile objects; authored meshes, no game data.
+tasks.register('worldTileCreaturesTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.vimi.gui.WorldTileCreaturesTest'
+}
+check.dependsOn worldTileCreaturesTest
 
 tasks.register('worldPickTest', JavaExec) {
     dependsOn testClasses

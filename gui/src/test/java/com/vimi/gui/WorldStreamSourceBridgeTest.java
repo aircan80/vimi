@@ -41,6 +41,12 @@ public final class WorldStreamSourceBridgeTest {
         check(!WorldStreamGpuOwner.exteriorsEnabled("false"), "false turns exteriors off");
         check(!WorldStreamGpuOwner.exteriorsEnabled("FALSE"), "The opt-out ignores letter case");
         check(WorldStreamGpuOwner.exteriorsEnabled("no"), "Only false opts out");
+        check(!WorldStreamGpuOwner.creaturesEnabled(null), "Creature models are off without the property");
+        check(!WorldStreamGpuOwner.creaturesEnabled("yes"), "Only true opts in to creature models");
+        check(WorldStreamGpuOwner.creaturesEnabled("TRUE"), "true (any case) opts in to creature models");
+        if (System.getProperty("vimi.world.creatures") == null) {
+            check(!WorldStreamGpuOwner.CREATURES, "The default GUI session draws no creature models");
+        }
         var spec = WorldStreamGpuOwner.spec("0".repeat(64));
         check(spec.exteriorObjects() == WorldStreamGpuOwner.EXTERIORS,
                 "The GUI session profile follows the property");
@@ -87,6 +93,27 @@ public final class WorldStreamSourceBridgeTest {
                     fixture.source, scope, TILE, new Cancellation());
             check(empty.exterior() == null && !empty.failed() && empty.placements() == 0,
                     "A tile without placed objects prepares to no objects, not a failure");
+            // Creatures ride in the same late objects: a tile without buildings still carries them.
+            var creatures = new WorldTileCreatures(token -> WorldTileCreaturesTest.index(java.util.List.of(
+                    WorldSpawnOverlayTest.spawn(1, 1, (32 - TILE.x() - .5) * WorldFormats.TILE_SIZE,
+                            (32 - TILE.y() - .5) * WorldFormats.TILE_SIZE, 5.0))), () -> "r1",
+                    (npc, token) -> WorldTileCreaturesTest.qualified(7, null),
+                    (display, token) -> WorldTileCreaturesTest.preview(display, 0L, 0L,
+                            WorldTileCreaturesTest.appearance(true)));
+            var withCreatures = WorldStreamSourceBridge.prepareExterior(fixture.source, scope, TILE,
+                    new Cancellation(), (builder, tile, token) -> creatures.append(builder, 0, tile, token));
+            check(withCreatures.exterior() != null && withCreatures.exterior().placements() == 1
+                            && withCreatures.placements() == 0 && !withCreatures.failed()
+                            && withCreatures.creatures().drawn() == 1,
+                    "Creature placements are delivered without buildings and are not counted as buildings");
+            var broken = WorldStreamSourceBridge.prepareExterior(fixture.source, scope, TILE,
+                    new Cancellation(), (builder, tile, token) -> {
+                        builder.model();
+                        throw new IllegalStateException("authored creature failure");
+                    });
+            check(broken.exterior() == null && !broken.failed()
+                            && broken.creatures().note().contains("IllegalStateException"),
+                    "A creature failure is isolated to creatures and drops its partial model");
             var canceled = new Cancellation();
             canceled.cancel();
             try {
