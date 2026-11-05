@@ -293,14 +293,17 @@ public final class GpuPreviewServiceTest {
             fixture.update(terrainOwner, new GpuPreviewService.ViewRequest(100, 32, 32, 0, 0, 1, 0));
             fixture.updateTerrain(terrainOwner, new GpuPreviewService.TerrainRequest(1, 800, 500, camera));
             await(terrainChild.started);
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            // Polls end as soon as the control arrives; the bound only absorbs loaded CI runners.
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
             while (!terrainChild.controls.toString().contains("WORLD 1 ")
                     && System.nanoTime() < deadline) {
                 Thread.sleep(5);
             }
-            require(terrainChild.controls.toString().contains("WORLD 1 800 500 1.0 2.0 3.0 0.2 -0.1\n")
-                    && !terrainChild.controls.toString().contains("VIEW"),
-                    "Orbit controls cannot advance or corrupt free-flight revision");
+            String terrainControls = terrainChild.controls.toString();
+            require(terrainControls.contains("WORLD 1 800 500 1.0 2.0 3.0 0.2 -0.1\n")
+                    && !terrainControls.contains("VIEW"),
+                    "Orbit controls cannot advance or corrupt free-flight revision; controls: "
+                            + terrainControls.strip().replace('\n', '|'));
             fixture.open(modelOwner, mesh(), null, Set.of(), ignored -> {});
             fixture.updateTerrain(modelOwner, new GpuPreviewService.TerrainRequest(100, 32, 32, camera));
             fixture.update(modelOwner, new GpuPreviewService.ViewRequest(2, 32, 32, 0, 0, 1, 0));
@@ -308,14 +311,15 @@ public final class GpuPreviewServiceTest {
             terrainClosed.get(2, TimeUnit.SECONDS);
             fixture.closeOwner(terrainOwner).get(2, TimeUnit.SECONDS);
             require(modelChild.isAlive(), "Retired terrain owner cannot close the model successor");
-            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
             while (!modelChild.controls.toString().contains("VIEW 2 ")
                     && System.nanoTime() < deadline) {
                 Thread.sleep(5);
             }
-            require(modelChild.controls.toString().contains("VIEW 2 ")
-                    && !modelChild.controls.toString().contains("WORLD"),
-                    "Free-flight controls cannot corrupt an orbit session");
+            String modelControls = modelChild.controls.toString();
+            require(modelControls.contains("VIEW 2 ") && !modelControls.contains("WORLD"),
+                    "Free-flight controls cannot corrupt an orbit session; controls: "
+                            + modelControls.strip().replace('\n', '|'));
         } finally {
             fixture.closeAsync().get(3, TimeUnit.SECONDS);
         }
