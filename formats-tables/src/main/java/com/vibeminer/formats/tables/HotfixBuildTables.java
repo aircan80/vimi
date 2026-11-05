@@ -30,9 +30,8 @@ import java.util.function.Function;
 
 /** Bounded ordinary view only. Raw captures and native preparation remain the actual base DB2. */
 public final class HotfixBuildTables implements BuildTables {
-    // A real client cache can hotfix thousands of wide rows in one table: one Forever cache
-    // charges about 27 MiB for ItemSparse alone. Item warmup pins several such tables at once.
-    private static final long TABLE_BYTES = 64L << 20, CACHE_BYTES = 128L << 20;
+    // Byte ceilings come from the shared HotfixMemory accountant. A real Forever cache charges
+    // about 27 MiB for ItemSparse alone, and item warmup pins several such tables at once.
     private static final int CACHE_TABLES = 8;
 
     private enum Kind {
@@ -139,6 +138,19 @@ public final class HotfixBuildTables implements BuildTables {
         }
     }
 
+    /** A table whose overlay exceeded a bound; it reads base rows with a visible reason. */
+    private record Unavailable(String identity, String name, long rows, String reason) {}
+
+    private static final class OverBudget extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+        final String reason;
+
+        OverBudget(String reason) {
+            super("Hotfix " + reason, null, false, false);
+            this.reason = reason;
+        }
+    }
+
     private static final class Job<T> {
         final Cancellation token = new Cancellation();
         final CompletableFuture<T> result = new CompletableFuture<>();
@@ -151,6 +163,7 @@ public final class HotfixBuildTables implements BuildTables {
     private final HotfixBinding binding;
     private final LinkedHashMap<Long, View> views = new LinkedHashMap<>(8, .75f, true);
     private final Set<Long> pinned = new HashSet<>();
+    private final Map<Long, Unavailable> unavailable = new HashMap<>();
     private final Set<Job<?>> jobs = new HashSet<>();
     private final ThreadPoolExecutor worker =
             new ThreadPoolExecutor(
@@ -179,12 +192,13 @@ public final class HotfixBuildTables implements BuildTables {
     private final CompletableFuture<Void> drained = new CompletableFuture<>();
     private boolean closed;
     private Throwable cancellationFailure;
-    private long charged;
+    private final HotfixMemory memory;
 
     HotfixBuildTables(ClientBuildTables base, TablesOptions options) {
         this.base = Objects.requireNonNull(base);
         this.options = options;
         binding = Objects.requireNonNull(options.hotfix());
+        memory = options.hotfixMemory();
         if (!binding.build().equals(base.build()) || !binding.locale().equals(base.locale())) {
             throw new IllegalArgumentException("Hotfix workspace mismatch");
         }
@@ -358,6 +372,36 @@ public final class HotfixBuildTables implements BuildTables {
             return null;
         }
         long id = metadata.entry().fileDataId();
+        var skipped = unavailable.get(id);
+        if (skipped != null
+                && skipped.reason().equals(HotfixViewInfo.TABLE_BUDGET)
+                && skipped.identity().equals(metadata.identity())) {
+            return null;
+        }
+        try {
+            var compiled = compile(metadata, priority, token);
+            unavailable.remove(id);
+            return compiled;
+        } catch (OverBudget over) {
+            // One oversized table must not fail the workspace. It reads base rows only, and
+            // hotfixInfo names the reason so the missing overlay stays explainable. An oversized
+            // table stays skipped; a full shared budget is retried on the next read.
+            unavailable.put(
+                    id,
+                    new Unavailable(
+                            metadata.identity(),
+                            metadata.entry().name(),
+                            metadata.rows(),
+                            over.reason));
+            return null;
+        }
+    }
+
+    private View compile(
+            ClientBuildTables.HotfixMetadata metadata,
+            TableTypes.Priority priority,
+            Cancellation token) {
+        long id = metadata.entry().fileDataId();
         var cached = views.get(id);
         if (cached != null
                 && cached.metadata.identity().equals(metadata.identity())
@@ -369,7 +413,7 @@ public final class HotfixBuildTables implements BuildTables {
             if (pinned.contains(id)) {
                 throw new IllegalStateException("Hotfix base changed during operation");
             }
-            charged -= views.remove(id).bytes;
+            memory.release(views.remove(id).bytes);
         }
         long hash = Long.parseUnsignedLong(metadata.header().tableHash(), 16);
         var input = entries(hash);
@@ -413,8 +457,8 @@ public final class HotfixBuildTables implements BuildTables {
             }
             if (regionConflicts.contains(entry.recordId())) {
                 bytes = Math.addExact(bytes, 384);
-                if (bytes > TABLE_BYTES) {
-                    throw new IllegalStateException("Hotfix decoded table budget exceeded");
+                if (bytes > memory.tableBytes()) {
+                    throw new OverBudget(HotfixViewInfo.TABLE_BUDGET);
                 }
                 changes.put(
                         entry.recordId(), new Change(entry, Kind.UNKNOWN, null, "REGION_CONFLICT"));
@@ -477,8 +521,8 @@ public final class HotfixBuildTables implements BuildTables {
                 }
             }
             bytes = Math.addExact(bytes, charge);
-            if (bytes > TABLE_BYTES) {
-                throw new IllegalStateException("Hotfix decoded table budget exceeded");
+            if (bytes > memory.tableBytes()) {
+                throw new OverBudget(HotfixViewInfo.TABLE_BUDGET);
             }
             changes.put(entry.recordId(), new Change(entry, kind, row));
         }
@@ -519,19 +563,6 @@ public final class HotfixBuildTables implements BuildTables {
                 throw new IllegalStateException("Hotfix base IDs share ordinal");
             }
         }
-        while (views.size() >= CACHE_TABLES || charged + bytes > CACHE_BYTES) {
-            Long victim = null;
-            for (var key : views.keySet()) {
-                if (!pinned.contains(key)) {
-                    victim = key;
-                    break;
-                }
-            }
-            if (victim == null) {
-                throw new IllegalStateException("Hotfix retained table budget exceeded");
-            }
-            charged -= views.remove(victim).bytes;
-        }
         var result =
                 new View(
                         metadata,
@@ -547,8 +578,20 @@ public final class HotfixBuildTables implements BuildTables {
                         unknown,
                         ignored,
                         binding.inputFingerprint());
+        while (views.size() >= CACHE_TABLES || !memory.reserve(bytes)) {
+            Long victim = null;
+            for (var key : views.keySet()) {
+                if (!pinned.contains(key)) {
+                    victim = key;
+                    break;
+                }
+            }
+            if (victim == null) {
+                throw new OverBudget(HotfixViewInfo.RETAINED_BUDGET);
+            }
+            memory.release(views.remove(victim).bytes);
+        }
         views.put(id, result);
-        charged += bytes;
         pinned.add(id);
         return result;
     }
@@ -992,7 +1035,7 @@ public final class HotfixBuildTables implements BuildTables {
                                             .findFirst()
                                             .orElse(null);
                     if (v == null) {
-                        return Optional.empty();
+                        return unavailableInfo(table, rowId);
                     }
                     HotfixViewInfo.RowSource origin = null;
                     if (rowId != null) {
@@ -1041,6 +1084,48 @@ public final class HotfixBuildTables implements BuildTables {
                                     v.ignored,
                                     origin));
                 });
+    }
+
+    private Optional<HotfixViewInfo> unavailableInfo(TableTypes.Ref table, Long rowId) {
+        var skipped =
+                table.fileDataId() != null
+                        ? unavailable.get(table.fileDataId())
+                        : unavailable.values().stream()
+                                .filter(
+                                        u ->
+                                                u.name() != null
+                                                        && u.name().equalsIgnoreCase(table.name()))
+                                .findFirst()
+                                .orElse(null);
+        if (skipped == null) {
+            return Optional.empty();
+        }
+        var origin =
+                rowId == null
+                        ? null
+                        : new HotfixViewInfo.RowSource(
+                                HotfixViewInfo.Origin.BASE,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                skipped.reason());
+        return Optional.of(
+                new HotfixViewInfo(
+                        binding.inputFingerprint(),
+                        null,
+                        HotfixBinding.POLICY,
+                        skipped.rows(),
+                        skipped.rows(),
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        origin,
+                        skipped.reason()));
     }
 
     private static Throwable append(Throwable first, Throwable next) {
@@ -1099,8 +1184,10 @@ public final class HotfixBuildTables implements BuildTables {
                             failure = append(failure, error);
                         }
                     }
+                    for (var retired : views.values()) {
+                        memory.release(retired.bytes);
+                    }
                     views.clear();
-                    charged = 0;
                     try {
                         await(baseDrain);
                     } catch (RuntimeException | Error error) {

@@ -69,6 +69,11 @@ class HotfixBuildTablesTest {
     }
 
     private static BuildTables numbers(long hash, Db2ByteSource source, boolean relation) {
+        return numbers(hash, source, relation, HotfixMemory.PROCESS);
+    }
+
+    private static BuildTables numbers(
+            long hash, Db2ByteSource source, boolean relation, HotfixMemory memory) {
         byte[] bytes = Db2Fixture.numeric("WDC5", 0, 32, 9, new long[0], true);
         ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(152, (int) hash);
         var files =
@@ -114,7 +119,8 @@ class HotfixBuildTablesTest {
                         .withLocalDefinitionsOnly()
                         .withHotfix(
                                 new HotfixBinding(
-                                        TablesContract.BUILD, "enUS", "1.2.3.4", source, index));
+                                        TablesContract.BUILD, "enUS", "1.2.3.4", source, index))
+                        .withHotfixMemory(memory);
         return new TablesService(
                         localInventory(files),
                         definitions,
@@ -366,6 +372,80 @@ class HotfixBuildTablesTest {
             assertEquals(count, view.added());
             assertEquals(2 + count, view.effectiveRows());
         }
+    }
+
+    private static Db2ByteSource manyRows(int count) {
+        var changes = new byte[count][];
+        for (int i = 0; i < count; i++) {
+            changes[i] = entry(0x11223344L, 1, 1_000 + i, 1, number(i));
+        }
+        return cache(changes);
+    }
+
+    @Test
+    void oversizedTableReadsBaseRowsWithAVisibleReasonInsteadOfFailing() {
+        var memory = new HotfixMemory(1 << 20, 1 << 20);
+        try (var tables = numbers(0x11223344L, manyRows(4_096), false, memory)) {
+            var base = tables.get(TableTypes.Ref.id(100), 7, P, Cancellation.NONE).join();
+            assertEquals(TableTypes.RowOutcome.FOUND, base.outcome());
+            assertEquals(
+                    TableTypes.RowOutcome.ABSENT,
+                    tables.get(TableTypes.Ref.id(100), 1_000, P, Cancellation.NONE)
+                            .join()
+                            .outcome());
+            var page =
+                    tables.page(
+                                    new TableTypes.PageRequest(TableTypes.Ref.id(100)),
+                                    P,
+                                    Cancellation.NONE)
+                            .join();
+            assertEquals(TableTypes.PageState.OK, page.state());
+            assertEquals(2, page.rows().size());
+            var info =
+                    tables.hotfixInfo(TableTypes.Ref.id(100), 7L, P, Cancellation.NONE)
+                            .join()
+                            .orElseThrow();
+            assertEquals(HotfixViewInfo.TABLE_BUDGET, info.unavailable());
+            assertEquals(HotfixViewInfo.Origin.BASE, info.row().origin());
+            assertEquals(HotfixViewInfo.TABLE_BUDGET, info.row().reason());
+            assertEquals(0, memory.reserved());
+        }
+    }
+
+    @Test
+    void handlesShareOneOverlayBudgetAndRetryOnceItIsReleased() {
+        // Each view charges about 0.9 MiB; two do not fit a 1.5 MiB shared ceiling.
+        var memory = new HotfixMemory(1 << 20, 3 << 19);
+        var first = numbers(0x11223344L, manyRows(1_000), false, memory);
+        try (var second = numbers(0x11223344L, manyRows(1_000), false, memory)) {
+            assertEquals(
+                    TableTypes.RowOutcome.FOUND,
+                    first.get(TableTypes.Ref.id(100), 1_000, P, Cancellation.NONE)
+                            .join()
+                            .outcome());
+            assertTrue(memory.reserved() > 0);
+            assertEquals(
+                    TableTypes.RowOutcome.ABSENT,
+                    second.get(TableTypes.Ref.id(100), 1_000, P, Cancellation.NONE)
+                            .join()
+                            .outcome());
+            assertEquals(
+                    HotfixViewInfo.RETAINED_BUDGET,
+                    second.hotfixInfo(TableTypes.Ref.id(100), null, P, Cancellation.NONE)
+                            .join()
+                            .orElseThrow()
+                            .unavailable());
+            first.close();
+            assertEquals(0, memory.reserved());
+            assertEquals(
+                    TableTypes.RowOutcome.FOUND,
+                    second.get(TableTypes.Ref.id(100), 1_000, P, Cancellation.NONE)
+                            .join()
+                            .outcome());
+        } finally {
+            first.close();
+        }
+        assertEquals(0, memory.reserved());
     }
 
     @Test
