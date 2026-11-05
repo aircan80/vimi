@@ -55,6 +55,8 @@ public final class WorldAudioPlaybackTest {
         final AtomicInteger opened = new AtomicInteger(), closedLines = new AtomicInteger();
         final AtomicLong frames = new AtomicLong();
         final ConcurrentLinkedQueue<Integer> peaks = new ConcurrentLinkedQueue<>();
+        /** Bytes per accepted write, in order. */
+        final ConcurrentLinkedQueue<Integer> writes = new ConcurrentLinkedQueue<>();
         volatile int last;
         /** A removed device or a line stopped by the OS accepts no bytes. */
         volatile boolean dead;
@@ -73,6 +75,7 @@ public final class WorldAudioPlaybackTest {
                                 peak = Math.max(peak, Math.abs((short) (bytes[i] << 8
                                         | bytes[i + 1] & 0xff)));
                             peaks.add(peak);
+                            writes.add(length);
                             last = peak;
                             frames.addAndGet(length / 2);
                             Thread.sleep(1);
@@ -533,25 +536,63 @@ public final class WorldAudioPlaybackTest {
      */
     private static void monoOnlyDevicesPlayDownmixedStereoAndStereoDevicesAreUnchanged()
             throws Exception {
+        playsStereoTrackToTheEnd(devices(1), 1, 0x3000);
+        playsStereoTrackToTheEnd(devices(1, 2), 2, 0x4000);
+    }
+
+    /** A DirectSound-style mixer listing 16-bit formats with the given channel counts. */
+    private static javax.sound.sampled.DataLine.Info devices(int... channelCounts) {
         var signed = javax.sound.sampled.AudioFormat.Encoding.PCM_SIGNED;
         float any = javax.sound.sampled.AudioSystem.NOT_SPECIFIED;
-        var mono = new java.util.ArrayList<javax.sound.sampled.AudioFormat>();
-        var both = new java.util.ArrayList<javax.sound.sampled.AudioFormat>();
-        for (int channels : new int[] {1, 2})
-            for (boolean bigEndian : new boolean[] {false, true}) {
-                var format = new javax.sound.sampled.AudioFormat(signed, any, 16, channels,
-                        2 * channels, any, bigEndian);
-                both.add(format);
-                if (channels == 1) mono.add(format);
-            }
-        playsStereoTrackToTheEnd(mixer(mono), 1, 0x3000);
-        playsStereoTrackToTheEnd(mixer(both), 2, 0x4000);
+        var formats = new java.util.ArrayList<javax.sound.sampled.AudioFormat>();
+        for (int channels : channelCounts)
+            for (boolean bigEndian : new boolean[] {false, true})
+                formats.add(new javax.sound.sampled.AudioFormat(signed, any, 16, channels,
+                        2 * channels, any, bigEndian));
+        return mixer(formats);
+    }
+
+    /**
+     * Ambience loops replay a cached copy of the decoded stream. On a mono-only device the cache
+     * must hold the stereo stream, not the downmixed block, or every replay is downmixed twice
+     * and plays half its samples. One pass (1000 frames) fits in one block, so each write is one
+     * pass; enough passes run to finish the fade-in.
+     */
+    private static void monoOnlyAmbienceLoopsReplayWholePasses() throws Exception {
+        long frames = 1000;
+        var mono = devices(1);
+        var device = new Device();
+        var decodes = new AtomicInteger();
+        var playback = new WorldAudioPlayback(
+                () -> AudioOutput.channels(mono::isFormatSupported), format -> {
+                    if (!mono.isFormatSupported(format))
+                        throw new javax.sound.sampled.LineUnavailableException("unsupported");
+                    return device.line();
+                }, (bytes, canceled) -> {
+                    decodes.incrementAndGet();
+                    return new StereoPcm(frames);
+                }, status -> {});
+        playback.ambience.volume(1);
+        playback.ambience.track(track(WorldAreaAudio.Kind.AMBIENCE, 100, 0), FILES);
+        playback.ambience.enabled(true);
+        int passes = (int) (8000 * WorldAudioPlayback.FADE_SECONDS / frames) + 4;
+        await(() -> device.writes.size() >= passes, "ambience did not loop");
+        playback.closeAsync().get(10, TimeUnit.SECONDS);
+        if (decodes.get() != 1) throw new AssertionError("Ambience loop re-decoded its file");
+        var writes = device.writes.toArray(Integer[]::new);
+        for (int pass = 0; pass < passes; pass++)
+            if (writes[pass] != frames * 2)
+                throw new AssertionError("Pass " + pass + " wrote " + writes[pass] + " bytes");
+        var peaks = device.peaks.toArray(Integer[]::new);
+        if (peaks[passes - 1] != 0x3000)
+            throw new AssertionError("Looped full-volume peak " + peaks[passes - 1]);
     }
 
     public static void main(String[] args) throws Exception {
         probeMatchesWindowsLinuxAndMonoMixerFormats();
         downmixAveragesStereoFrames();
         monoOnlyDevicesPlayDownmixedStereoAndStereoDevicesAreUnchanged();
+        monoOnlyAmbienceLoopsReplayWholePasses();
         gainRampsPerFrame();
         fadesKeepKitsAndCloseOwnedResources();
         ambienceLoopsFromMemoryAndMusicWaitsRecordedSilence();
