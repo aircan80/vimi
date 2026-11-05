@@ -1364,8 +1364,8 @@ class WorldExteriorObjectsTest {
 
     /**
      * An independent oracle in the style of gl-matrix (column vectors, every call post-multiplies
-     * the current matrix), used to transcribe the wowdev placement-matrix examples step by step.
-     * It never calls {@link WorldExteriorObjects.Rotation}.
+     * the current matrix), used to transcribe the wowdev placement-matrix examples step by step. It
+     * never calls {@link WorldExteriorObjects.Rotation}.
      */
     private static final class GlMat4 {
         double[][] m = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}};
@@ -1387,15 +1387,18 @@ class WorldExteriorObjectsTest {
             double t = Math.toRadians(degrees), c = Math.cos(t), s = Math.sin(t);
             return times(
                     switch (axis) {
-                        case 'x' -> new double[][] {
-                            {1, 0, 0, 0}, {0, c, -s, 0}, {0, s, c, 0}, {0, 0, 0, 1}
-                        };
-                        case 'y' -> new double[][] {
-                            {c, 0, s, 0}, {0, 1, 0, 0}, {-s, 0, c, 0}, {0, 0, 0, 1}
-                        };
-                        default -> new double[][] {
-                            {c, -s, 0, 0}, {s, c, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}
-                        };
+                        case 'x' ->
+                                new double[][] {
+                                    {1, 0, 0, 0}, {0, c, -s, 0}, {0, s, c, 0}, {0, 0, 0, 1}
+                                };
+                        case 'y' ->
+                                new double[][] {
+                                    {c, 0, s, 0}, {0, 1, 0, 0}, {-s, 0, c, 0}, {0, 0, 0, 1}
+                                };
+                        default ->
+                                new double[][] {
+                                    {c, -s, 0, 0}, {s, c, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}
+                                };
                     });
         }
 
@@ -1465,8 +1468,11 @@ class WorldExteriorObjectsTest {
             var expected = oracle.apply(v[0], v[1], v[2]);
             var actual = world(p, v[0], v[1], v[2]);
             for (int i = 0; i < 3; i++) {
-                assertEquals(expected[i], actual[i], 1e-9, "axis " + i + " of local " + List.of(
-                        v[0], v[1], v[2]));
+                assertEquals(
+                        expected[i],
+                        actual[i],
+                        1e-9,
+                        "axis " + i + " of local " + List.of(v[0], v[1], v[2]));
             }
         }
         var r = p.rotation().rowMajor();
@@ -1479,7 +1485,8 @@ class WorldExteriorObjectsTest {
 
     @Test
     void mddfPitchRollAndHeadingFollowThePinnedPlacementMatrix() {
-        var tilted = new Mddf(MODEL, 1, 0x240, 1234.5f, 87.25f, 2345.75f, 17.5f, -121.25f, 33, 1536);
+        var tilted =
+                new Mddf(MODEL, 1, 0x240, 1234.5f, 87.25f, 2345.75f, 17.5f, -121.25f, 33, 1536);
         var wrapped = new Mddf(MODEL, 2, 0x40, 500, 40, 600, -8, 405, -71, 700);
         var pitched = new Mddf(MODEL, 3, 0x1262, 10, 0, 20, 90, 0, 0, 1024);
         var rolled = new Mddf(MODEL, 4, 0x240, 10, 0, 20, 0, 0, 90, 1024);
@@ -1512,7 +1519,12 @@ class WorldExteriorObjectsTest {
                     assertEquals(r.uid(), p.uniqueId());
                     assertMapsLike(
                             GlMat4.adtPlacement(
-                                    r.x(), r.y(), r.z(), r.pitch(), r.heading(), r.roll(),
+                                    r.x(),
+                                    r.y(),
+                                    r.z(),
+                                    r.pitch(),
+                                    r.heading(),
+                                    r.roll(),
                                     r.scale() / 1024.0),
                             p);
                 }

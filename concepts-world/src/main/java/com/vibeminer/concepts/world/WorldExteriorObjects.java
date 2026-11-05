@@ -81,11 +81,10 @@ public final class WorldExteriorObjects {
     /**
      * MDDF flags: 0x40 direct FileDataID (required). 0x2, 0x20, 0x200 and 0x1000 select neither the
      * reference nor the transform in any reviewed source (wowdev ADT/v18 rev 37119, TrinityCore
-     * ec72c19 adtfile.cpp:149, wow.export 4474fa4 M2Renderer.js:985-1008), so they are admitted
+     * ec72c19 adtfile.cpp:149, wow.export 4474fa4 M2Renderer.js:984-1008), so they are admitted
      * without being interpreted; the meaning of 0x200 itself is not pinned.
      */
-    private static final int DOODAD_DIRECT_ID = 0x40,
-            DOODAD_ADMITTED = 0x2 | 0x20 | 0x200 | 0x1000;
+    private static final int DOODAD_DIRECT_ID = 0x40, DOODAD_ADMITTED = 0x2 | 0x20 | 0x200 | 0x1000;
 
     /** MODD flags: only 0x1 (accepts projected textures) is admitted; it carries no transform. */
     private static final int SET_DOODAD_ADMITTED = 0x1;
@@ -220,9 +219,8 @@ public final class WorldExteriorObjects {
 
     /**
      * Row-major 3x3 rotation in native terrain axes (rows are output X, Y, Z; columns are raw
-     * model-local x, y, z). Buildings use the reviewed ADT heading rule. MDDF doodads add pitch
-     * and roll ({@link #mddf}); set doodads compose the building heading with their MODD
-     * quaternion.
+     * model-local x, y, z). Buildings use the reviewed ADT heading rule. MDDF doodads add pitch and
+     * roll ({@link #mddf}); set doodads compose the building heading with their MODD quaternion.
      */
     public record Rotation(
             double m00,
@@ -241,9 +239,9 @@ public final class WorldExteriorObjects {
         /**
          * The MDDF rotation in degrees: the heading (rotation y), then pitch (rotation x) about
          * model-local y, then roll (rotation z) about model-local x, applied to the model first:
-         * {@code heading(y) * Ry(x) * Rx(z)}. This is TrinityCore ec72c19's
-         * {@code Matrix3::fromEulerAnglesZYX(y, x, z)} (ModelInstance.cpp:29, Matrix3.cpp:1664-1681)
-         * in its (z, x, up) placement frame (wmo.h:68), turned 180 degrees about up into the native
+         * {@code heading(y) * Ry(x) * Rx(z)}. This is TrinityCore ec72c19's {@code
+         * Matrix3::fromEulerAnglesZYX(y, x, z)} (ModelInstance.cpp:29, Matrix3.cpp:1664-1681) in
+         * its (z, x, up) placement frame (wmo.h:68), turned 180 degrees about up into the native
          * axes, which is exactly the heading rule's extra half turn. The wowdev ADT/v18 placement
          * matrix (rev 37119) gives the same matrix.
          */
