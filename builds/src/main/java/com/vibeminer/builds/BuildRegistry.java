@@ -175,13 +175,6 @@ public final class BuildRegistry implements AutoCloseable {
         database = new DerivedSqliteConnection(path);
         database.run(
                 Cancellation.NONE,
-                false,
-                session -> {
-                    session.execute("PRAGMA synchronous=FULL");
-                    return null;
-                });
-        database.run(
-                Cancellation.NONE,
                 true,
                 session -> {
                     session.execute(

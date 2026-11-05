@@ -84,6 +84,8 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
     // Package-private, instance-scoped test seam. No property, public option or global hook.
     java.util.function.BiConsumer<WritePoint, ObjectKey> writeProbe;
     java.util.function.Consumer<MaintenancePoint> maintenanceProbe;
+    // Test-only: observes the index connection as soon as open creates it. Unset in production.
+    static volatile java.util.function.Consumer<NativeSqlite> indexOpened;
     java.util.function.Consumer<Maintenance.Resources> maintenanceResourcesProbe;
     java.util.function.BiConsumer<ReadPoint, ObjectKey> readProbe;
     java.util.function.Consumer<ObjectKey> wholeShaProbe;
@@ -208,10 +210,13 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             for (var entry : batch.entries) {
                 atWrite(WritePoint.PACK_SYNCED, entry.header().key());
             }
+            // NORMAL, never FULL: the pack fsync above orders the bytes before these rows, and a
+            // lost commit loses a WAL suffix that reopen truncates away
+            // (docs/durability-policy.md).
             database.uncancelled(
                     () ->
                             database.transaction(
-                                    kind() == Kind.LIBRARY,
+                                    false,
                                     () -> {
                                         for (var entry : batch.entries) {
                                             applyEntry(
@@ -571,6 +576,9 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             }
         }
         database = new NativeSqlite(indexPath, false);
+        if (indexOpened != null) {
+            indexOpened.accept(database);
+        }
         database.exec("PRAGMA journal_mode=WAL");
         database.exec("PRAGMA synchronous=NORMAL");
         index = new StoreIndex(database);
@@ -1310,7 +1318,9 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
             return pending.committed;
         }
         if (!LibraryOwnership.owned(database, owner, key)) {
-            database.transaction(true, () -> LibraryOwnership.attach(database, owner, key, length));
+            // Same WAL as the object rows and every later reader of this claim: NORMAL suffices.
+            database.transaction(
+                    false, () -> LibraryOwnership.attach(database, owner, key, length));
         }
         return CompletableFuture.completedFuture(null);
     }
@@ -1441,8 +1451,9 @@ public final class ObjectStore implements ObjectReader, ObjectWriter, HistoryLog
                 io.sync(file, packPath(number));
                 atWrite(WritePoint.PACK_SYNCED, key);
                 Format.Entry committed = entry;
+                // NORMAL after the pack fsync, as in commitPending.
                 database.transaction(
-                        kind() == Kind.LIBRARY,
+                        false,
                         () -> {
                             applyEntry(number, start, committed, history);
                             if (owner != null && !tombstone) {

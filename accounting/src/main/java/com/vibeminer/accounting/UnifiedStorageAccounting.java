@@ -116,13 +116,6 @@ public final class UnifiedStorageAccounting implements StorageAccounting {
                             service.database = new DerivedSqliteConnection(path);
                             service.database.run(
                                     Cancellation.NONE,
-                                    false,
-                                    session -> {
-                                        session.execute("PRAGMA synchronous=FULL");
-                                        return null;
-                                    });
-                            service.database.run(
-                                    Cancellation.NONE,
                                     true,
                                     session -> {
                                         session.execute(

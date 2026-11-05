@@ -63,13 +63,6 @@ final class DownloadIntents {
         try (var connection = new DerivedSqliteConnection(database)) {
             connection.run(
                     Cancellation.NONE,
-                    false,
-                    sql -> {
-                        sql.execute("PRAGMA synchronous=FULL");
-                        return null;
-                    });
-            connection.run(
-                    Cancellation.NONE,
                     true,
                     sql -> {
                         sql.execute(
@@ -122,13 +115,6 @@ final class DownloadIntents {
 
     void save(Entry entry) throws Exception {
         try (var connection = new DerivedSqliteConnection(database)) {
-            connection.run(
-                    Cancellation.NONE,
-                    false,
-                    sql -> {
-                        sql.execute("PRAGMA synchronous=FULL");
-                        return null;
-                    });
             connection.run(
                     Cancellation.NONE,
                     true,
