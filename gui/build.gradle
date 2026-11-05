@@ -107,6 +107,11 @@ tasks.withType(JavaExec).configureEach {
     if (dataDirectory.isPresent()) {
         systemProperty 'vimi.dataDirectory', dataDirectory.get()
     }
+    // Diagnostic renderer override for the inline GPU World: default, vulkan, metal or d3d11.
+    def gpuBackend = providers.gradleProperty('gpuBackend')
+    if (gpuBackend.isPresent()) {
+        systemProperty 'vimi.gpu.backend', gpuBackend.get()
+    }
 }
 tasks.register('backendTest', JavaExec) {
     dependsOn testClasses
