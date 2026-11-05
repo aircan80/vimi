@@ -10,6 +10,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.ReadOnlyBufferException;
 import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
@@ -197,6 +198,8 @@ class WmoFormatsTest {
         assertEquals(2, result.batches().getFirst().flags());
         assertEquals(255, result.batches().getFirst().materialByte());
         assertEquals(65535, result.batches().getFirst().rawBounds().getLast());
+        // Flag 0x2 alone: the MOMT index is the sixth bounds word, not the material byte.
+        assertEquals(65535, result.batches().getFirst().materialIndex());
         assertEquals(0x1234, result.header().rawBatchPadding());
         assertEquals(0xfffffffdL, result.header().rawUnused());
         assertEquals(0xfffffff9L, result.header().tail1());
@@ -210,6 +213,16 @@ class WmoFormatsTest {
         assertTrue(
                 result.chunks().stream().anyMatch(c -> c.tag() == tag("ZZZZ") && c.bytes() == 7));
         assertEquals(255, Byte.toUnsignedInt(result.triangleDeclarations().get(1)));
+    }
+
+    @Test
+    void batchMaterialIndexReadsTheByteOrTheLargeIndexAndRefusesOtherFlags() {
+        var bounds = List.of(1, 2, 3, 4, 5, 300);
+        assertEquals(7, new WmoFormats.Batch(bounds, 0, 3, 0, 2, 0, 7).materialIndex());
+        assertEquals(300, new WmoFormats.Batch(bounds, 0, 3, 0, 2, 2, 7).materialIndex());
+        for (int flags : new int[] {1, 3, 4, 0x80}) {
+            assertEquals(-1, new WmoFormats.Batch(bounds, 0, 3, 0, 2, flags, 7).materialIndex());
+        }
     }
 
     @Test
