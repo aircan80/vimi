@@ -44,6 +44,10 @@ final class WorldStreamTileFileTest {
     }
 
     static TerrainScene.Tile full(boolean maximumIndices) {
+        return full(7, 19, maximumIndices);
+    }
+
+    static TerrainScene.Tile full(int x, int y, boolean maximumIndices) {
         float[] vertices = new float[37120 * 3];
         int at = 0;
         for (int chunk = 0; chunk < 256; chunk++) {
@@ -58,7 +62,7 @@ final class WorldStreamTileFileTest {
             }
         }
         return TerrainScene.Tile.copyOf(
-                7, 19, vertices, maximumIndices ? new int[196608] : new int[] {0, 1, 2}, 256);
+                x, y, vertices, maximumIndices ? new int[196608] : new int[] {0, 1, 2}, 256);
     }
 
     static WorldStreamTileFile.Header header(TerrainScene.Tile tile, boolean textured) {

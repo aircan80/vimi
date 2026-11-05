@@ -201,6 +201,10 @@ public final class WorldStreamTileWriter {
             return data.bytes();
         }
 
+        WorldStreamObjectsFile.Data data() {
+            return data;
+        }
+
         /** Bounded accumulation; every add is checked against the per-tile file profile. */
         public static final class Builder {
             private final java.util.ArrayList<int[]> models = new java.util.ArrayList<>();
