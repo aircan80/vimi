@@ -145,7 +145,8 @@ public final class NativeHotfixWorkspaceTest {
         foreignCancellationIsNotClassified();
         invalidVersionNeverTouchesStore();
         refreshedBindingMarksOnlyOlderLoadedSnapshotsForReopen();
-        System.out.println("NATIVE_HOTFIX_WORKSPACE_PASS scenarios=8 noNetwork=true");
+        publishedWorkspaceTablesApplyLoadedSnapshot();
+        System.out.println("NATIVE_HOTFIX_WORKSPACE_PASS scenarios=9 noNetwork=true");
     }
 
     private static void loadedSnapshotRetiresWithWork() throws Exception {
@@ -406,6 +407,34 @@ public final class NativeHotfixWorkspaceTest {
             } finally {
                 reopened.close();
             }
+        }
+    }
+
+    /**
+     * The published workspace (talents, items, source details) must read the same effective view
+     * as key bootstrap and table preparation. Only local comparison stays base-only.
+     */
+    private static void publishedWorkspaceTablesApplyLoadedSnapshot() throws Exception {
+        try (var fixture = new Fixture(new ClientHotfixStore.Probe() {})) {
+            var status = new com.vibeminer.formats.generated.TactKeyStatus(java.util.Map.of());
+            check(fixture.work.tablesOptions(status, NativePreparationWork.TableRole.WORKSPACE).hotfix() == null,
+                    "No hotfix binding before the snapshot loads");
+            check(fixture.work.hotfixIdentity() == null, "No hotfix identity before the snapshot loads");
+            ensure(fixture.work, Cancellation.NONE);
+            var preparation =
+                    fixture.work.tablesOptions(status, NativePreparationWork.TableRole.PREPARATION).hotfix();
+            var workspace =
+                    fixture.work.tablesOptions(status, NativePreparationWork.TableRole.WORKSPACE).hotfix();
+            var comparison =
+                    fixture.work.tablesOptions(status, NativePreparationWork.TableRole.LOCAL_BASE).hotfix();
+            check(preparation != null, "Preparation reads the loaded snapshot");
+            check(workspace != null, "Published workspace tables read the loaded snapshot");
+            check(workspace.inputFingerprint().equals(preparation.inputFingerprint()),
+                    "Published workspace and preparation share one hotfix input");
+            check(comparison == null, "Local comparison stays base-only");
+            check(fixture.work.hotfixIdentity() != null
+                            && fixture.work.hotfixIdentity().contains(workspace.inputFingerprint()),
+                    "Derived workspace caches are keyed by the hotfix input");
         }
     }
 }

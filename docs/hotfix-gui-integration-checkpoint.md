@@ -15,6 +15,13 @@ input fingerprint only when configured; default base-only identity is preserved.
 Local comparison/prepared-only bootstrap remains physical/base-only. Native capture
 and saved/prepared evidence methods are delegated by the table view unchanged.
 
+Follow-up (build 70790 verification): the published workspace handle that every view
+reads (talents, items, source details) originally opened without the binding, so an
+imported cache changed only key bootstrap and the table inventory. NativePreparationWork
+now names three table roles: PREPARATION and WORKSPACE apply the loaded snapshot,
+LOCAL_BASE (comparison, prepared-only keys) stays physical. Item grid/stat identities
+include the hotfix input when one is loaded; base-only identities are unchanged.
+
 Returned snapshots are retained before fallible metadata adoption. Metadata failure
 closes the owner and always settles the waiting future; work retirement waits the
 actual load result then closes returned snapshots after table/domain handles. The
