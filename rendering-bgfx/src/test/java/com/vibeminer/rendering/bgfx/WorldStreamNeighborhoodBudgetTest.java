@@ -86,7 +86,7 @@ final class WorldStreamNeighborhoodBudgetTest {
     void objectTextureTiersSelectAPinnedSessionBudget() {
         var standard = WorldStreamTransport.ObjectTextures.STANDARD;
         var high = WorldStreamTransport.ObjectTextures.HIGH;
-        assertEquals(160L << 20, standard.budgetBytes());
+        assertEquals(192L << 20, standard.budgetBytes());
         assertEquals(256L << 20, high.budgetBytes());
         assertEquals(standard.budgetBytes(), BgfxWorldStreamRenderer.OBJECT_BUDGET_BYTES);
         assertEquals(
@@ -99,22 +99,29 @@ final class WorldStreamNeighborhoodBudgetTest {
         long standardMean = (long) (6.87 * (1 << 20)), highMean = (long) (9.72 * (1 << 20));
         long near = WorldStreamTransport.ViewDistance.NEAR.residents();
         long far = WorldStreamTransport.ViewDistance.FAR.residents();
-        // NEAR fits either tier; FAR + HIGH fits the HIGH budget.
+        // NEAR and FAR fit either tier at the mean (FAR: about 172 MiB STANDARD, 243 MiB HIGH).
         assertTrue(
                 BgfxWorldStreamRenderer.objectsFit(standard.budgetBytes(), 0, near * standardMean));
         assertTrue(BgfxWorldStreamRenderer.objectsFit(high.budgetBytes(), 0, near * highMean));
         assertTrue(BgfxWorldStreamRenderer.objectsFit(high.budgetBytes(), 0, far * highMean));
-        // Documented degradation: FAR + STANDARD at the mean (about 172 MiB) exceeds 160 MiB, so
-        // some outer-ring sets report FAILED and keep their terrain (objects load nearest-first).
-        assertFalse(
+        assertTrue(
                 BgfxWorldStreamRenderer.objectsFit(standard.budgetBytes(), 0, far * standardMean));
+        // Documented degradation for rare dense sets: 25 tiles at the measured max (STANDARD
+        // 9.98 MiB, HIGH 16.92 MiB) exceed either budget, so outer-ring sets report FAILED and keep
+        // their terrain (objects load nearest-first).
+        assertFalse(
+                BgfxWorldStreamRenderer.objectsFit(
+                        standard.budgetBytes(), 0, far * (long) (9.98 * (1 << 20))));
+        assertFalse(
+                BgfxWorldStreamRenderer.objectsFit(
+                        high.budgetBytes(), 0, far * (long) (16.92 * (1 << 20))));
     }
 
     @Test
-    void exteriorObjectsShareTheFormerTenSlotWorstCase() {
+    void exteriorObjectsShareAPinnedStandardBudget() {
         long budget = BgfxWorldStreamRenderer.OBJECT_BUDGET_BYTES;
-        // Pinned to main's former ten-slot worst case, independent of later per-set limits.
-        assertEquals(160L << 20, budget);
+        // A pinned literal, independent of later per-set limits.
+        assertEquals(192L << 20, budget);
         assertTrue(WorldStreamObjectsFile.MAX_BYTES <= budget);
         assertTrue(BgfxWorldStreamRenderer.objectsFit(0, WorldStreamObjectsFile.MAX_BYTES));
         assertTrue(BgfxWorldStreamRenderer.objectsFit(budget - 100, 100));
@@ -123,9 +130,9 @@ final class WorldStreamNeighborhoodBudgetTest {
         assertTrue(BgfxWorldStreamRenderer.objectsFit(budget, 0));
         assertFalse(BgfxWorldStreamRenderer.objectsFit(-1, 0));
         assertFalse(BgfxWorldStreamRenderer.objectsFit(0, -1));
-        // Ten 16 MiB sets (main's per-set maximum) fit; the eleventh fails alone.
+        // Twelve 16 MiB sets fit; the thirteenth fails alone.
         long reserved = 0;
-        for (int set = 0; set < 10; set++) {
+        for (int set = 0; set < 12; set++) {
             assertTrue(BgfxWorldStreamRenderer.objectsFit(reserved, 16L << 20));
             reserved += 16L << 20;
         }

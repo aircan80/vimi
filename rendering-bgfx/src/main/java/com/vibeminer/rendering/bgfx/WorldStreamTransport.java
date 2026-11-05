@@ -64,7 +64,7 @@ public final class WorldStreamTransport {
 
     /**
      * Exterior object texture tier (#267 wires its image detail here). It selects the session's
-     * shared objects GPU budget: STANDARD 160 MiB, HIGH 256 MiB.
+     * shared objects GPU budget: STANDARD 192 MiB, HIGH 256 MiB.
      */
     public enum ObjectTextures {
         STANDARD(WorldStreamEnvelope.Session.STANDARD_TEXTURES),

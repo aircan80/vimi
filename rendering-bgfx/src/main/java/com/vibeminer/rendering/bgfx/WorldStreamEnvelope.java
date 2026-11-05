@@ -40,7 +40,7 @@ final class WorldStreamEnvelope {
         static final int STANDARD_TEXTURES = 1, HIGH_TEXTURES = 2;
 
         /** GPU bytes all exterior object sets of a session may reserve together, per tier. */
-        static final long STANDARD_OBJECT_BUDGET = 160L << 20, HIGH_OBJECT_BUDGET = 256L << 20;
+        static final long STANDARD_OBJECT_BUDGET = 192L << 20, HIGH_OBJECT_BUDGET = 256L << 20;
 
         Session(WorldStreamState.Nonce nonce, String scope, long policy) {
             this(nonce, scope, policy, false);

@@ -86,10 +86,10 @@ final class BgfxWorldStreamRenderer implements AutoCloseable {
 
     /**
      * STANDARD-tier GPU bytes all resident and building exterior object sets may reserve together:
-     * main's former ten-slot worst case, pinned as a literal. The session's object texture tier
-     * selects the budget actually enforced (HIGH: 256 MiB). A set that does not fit fails alone and
-     * its terrain is kept; late objects load nearest-first, so on FAR + HIGH the outer ring is what
-     * may report FAILED.
+     * 192 MiB, pinned as a literal: about 12% over FAR's measured mean of about 172 MiB with mip
+     * chains. The session's object texture tier selects the budget actually enforced (HIGH: 256
+     * MiB). A set that does not fit fails alone and its terrain is kept; late objects load
+     * nearest-first, so on FAR + HIGH the outer ring is what may report FAILED.
      */
     static final long OBJECT_BUDGET_BYTES = WorldStreamEnvelope.Session.STANDARD_OBJECT_BUDGET;
 
